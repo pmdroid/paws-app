@@ -554,7 +554,7 @@ try {
           ).status,
           200,
         );
-        observe("Production Paws startup wires the host sharing policy route", {
+        observe("Production Paws startup wires the host policy route", {
           hostPolicy: true,
         });
         const controlled = await insertQueuedItem(paws.store, {

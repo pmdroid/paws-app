@@ -8,7 +8,7 @@ export function* eligibleRunnerRowsSteps(
   agent: string,
   includeRevoked: boolean,
 ) {
-  const { runner: r, runnerPolicy: p, runnerAgentPolicy: a } = q.t;
+  const { runner: r, runnerAgentPolicy: a } = q.t;
   return yield* q.all(
     q.orm
       .select({
@@ -18,7 +18,7 @@ export function* eligibleRunnerRowsSteps(
         status: r.status,
         lastSeenAt: r.lastSeenAt,
         revokedAt: r.revokedAt,
-        sharing: sql<number>`COALESCE(${p.sharing}, 0)`.mapWith(Number),
+        isolation: r.isolation,
         quotaState: sql<string>`COALESCE(${a.quotaState}, 'ok')`,
         cooldownUntil: sql<number>`COALESCE(${a.cooldownUntil}, 0)`.mapWith(Number),
         virtualFinish: sql<number>`COALESCE(${a.virtualFinish}, 0)`.mapWith(Number),
@@ -26,7 +26,6 @@ export function* eligibleRunnerRowsSteps(
         resolvedModel: a.resolvedModel,
       })
       .from(r)
-      .leftJoin(p, eq(p.runnerId, r.id))
       .leftJoin(a, and(eq(a.runnerId, r.id), eq(a.agent, agent)))
       .where(
         and(
@@ -53,20 +52,6 @@ export function* itemOwnerScopeRowSteps(q: Q, itemId: string) {
       .leftJoin(w, eq(w.linearOrganizationId, s.organizationId))
       .where(eq(i.id, itemId)),
   );
-}
-
-export function* delegationLeadUserIdsSteps(q: Q, delegationId: string) {
-  const { workItem: i, workItemScheduling: c, workspaceUser: u } = q.t;
-  const rows = yield* q.all(
-    q.orm
-      .selectDistinct({ id: u.id })
-      .from(i)
-      .innerJoin(c, eq(c.itemId, i.id))
-      .innerJoin(u, eq(u.linearUserId, c.projectLeadId))
-      .where(eq(i.delegationId, delegationId))
-      .orderBy(asc(u.id)),
-  );
-  return rows.map((row) => row.id);
 }
 
 export function* lastItemRunnerSteps(q: Q, itemId: string) {
@@ -151,11 +136,6 @@ export function* runnerUsageListSteps(
       .orderBy(desc(u.startedAt), desc(u.commandId))
       .limit(100),
   );
-}
-
-export function* runnerSharingSteps(q: Q, runnerId: string) {
-  const { runnerPolicy: p } = q.t;
-  return yield* q.one(q.orm.select({ sharing: p.sharing }).from(p).where(eq(p.runnerId, runnerId)));
 }
 
 export function* bindingReadinessRowSteps(q: Q, bindingId: string) {

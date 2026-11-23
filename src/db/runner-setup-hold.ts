@@ -231,20 +231,17 @@ export function* enqueueRunnerSetupChecksSteps(
   now: number,
   serves?: { runnerId: string | null; ownerUserId?: string | null },
 ): Steps<boolean> {
-  const { runnerSetupHold: h, runner, runnerPolicy } = q.t;
+  const { runnerSetupHold: h, runner } = q.t;
   let owners: string[] | undefined;
   if (serves) {
     const id = serves.runnerId ?? "";
     const own = yield* q.one(
-      q.orm.select({ owner: runner.ownerUserId }).from(runner).where(eq(runner.id, id)),
-    );
-    const shared = yield* q.one(
       q.orm
-        .select({ one: sql`1` })
-        .from(runnerPolicy)
-        .where(and(eq(runnerPolicy.runnerId, id), eq(runnerPolicy.sharing, 1))),
+        .select({ owner: runner.ownerUserId, isolation: runner.isolation })
+        .from(runner)
+        .where(eq(runner.id, id)),
     );
-    if (!shared)
+    if (own?.isolation !== "issue_vm")
       owners = [own?.owner, serves.ownerUserId].filter(
         (owner): owner is string => typeof owner === "string",
       );

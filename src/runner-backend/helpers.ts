@@ -43,7 +43,7 @@ export const HELPER_LANE_BUSY =
 const AT_CAPACITY = /(no free capacity|account at its concurrency limit)$/;
 
 /** Rejections of runners the requester may not use at all. */
-const NOT_THIS_TASKS = new Set(["not-yours", "not-shared", "no-project-lead"]);
+const NOT_THIS_TASKS = new Set(["not-yours"]);
 
 /** Each runner's reasons, by runner name, so a failure says why every runner refused. */
 function noRunnerMessage(agent: string, reasons: ReadonlyMap<string, ReadonlySet<string>>): string {

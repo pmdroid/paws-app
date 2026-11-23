@@ -20,7 +20,6 @@ export function createOnboardingReadiness(store: Db): OnboardingReadinessReader 
           workspaceId,
           teamId,
           ownerUserId: userId,
-          leadUserIds: [],
           agent: "claude",
           purpose: "prepare",
           now,

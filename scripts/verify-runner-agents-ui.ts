@@ -68,8 +68,7 @@ const server = Bun.serve({
           { agent: "grok", offered: "0.1.9", refused: [], checkedAt: now },
         ],
       });
-    if (path === `/api/runners/${runner.id}/policy`)
-      return Response.json({ ownerUserId: "admin", sharing: 0 });
+    if (path === `/api/runners/${runner.id}/policy`) return Response.json({ ownerUserId: "admin" });
     if (path === "/api/workspaces/repositories") return Response.json({ repositories: [] });
     if (path === "/api/runners/vm") return Response.json({ available: false, vm: null });
     if (path === "/api/runners/usage") return Response.json({ usage: [] });

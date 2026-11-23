@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { JOB_KIND, delegationHasOpenWork, type WorkItemState } from "../core";
 import { type Q, type Db } from "./db";
@@ -86,25 +86,6 @@ export function* schedulingProjectLeadSteps(q: Q, itemId: string) {
 
 export async function schedulingProjectLead(store: Db, itemId: string): Promise<string | null> {
   return store.run((q) => schedulingProjectLeadSteps(q, itemId));
-}
-
-/** The people who lead a Linear project anywhere in the delegation, by `workspace_user` id. */
-export function* delegationProjectLeadIdsSteps(q: Q, delegationId: string) {
-  const { workItem: i, workItemScheduling: c, workspaceUser: u } = q.t;
-  const rows = yield* q.all(
-    q.orm
-      .selectDistinct({ id: u.id })
-      .from(i)
-      .innerJoin(c, eq(c.itemId, i.id))
-      .innerJoin(u, eq(u.linearUserId, c.projectLeadId))
-      .where(eq(i.delegationId, delegationId))
-      .orderBy(asc(u.id)),
-  );
-  return rows.map((row) => row.id);
-}
-
-export async function delegationProjectLeadIds(store: Db, delegationId: string): Promise<string[]> {
-  return store.run((q) => delegationProjectLeadIdsSteps(q, delegationId));
 }
 
 export function* itemPathHintsSteps(q: Q, itemId: string) {

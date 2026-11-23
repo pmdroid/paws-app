@@ -239,7 +239,6 @@ export async function retroRunnerCandidates(
         workspaceId: input.workspaceId,
         teamId: "",
         ownerUserId: admin.id,
-        leadUserIds: [],
         agent: input.agent,
         purpose: "work",
         now: input.now,

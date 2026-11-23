@@ -42,18 +42,15 @@ type Runner = {
   createdAt: number;
   lastSeenAt: number;
   agent?: "codex" | "claude";
-  sharing?: number;
+  isolation?: "none" | "issue_vm";
   capacity?: number;
 };
 
-/** An active runner with a ready agent, plus its sharing policy and capacity when given. */
-async function insertRunner(db: Db, { agent = "codex", sharing, capacity, ...runner }: Runner) {
+/** An active runner with a ready agent, plus its capacity when given. */
+async function insertRunner(db: Db, { agent = "codex", capacity, ...runner }: Runner) {
   await seed(
     db,
     (q) => q.orm.insert(q.t.runner).values({ name: runner.id, status: "active", ...runner }),
-    ...(sharing === undefined
-      ? []
-      : [(q: Q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId: runner.id, sharing })]),
     (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: runner.id, agent }),
     ...(capacity === undefined
       ? []
@@ -135,9 +132,9 @@ async function setAgentPolicy(
   }
 }
 
-function setSharing(db: Db, runnerId: string, sharing: number) {
+function setIsolation(db: Db, runnerId: string, isolation: "none" | "issue_vm") {
   return seed(db, (q) =>
-    q.orm.update(q.t.runnerPolicy).set({ sharing }).where(eq(q.t.runnerPolicy.runnerId, runnerId)),
+    q.orm.update(q.t.runner).set({ isolation }).where(eq(q.t.runner.id, runnerId)),
   );
 }
 
@@ -242,12 +239,12 @@ async function placeItem(bindTask = true) {
   await seed(db, (q) =>
     q.orm.update(q.t.workItem).set({ ownerUserId: owner }).where(eq(q.t.workItem.id, item.id)),
   );
-  for (const [id, userId, sharing] of [
-    ["own", owner, 0],
-    ["second", owner, 0],
-    ["shared", colleague, 1],
-    ["api", pool, 1],
-    ["unshared", pool, 0],
+  for (const [id, userId] of [
+    ["own", owner],
+    ["second", owner],
+    ["lead", colleague],
+    ["pool", pool],
+    ["pool-two", pool],
   ] as const)
     await insertRunner(db, {
       id,
@@ -255,7 +252,6 @@ async function placeItem(bindTask = true) {
       ownerUserId: userId,
       createdAt: now,
       lastSeenAt: now,
-      sharing,
     });
   const placement = createRunnerPlacement({
     store: db,
@@ -289,7 +285,7 @@ async function placeItem(bindTask = true) {
   };
 }
 
-test("Runner placement uses actual ownership, explicit sharing, provider evidence and independent review", async () => {
+test("Runner placement uses actual ownership, isolation, provider evidence and independent review", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-placement-"));
   try {
     const observations: boolean[] = [];
@@ -301,7 +297,7 @@ test("Runner placement uses actual ownership, explicit sharing, provider evidenc
   }
 });
 
-test("a solo item runs on its owner's runners and not another member's shared runner", async () => {
+test("a solo item runs on its owner's runners and not another member's runner", async () => {
   const placed = await placeItem();
   try {
     expect(await placed.ids()).toEqual(["own", "second"]);
@@ -358,7 +354,7 @@ test("runner placement resolves its item through session_key alone", async () =>
   }
 });
 
-test("an item in a Linear project also runs on its lead's shared runners after the owner's", async () => {
+test("an item never runs on its project lead's runner without isolation", async () => {
   const placed = await placeItem();
   try {
     await placed.db.run((q) =>
@@ -368,66 +364,26 @@ test("an item in a Linear project also runs on its lead's shared runners after t
         projectLeadId: "colleague",
       }),
     );
-    expect(await placed.ids()).toEqual(["own", "second", "shared"]);
-    await setSharing(placed.db, "shared", 0);
-    expect(await placed.ids()).toEqual(["own", "second"]);
+    const rejected: string[] = [];
+    expect(
+      await placed.ids({ onRejected: (id, reason) => rejected.push(`${id}: ${reason}`) }),
+    ).toEqual(["own", "second"]);
+    expect(rejected).toContain("lead: not-yours");
   } finally {
     await placed.close();
   }
 });
 
-test("a delegation spanning projects with several leads uses all of their shared runners", async () => {
+test("an item runs on another member's issue VM runner after the owner's own runners", async () => {
   const placed = await placeItem();
   try {
-    await seed(placed.db, (q) =>
-      q.orm.insert(q.t.workItem).values({
-        id: "sibling",
-        delegationId: placed.delegationId,
-        linearIssueId: "lin-sibling",
-        linearIdentifier: "sibling",
-        title: "Sibling",
-        state: "queued",
-        branchName: "paws/sibling",
-        position: 1,
-        createdAt: placed.now(),
-      }),
-    );
-    await placed.db.run((q) =>
-      saveSchedulingContextSteps(q, {
-        itemId: "item",
-        projectId: "one",
-        projectLeadId: "colleague",
-      }),
-    );
-    await placed.db.run((q) =>
-      saveSchedulingContextSteps(q, {
-        itemId: "sibling",
-        projectId: "two",
-        projectLeadId: "pool",
-      }),
-    );
-    expect((await placed.ids()).toSorted()).toEqual(["api", "own", "second", "shared"]);
-  } finally {
-    await placed.close();
-  }
-});
-
-test("a lead leaving the project stops lending runners, and an unknown lead keeps the saved one", async () => {
-  const placed = await placeItem();
-  try {
-    await placed.db.run((q) =>
-      saveSchedulingContextSteps(q, {
-        itemId: "item",
-        projectId: "project",
-        projectLeadId: "colleague",
-      }),
-    );
-    await placed.db.run((q) =>
-      saveSchedulingContextSteps(q, { itemId: "item", projectId: "project", priority: 2 }),
-    );
-    expect(await placed.ids()).toEqual(["own", "second", "shared"]);
-    await placed.db.run((q) => saveSchedulingContextSteps(q, { itemId: "item", projectId: null }));
-    expect(await placed.ids()).toEqual(["own", "second"]);
+    await setIsolation(placed.db, "pool", "issue_vm");
+    expect(await placed.ids()).toEqual(["own", "second", "pool"]);
+    await setRunner(placed.db, "own", { status: "paused" });
+    await setRunner(placed.db, "second", { status: "paused" });
+    expect(await placed.ids()).toEqual(["pool"]);
+    await setIsolation(placed.db, "pool", "none");
+    expect(await placed.ids()).toEqual([]);
   } finally {
     await placed.close();
   }
@@ -630,7 +586,6 @@ async function ownerPool(capacities: Record<string, number> = { a: 2, b: 2, c: 2
       ownerUserId: placed.owner,
       createdAt: placed.now(),
       lastSeenAt: placed.now(),
-      sharing: 0,
       capacity,
     });
   let commands = 0;
@@ -1034,11 +989,11 @@ test("placement reports every rejected runner and capacity waits include their r
       }),
     ).toEqual([]);
     expect(rejected.toSorted()).toEqual([
-      "api: no-project-lead",
+      "lead: not-yours",
       "own: agent account quota cooldown",
+      "pool-two: not-yours",
+      "pool: not-yours",
       "second: revoked",
-      "shared: no-project-lead",
-      "unshared: not-yours",
     ]);
     const error = new RunnerCapacityWait([], undefined, rejected);
     expect(error.message).toContain("own: agent account quota cooldown");

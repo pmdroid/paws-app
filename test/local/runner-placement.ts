@@ -108,15 +108,11 @@ export async function probeRunnerPlacement(
           createdAt: now,
           lastSeenAt: now,
         }),
-      (q) =>
-        q.orm.insert(q.t.runnerPolicy).values({ runnerId: id!, sharing: user === "owner" ? 0 : 1 }),
       (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: id!, agent: "codex" }),
     );
   }
-  const setSharing = (sharing: number) =>
-    change((q) =>
-      q.orm.update(q.t.runnerPolicy).set({ sharing }).where(eq(q.t.runnerPolicy.runnerId, "own")),
-    );
+  const setIsolation = (isolation: "none" | "issue_vm") =>
+    change((q) => q.orm.update(q.t.runner).set({ isolation }).where(eq(q.t.runner.id, "own")));
   const lastSeen = (lastSeenAt: number) =>
     change((q) => q.orm.update(q.t.runner).set({ lastSeenAt }).where(eq(q.t.runner.id, "second")));
   const setActive = (active: number) =>
@@ -214,9 +210,9 @@ export async function probeRunnerPlacement(
       teamChangeRejected: true,
     });
     assert.deepEqual(await ids(), ["own", "second"]);
-    observe("An item does not offer another member's shared runner", true, {
+    observe("An item does not offer another member's runner", true, {
       offered: ["own", "second"],
-      sharedExcluded: true,
+      othersExcluded: true,
     });
     await placement.candidates(request);
     await saveCheckpoint(db, item.id, {
@@ -473,7 +469,7 @@ export async function probeRunnerPlacement(
       { preferred: "second", sameModelDenied: true },
     );
     await placement.candidates(request);
-    await setSharing(1);
+    await setIsolation("issue_vm");
     await assert.rejects(
       () =>
         db.transaction(function* (q) {
@@ -491,7 +487,7 @@ export async function probeRunnerPlacement(
         }),
       /selection authority changed/,
     );
-    await setSharing(0);
+    await setIsolation("none");
     observe("Policy changes between selection and assignment cannot admit stale authority", true, {
       denied: true,
     });

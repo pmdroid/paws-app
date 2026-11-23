@@ -67,11 +67,11 @@ A Linear member who has never signed in to Paws can delegate an issue anyway. Pa
 
 The heading reads "Welcome, <first name>" and the lead line counts the remaining steps ("2 more steps before Paws starts PAS-n."). Once nothing is missing it reads "You're set up. Paws runs PAS-n on <runner>." The member can close the tab: Paws starts the task by itself once the runner and its agents are ready (see [Automatic start](#automatic-start)).
 
-Onboarding counts only the delegator's own runner and agent accounts they signed in themselves. A lead's shared runner still runs the delegation's work, but it doesn't complete a member's onboarding. Only the owner of a runner can sign its agents in or share it. Linear guests never reach this page. How Create VM works is in [Create a VM](create-vm.md); Add a host is [Enroll a remote Linux runner](runner-enrollment.md); the credit link is in [GitHub App](github-app.md#credit-link).
+Onboarding counts only the delegator's own runner and agent accounts they signed in themselves. A runner takes only its owner's work, so another member's runner, a project lead's included, never runs it. Only the owner of a runner can sign its agents in. Linear guests never reach this page. How Create VM works is in [Create a VM](create-vm.md); Add a host is [Enroll a remote Linux runner](runner-enrollment.md); the credit link is in [GitHub App](github-app.md#credit-link).
 
 ### Automatic start
 
-The resume never waits on a clock. A runner heartbeat, an agent sign-in becoming ready, a runner being shared, or a member VM reaching `ready` queues one `runner_setup.check` for the delegator, which reads the database only. If an eligible runner now has the agent ready, the item leaves its hold and the scheduler places it by the normal checks.
+The resume never waits on a clock. A runner heartbeat, an agent sign-in becoming ready or a member VM reaching `ready` queues one `runner_setup.check` for the delegator, which reads the database only. If an eligible runner now has the agent ready, the item leaves its hold and the scheduler places it by the normal checks.
 
 ### Repository access
 

@@ -32,6 +32,7 @@ export const runner = pgTable(
     liveReportedAt: bigint("live_reported_at", { mode: "number" }),
     terminationsSince: bigint("terminations_since", { mode: "number" }),
     fixSlots: integer("fix_slots").default(1).notNull(),
+    isolation: text().default("none").notNull(),
   },
   (table) => [
     foreignKey({
@@ -41,6 +42,7 @@ export const runner = pgTable(
     }),
     check("runner_check_1", sql`status IN ('active','paused','draining','revoked')`),
     check("runner_check_2", sql`fence >= 0`),
+    check("runner_check_3", sql`isolation IN ('none','issue_vm')`),
   ],
 );
 
@@ -281,12 +283,10 @@ export const runnerPolicy = pgTable(
       .primaryKey()
       .references(() => runner.id),
     hostOwner: text("host_owner").default("unknown").notNull(),
-    sharing: integer().default(0).notNull(),
     fallback: integer().default(0).notNull(),
   },
   () => [
     check("runner_policy_check_1", sql`host_owner IN ('member','workspace','unknown')`),
-    check("runner_policy_check_2", sql`sharing IN (0,1)`),
     check("runner_policy_check_3", sql`fallback IN (0,1)`),
   ],
 );

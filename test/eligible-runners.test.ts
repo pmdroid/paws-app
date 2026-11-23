@@ -27,7 +27,7 @@ type Member = { role: "member" | "admin"; active: boolean; teamIds: string[] };
 type Runner = {
   owner: string;
   version?: string | null;
-  sharing?: number;
+  isolation?: "none" | "issue_vm";
   status?: "active" | "paused" | "draining" | "revoked";
   seenAgoMs?: number;
   ready?: number;
@@ -88,8 +88,8 @@ async function workspace(runners: Record<string, Runner>) {
           createdAt: now,
           lastSeenAt: now - (runner.seenAgoMs ?? 0),
           revokedAt: runner.status === "revoked" ? now : null,
+          isolation: runner.isolation ?? "none",
         }),
-      (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId: id, sharing: runner.sharing ?? 0 }),
       (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: id, agent: "codex" }),
     );
     await seed(db, (q) =>
@@ -132,17 +132,15 @@ async function workspace(runners: Record<string, Runner>) {
     ws,
     users,
     now,
-    check(input: Partial<EligibleRunnersInput> & { leads?: string[] } = {}) {
-      const { leads = [], ...given } = input;
+    check(input: Partial<EligibleRunnersInput> = {}) {
       const rest = Object.fromEntries(
-        Object.entries(given).filter(([, value]) => value !== undefined),
+        Object.entries(input).filter(([, value]) => value !== undefined),
       );
       return db.run((q) =>
         eligibleRunnersSteps(q, {
           workspaceId: ws.id,
           teamId: "team",
           ownerUserId: users.me!,
-          leadUserIds: leads.map((name) => users[name]!),
           agent: "codex",
           purpose: "work",
           now,
@@ -157,7 +155,6 @@ async function workspace(runners: Record<string, Runner>) {
 const CASES: {
   name: string;
   runner: Runner;
-  leads?: string[];
   purpose?: EligibleRunnersInput["purpose"];
   reason: EligibleRunnerReason;
 }[] = [
@@ -180,32 +177,39 @@ const CASES: {
   },
   { name: "the delegator's own runner", runner: { owner: "me" }, reason: "own" },
   {
-    name: "a project lead's shared runner",
-    runner: { owner: "lead", sharing: 1 },
-    leads: ["lead"],
-    reason: "lead-shared",
-  },
-  {
-    name: "a project lead's runner that is not shared",
-    runner: { owner: "lead", sharing: 0 },
-    leads: ["lead"],
-    reason: "not-shared",
-  },
-  {
-    name: "a shared runner when the issue has no Linear project",
-    runner: { owner: "lead", sharing: 1 },
-    reason: "no-project-lead",
-  },
-  {
-    name: "a shared runner of someone who is not a project lead",
-    runner: { owner: "colleague", sharing: 1 },
-    leads: ["lead"],
+    name: "a project lead's runner without isolation",
+    runner: { owner: "lead", isolation: "none" },
     reason: "not-yours",
   },
   {
-    name: "another member's unshared runner",
+    name: "another member's runner without isolation",
     runner: { owner: "colleague" },
     reason: "not-yours",
+  },
+  {
+    name: "another member's issue VM runner",
+    runner: { owner: "colleague", isolation: "issue_vm" },
+    reason: "issue-vm",
+  },
+  {
+    name: "the delegator's own issue VM runner",
+    runner: { owner: "me", isolation: "issue_vm" },
+    reason: "own",
+  },
+  {
+    name: "another member's paused issue VM runner",
+    runner: { owner: "colleague", isolation: "issue_vm", status: "paused" },
+    reason: "paused",
+  },
+  {
+    name: "another member's issue VM runner whose agent is not signed in",
+    runner: { owner: "colleague", isolation: "issue_vm", ready: 0 },
+    reason: "agent-not-signed-in",
+  },
+  {
+    name: "another member's outdated issue VM runner",
+    runner: { owner: "colleague", isolation: "issue_vm", version: "0.1.83" },
+    reason: "outdated",
   },
   {
     name: "an own runner without a recent heartbeat",
@@ -229,21 +233,18 @@ const CASES: {
     reason: "auth-expired",
   },
   {
-    name: "a lead's shared runner when the lead is outside the team and not an admin",
-    runner: { owner: "outsider", sharing: 1 },
-    leads: ["outsider"],
+    name: "an issue VM runner whose owner is outside the team and not an admin",
+    runner: { owner: "outsider", isolation: "issue_vm" },
     reason: "owner-not-in-team",
   },
   {
-    name: "a lead's shared runner when the lead is an admin outside the team",
-    runner: { owner: "outside-admin", sharing: 1 },
-    leads: ["outside-admin"],
-    reason: "lead-shared",
+    name: "an issue VM runner whose owner is an admin outside the team",
+    runner: { owner: "outside-admin", isolation: "issue_vm" },
+    reason: "issue-vm",
   },
   {
-    name: "a lead's shared runner when the lead is no longer active",
-    runner: { owner: "gone", sharing: 1 },
-    leads: ["gone"],
+    name: "an issue VM runner whose owner is no longer active",
+    runner: { owner: "gone", isolation: "issue_vm" },
     reason: "owner-inactive",
   },
   {
@@ -264,11 +265,11 @@ for (const row of CASES)
   test(`eligibleRunners: ${row.name} is ${row.reason}`, async () => {
     const ws = await workspace({ runner: row.runner });
     try {
-      const result = await ws.check({ leads: row.leads, purpose: row.purpose });
+      const result = await ws.check({ purpose: row.purpose });
       expect(result.map(({ id, eligible, reason }) => ({ id, eligible, reason }))).toEqual([
         {
           id: "runner",
-          eligible: row.reason === "own" || row.reason === "lead-shared",
+          eligible: row.reason === "own" || row.reason === "issue-vm",
           reason: row.reason,
         },
       ]);
@@ -281,24 +282,15 @@ test("eligibleRunners lists every unrevoked runner in the workspace in id order"
   const ws = await workspace({
     b: { owner: "colleague" },
     a: { owner: "me" },
-    c: { owner: "lead", sharing: 1 },
+    c: { owner: "lead", isolation: "issue_vm" },
     gone: { owner: "me", status: "revoked" },
   });
   try {
-    expect((await ws.check({ leads: ["lead"] })).map(({ id, reason }) => [id, reason])).toEqual([
+    expect((await ws.check()).map(({ id, reason }) => [id, reason])).toEqual([
       ["a", "own"],
       ["b", "not-yours"],
-      ["c", "lead-shared"],
+      ["c", "issue-vm"],
     ]);
-  } finally {
-    await ws.close();
-  }
-});
-
-test("eligibleRunners reports the work owner's runner as own even when it is shared and they lead", async () => {
-  const ws = await workspace({ mine: { owner: "me", sharing: 1 } });
-  try {
-    expect((await ws.check({ leads: ["me"] }))[0]?.reason).toBe("own");
   } finally {
     await ws.close();
   }

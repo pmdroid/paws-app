@@ -1,11 +1,9 @@
 import {
   auditWorkspaceAccessSteps,
   latestModelCatalogSteps,
-  runnerSharingSteps,
   runnerFixSlotsSteps,
   runnerUsageListSteps,
   setRunnerFixSlotsSteps,
-  setRunnerSharingSteps,
   workspaceMemberSteps,
   workspaceMemberUsable,
   workspaceRunnerHostSteps,
@@ -18,9 +16,7 @@ import { z } from "zod";
 import { RunnerHealthResultSchema, labelModels } from "../runner-protocol";
 import type { WorkspacePrincipal } from "../workspace";
 
-const policyInput = z.strictObject({
-  sharing: z.boolean(),
-});
+const policyInput = z.strictObject({});
 const fixSlotsInput = z.strictObject({
   fixSlots: z.number().int().min(0),
 });
@@ -147,32 +143,17 @@ export function createRunnerPlacementBrowser(options: { store: Db; now?: () => n
       if (request.method === "GET")
         return json({
           ownerUserId: identity.ownerId,
-          ...(await store.run((q) => runnerSharingSteps(q, runnerId))),
           fixSlots: (await store.run((q) => runnerFixSlotsSteps(q, runnerId)))!.fixSlots,
         });
       if (request.method !== "POST") return json({ error: "Use GET or POST." }, 405);
-      const input = policyInput.parse(await body(request));
-      await store.transaction(function* (q) {
-        yield* memberSteps(q, principal);
-        const host = yield* runnerSteps(q);
-        if (host.ownerId !== principal.userId || host.revokedAt !== null)
-          throw new Error("Only the active host owner can change its sharing settings.");
-        yield* setRunnerSharingSteps(q, runnerId, input.sharing, now());
-        yield* auditWorkspaceAccessSteps(q, {
-          workspaceId: principal.workspaceId,
-          userId: principal.userId,
-          action: "runner.policy.updated",
-          subject: runnerId,
-          now: now(),
-        });
-      });
+      policyInput.parse(await body(request));
       return json({ ok: true });
     } catch (error) {
       journalCaught(error, "browser.createRunnerPlacementBrowser.member", null);
       if (error instanceof z.ZodError || error instanceof SyntaxError)
         return json(
           {
-            error: fix ? "Choose a valid number of fix slots." : "Choose a valid sharing setting.",
+            error: fix ? "Choose a valid number of fix slots." : "Choose a valid setting.",
           },
           400,
         );

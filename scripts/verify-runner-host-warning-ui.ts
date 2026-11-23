@@ -49,7 +49,7 @@ const server = Bun.serve({
         serverVersion: null,
         agentVersions: [],
       });
-    if (path.endsWith("/policy")) return Response.json({ ownerUserId: "owner", sharing: 0 });
+    if (path.endsWith("/policy")) return Response.json({ ownerUserId: "owner" });
     return (
       (await handleStatusRequest(request, {
         provider: fixtureProvider(snapshot),

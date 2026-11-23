@@ -59,7 +59,7 @@ const server = Bun.serve({
       });
     if (url.pathname === "/api/runners/usage") return Response.json({ usage: [] });
     if (url.pathname === "/api/runners/runner-a/policy")
-      return Response.json({ ownerUserId: "person", sharing: 0 });
+      return Response.json({ ownerUserId: "person" });
     if (url.pathname === "/api/runners/runner-a/accounts")
       return Response.json({
         accounts: ["claude", "codex", "grok", "opencode"].map((agent) => ({

@@ -2,7 +2,6 @@ import { afterEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import {
   chargeRunnerAgentSteps,
-  delegationProjectLeadIdsSteps,
   finishRunnerExecutionUsageSteps,
   insertRunnerExecutionUsageSteps,
   lastSuccessfulImplementationSteps,
@@ -100,7 +99,6 @@ describePglite((connect) => {
     const db = await connected(connect);
     expect(await db.run((q) => runnerPlacementPolicySteps(q, "box", "codex"))).toEqual({
       runner: null,
-      host: null,
       capacity: null,
       agent: null,
       membership: null,
@@ -117,8 +115,8 @@ describePglite((connect) => {
           status: "active",
           fence: 3,
           createdAt: 0,
+          isolation: "issue_vm",
         }),
-      (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId: "box", sharing: 1 }),
       (q) => q.orm.insert(q.t.runnerCapacity).values({ runnerId: "box", capacity: 2, ceiling: 4 }),
       (q) =>
         q.orm.insert(q.t.workspaceMember).values({
@@ -146,8 +144,8 @@ describePglite((connect) => {
       status: "active",
       fence: 3,
       revokedAt: null,
+      isolation: "issue_vm",
     });
-    expect(policy.host).toEqual({ runnerId: "box", sharing: 1 });
     expect(policy.capacity).toEqual({ capacity: 2, ceiling: 4, desired: null });
     expect(policy.agent).toMatchObject({ runnerId: "box", agent: "codex", quotaState: "ok" });
     expect(policy.agent).not.toHaveProperty("virtualFinish");
@@ -291,55 +289,6 @@ describePglite((connect) => {
     });
     await db.run((q) => setRunnerAgentCooldownSteps(q, "box", "codex", 120));
     expect(await readPolicy(db)).toMatchObject({ cooldownUntil: 120 });
-  });
-
-  test("project leads are distinct people across the delegation", async () => {
-    const db = await connected(connect);
-    const item = (id: string, delegationId: string) => ({
-      id,
-      delegationId,
-      linearIssueId: `issue-${id}`,
-      linearIdentifier: id,
-      title: id,
-      state: "queued",
-      branchName: `paws/${id}`,
-      position: 0,
-      createdAt: 0,
-    });
-    const scheduled = (itemId: string, projectLeadId: string) => ({
-      itemId,
-      projectKnown: 1,
-      projectLeadId,
-    });
-    await seed(
-      db,
-      (q) =>
-        q.orm
-          .insert(q.t.workItem)
-          .values([item("a", "d"), item("b", "d"), item("c", "d"), item("x", "other")]),
-      (q) =>
-        q.orm
-          .insert(q.t.workItemScheduling)
-          .values([
-            scheduled("a", "linear-z"),
-            scheduled("b", "linear-m"),
-            scheduled("c", "linear-m"),
-            scheduled("x", "linear-x"),
-          ]),
-      (q) =>
-        q.orm.insert(q.t.workspaceUser).values(
-          ["m", "x", "z"].map((name) => ({
-            id: `user-${name}`,
-            linearUserId: `linear-${name}`,
-            name,
-            email: `${name}@example.com`,
-          })),
-        ),
-    );
-    expect(await db.run((q) => delegationProjectLeadIdsSteps(q, "d"))).toEqual([
-      "user-m",
-      "user-z",
-    ]);
   });
 
   test("a session's installation is its team and OAuth client", async () => {

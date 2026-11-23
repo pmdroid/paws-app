@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { probeRunnerPolicyBrowser } from "./local/runner-policy-browser";
 
-test("Runner policy and usage require owner consent and current workspace authority", async () => {
+test("Runner policy and usage require current workspace authority", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-policy-"));
   try {
     const observations: boolean[] = [];

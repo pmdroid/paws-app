@@ -130,7 +130,7 @@ const server = Bun.serve({
       });
     if (path === "/api/runners/usage") return Response.json({ usage: [] });
     if (/^\/api\/runners\/[^/]+\/policy$/.test(path))
-      return Response.json({ ownerUserId: "owner", sharing: 1 });
+      return Response.json({ ownerUserId: "owner" });
     if (request.method === "POST" && path.includes("/coding-agents/")) {
       posts.push({ path, body: await request.json() });
       stage = "installing";

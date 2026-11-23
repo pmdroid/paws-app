@@ -3,7 +3,6 @@ import { isWorkspaceAdmin } from "../workspace";
 import {
   listAgentBindingsSteps,
   delegatedLinearUserIdSteps,
-  delegationLeadUserIdsSteps,
   eligibleRunnerRowsSteps,
   getWorkItemRepositorySteps,
   itemOwnerScopeRowSteps,
@@ -40,16 +39,11 @@ export function* eligibleRunnersSteps(q: Q, input: EligibleRunnersInput): Steps<
   const runners: EligibleRunner[] = [];
   for (const { status, revokedAt, lastSeenAt, ...runner } of rows) {
     const reason = yield* reasonSteps();
-    runners.push({ ...runner, eligible: reason === "own" || reason === "lead-shared", reason });
+    runners.push({ ...runner, eligible: reason === "own" || reason === "issue-vm", reason });
     function* reasonSteps(): Steps<EligibleRunnerReason> {
       if (revokedAt !== null || status === "revoked") return "revoked";
       const own = input.ownerUserId !== null && runner.ownerId === input.ownerUserId;
-      if (!own) {
-        if (input.leadUserIds.includes(runner.ownerId)) {
-          if (runner.sharing !== 1) return "not-shared";
-        } else if (runner.sharing === 1 && input.leadUserIds.length === 0) return "no-project-lead";
-        else return "not-yours";
-      }
+      if (!own && runner.isolation !== "issue_vm") return "not-yours";
       const member = yield* workspaceMemberSteps(q, input.workspaceId, runner.ownerId);
       if (!workspaceMemberUsable(member)) return "owner-inactive";
       if (!isWorkspaceAdmin(member.role) && !member.teamIds.includes(input.teamId))
@@ -78,7 +72,7 @@ export function* eligibleRunnersSteps(q: Q, input: EligibleRunnersInput): Steps<
         }
         if (!healthy) return expired ? "auth-expired" : "agent-not-signed-in";
       }
-      return own ? "own" : "lead-shared";
+      return own ? "own" : "issue-vm";
     }
   }
   return runners;
@@ -103,7 +97,7 @@ function* runnerNameOrIdSteps(q: Q, runnerId: string) {
 export function* runnerSetupNeedSteps(
   q: Q,
   runners: readonly EligibleRunner[],
-  owner: { ownerUserId: string | null; leadUserIds: readonly string[] },
+  owner: { ownerUserId: string | null },
   agent: string,
 ): Steps<RunnerSetupNeed | null> {
   if (runners.some((runner) => runner.eligible)) return null;
@@ -120,8 +114,7 @@ export function* runnerSetupNeedSteps(
       agent,
     };
   const usable = (runner: EligibleRunner) =>
-    runner.ownerId === owner.ownerUserId ||
-    (runner.sharing === 1 && owner.leadUserIds.includes(runner.ownerId));
+    runner.ownerId === owner.ownerUserId || runner.isolation === "issue_vm";
   if (
     runners.some(
       (runner) => usable(runner) && ["offline", "paused", "outdated"].includes(runner.reason),
@@ -131,7 +124,7 @@ export function* runnerSetupNeedSteps(
   return { reason: "no-runner" };
 }
 
-/** The workspace, team, owner and project leads of a work item, or null when one is unknown. */
+/** The workspace, team and owner of a work item, or null when one is unknown. */
 export function* itemOwnerScopeSteps(q: Q, itemId: string) {
   const scope = yield* itemOwnerScopeRowSteps(q, itemId);
   if (!scope?.workspaceId || !scope.teamId) return null;
@@ -140,9 +133,7 @@ export function* itemOwnerScopeSteps(q: Q, itemId: string) {
     scope.ownerUserId ??
     (delegator ? yield* workspaceUserIdForLinearUserSteps(q, delegator) : null);
   if (!ownerUserId) return null;
-  // The leads of the Linear projects across the item's delegation lend their shared runners.
-  const leadUserIds = yield* delegationLeadUserIdsSteps(q, scope.delegationId);
-  return { workspaceId: scope.workspaceId, teamId: scope.teamId, ownerUserId, leadUserIds };
+  return { workspaceId: scope.workspaceId, teamId: scope.teamId, ownerUserId };
 }
 
 type ItemRunnerInput = { itemId: string; agent: string; now?: number };
@@ -225,8 +216,6 @@ export function* itemRepositoryRunnerSteps(q: Q, input: { itemId: string; now?: 
 
 const OUT_OF_SCOPE = new Set<EligibleRunnerReason>([
   "not-yours",
-  "not-shared",
-  "no-project-lead",
   "revoked",
   "owner-inactive",
   "owner-not-in-team",

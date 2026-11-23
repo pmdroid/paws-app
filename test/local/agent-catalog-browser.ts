@@ -66,7 +66,7 @@ const server = Bun.serve({
       });
     if (path === "/api/runners") return Response.json(body());
     if (/^\/api\/runners\/[^/]+\/policy$/.test(path))
-      return Response.json({ ownerUserId: "owner", sharing: 1 });
+      return Response.json({ ownerUserId: "owner" });
     return (
       (await handleStatusRequest(request, {
         provider: fixtureProvider(snapshot),

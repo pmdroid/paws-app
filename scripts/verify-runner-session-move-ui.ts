@@ -105,7 +105,7 @@ const server = Bun.serve({
       if (session) session.move = { status: "moving", reason: null };
       return Response.json({ ok: true, moving: true }, { status: 202 });
     }
-    if (path.endsWith("/policy")) return Response.json({ ownerUserId: "owner", sharing: 0 });
+    if (path.endsWith("/policy")) return Response.json({ ownerUserId: "owner" });
     if (path === "/api/runners/vm") return Response.json({ available: false, vm: null });
     if (path === "/api/runners/usage") return Response.json({ usage: [] });
     return (

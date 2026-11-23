@@ -409,7 +409,6 @@ test("a central Claude account without a stored credential needs sign-in; Grok s
         workspaceId: "W1",
         teamId: "T1",
         ownerUserId: "U1",
-        leadUserIds: [],
         agent: "claude",
         purpose: "work",
         now: NOW,
