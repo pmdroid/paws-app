@@ -121,6 +121,7 @@ import {
   type CloseoutOutputPointer,
 } from "../../../db";
 import { followUpsFor } from "./follow-ups";
+import { pullFactsFor, withPullFacts } from "./pull-facts";
 import { hostDiskFullReason, isTerminalWorkItemState, riskCarryOverReason } from "../../../core";
 import { redactCloseoutText } from "../server/artifact";
 import { doingOf } from "./doing";
@@ -628,9 +629,17 @@ async function readItemDetail(
       automaticApproval: "Manual approval required",
     };
   }
-  const detail = { ...withoutOutputs(scope), ...(await followUpsFor(store, options, records)) };
   const env = options.env ?? process.env;
   const pawsHome = options.pawsHome ?? env.PAWS_HOME;
+  const pulls = await pullFactsFor(store, records, pawsHome);
+  const items = scope.items.map((item, index) => ({
+    ...item,
+    pr: withPullFacts(item.pr, pulls.get(records[index]!.id)),
+  }));
+  const detail = {
+    ...withoutOutputs({ ...scope, items }),
+    ...(await followUpsFor(store, options, records, pawsHome)),
+  };
   if (!pawsHome || detail.verdicts.length === 0) return { ...detail, id, blocks, risk };
   const progress = await store.run(listCloseoutProgressSteps);
   const verdicts: typeof detail.verdicts = [];

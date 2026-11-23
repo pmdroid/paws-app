@@ -1,10 +1,17 @@
-import type { IssueDetailResponse, StatusFollowUp, StatusItem, StepState } from "../contract";
+import type {
+  IssueDetailResponse,
+  PullState,
+  StatusFollowUp,
+  StatusItem,
+  StatusPullCi,
+  StatusPullRequest,
+  StatusPullSize,
+  StepState,
+} from "../contract";
 import { clock24, esc, itemLabel, mergeQueueLine, safeHref, statePill } from "./format";
 import { routeHref } from "./route";
 
 const NOT_HANDED = "In Linear, not handed to Paws";
-
-type PullState = "open" | "merged" | "closed";
 
 export function resultsSection(snapshot: IssueDetailResponse, item: StatusItem): string {
   const steps = mergeSteps(snapshot, item);
@@ -21,6 +28,7 @@ export function resultsSection(snapshot: IssueDetailResponse, item: StatusItem):
 }
 
 function pullState(snapshot: IssueDetailResponse, item: StatusItem): PullState {
+  if (item.pr?.state) return item.pr.state;
   const outcome = snapshot.mergeHistory.findLast((candidate) => candidate.itemId === item.id);
   return item.state === "merged" || outcome?.outcome === "merged" ? "merged" : "open";
 }
@@ -32,12 +40,14 @@ function pullPill(state: PullState): string {
 function pullRequestCard(snapshot: IssueDetailResponse, item: StatusItem, steps: string): string {
   if (!item.pr) return "";
   const state = pullState(snapshot, item);
-  const ci = state === "open" ? ciLine(snapshot, item) : "";
+  const ci = item.pr.ci ? pullCiLine(item.pr.ci) : state === "open" ? ciLine(snapshot, item) : "";
+  const size = item.pr.size ? sizeLine(item.pr.size) : "";
   return `<section class="results-card" aria-labelledby="results-pull-${esc(item.id)}" data-result-pull>
     <h3 id="results-pull-${esc(item.id)}" class="text-sm font-semibold text-muted-foreground">Pull request</h3>
-    <p class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 [overflow-wrap:anywhere]"><a href="${esc(item.pr.url)}" target="_blank" rel="noopener noreferrer"><span class="lin-id">#${item.pr.number}</span> ${esc(item.title)}</a>${pullPill(state)}</p>
+    <p class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 [overflow-wrap:anywhere]"><a href="${esc(item.pr.url)}" target="_blank" rel="noopener noreferrer"><span class="lin-id">#${item.pr.number}</span> ${esc(item.pr.title ?? item.title)}</a>${pullPill(state)}</p>
     ${ci ? `<p class="text-sm text-muted-foreground" data-result-ci>${esc(ci)}</p>` : ""}
-    ${mergeLine(snapshot, item, state)}${steps}
+    ${size ? `<p class="text-sm text-muted-foreground" data-result-size>${esc(size)}</p>` : ""}
+    ${mergedAs(item.pr, state) || mergeLine(snapshot, item, state)}${steps}
   </section>`;
 }
 
@@ -46,6 +56,27 @@ function ciLine(snapshot: IssueDetailResponse, item: StatusItem): string {
   if (entry?.waitingFor === "ci") return "CI running";
   const round = snapshot.ciRounds.findLast((candidate) => candidate.itemId === item.id);
   return round ? `CI failed on ${round.head.slice(0, 7)}` : "";
+}
+
+function pullCiLine(ci: StatusPullCi): string {
+  if (ci.state === "passed") return "CI passed";
+  if (ci.state === "pending") return "CI running";
+  return ci.failed.length ? `CI failed: ${ci.failed.join(", ")}` : "CI failed";
+}
+
+function sizeLine(size: StatusPullSize): string {
+  return `+${size.additions} −${size.deletions} in ${size.files} ${size.files === 1 ? "file" : "files"}`;
+}
+
+function mergedAs(pr: StatusPullRequest, state: PullState): string {
+  if (state !== "merged" || !pr.mergeSha) return "";
+  const short = esc(pr.mergeSha.slice(0, 7));
+  const repo = /^(https:\/\/[^\s]+)\/pull\/\d+/.exec(pr.url)?.[1];
+  const href = repo ? safeHref(`${repo}/commit/${pr.mergeSha}`) : null;
+  const sha = href
+    ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer"><code>${short}</code></a>`
+    : `<code>${short}</code>`;
+  return `<p class="text-sm" data-result-merge>Merged as ${sha}</p>`;
 }
 
 function mergeLine(snapshot: IssueDetailResponse, item: StatusItem, state: PullState): string {
@@ -125,7 +156,7 @@ function followUpRow(entry: StatusFollowUp): string {
   const pullUrl = entry.pull ? safeHref(entry.pull.url) : null;
   const pull =
     entry.pull && pullUrl
-      ? `<a href="${esc(pullUrl)}" target="_blank" rel="noopener noreferrer" data-follow-up-pull><span class="lin-id">#${entry.pull.number}</span></a>${pullPill(entry.pull.state)}`
+      ? `<a href="${esc(pullUrl)}" target="_blank" rel="noopener noreferrer" data-follow-up-pull><span class="lin-id">#${entry.pull.number}</span></a>${pullPill(entry.pull.state)}${entry.pull.ci ? `<span class="text-sm text-muted-foreground" data-follow-up-ci>${esc(pullCiLine(entry.pull.ci))}</span>` : ""}`
       : "";
   return `<li class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 [overflow-wrap:anywhere]" data-follow-up>${link}${state}${pull}</li>`;
 }
