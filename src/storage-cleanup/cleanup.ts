@@ -28,7 +28,7 @@ import {
 import { journalCaught } from "../journal";
 import {
   RunnerStorageCleanupResultSchema,
-  STORAGE_CLEANUP_RUNNER_VERSION,
+  MINIMUM_RUNNER_VERSION,
   runnerReleaseAtLeast,
   type RunnerCommand,
 } from "../runner-protocol";
@@ -343,7 +343,7 @@ export function createStorageCleanup(options: StorageCleanupOptions) {
   function* targetSteps(q: Q, machine: string, at: number): Steps<string> {
     const target = yield* storageCleanupRunnerSteps(q, machine);
     if (!target) throw new Refused({ status: 404, body: { error: "No such runner." } });
-    if (!runnerReleaseAtLeast(target.version, STORAGE_CLEANUP_RUNNER_VERSION))
+    if (!runnerReleaseAtLeast(target.version, MINIMUM_RUNNER_VERSION))
       throw new Refused({
         status: 409,
         body: { state: "unsupported", error: "This runner is too old to clean up worker logs." },

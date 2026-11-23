@@ -15,7 +15,7 @@ import {
 import { journalCaught } from "../journal";
 import {
   RunnerStorageReportSchema,
-  STORAGE_REPORT_RUNNER_VERSION,
+  MINIMUM_RUNNER_VERSION,
   runnerReleaseAtLeast,
   type RunnerCommand,
 } from "../runner-protocol";
@@ -118,7 +118,7 @@ export function createStorageUsage(options: StorageUsageOptions): StorageUsage {
       const outcome = await options.store
         .transaction(function* (q): Steps<StorageRefresh> {
           const version = yield* runnerHostVersionSteps(q, runner.id);
-          if (!runnerReleaseAtLeast(version, STORAGE_REPORT_RUNNER_VERSION)) return "unavailable";
+          if (!runnerReleaseAtLeast(version, MINIMUM_RUNNER_VERSION)) return "unavailable";
           if (yield* pendingStorageReportSteps(q, runner.id, at)) return "busy";
           yield* runners.enqueueSteps(q, {
             id: randomUUID(),
@@ -216,7 +216,7 @@ export function createStorageUsage(options: StorageUsageOptions): StorageUsage {
         runners: runners.map((runner): RunnerStorageView => {
           const snapshot = snapshots.find((entry) => entry.machine === runner.id) ?? null;
           const online = (runner.lastSeenAt ?? 0) > at - ONLINE_MS;
-          const supported = runnerReleaseAtLeast(runner.version, STORAGE_REPORT_RUNNER_VERSION);
+          const supported = runnerReleaseAtLeast(runner.version, MINIMUM_RUNNER_VERSION);
           const ageMs = snapshot ? Math.max(0, at - snapshot.takenAt) : null;
           return {
             machine: runner.id,

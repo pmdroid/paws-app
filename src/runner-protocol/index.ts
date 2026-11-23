@@ -181,8 +181,6 @@ export {
 export {
   MINIMUM_RUNNER_VERSION,
   REVIEW_COMMAND_OAUTH_RUNNER_VERSION,
-  STORAGE_CLEANUP_RUNNER_VERSION,
-  STORAGE_REPORT_RUNNER_VERSION,
   type RunnerVersion,
 } from "./versions";
 export {
