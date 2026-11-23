@@ -456,6 +456,185 @@ try {
     await expect(admin.locator("#storage-kind")).toBeDisabled();
     await expect(admin.locator("#storage-days")).toBeDisabled();
     await admin.screenshot({ path: join(out, `storage-environment-${width}.png`), fullPage: true });
+    const GB = 1024 ** 3;
+    const disk = (mount: string, total: number, free: number) => ({
+      mount,
+      type: mount === "/tmp" ? "tmpfs" : "ext4",
+      totalBytes: total * GB,
+      freeBytes: free * GB,
+      ...(mount === "/tmp" ? { memory: true } : {}),
+    });
+    const scanned = (machine: string, categories: Record<string, number>) => ({
+      id: `snap-${machine}`,
+      machine,
+      takenAt: Date.now() - 3_600_000,
+      partial: false,
+      filesystems: { home: disk("/", 200, 61), tmp: disk("/tmp", 16, 9) },
+      categories: Object.fromEntries(
+        Object.entries(categories).map(([key, gb]) => [key, { bytes: gb * GB, files: 10 }]),
+      ),
+    });
+    const cleanups = [
+      {
+        id: "cleanup-1",
+        machine: "server",
+        actor: "schedule",
+        startedAt: Date.now() - 86_400_000,
+        finishedAt: Date.now() - 86_399_000,
+        categories: ["temporary"],
+        deleted: [
+          {
+            category: "temporary",
+            ref: "paws-closeout-01J0000000000000000000000A-x",
+            bytes: 2 * GB,
+          },
+        ],
+        skipped: [
+          {
+            category: "temporary",
+            ref: "paws-agent-01J0000000000000000000000B-y",
+            reason: "owner is running",
+          },
+        ],
+        freedBytes: 2 * GB,
+        error: null,
+      },
+    ];
+    let cleanupRules = {
+      schedule: { enabled: true, timeUtc: "03:00", machines: ["server"] },
+      categories: {
+        temporary: { enabled: true, olderThanHours: 24 },
+        closeout_logs: { enabled: true },
+      },
+    };
+    await admin.route("**/api/settings/storage-usage", (route) =>
+      route.fulfill({
+        json: {
+          scanning: false,
+          live: { home: disk("/", 500, 180), tmp: disk("/tmp", 8, 1), checkedAt: Date.now() },
+          snapshots: [
+            scanned("server", {
+              transcripts: 12,
+              closeout: 9,
+              evidence: 4,
+              repositories: 60,
+              temporary: 6.5,
+              secrets: 0.01,
+              other: 2,
+            }),
+            scanned("runner-1", {
+              repositories: 40,
+              worker_logs: 3,
+              executions: 18,
+              tool_caches: 22,
+              other: 1,
+            }),
+          ],
+          runners: [
+            {
+              machine: "runner-1",
+              name: "build-box",
+              state: "fresh",
+              online: true,
+              reporting: false,
+              ageMs: 3_600_000,
+              snapshot: scanned("runner-1", {
+                repositories: 40,
+                worker_logs: 3,
+                executions: 18,
+                tool_caches: 22,
+                other: 1,
+              }),
+            },
+            {
+              machine: "runner-2",
+              name: "old-box",
+              state: "unsupported",
+              online: true,
+              reporting: false,
+              ageMs: null,
+              snapshot: null,
+            },
+          ],
+        },
+      }),
+    );
+    await admin.route("**/api/settings/storage-cleanup", async (route) => {
+      if (route.request().method() === "PUT") cleanupRules = route.request().postDataJSON();
+      await route.fulfill({ json: cleanupRules });
+    });
+    await admin.route("**/api/settings/storage-cleanup/history", (route) =>
+      route.fulfill({ json: cleanups }),
+    );
+    await admin.route("**/api/settings/storage-cleanup/preview", (route) =>
+      route.fulfill({
+        json: {
+          id: "preview-1",
+          expiresAt: Date.now() + 900_000,
+          items: [
+            {
+              category: "temporary",
+              ref: "paws-closeout-01J0000000000000000000000C-a",
+              bytes: 4 * GB,
+            },
+            {
+              category: "temporary",
+              ref: "paws-agent-01J0000000000000000000000D-b",
+              bytes: 1.5 * GB,
+            },
+            { category: "closeout_logs", ref: "closeout_step/p1/s1", bytes: 0.2 * GB },
+          ],
+          kept: [{ category: "temporary", reason: "owner is running", count: 2 }],
+        },
+      }),
+    );
+    let ranWith: unknown = null;
+    await admin.route("**/api/settings/storage-cleanup/run", (route) => {
+      ranWith = route.request().postDataJSON();
+      return route.fulfill({
+        json: {
+          ...cleanups[0],
+          id: "cleanup-2",
+          actor: "admin",
+          deleted: [],
+          skipped: [],
+          freedBytes: 5.7 * GB,
+        },
+      });
+    });
+    await admin.reload();
+    await expect(admin.getByText("Update the runner to see disk use")).toBeVisible();
+    await expect(
+      admin.getByText("/tmp is more than 80% full on the server (88%)", { exact: false }),
+    ).toBeVisible();
+    await expect(admin.getByText("/tmp (memory)").first()).toBeVisible();
+    await admin.getByRole("heading", { name: "Disk use" }).scrollIntoViewIfNeeded();
+    await admin.screenshot({ path: join(out, `storage-disk-${width}.png`), fullPage: true });
+    await admin.locator("#cleanup-hours").fill("48");
+    await admin.getByRole("button", { name: "Save rules" }).click();
+    await expect(admin.getByText("Cleanup rules saved.")).toBeVisible();
+    expect(cleanupRules.categories.temporary.olderThanHours).toBe(48);
+    await admin
+      .locator("#cleanup-form")
+      .screenshot({ path: join(out, `storage-rules-${width}.png`) });
+    await admin.getByRole("button", { name: "Preview cleanup" }).click();
+    await expect(admin.getByRole("dialog")).toContainText("Clean up the Paws server");
+    await admin.screenshot({ path: join(out, `storage-preview-${width}.png`) });
+    await admin.getByRole("button", { name: "Delete 3 items" }).click();
+    await expect(admin.getByRole("dialog")).toHaveCount(0);
+    expect(ranWith).toEqual({ previewId: "preview-1" });
+    await admin.getByRole("button", { name: "Show items" }).click();
+    await expect(admin.getByText("owner is running").first()).toBeVisible();
+    await admin.getByRole("heading", { name: "Cleanup history" }).scrollIntoViewIfNeeded();
+    await admin.screenshot({ path: join(out, `storage-history-${width}.png`) });
+    for (const path of [
+      "storage-usage",
+      "storage-cleanup",
+      "storage-cleanup/history",
+      "storage-cleanup/preview",
+      "storage-cleanup/run",
+    ])
+      await admin.unroute(`**/api/settings/${path}`);
     await admin.unroute("**/api/settings/storage");
     await admin.unroute("**/api/settings/storage/check");
 

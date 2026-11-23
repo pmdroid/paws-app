@@ -1,5 +1,6 @@
 import { mountRepositorySettings } from "./repository-settings";
 import { createStorageSettings } from "./storage-settings";
+import { createStorageDisk } from "./storage-disk";
 import { createMemberVmSettings } from "./member-vm-settings";
 import { createCloseoutSettings } from "./closeout-settings";
 import { createRunnerVmKeys } from "./runner-vm-keys";
@@ -85,6 +86,7 @@ const mergeSettings = createMergeSettings(() => paint());
 const hookSettings = createHookSettings();
 const briefSettings = createBriefSettings();
 const storageSettings = createStorageSettings();
+const storageDisk = createStorageDisk();
 const memberVmSettings = createMemberVmSettings();
 const closeoutSettings = createCloseoutSettings();
 const runnerVmKeys = createRunnerVmKeys();
@@ -480,6 +482,8 @@ function paint(): void {
   if (notebooksRoot) notebooks.mount(notebooksRoot, currentEngine());
   const storageRoot = document.querySelector<HTMLElement>("#storage-settings");
   if (storageRoot) storageSettings.mount(storageRoot, currentEngine());
+  const storageDiskRoot = document.querySelector<HTMLElement>("#storage-disk-settings");
+  if (storageDiskRoot) storageDisk.mount(storageDiskRoot, currentEngine());
   const memberVmRoot = document.querySelector<HTMLElement>("#member-vm-settings");
   if (memberVmRoot) memberVmSettings.mount(memberVmRoot, currentEngine());
   const closeoutRoot = document.querySelector<HTMLElement>("#closeout-settings");
