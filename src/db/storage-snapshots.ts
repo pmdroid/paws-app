@@ -1,6 +1,7 @@
-import { and, desc, eq, gt, isNull, notExists, notInArray } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, ne, notExists, notInArray } from "drizzle-orm";
 import type { Q, Steps } from "./db";
 import { ulid } from "./ulid";
+import { workspaceMemberUsableWhere } from "./workspace";
 
 export const STORAGE_SNAPSHOTS_KEPT = 30;
 
@@ -75,6 +76,28 @@ export function* storageRunnersSteps(q: Q) {
       .from(runner)
       .leftJoin(runnerHostStatus, eq(runnerHostStatus.runnerId, runner.id))
       .where(isNull(runner.revokedAt))
+      .orderBy(runner.id),
+  );
+}
+
+export function* connectedRunnersSteps(q: Q, seenAfter: number) {
+  const { runner, workspaceMember: owner } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({ id: runner.id, workspaceId: runner.workspaceId })
+      .from(runner)
+      .innerJoin(
+        owner,
+        and(eq(owner.workspaceId, runner.workspaceId), eq(owner.userId, runner.ownerUserId)),
+      )
+      .where(
+        and(
+          isNull(runner.revokedAt),
+          ne(runner.status, "revoked"),
+          workspaceMemberUsableWhere(owner),
+          gt(runner.lastSeenAt, seenAfter),
+        ),
+      )
       .orderBy(runner.id),
   );
 }

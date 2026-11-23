@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { PawsPaths } from "../config";
 import {
+  connectedRunnersSteps,
   latestStorageSnapshotsSteps,
   pendingStorageReportSteps,
   runnerHostVersionSteps,
   saveStorageSnapshotSteps,
-  seenMemberRunnersSteps,
   storageReportCommandSteps,
   storageRunnersSteps,
   type Db,
@@ -28,6 +28,7 @@ const SCAN_EVERY_MS = 6 * 60 * 60 * 1000;
 const FREE_SPACE_EVERY_MS = 60 * 1000;
 const REPORT_MS = 10 * 60 * 1000;
 const ONLINE_MS = 60 * 1000;
+const CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 export type StorageSnapshot = StorageScan<string> & {
   id: string;
@@ -106,7 +107,7 @@ export function createStorageUsage(options: StorageUsageOptions): StorageUsage {
     const runners = await options.runners?.();
     if (!runners || stopped) return "unavailable";
     const at = now();
-    const seen = await options.store.run((q) => seenMemberRunnersSteps(q, at - ONLINE_MS));
+    const seen = await options.store.run((q) => connectedRunnersSteps(q, at - ONLINE_MS));
     for (const runner of seen) {
       if (only !== undefined && runner.id !== only) continue;
       if (enqueuing.has(runner.id)) {
@@ -214,7 +215,7 @@ export function createStorageUsage(options: StorageUsageOptions): StorageUsage {
         snapshots,
         runners: runners.map((runner): RunnerStorageView => {
           const snapshot = snapshots.find((entry) => entry.machine === runner.id) ?? null;
-          const online = runner.status === "active" && (runner.lastSeenAt ?? 0) > at - ONLINE_MS;
+          const online = (runner.lastSeenAt ?? 0) > at - ONLINE_MS;
           const supported = runnerReleaseAtLeast(runner.version, STORAGE_REPORT_RUNNER_VERSION);
           const ageMs = snapshot ? Math.max(0, at - snapshot.takenAt) : null;
           return {
@@ -245,13 +246,14 @@ export function createStorageUsage(options: StorageUsageOptions): StorageUsage {
         const report = RunnerStorageReportSchema.parse(JSON.parse(body.toString("utf8")));
         const duplicate = await options.store.transaction(function* (q) {
           const command = yield* storageReportCommandSteps(q, report.commandId, runnerId);
-          if (!command || command.expiresAt <= now() || report.takenAt > now())
+          const at = now();
+          if (!command || command.expiresAt <= at || report.takenAt > at + CLOCK_SKEW_MS)
             throw new Error("Storage report command is unavailable.");
           if (command.answered) return true;
           yield* saveStorageSnapshotSteps(q, {
             id: report.commandId,
             machine: runnerId,
-            takenAt: report.takenAt,
+            takenAt: Math.min(report.takenAt, at),
             partial: report.partial,
             filesystems: report.filesystems,
             categories: report.categories,

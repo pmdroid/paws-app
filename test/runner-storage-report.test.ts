@@ -144,6 +144,7 @@ describePglite((connect) => {
           .update(q.t.runner)
           .set({ lastSeenAt: NOW - 3_600_000 })
           .where(eq(q.t.runner.id, away)),
+      (q) => q.orm.update(q.t.runner).set({ status: "draining" }).where(eq(q.t.runner.id, current)),
     );
     await db.run((q) =>
       saveStorageSnapshotSteps(q, {
@@ -201,7 +202,7 @@ describePglite((connect) => {
     const acknowledged = new Set<string>();
     const reporter = createRunnerStorageReporter({
       root: home,
-      now: () => clock,
+      now: () => clock + 5_000,
       daemon: {
         pendingCommands: () => sent.filter((command) => !acknowledged.has(command.id)),
         acknowledgeCommand: async (id) => void acknowledged.add(id),
