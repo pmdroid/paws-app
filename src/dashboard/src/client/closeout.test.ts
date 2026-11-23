@@ -17,6 +17,7 @@ import {
   checkListKey,
   parseCheckHash,
   renderCloseoutChecks,
+  testSelectionText,
   type CloseoutView,
 } from "./closeout";
 import { render } from "./render";
@@ -98,6 +99,67 @@ describe("closeout checks", () => {
     const all = renderCloseoutChecks(verdict("ENG-100"), view, null);
     expect(all).toContain(">Collapse all</button>");
     expect(all).not.toContain('aria-expanded="false"');
+  });
+
+  test("a failed test check lists its stored failures and the selection under the check", () => {
+    const shown = verdict("ENG-100");
+    const failures = Array.from({ length: 23 }, (_, index) => ({
+      file: `test/case-${index}.test.ts`,
+      name: `case ${index} > adds`,
+      message: `expected ${index}\n  at line two`,
+      kind: "failed" as const,
+    }));
+    const withTests = {
+      ...shown,
+      attempts: shown.attempts!.map((attempt) => ({
+        ...attempt,
+        checks: attempt.checks.map((check) =>
+          check.id === "unit"
+            ? {
+                ...check,
+                failedTests: { total: 30, shown: failures },
+                testSelection: {
+                  mode: "selected" as const,
+                  reasons: ["test/a.test.ts reaches a changed path"],
+                  selected: 14,
+                  total: 512,
+                  base: "3e7f21b9a0c",
+                },
+              }
+            : check,
+        ),
+      })),
+    };
+    const html = renderCloseoutChecks(withTests, openedView(), null);
+    expect(html).toContain("Ran 14 of 512 test files: affected since 3e7f21b");
+    expect(html).toContain("Failed tests (30)");
+    expect(html.match(/class="failed-test"/g)).toHaveLength(23);
+    expect(html).toContain('<summary>3 more</summary><details class="failed-test">');
+    expect(html).toContain('<span class="mono failed-test-file">test/case-0.test.ts</span>');
+    expect(html).toContain('<span class="muted failed-test-line">expected 0</span>');
+    expect(html).toContain("expected 0\n  at line two</pre>");
+    expect(html).toContain("Showing 23 of 30 failed tests.");
+    const plain = renderCloseoutChecks(shown, openedView(), null);
+    expect(plain).not.toContain("failed-test");
+    expect(plain).not.toContain("test-selection");
+  });
+
+  test("the selection line names the full suite's reason and drops when nothing is stored", () => {
+    const full = {
+      mode: "full" as const,
+      selected: 0,
+      base: "abc",
+      reasons: ["package.json changed"],
+    };
+    expect(testSelectionText(full)).toBe("Ran the full suite: package.json changed");
+    expect(testSelectionText({ ...full, reasons: ["a changed", "b changed", "c changed"] })).toBe(
+      "Ran the full suite: a changed, and 2 more",
+    );
+    expect(testSelectionText({ ...full, reasons: [] })).toBe("");
+    expect(testSelectionText(undefined)).toBe("");
+    expect(
+      testSelectionText({ mode: "selected", selected: 1, base: "", reasons: ["x reaches"] }),
+    ).toBe("Ran 1 test file: affected");
   });
 
   test("an open row without its output shows the log it loaded when it opened", () => {

@@ -1,6 +1,8 @@
 import { journalCaught } from "../journal";
 import type {
   StatusCheck,
+  StatusFailedTests,
+  StatusTestSelection,
   StatusCloseoutAttempt,
   StatusVerdict,
   StatusPullRequest,
@@ -332,7 +334,48 @@ export function checkBody(
         `<button type="button" class="btn sm" data-action="check-stream" ${data} data-stream="${stream}" aria-pressed="${selectedStream === stream}">${stream}</button>`,
     )
     .join("");
-  return `<div class="between"><span class="mono check-command">$ ${esc(check.kind === "review" ? "closeout review --independent" : check.command)}</span>${tools}</div><div class="check-terminal"><div class="between terminal-toolbar"><div class="row" role="group" aria-label="Output stream">${tabs}</div><span>attempt ${shown} · ${esc(checkMeta(check))}</span></div>${output(verdict.itemId, attempt.number, check, streams, wrap, selectedStream, log?.status === "loading")}${tailOnly}${truncated}${failed}</div>${findings}`;
+  return `<div class="between"><span class="mono check-command">$ ${esc(check.kind === "review" ? "closeout review --independent" : check.command)}</span>${tools}</div>${testSelectionLine(check.testSelection)}${failedTestList(check)}<div class="check-terminal"><div class="between terminal-toolbar"><div class="row" role="group" aria-label="Output stream">${tabs}</div><span>attempt ${shown} · ${esc(checkMeta(check))}</span></div>${output(verdict.itemId, attempt.number, check, streams, wrap, selectedStream, log?.status === "loading")}${tailOnly}${truncated}${failed}</div>${findings}`;
+}
+
+const FAILED_TESTS_SHOWN = 20;
+
+export function testSelectionText(selection: StatusTestSelection | null | undefined): string {
+  if (!selection || selection.reasons.length === 0) return "";
+  if (selection.mode === "selected") {
+    const of = selection.total === undefined ? "" : ` of ${selection.total}`;
+    const files = selection.total === undefined && selection.selected === 1 ? "file" : "files";
+    const since = selection.base ? `affected since ${selection.base.slice(0, 7)}` : "affected";
+    return `Ran ${selection.selected}${of} test ${files}: ${since}`;
+  }
+  const more = selection.reasons.length - 1;
+  return `Ran the full suite: ${selection.reasons[0]}${more > 0 ? `, and ${more} more` : ""}`;
+}
+
+function testSelectionLine(selection: StatusTestSelection | null | undefined): string {
+  const text = testSelectionText(selection);
+  if (!text) return "";
+  return `<p class="muted test-selection" title="${esc(selection!.reasons.join("\n"))}">${esc(text)}</p>`;
+}
+
+function failedTestList(check: StatusCheck): string {
+  const failed: StatusFailedTests | null | undefined = check.failedTests;
+  if (!failed || failed.shown.length === 0) return "";
+  const row = (test: StatusFailedTests["shown"][number]) => {
+    const first = test.message.split("\n").find((line) => line.trim()) ?? "";
+    const kind = test.kind === "failed" ? "" : `<span class="tag">${esc(test.kind)}</span>`;
+    const file = test.file ? `<span class="mono failed-test-file">${esc(test.file)}</span>` : "";
+    return `<details class="failed-test"><summary><span class="failed-test-head"><b>${esc(test.name ?? test.file ?? "Unnamed test")}</b>${test.name ? file : ""}${kind}</span><span class="muted failed-test-line">${esc(first)}</span></summary><pre class="out whitespace-pre-wrap break-words">${esc(test.message)}</pre></details>`;
+  };
+  const rows = failed.shown.slice(0, FAILED_TESTS_SHOWN).map(row).join("");
+  const rest = failed.shown.slice(FAILED_TESTS_SHOWN);
+  const more = rest.length
+    ? `<details class="failed-tests-more"><summary>${rest.length} more</summary>${rest.map(row).join("")}</details>`
+    : "";
+  const stored =
+    failed.total > failed.shown.length
+      ? `<p class="muted">Showing ${failed.shown.length} of ${failed.total} failed tests. The log has the rest.</p>`
+      : "";
+  return `<div class="failed-tests"><h3>Failed tests (${failed.total})</h3>${rows}${more}${stored}</div>`;
 }
 
 /** A running check that Paws has not sent to its runner yet; `detail` says why. */
