@@ -24,7 +24,7 @@ async function migratedBefore(dir: string, tag: string) {
   return { store: postgresDb(pg), close: () => client.close() };
 }
 
-test("a member VM row from before the provider columns lives on exe.dev under its VM name", async () => {
+test("a member VM row from before the provider columns lives on exe.dev under its VM name, and one still in create has no VM id yet", async () => {
   const dir = join(tempHome(), "pglite");
   const old = await migratedBefore(dir, "0029_member_vm_provider");
   await sqlRun(
@@ -58,7 +58,7 @@ test("a member VM row from before the provider columns lives on exe.dev under it
       ),
     ).toEqual([
       { id: "vm-1", provider: "exe-dev", provider_vm_id: "ada-paws" },
-      { id: "vm-2", provider: "exe-dev", provider_vm_id: "ada-paws-2" },
+      { id: "vm-2", provider: "exe-dev", provider_vm_id: null },
     ]);
     const refused = await sqlRun(
       migrated.store,
