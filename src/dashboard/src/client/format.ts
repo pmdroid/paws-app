@@ -235,9 +235,10 @@ export function waitReason(item: WaitingItem): string | null {
   if (held) return held;
   const blockers = item.blockers;
   if (blockers.length) return `Blocked by ${blockers.join(", ")}`;
-  return item.queue?.ownerCap
-    ? `Waiting: ${capLine(item, item.queue.ownerCap)}`
-    : "Waiting for a free runner";
+  if (item.queue?.ownerCap) return `Waiting: ${capLine(item, item.queue.ownerCap)}`;
+  return item.queue?.waitingFor?.kind === "slots"
+    ? "Waiting for a free runner"
+    : "Waiting to start";
 }
 
 const HELD_LINES: Record<HeldReason, string> = {
