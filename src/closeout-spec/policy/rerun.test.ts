@@ -173,7 +173,7 @@ describe("rerun and since", () => {
     const plain = load(`${BASE}${TEST}`);
     expect(plain.ok && !plain.absent && plain.policy.digest).not.toBe(loaded.policy.digest);
     const prefix = `${PUBLIC_POLICY_PATH}: `;
-    expect(failure(`${BASE}${TEST}    select: { runner: pytest }\n`)).toBe(
+    expect(failure(`${BASE}${TEST}    select: { runner: ctest }\n`)).toBe(
       `${prefix}/items/2/select/runner must be equal to one of the allowed values`,
     );
     expect(failure(`${BASE}${TEST}${SINCE.replace("test-since.ts", "x")}${select}`)).toBe(

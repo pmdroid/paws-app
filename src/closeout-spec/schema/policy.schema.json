@@ -121,7 +121,7 @@
           "additionalProperties": false,
           "required": ["runner"],
           "properties": {
-            "runner": { "enum": ["bun", "vitest", "jest", "go", "cargo", "nextest"] },
+            "runner": { "enum": ["bun", "vitest", "jest", "go", "cargo", "nextest", "pytest"] },
             "always": {
               "type": "array",
               "maxItems": 256,

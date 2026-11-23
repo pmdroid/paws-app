@@ -346,7 +346,7 @@ function decodeRerun(value: unknown): RerunPolicy {
 }
 
 function decodeSelect(item: PolicyCommand, value: unknown): TestSelect {
-  const runners: unknown[] = ["bun", "vitest", "jest", "go", "cargo", "nextest"];
+  const runners: unknown[] = ["bun", "vitest", "jest", "go", "cargo", "nextest", "pytest"];
   if (!isRecord(value) || !runners.includes(value.runner))
     throw new Error("document does not match the schema");
   if (item.since !== undefined)
