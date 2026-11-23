@@ -2,7 +2,7 @@ import { journalCaught } from "../journal";
 import { constants, createHash, createPublicKey, publicEncrypt } from "node:crypto";
 import { z } from "zod";
 import { isExeDevVmName, shellQuote } from "./names";
-import { isProvisioningError, type ExeDev, type ExeDevExecResult } from "./types";
+import { isProvisioningError, type ExeDevExecResult, type VmProvider } from "./types";
 
 /**
  * The guest side of VM provisioning: install the Paws runner on an exe.dev VM, write its config,
@@ -80,7 +80,7 @@ export type ExeDevBootstrapTailnet = {
 };
 
 export type ExeDevBootstrapOptions = {
-  exeDev: ExeDev;
+  exeDev: VmProvider;
   /** The exact runner release to install, like `1.4.0`. */
   runnerVersion: string;
   /** The contents of `deploy/linux/install.sh`. */

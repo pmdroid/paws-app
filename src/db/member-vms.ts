@@ -20,12 +20,16 @@ export type MemberVmDeleteStep = (typeof MEMBER_VM_DELETE_STEPS)[number];
 export const MEMBER_VM_STEPS = ["create", "install", "enroll", "health", "ready"] as const;
 export type MemberVmStep = (typeof MEMBER_VM_STEPS)[number];
 
+export type MemberVmProvider = "exe-dev" | "boat" | "instabox";
+
 export type MemberVm = {
   id: string;
   workspaceId: string;
   userId: string;
   vmName: string;
   pool: string | null;
+  provider: MemberVmProvider;
+  providerVmId: string | null;
   step: MemberVmStep;
   failure: string | null;
   runnerId: string | null;
@@ -253,6 +257,7 @@ export async function setMemberVmPool(
 
 export type MemberVmStepFields = {
   vmName?: string;
+  providerVmId?: string;
   createRequestedAt?: number | null;
   installStartedAt?: number;
   tokenExpiresAt?: number | null;

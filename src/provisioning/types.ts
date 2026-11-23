@@ -91,13 +91,33 @@ export type ExeDevPool = {
   status: string | null;
 };
 
-export type ExeDev = {
-  createVm(name: string, size?: ExeDevVmSize): Promise<ExeDevCreatedVm>;
+export type VmProviderId = "exe-dev" | "boat" | "instabox";
+
+export type VmState = "running" | "starting" | "stopped" | "stopping" | "error" | "unknown";
+
+export type VmCreateRequest = { key: string };
+
+export type CreatedVm = ExeDevCreatedVm & { id: string };
+
+export type ProviderVm = ExeDevVm & { state: VmState };
+
+export type VmProvider = {
+  id: VmProviderId;
+  createVm(name: string, size?: ExeDevVmSize, request?: VmCreateRequest): Promise<CreatedVm>;
+  deleteVm(name: string): Promise<ExeDevDeleteResult>;
+  execVm(name: string, command: string, options?: ExeDevExecOptions): Promise<ExeDevExecResult>;
+  getVm(name: string): Promise<ProviderVm>;
+};
+
+export type ExeDev = VmProvider & {
   /** `pool list`. */
   listPools(): Promise<ExeDevPool[]>;
   /** `pool adopt --vm=<vm> --pool=<pool>`: admins only, and the move can take minutes. */
   adoptVm(name: string, pool: string): Promise<void>;
-  deleteVm(name: string): Promise<ExeDevDeleteResult>;
-  execVm(name: string, command: string, options?: ExeDevExecOptions): Promise<ExeDevExecResult>;
-  getVm(name: string): Promise<ExeDevVm>;
 };
+
+export function exeDevVmState(status: string): VmState {
+  if (status === "running") return "running";
+  if (status === "paused" || status === "stopped") return "stopped";
+  return "unknown";
+}

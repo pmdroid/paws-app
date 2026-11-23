@@ -8,6 +8,7 @@ import {
   shellQuote,
 } from "./names";
 import {
+  exeDevVmState,
   ProvisioningError,
   type ExeDev,
   type ExeDevCreatedVm,
@@ -147,6 +148,8 @@ export function createExeDev(options: ExeDevOptions): ExeDev {
   }
 
   return {
+    id: "exe-dev",
+
     async createVm(name, size) {
       const vm = assertVmName("createVm", name);
       const command = newVmCommand(vm, size);
@@ -158,7 +161,7 @@ export function createExeDev(options: ExeDevOptions): ExeDev {
           "application/json",
           timeout.createVm,
         );
-        return parseCreated(vm, status, text);
+        return { ...parseCreated(vm, status, text), id: vm };
       } catch (error) {
         if (!sizeRefusal(error, size)) throw error;
         throw sizeRefused(error, vm, command, await quietToken(options.readToken));
@@ -237,7 +240,8 @@ export function createExeDev(options: ExeDevOptions): ExeDev {
         "application/json",
         timeout.getVm,
       );
-      return parseListed(vm, status, text);
+      const listed = parseListed(vm, status, text);
+      return { ...listed, state: exeDevVmState(listed.status) };
     },
 
     async execVm(name, command, execOptions: ExeDevExecOptions = {}) {

@@ -104,7 +104,7 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
   const loop = new JobLoop(db, clock, { leaseMs: 60_000 });
   const exeDev = createFakeExeDev();
   registerMemberVmJob(loop, {
-    exeDev,
+    provider: exeDev,
     ...(options.size === undefined ? {} : { size: options.size }),
     bootstrap,
     mintEnrollment: (ref, request) =>

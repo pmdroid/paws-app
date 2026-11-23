@@ -16,10 +16,11 @@ import {
 } from "../db";
 import {
   isProvisioningError,
-  type ExeDev,
   type ExeDevBootstrap,
   type ExeDevVmSize,
   type ProvisioningErrorCode,
+  type VmProvider,
+  type VmProviderId,
 } from "../provisioning";
 import { workspaceTokenHash } from "../workspace";
 import { freeVmNameSteps, MEMBER_VM_QUEUE, type MemberRef, type MemberVm } from "./store";
@@ -32,7 +33,7 @@ export type MintEnrollment = (
 type Secrets = readonly (string | null | undefined | Promise<string | null>)[];
 
 export type MemberVmProvisioning = {
-  exeDev: ExeDev;
+  provider: VmProvider;
   bootstrap: ExeDevBootstrap;
   mintEnrollment: MintEnrollment;
   /** The VM size from Settings. Missing: a bare `new`, exe.dev's default size. */
@@ -41,7 +42,9 @@ export type MemberVmProvisioning = {
 
 export type MemberVmJobOptions = (
   | MemberVmProvisioning
-  | { provision: () => MemberVmProvisioning | Promise<MemberVmProvisioning> }
+  | {
+      provision: (provider: VmProviderId) => MemberVmProvisioning | Promise<MemberVmProvisioning>;
+    }
 ) & {
   secrets?: () => Secrets | Promise<Secrets>;
   now?: () => number;
@@ -51,6 +54,7 @@ export type MemberVmJobOptions = (
 export const MEMBER_VM_POLL_MS = 5_000;
 export const MEMBER_VM_INSTALL_TIMEOUT_MS = 30 * 60_000;
 export const MEMBER_VM_HEALTH_TIMEOUT_MS = 10 * 60_000;
+export const MEMBER_VM_START_TIMEOUT_MS = 10 * 60_000;
 const TOKEN_MARGIN_MS = 60_000;
 const MAX_FAILURE = 500;
 const REJECTED: ReadonlySet<ProvisioningErrorCode> = new Set([
@@ -83,7 +87,7 @@ export function createMemberVmHandler(store: Db, options: MemberVmJobOptions) {
     const minted: string[] = [];
     let outcome: Outcome;
     try {
-      const provisioning = "provision" in options ? await options.provision() : options;
+      const provisioning = "provision" in options ? await options.provision(row.provider) : options;
       outcome = await runStep(store, row, provisioning, now, (token) => minted.push(token));
     } catch (error) {
       if (error instanceof StepMoved || !(await context.isCurrent())) return;
@@ -123,7 +127,8 @@ async function runStep(
   now: () => number,
   minted: (token: string) => void,
 ): Promise<Outcome> {
-  const { exeDev, bootstrap } = options;
+  const { provider, bootstrap } = options;
+  if (provider.id !== row.provider) throw unsupportedProvider(row.provider);
   const vm = row.vmName;
   const member = { workspaceId: row.workspaceId, userId: row.userId };
   const mint = async () => {
@@ -141,37 +146,49 @@ async function runStep(
 
   switch (row.step) {
     case "create": {
-      const asked = row.createRequestedAt;
-      await update(store, row, { createRequestedAt: asked ?? now() }, now());
-      try {
-        await exeDev.createVm(
-          vm,
-          row.pool === null ? options.size : { ...options.size, pool: row.pool },
-        );
-      } catch (error) {
-        const ours = isProvisioningError(error) && error.code === "conflict" && asked !== null;
-        if (ours) journalCaught(error, "member-vm.createVm", null, "resuming our create request");
-        // exe.dev names are global, so another account may hold this one. Nothing was created
-        // under it for us, so the row takes the next name and asks again.
-        if (asked === null && isProvisioningError(error) && error.code === "name_unavailable") {
-          journalCaught(error, "member-vm.createVm", null, "trying the next VM name");
-          const vmName = await store.run((q) => freeVmNameSteps(q, member, vm));
-          await update(store, row, { vmName, createRequestedAt: null }, now());
-          return { next: "advance" };
+      if (row.providerVmId === null) {
+        const asked = row.createRequestedAt;
+        await update(store, row, { createRequestedAt: asked ?? now() }, now());
+        let providerVmId = vm;
+        try {
+          const created = await provider.createVm(
+            vm,
+            row.pool === null ? options.size : { ...options.size, pool: row.pool },
+            { key: row.id },
+          );
+          providerVmId = created.id;
+        } catch (error) {
+          const ours = isProvisioningError(error) && error.code === "conflict" && asked !== null;
+          if (ours) journalCaught(error, "member-vm.createVm", null, "resuming our create request");
+          // exe.dev names are global, so another account may hold this one. Nothing was created
+          // under it for us, so the row takes the next name and asks again.
+          if (asked === null && isProvisioningError(error) && error.code === "name_unavailable") {
+            journalCaught(error, "member-vm.createVm", null, "trying the next VM name");
+            const vmName = await store.run((q) => freeVmNameSteps(q, member, vm));
+            await update(store, row, { vmName, createRequestedAt: null }, now());
+            return { next: "advance" };
+          }
+          if (!ours) {
+            if (rejected(error))
+              await store.run((q) => restoreMemberVmCreateRequestSteps(q, row.id, asked));
+            if (isProvisioningError(error) && error.code === "conflict")
+              throw new Error(
+                `exe.dev already has a VM named ${vm} that Paws did not create (conflict).`,
+                { cause: error },
+              );
+            throw error;
+          }
         }
-        if (!ours) {
-          if (rejected(error))
-            await store.run((q) => restoreMemberVmCreateRequestSteps(q, row.id, asked));
-          if (isProvisioningError(error) && error.code === "conflict")
-            throw new Error(
-              `exe.dev already has a VM named ${vm} that Paws did not create (conflict).`,
-              { cause: error },
-            );
-          throw error;
-        }
+        await update(store, row, { providerVmId }, now());
       }
-      await advance(store, row, "install", now());
-      return { next: "advance" };
+      const listed = await provider.getVm(vm);
+      if (listed.state === "running") {
+        await advance(store, row, "install", now());
+        return { next: "advance" };
+      }
+      if (now() - row.stepStartedAt >= MEMBER_VM_START_TIMEOUT_MS)
+        throw new Error(`${vm}: the VM did not start within ten minutes.`);
+      return { next: "poll" };
     }
 
     case "install": {
@@ -293,6 +310,16 @@ class StepMoved extends Error {
   constructor() {
     super("The member VM moved on while this step ran.");
   }
+}
+
+export function unsupportedProvider(id: string): Error {
+  return new Error(`Create VM does not support the provider "${id}" yet.`);
+}
+
+export function providerFor(providers: readonly VmProvider[], id: string): VmProvider {
+  const provider = providers.find((candidate) => candidate.id === id);
+  if (provider === undefined) throw unsupportedProvider(id);
+  return provider;
 }
 
 function rejected(error: unknown): boolean {

@@ -8,8 +8,9 @@ import {
   type ExeDevBootstrap,
   type ExeDevTokenReader,
   type ExeDevVmSize,
+  type VmProviderId,
 } from "../provisioning";
-import type { MemberVmProvisioning, MintEnrollment } from "./job";
+import { providerFor, type MemberVmProvisioning, type MintEnrollment } from "./job";
 
 export type MemberVmRunnerControl = {
   port: number;
@@ -36,9 +37,10 @@ export type MemberVmProvisioningSource = {
 
 export function createMemberVmProvisioning(
   source: MemberVmProvisioningSource,
-): () => Promise<MemberVmProvisioning> {
+): (provider: VmProviderId) => Promise<MemberVmProvisioning> {
   const exeDev = source.exeDev ?? createExeDev({ readToken: source.readToken });
-  return async () => {
+  return async (id) => {
+    const provider = providerFor([exeDev], id);
     if (source.publicUrl === null)
       throw new Error("Create VM needs PAWS_PUBLIC_URL so the VM can reach this Paws.");
     const authKey = source.tailscaleAuthKey ?? (() => null);
@@ -55,7 +57,12 @@ export function createMemberVmProvisioning(
     if (!control) throw new Error("Create VM needs runner control to be configured.");
     const size = source.size?.() ?? {};
     if (source.bootstrap)
-      return { exeDev, bootstrap: source.bootstrap, mintEnrollment: control.mintEnrollment, size };
+      return {
+        provider,
+        bootstrap: source.bootstrap,
+        mintEnrollment: control.mintEnrollment,
+        size,
+      };
     const runnerVersion = control.serverVersion ?? (await source.latestRelease());
     if (runnerVersion === null)
       throw new Error(
@@ -67,7 +74,7 @@ export function createMemberVmProvisioning(
     const runnerApi = new URL(source.runnerUrl ?? source.publicUrl);
     if (!source.runnerUrl) runnerApi.port = String(control.port);
     const bootstrap = createExeDevBootstrap({
-      exeDev,
+      exeDev: provider,
       runnerVersion,
       installer,
       mise: PINNED_MISE["linux-x64"],
@@ -76,6 +83,6 @@ export function createMemberVmProvisioning(
       serverCa: source.serverCa ?? null,
       tailnet: { authKey, release: PINNED_TAILSCALE.amd64 },
     });
-    return { exeDev, bootstrap, mintEnrollment: control.mintEnrollment, size };
+    return { provider, bootstrap, mintEnrollment: control.mintEnrollment, size };
   };
 }

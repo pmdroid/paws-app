@@ -162,14 +162,14 @@ async function fixture() {
   const stopped: string[] = [];
   const loop = new JobLoop(db, clock, { leaseMs: 60_000 });
   registerMemberVmJob(loop, {
-    exeDev: provisioningExeDev,
+    provider: provisioningExeDev,
     bootstrap,
     mintEnrollment: (ref, request) =>
       control.createEnrollment(principal(ref.userId, "member"), request),
     now: () => clock.now(),
   });
   registerMemberVmDeleteJob(loop, {
-    exeDev,
+    providers: [exeDev],
     async stopTask(itemId) {
       stopped.push(itemId);
       await seed(db, (q) =>
