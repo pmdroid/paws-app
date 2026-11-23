@@ -1,0 +1,2 @@
+ALTER TABLE "runner_command" DROP CONSTRAINT "runner_command_check_1";--> statement-breakpoint
+ALTER TABLE "runner_command" ADD CONSTRAINT "runner_command_check_1" CHECK (kind IN ('run','review','check','task','cancel','handover','checkpoint','probe','login_check','login','upgrade','storage.report'));

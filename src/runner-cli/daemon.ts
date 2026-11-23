@@ -13,6 +13,7 @@ import {
   type RunnerWorkCleaner,
 } from "../runner-execution";
 import { openRunnerAgents, openRunnerRuntime } from "../runner-runtime";
+import { createRunnerStorageReporter } from "../storage-usage";
 
 export const RUNNER_WORK_ROOT = "/var/lib/paws-agent/work";
 
@@ -76,12 +77,18 @@ export async function runPairedDaemon(
     agents: openRunnerAgents({ onError: report }),
     concurrency: () => daemon.capacity(),
   });
+  const storage = createRunnerStorageReporter({ root, daemon });
   let health: Awaited<ReturnType<typeof openRunnerHealthRuntime>> | undefined;
   let retro: Awaited<ReturnType<typeof openRunnerRetroRuntime>> | undefined;
   let stopping: Promise<void> | undefined;
   const stop = () =>
     (stopping ??= (async () => {
-      const results = await Promise.allSettled([runtime.stop(), health?.stop(), retro?.stop()]);
+      const results = await Promise.allSettled([
+        runtime.stop(),
+        health?.stop(),
+        retro?.stop(),
+        storage.stop(),
+      ]);
       if (results.some((result) => result.status === "rejected"))
         throw new Error("Runner shutdown failed");
     })());
@@ -127,6 +134,7 @@ export async function runPairedDaemon(
         if (!signal.aborted) await runtime.tick();
         if (!signal.aborted) await health.tick();
         if (!signal.aborted) await retro.tick();
+        if (!signal.aborted) await storage.tick();
       } catch (error) {
         if (!isIdentityRejected(error)) journalCaught(error, "daemon.runPairedDaemon.tick", null);
         if (!signal.aborted)

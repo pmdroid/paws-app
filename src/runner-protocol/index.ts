@@ -99,6 +99,11 @@ export {
 } from "./results";
 
 export { RunnerHealthResultSchema, type RunnerHealthResult } from "./health";
+export {
+  RUNNER_STORAGE_CATEGORIES,
+  RunnerStorageReportSchema,
+  type RunnerStorageReport,
+} from "./storage";
 
 export {
   RUNNER_ARTIFACT_COUNT_LIMIT,
@@ -173,6 +178,7 @@ export {
 export {
   MINIMUM_RUNNER_VERSION,
   REVIEW_COMMAND_OAUTH_RUNNER_VERSION,
+  STORAGE_REPORT_RUNNER_VERSION,
   type RunnerVersion,
 } from "./versions";
 export {
