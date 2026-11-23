@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { trackHostOperation } from "../host-operation";
 import { gitEnv, withCredential } from "./git";
 import { publicationExec } from "./publication";
 import { useGitTempDirectory } from "./temp";
@@ -61,3 +62,18 @@ for (const outcome of ["succeeds", "fails"]) {
     expect(await readdir(root)).toEqual([]);
   });
 }
+
+test("a temp directory made for a job carries the job's item id in its name", async () => {
+  const owner = "01KBBBBBBBBBBBBBBBBBBBBBBB";
+  const names = await trackHostOperation(
+    "job:test",
+    () =>
+      trackHostOperation("nested", () =>
+        withCredential("acme-token", ok, async () => readdir(root)),
+      ),
+    undefined,
+    owner,
+  );
+  expect(names).toHaveLength(1);
+  expect(names[0]).toStartWith(`paws-git-${owner}-`);
+});

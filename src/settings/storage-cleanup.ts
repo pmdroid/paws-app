@@ -21,10 +21,10 @@ export type StorageCleanupSettingsOptions = {
 };
 
 const ROUTES: Record<string, string> = {
-  "": "GET PUT",
-  "/preview": "POST",
-  "/run": "POST",
-  "/history": "GET",
+  "/api/settings/storage-cleanup": "GET PUT",
+  "/api/settings/storage-cleanup/preview": "POST",
+  "/api/settings/storage-cleanup/run": "POST",
+  "/api/settings/storage-cleanup/history": "GET",
 };
 
 export async function handleStorageCleanupRequest(
@@ -32,9 +32,8 @@ export async function handleStorageCleanupRequest(
   options: StorageCleanupSettingsOptions,
 ): Promise<Response | null> {
   const path = new URL(request.url).pathname;
-  if (!path.startsWith(STORAGE_CLEANUP_PATH)) return null;
+  const methods = Object.hasOwn(ROUTES, path) ? ROUTES[path] : undefined;
   const action = path.slice(STORAGE_CLEANUP_PATH.length);
-  const methods = ROUTES[action];
   if (methods === undefined) return null;
   if (!localRequest(request, options.trustedOrigin))
     return json({ error: "Storage cleanup is only available on the local Paws origin" }, 403);
