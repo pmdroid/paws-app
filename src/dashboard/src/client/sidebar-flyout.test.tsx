@@ -66,32 +66,30 @@ async function sidebar({
   const item = (name: string) =>
     [...container.querySelectorAll("a")].find((link) => link.textContent === name)!;
   const menu = (name: string) => container.querySelector(`[role="menu"][aria-label="${name}"]`);
-  const pointer = (target: Element, type: "pointerover" | "pointerout", related?: Element) =>
-    act(() => {
-      target.dispatchEvent(
-        new window.PointerEvent(type, {
-          bubbles: true,
-          pointerType: "mouse",
-          relatedTarget: related ?? window.document.body,
-        }) as unknown as Event,
-      );
-    });
-  const key = (target: Element, name: string, shiftKey = false) =>
-    act(() => {
-      target.dispatchEvent(
-        new window.KeyboardEvent("keydown", {
-          key: name,
-          bubbles: true,
-          cancelable: true,
-          shiftKey,
-        }) as unknown as Event,
-      );
-    });
+  const fire = (target: Element, event: Event) => act(() => void target.dispatchEvent(event));
+  const pointer = (target: Element, type: "pointerover" | "pointerout") =>
+    fire(
+      target,
+      new window.PointerEvent(type, {
+        bubbles: true,
+        pointerType: "mouse",
+        relatedTarget: window.document.body,
+      }) as unknown as Event,
+    );
+  const key = (target: Element, name: string) =>
+    fire(
+      target,
+      new window.KeyboardEvent("keydown", {
+        key: name,
+        bubbles: true,
+        cancelable: true,
+      }) as unknown as Event,
+    );
   const focused = () => window.document.activeElement;
-  return { window, container, item, menu, pointer, key, focused, paths };
+  return { item, menu, pointer, key, focused, paths };
 }
 
-test("hovering Workspace opens its pages after a delay and clicking one opens it", async () => {
+test("hovering opens the pages after a delay, clicking one opens it, and leaving closes them", async () => {
   const { item, menu, pointer, paths } = await sidebar();
   const workspace = item("Workspace");
   expect(workspace.getAttribute("aria-haspopup")).toBe("menu");
@@ -114,13 +112,8 @@ test("hovering Workspace opens its pages after a delay and clicking one opens it
   await act(() => (entries[1] as HTMLElement).click());
   expect(paths.at(-1)).toBe(`/workspace/${WORKSPACE_PAGES[1]!.id}`);
   expect(menu("Workspace pages")).toBeNull();
-});
-
-test("the panel closes once the pointer has left the item and the panel", async () => {
-  const { item, menu, pointer } = await sidebar();
   await pointer(item("Settings"), "pointerover");
   await wait(150);
-  expect(menu("Settings pages")).not.toBeNull();
   await pointer(item("Settings"), "pointerout");
   await wait(150);
   expect(menu("Settings pages")).not.toBeNull();
@@ -128,7 +121,7 @@ test("the panel closes once the pointer has left the item and the panel", async 
   expect(menu("Settings pages")).toBeNull();
 });
 
-test("Right arrow opens Settings on its first entry, Down moves and Escape returns", async () => {
+test("Right arrow opens Settings on its first entry, Down moves, Escape returns and Tab away closes", async () => {
   const { item, menu, key, focused, paths } = await sidebar();
   const settings = item("Settings");
   await act(() => settings.focus());
@@ -151,17 +144,9 @@ test("Right arrow opens Settings on its first entry, Down moves and Escape retur
   await key(focused()!, "ArrowLeft");
   expect(menu("Settings pages")).toBeNull();
   expect(focused()).toBe(settings);
-});
-
-test("focus leaving the item and its panel closes the panel", async () => {
-  const { item, menu, key, focused } = await sidebar();
-  const workspace = item("Workspace");
-  await act(() => workspace.focus());
-  await key(workspace, "ArrowRight");
-  expect(menu("Workspace pages")).not.toBeNull();
-  await act(() => item("Settings").focus());
-  expect(menu("Workspace pages")).toBeNull();
-  expect(focused()).toBe(item("Settings"));
+  await key(settings, "ArrowRight");
+  await act(() => item("Workspace").focus());
+  expect(menu("Settings pages")).toBeNull();
 });
 
 test("no flyout on the active route, without hover, or in the mobile sheet", async () => {

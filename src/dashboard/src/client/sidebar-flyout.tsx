@@ -97,9 +97,6 @@ export function SidebarFlyoutItem({
       event.preventDefault();
       const step = event.key === "ArrowDown" ? 1 : -1;
       list[(index + step + list.length) % list.length]?.focus();
-    } else if (event.key === "Home" || event.key === "End") {
-      event.preventDefault();
-      list.at(event.key === "Home" ? 0 : -1)?.focus();
     } else if (event.key === "Escape" || event.key === "ArrowLeft") {
       event.preventDefault();
       event.stopPropagation();
