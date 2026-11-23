@@ -97,7 +97,12 @@ describe("pages outside the issue page talk about issues", () => {
       if (item.id === "ENG-103")
         Object.assign(item, {
           state: "queued",
-          queue: { position: 1, busySlots: 4, totalSlots: 4 },
+          queue: {
+            position: 1,
+            busySlots: 4,
+            totalSlots: 4,
+            waitingFor: { kind: "slots", text: "Queued, 1st in line." },
+          },
         });
     }
     const html = page({ view: "issues", id: null }, snapshot);

@@ -1944,7 +1944,7 @@ describe("live status provider", () => {
       const list = await createLiveStatusProvider(db).issues();
       const item = list.issues.find((entry) => entry.id === "PAS-710")!;
       expect(item.blockers).toEqual(named ? ["PAS-709"] : []);
-      expect(waitReason(item)).toBe(named ? "Blocked by PAS-709" : "Waiting for a free runner");
+      expect(waitReason(item)).toBe(named ? "Blocked by PAS-709" : "Waiting to start");
     },
   );
 

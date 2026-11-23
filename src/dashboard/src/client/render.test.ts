@@ -60,7 +60,7 @@ describe("status views", () => {
     item.runId = null;
     const queued = render(model({ snapshot })).content;
     expect(tiles(queued)).toEqual([0, 0, 0, 1]);
-    expect(queued).toContain("Waiting for a free runner");
+    expect(queued).toContain("Waiting to start");
     expect(queued).toContain('href="/issues"');
     expect(queued).not.toContain('href="/runs/old-run"');
     expect(queued).not.toContain('href="/runs/current-run"');
@@ -176,7 +176,7 @@ describe("status views", () => {
     expect(tableRow(view, "ENG-103")).toContain(
       '<span class="st awaiting_input">awaiting_input</span>',
     );
-    expect(tableRow(view, "ENG-110")).toContain("Waiting for a free runner");
+    expect(tableRow(view, "ENG-110")).toContain("Waiting to start");
     expect(tableIds(view)).not.toContain("ENG-99");
     expect(view.slice(view.indexOf("merged-heading"))).toContain("Audit event schema v2");
     expect(html).toContain("In flight");
