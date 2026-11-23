@@ -90,6 +90,7 @@ export function detaching(exe: FakeExeDev): ExeDev & { outer: OuterCall[] } {
   const runs = new Map<string, { exitCode: number; log: string }>();
   return {
     outer,
+    id: exe.id,
     createVm: (name) => exe.createVm(name),
     deleteVm: (name) => exe.deleteVm(name),
     getVm: (name) => exe.getVm(name),

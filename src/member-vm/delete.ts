@@ -24,8 +24,8 @@ import {
   type MemberVmRunner,
   runnerLeaseCutoff,
 } from "../db";
-import { isProvisioningError, type ExeDev } from "../provisioning";
-import { redact } from "./job";
+import { isProvisioningError, type VmProvider } from "../provisioning";
+import { providerFor, redact } from "./job";
 import {
   MEMBER_VM_DELETE_QUEUE,
   MEMBER_VM_QUEUE,
@@ -37,7 +37,7 @@ import {
 type Secrets = readonly (string | null | undefined | Promise<string | null>)[];
 
 export type MemberVmDeleteJobOptions = {
-  exeDev: ExeDev | (() => ExeDev | Promise<ExeDev>);
+  providers: readonly VmProvider[];
   stopTask: (itemId: string) => Promise<void>;
   disconnect?: (fingerprint: string) => void;
   secrets?: () => Secrets | Promise<Secrets>;
@@ -102,7 +102,7 @@ async function runDeleteStep(
   now: () => number,
 ): Promise<Outcome> {
   const vm = row.vmName;
-  const created = row.step !== "create";
+  const created = row.step !== "create" || row.providerVmId !== null;
   const actor = row.deleteRequestedBy ?? row.userId;
   switch (row.deleteStep) {
     case "drain": {
@@ -156,8 +156,7 @@ async function runDeleteStep(
     case "tailnet": {
       if (created) {
         try {
-          const exeDev = await resolve(options.exeDev);
-          await exeDev.execVm(vm, MEMBER_VM_TAILNET_LOGOUT, {
+          await providerFor(options.providers, row.provider).execVm(vm, MEMBER_VM_TAILNET_LOGOUT, {
             timeoutMs: TAILNET_LOGOUT_TIMEOUT_MS,
           });
         } catch (caughtError2) {
@@ -185,10 +184,10 @@ async function runDeleteStep(
     }
 
     case "destroy": {
-      const exeDev = await resolve(options.exeDev);
-      if (created) await exeDev.deleteVm(vm);
+      const provider = providerFor(options.providers, row.provider);
+      if (created) await provider.deleteVm(vm);
       else if (row.createRequestedAt !== null) {
-        const exists = await exeDev.getVm(vm).then(
+        const exists = await provider.getVm(vm).then(
           () => true,
           (error: unknown) => {
             journalCaught(error, "delete.runDeleteStep.getVm", null);
@@ -280,10 +279,6 @@ class StepMoved extends Error {
   constructor() {
     super("The member VM delete moved on while this step ran.");
   }
-}
-
-async function resolve(exeDev: MemberVmDeleteJobOptions["exeDev"]): Promise<ExeDev> {
-  return typeof exeDev === "function" ? await exeDev() : exeDev;
 }
 
 function memberVmId(payload: unknown): string | null {

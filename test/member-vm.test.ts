@@ -32,6 +32,7 @@ import {
   type FakeBootstrap,
   type FakeExeDev,
   ProvisioningError,
+  type VmState,
 } from "../src/provisioning";
 import { RUNNER_FAILURE } from "../src/runner-cli";
 import { createRunnerControl } from "../src/runner-control";
@@ -128,7 +129,7 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
   const jobs = (exe: ExeDev = input.exeDev ?? exeDev, boot: FakeBootstrap = bootstrap) => {
     const loop = new JobLoop(db, clock, { leaseMs: LEASE_MS });
     registerMemberVmJob(loop, {
-      exeDev: exe,
+      provider: exe,
       bootstrap: boot,
       mintEnrollment: (ref, request) =>
         control.createEnrollment(principal(ref.userId, "member"), request),
@@ -242,6 +243,69 @@ describe("member VM", () => {
     expect(f.bootstrap.calls.filter((call) => call.step === "startInstall")).toHaveLength(1);
   });
 
+  test("create stores the provider's VM id and waits in create until the VM runs", async () => {
+    const f = await fixture();
+    const states: VmState[] = ["starting", "starting"];
+    const keys: (string | undefined)[] = [];
+    const provider: ExeDev = {
+      ...f.exeDev,
+      async createVm(name, size, request) {
+        keys.push(request?.key);
+        return { ...(await f.exeDev.createVm(name, size)), id: `vm-id-${name}` };
+      },
+      async getVm(name) {
+        return { ...(await f.exeDev.getVm(name)), state: states.shift() ?? "running" };
+      },
+    };
+    const started = await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const loop = f.jobs(provider);
+    const seen: { step: string; providerVmId: string | null }[] = [];
+    for (let tick = 0; tick < 3; tick++) {
+      if ((await loop.tick()) === null) {
+        f.clock.advance(MEMBER_VM_POLL_MS);
+        await loop.tick();
+      }
+      const row = (await findMemberVm(f.db, f.member))!;
+      seen.push({ step: row.step, providerVmId: row.providerVmId });
+    }
+    expect(seen).toEqual([
+      { step: "create", providerVmId: "vm-id-ada-lovelace-paws" },
+      { step: "create", providerVmId: "vm-id-ada-lovelace-paws" },
+      { step: "install", providerVmId: "vm-id-ada-lovelace-paws" },
+    ]);
+    expect(keys).toEqual([started.id]);
+    expect(f.exeDev.calls.filter((call) => call.operation === "getVm")).toHaveLength(3);
+  });
+
+  test("a VM that does not start within ten minutes fails the create step", async () => {
+    const f = await fixture();
+    const provider: ExeDev = {
+      ...f.exeDev,
+      async getVm(name) {
+        return { ...(await f.exeDev.getVm(name)), state: "starting" };
+      },
+    };
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const row = await drive(f, f.jobs(provider), settled);
+    expect(row.step).toBe("create");
+    expect(row.failure).toBe("ada-lovelace-paws: the VM did not start within ten minutes.");
+    expect(f.exeDev.calls.filter((call) => call.operation === "createVm")).toHaveLength(1);
+  });
+
+  test("a row on a provider without a client fails its step and never reaches exe.dev", async () => {
+    const f = await fixture();
+    const vm = await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    await seed(f.db, (q) =>
+      q.orm.update(q.t.memberVm).set({ provider: "boat" }).where(eq(q.t.memberVm.id, vm.id)),
+    );
+    const row = await drive(f, f.jobs(), settled);
+    expect(row.step).toBe("create");
+    expect(row.failure).toBe('Create VM does not support the provider "boat" yet.');
+    expect(f.exeDev.calls).toHaveLength(0);
+    const view = memberVmView(row, f.clock.now());
+    expect(view.provider).toBe("boat");
+  });
+
   test("a conflict on a name Paws never asked for is a failure", async () => {
     const f = await fixture();
     f.exeDev.addVm("ada-lovelace-paws");
@@ -323,7 +387,7 @@ describe("member VM", () => {
       provision: () => {
         if (!ready) throw new Error("Create VM needs runner control to be configured.");
         return {
-          exeDev: f.exeDev,
+          provider: f.exeDev,
           bootstrap: f.bootstrap,
           mintEnrollment: (ref, request) =>
             f.control.createEnrollment({ ...f.member, userId: ref.userId }, request),
@@ -506,7 +570,7 @@ describe("member VM", () => {
     const loop = new JobLoop(f.db, f.clock, { leaseMs: LEASE_MS });
     registerMemberVmJob(loop, {
       provision: () => ({
-        exeDev,
+        provider: exeDev,
         bootstrap: f.bootstrap,
         mintEnrollment: (ref, request) =>
           f.control.createEnrollment({ ...f.member, userId: ref.userId }, request),

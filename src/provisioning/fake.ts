@@ -2,9 +2,10 @@ import { journalCaught } from "../journal";
 import { sizeRefused } from "./client";
 import { adoptVmCommand, assertCommand, assertVmName, newVmCommand } from "./names";
 import {
+  exeDevVmState,
   ProvisioningError,
   type ExeDev,
-  type ExeDevCreatedVm,
+  type CreatedVm,
   type ExeDevExecResult,
   type ExeDevPool,
   type ExeDevVm,
@@ -114,6 +115,7 @@ export function createFakeExeDev(): FakeExeDev {
   }
 
   return {
+    id: "exe-dev",
     calls,
     vms,
     pools,
@@ -146,7 +148,7 @@ export function createFakeExeDev(): FakeExeDev {
       rules.push({ ...failure, operation, code, times: failure.times ?? 1 });
     },
 
-    async createVm(name, size): Promise<ExeDevCreatedVm> {
+    async createVm(name, size): Promise<CreatedVm> {
       const call: Extract<FakeExeDevCall, { operation: "createVm" }> = {
         operation: "createVm",
         vm: String(name),
@@ -170,7 +172,12 @@ export function createFakeExeDev(): FakeExeDev {
         );
       const created = addVm(vm);
       if (pool !== undefined) placement.set(vm, pool);
-      return { name: created.name, sshDest: created.sshDest, httpsUrl: created.httpsUrl };
+      return {
+        id: created.name,
+        name: created.name,
+        sshDest: created.sshDest,
+        httpsUrl: created.httpsUrl,
+      };
     },
 
     async deleteVm(name) {
@@ -221,7 +228,8 @@ export function createFakeExeDev(): FakeExeDev {
       calls.push({ operation: "getVm", vm: String(name) });
       const vm = assertVmName("getVm", name);
       failIfScripted("getVm", vm);
-      return { ...existing("getVm", vm) };
+      const found = existing("getVm", vm);
+      return { ...found, state: exeDevVmState(found.status) };
     },
 
     async execVm(name, command, options = {}) {

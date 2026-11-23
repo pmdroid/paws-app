@@ -49,8 +49,9 @@ export { LATEST_RUNNER_RELEASE_URL, latestRunnerRelease } from "./release";
 export type { FakeBootstrap, FakeBootstrapCall, FakeBootstrapOptions } from "./fake-bootstrap";
 export type { FakeExecScript, FakeExeDev, FakeExeDevCall, FakeFailure } from "./fake";
 export { isExeDevPoolName, isExeDevVmName, MAX_EXEC_COMMAND_BYTES } from "./names";
-export { isProvisioningError, ProvisioningError } from "./types";
+export { exeDevVmState, isProvisioningError, ProvisioningError } from "./types";
 export type {
+  CreatedVm,
   ExeDev,
   ExeDevCreatedVm,
   ExeDevDeleteResult,
@@ -60,7 +61,12 @@ export type {
   ExeDevVm,
   ExeDevVmSize,
   ProvisioningErrorCode,
+  ProviderVm,
   ProvisioningOperation,
+  VmCreateRequest,
+  VmProvider,
+  VmProviderId,
+  VmState,
 } from "./types";
 
 export function exeDevTokenReader(home: string): ExeDevTokenReader {

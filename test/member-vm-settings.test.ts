@@ -87,9 +87,9 @@ test("the next VM is created with the saved size", async () => {
     bootstrap: {} as never,
     size: () => loadConfigFile(configPath).memberVm ?? {},
   });
-  expect((await provisioning()).size).toEqual({ cpu: 2, image: "ubuntu:24.04" });
+  expect((await provisioning("exe-dev")).size).toEqual({ cpu: 2, image: "ubuntu:24.04" });
   await handleMemberVmSettingsRequest(put({ cpu: 4, memoryGb: 8 }), options("admin"));
-  expect((await provisioning()).size).toEqual({ cpu: 4, memoryGb: 8 });
+  expect((await provisioning("exe-dev")).size).toEqual({ cpu: 4, memoryGb: 8 });
 });
 
 test("invalid values get 400 with a message and members get 403", async () => {

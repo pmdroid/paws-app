@@ -1820,7 +1820,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         ...(options?.memberVm?.pollMs === undefined ? {} : { pollMs: options.memberVm.pollMs }),
       });
       registerMemberVmDeleteJob(created.jobs, {
-        exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
+        providers: [options?.memberVm?.exeDev ?? memberVmExeDev],
         stopTask: async (itemId) => {
           if (orchestrator === null) throw new Error("Paws is still starting. Retry the delete.");
           await submitCommand(store, orchestrator.bus, {

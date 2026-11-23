@@ -544,6 +544,8 @@ export const memberVm = pgTable(
     deleteBlocked: jsonb("delete_blocked"),
     enrollmentsTracked: integer("enrollments_tracked").default(1).notNull(),
     pool: text(),
+    provider: text().default("exe-dev").notNull(),
+    providerVmId: text("provider_vm_id"),
   },
   (table) => [
     unique().on(table.vmName),
@@ -559,6 +561,7 @@ export const memberVm = pgTable(
     ),
     check("member_vm_check_3", sql`delete_force IN (0,1)`),
     check("member_vm_check_6", sql`enrollments_tracked IN (0,1)`),
+    check("member_vm_check_7", sql`provider IN ('exe-dev','boat','instabox')`),
   ],
 );
 

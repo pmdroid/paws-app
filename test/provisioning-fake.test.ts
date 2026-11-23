@@ -33,6 +33,7 @@ async function code(promise: Promise<unknown>): Promise<string> {
 test("the fake creates, lists and records every call", async () => {
   const exe = createFakeExeDev();
   expect(await exe.createVm("ada-paws")).toEqual({
+    id: "ada-paws",
     name: "ada-paws",
     sshDest: "ada-paws.exe.xyz",
     httpsUrl: "https://ada-paws.exe.xyz",

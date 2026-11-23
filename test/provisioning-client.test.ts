@@ -89,6 +89,7 @@ const LISTED = {
     {
       vm_name: "ada-paws",
       status: "running",
+      state: "running",
       region: "lon",
       region_display: "London, UK",
       https_url: "https://ada-paws.exe.xyz",
@@ -122,6 +123,7 @@ describe("createVm", () => {
   test("posts `new --name` with the bearer token and returns the VM", async () => {
     const { exe, sent } = client(() => json(CREATED));
     expect(await exe.createVm("ada-paws")).toEqual({
+      id: "ada-paws",
       name: "ada-paws",
       sshDest: "ada-paws.exe.xyz",
       httpsUrl: "https://ada-paws.exe.xyz",
@@ -424,6 +426,7 @@ describe("getVm", () => {
     expect(await exe.getVm("ada-paws")).toEqual({
       name: "ada-paws",
       status: "running",
+      state: "running",
       region: "lon",
       sshDest: "ada-paws.exe.xyz",
       httpsUrl: "https://ada-paws.exe.xyz",

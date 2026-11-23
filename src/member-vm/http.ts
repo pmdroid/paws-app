@@ -62,6 +62,7 @@ export type MemberVmView = {
   vmName: string;
   /** The pool chosen in Create VM or moved to. Null: `[member_vm] pool` when it was created. */
   pool: string | null;
+  provider: MemberVm["provider"];
   userId: string;
   ownerName: string | null;
   step: MemberVm["step"];
@@ -121,6 +122,7 @@ export function memberVmView(
     id: row.id,
     vmName: row.vmName,
     pool: row.pool,
+    provider: row.provider,
     userId: row.userId,
     ownerName,
     step: row.step,

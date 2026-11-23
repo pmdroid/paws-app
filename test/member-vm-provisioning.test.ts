@@ -68,14 +68,14 @@ test("each missing prerequisite is named before any exe.dev call", async () => {
   ];
   for (const [overrides, message] of cases) {
     const { value, exeDev } = source(overrides);
-    await expect(createMemberVmProvisioning(value)()).rejects.toThrow(message);
+    await expect(createMemberVmProvisioning(value)("exe-dev")).rejects.toThrow(message);
     expect(exeDev.calls).toHaveLength(0);
   }
 });
 
 test("the bootstrap points the VM at this Paws and the runner API port", async () => {
   const { value, exeDev, minted } = source();
-  const provisioning = await createMemberVmProvisioning(value)();
+  const provisioning = await createMemberVmProvisioning(value)("exe-dev");
   provisioning.mintEnrollment({ workspaceId: "w", userId: "u" }, { name: VM });
   expect(minted).toEqual(["u"]);
   const error = await provisioning.bootstrap.startInstall(VM, "t".repeat(43)).catch((e) => e);
@@ -92,7 +92,7 @@ test("the bootstrap points the VM at this Paws and the runner API port", async (
 test("a source checkout installs the latest runner release on the VM", async () => {
   const { value, exeDev, control } = source({ latestRelease: async () => "0.1.40" });
   control.serverVersion = null;
-  const provisioning = await createMemberVmProvisioning(value)();
+  const provisioning = await createMemberVmProvisioning(value)("exe-dev");
   await provisioning.bootstrap.startInstall(VM, "t".repeat(43)).catch(() => undefined);
   const commands = exeDev.calls.map((call) => (call.operation === "execVm" ? call.command : ""));
   expect(commands.some((command) => command.includes("'0.1.40'"))).toBe(true);
@@ -121,11 +121,13 @@ test("a Paws on a .ts.net host without a Tailscale auth key is refused before an
     "https://AGENTBOX.TAILE07E4.TS.NET",
   ]) {
     const { value, exeDev } = source({ publicUrl, tailscaleAuthKey: () => null });
-    await expect(createMemberVmProvisioning(value)()).rejects.toThrow(
+    await expect(createMemberVmProvisioning(value)("exe-dev")).rejects.toThrow(
       /~\/\.paws\/secrets\/tailscale-authkey/,
     );
     const absent = source({ publicUrl });
-    await expect(createMemberVmProvisioning(absent.value)()).rejects.toThrow(/tailscale-authkey/);
+    await expect(createMemberVmProvisioning(absent.value)("exe-dev")).rejects.toThrow(
+      /tailscale-authkey/,
+    );
     expect(exeDev.calls).toHaveLength(0);
     expect(absent.exeDev.calls).toHaveLength(0);
   }
@@ -133,7 +135,7 @@ test("a Paws on a .ts.net host without a Tailscale auth key is refused before an
 
 test("a public Paws without an auth key provisions as before and skips the tailnet step", async () => {
   const { value, exeDev } = source({ tailscaleAuthKey: () => null });
-  const provisioning = await createMemberVmProvisioning(value)();
+  const provisioning = await createMemberVmProvisioning(value)("exe-dev");
   expect(await provisioning.bootstrap.joinTailnet(VM)).toBe("skipped");
   expect(exeDev.calls).toHaveLength(0);
 });
@@ -143,7 +145,7 @@ test("with an auth key the bootstrap joins the VM to the tailnet with the pinned
     publicUrl: "https://agentbox.taile07e4.ts.net:8787",
     tailscaleAuthKey: () => "tskey-auth-kAbCdEf1CNTRL-0123456789",
   });
-  const provisioning = await createMemberVmProvisioning(value)();
+  const provisioning = await createMemberVmProvisioning(value)("exe-dev");
   // The catch-all script answers every command with no output, so the join stops at the key.
   await provisioning.bootstrap.joinTailnet(VM).catch(() => undefined);
   const commands = exeDev.calls.map((call) => (call.operation === "execVm" ? call.command : ""));
@@ -154,7 +156,7 @@ test("with an auth key the bootstrap joins the VM to the tailnet with the pinned
 test("a .ts.net PAWS_RUNNER_URL needs an auth key and becomes the runner API URL", async () => {
   const runnerUrl = "https://paws.example.ts.net:8788";
   const refused = source({ runnerUrl, tailscaleAuthKey: () => null });
-  await expect(createMemberVmProvisioning(refused.value)()).rejects.toThrow(
+  await expect(createMemberVmProvisioning(refused.value)("exe-dev")).rejects.toThrow(
     /PAWS_RUNNER_URL is on a tailnet/,
   );
   expect(refused.exeDev.calls).toHaveLength(0);
@@ -162,7 +164,7 @@ test("a .ts.net PAWS_RUNNER_URL needs an auth key and becomes the runner API URL
     runnerUrl,
     tailscaleAuthKey: () => "tskey-auth-kAbCdEf1CNTRL-0123456789",
   });
-  const provisioning = await createMemberVmProvisioning(value)();
+  const provisioning = await createMemberVmProvisioning(value)("exe-dev");
   await provisioning.bootstrap.startInstall(VM, "t".repeat(43)).catch(() => undefined);
   await provisioning.bootstrap.joinTailnet(VM).catch(() => undefined);
   const commands = exeDev.calls.map((call) => (call.operation === "execVm" ? call.command : ""));

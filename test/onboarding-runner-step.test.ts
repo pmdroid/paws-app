@@ -186,7 +186,7 @@ async function fixture({
   const runnerHttp = createRunnerHttp(control, { hostConfig: async () => HOST_CONFIG });
   const loop = new JobLoop(db, clock, { leaseMs: 60_000 });
   registerMemberVmJob(loop, {
-    exeDev: createFakeExeDev(),
+    provider: createFakeExeDev(),
     bootstrap: createFakeBootstrap({
       installPolls: 1,
       async enroll(vm, token) {
