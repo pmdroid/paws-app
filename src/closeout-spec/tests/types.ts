@@ -37,7 +37,7 @@ export type TestContext = {
   changes(): Promise<TestChange[]>;
   readAtBase(path: string): Promise<string | undefined>;
   readAtHead(path: string): Promise<string | undefined>;
-  snapshot(commit: string): Promise<Snapshot>;
+  snapshot(commit: string, read?: RegExp): Promise<Snapshot>;
 };
 
 export type TestAdapter = {

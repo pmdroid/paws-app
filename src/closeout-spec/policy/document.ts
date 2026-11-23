@@ -1,6 +1,7 @@
 import { journalCaught } from "../../journal";
 import Ajv2020 from "ajv/dist/2020";
 import type { AnySchema, ErrorObject, ValidateFunction } from "ajv/dist/2020";
+import { posix } from "node:path";
 import { parse, YAMLParseError } from "yaml";
 import { selectExecError } from "../tests/select";
 import policySchema from "../schema/policy.schema.json" with { type: "json" };
@@ -345,6 +346,11 @@ function decodeRerun(value: unknown): RerunPolicy {
   return rerun;
 }
 
+function insideRoot(path: string): boolean {
+  const normal = posix.normalize(path);
+  return !path.startsWith("/") && normal !== ".." && !normal.startsWith("../");
+}
+
 function decodeSelect(item: PolicyCommand, value: unknown): TestSelect {
   const runners: unknown[] = ["bun", "vitest", "jest", "go", "cargo", "nextest", "pytest"];
   if (!isRecord(value) || !runners.includes(value.runner))
@@ -358,6 +364,14 @@ function decodeSelect(item: PolicyCommand, value: unknown): TestSelect {
   if (value.always !== undefined) select.always = expectStrings(value.always);
   if (value.full_on !== undefined) select.full_on = expectStrings(value.full_on);
   if (value.max_selected !== undefined) select.max_selected = expectInt(value.max_selected);
+  if (value.package_roots !== undefined) {
+    if (runner !== "pytest")
+      throw new Error(`item ${item.id}: select.package_roots needs select.runner pytest`);
+    select.package_roots = expectStrings(value.package_roots);
+    const outside = select.package_roots.find((root) => !insideRoot(root));
+    if (outside !== undefined)
+      throw new Error(`item ${item.id}: select.package_roots entry ${outside} is outside the root`);
+  }
   return select;
 }
 
