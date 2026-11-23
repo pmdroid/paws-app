@@ -205,8 +205,8 @@ export function createRunnerPlacement(options: {
   /**
    * Load per runner, both as a share of its slots. `current` counts leased work, helpers, slots
    * held between commands, and the caller's unassigned reservations. `recent` is the busy time of
-   * executions that finished within LOAD_HISTORY_MS, decayed by age, so a runner that has just
-   * worked long turns yields to one that has been idle even when both are free right now.
+   * executions that finished within LOAD_HISTORY_MS, decayed by age. `slots` is the runner's
+   * slot count.
    */
   function* runnerLoadSteps(
     q: Q,
@@ -215,7 +215,7 @@ export function createRunnerPlacement(options: {
     reserved?: ReadonlyMap<string, number>,
   ) {
     const from = at - LOAD_HISTORY_MS;
-    const load = new Map<string, { current: number; recent: number }>();
+    const load = new Map<string, { current: number; recent: number; slots: number }>();
     for (const id of runnerIds) {
       const { capacity, occupied } = yield* runnerOccupancySteps(q, id, at);
       const slots = Math.max(capacity, 1);
@@ -228,6 +228,7 @@ export function createRunnerPlacement(options: {
       load.set(id, {
         current: (occupied + held + (reserved?.get(id) ?? 0)) / slots,
         recent: busy / slots / LOAD_HISTORY_MS,
+        slots,
       });
     }
     return load;
@@ -582,17 +583,21 @@ export function createRunnerPlacement(options: {
       at,
       input.reserved,
     );
-    ranked.sort(
-      (a, b) =>
+    ranked.sort((a, b) => {
+      const left = load.get(a.runner.id)!;
+      const right = load.get(b.runner.id)!;
+      return (
         Number(a.extra) - Number(b.extra) ||
         a.rank - b.rank ||
-        load.get(a.runner.id)!.current - load.get(b.runner.id)!.current ||
+        Number(left.current >= 1) - Number(right.current >= 1) ||
         Number(a.low) - Number(b.low) ||
-        load.get(a.runner.id)!.recent - load.get(b.runner.id)!.recent ||
-        a.runner.virtualFinish - b.runner.virtualFinish ||
-        a.runner.lastUsedAt - b.runner.lastUsedAt ||
-        a.runner.id.localeCompare(b.runner.id),
-    );
+        right.current - left.current ||
+        right.slots - left.slots ||
+        right.recent - left.recent ||
+        b.runner.lastUsedAt - a.runner.lastUsedAt ||
+        a.runner.id.localeCompare(b.runner.id)
+      );
+    });
     if (admissionRunner) {
       const runId = current.item?.currentRunId ?? "";
       function* freeSteps(id: string) {

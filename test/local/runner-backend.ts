@@ -2459,6 +2459,7 @@ export async function probeRunnerBackend(
       await control.setStatus(principal, enrolled.runnerId, "active");
       hostIds.push(enrolled.runnerId);
     }
+    hostIds.sort((a, b) => a.localeCompare(b));
     for (const hostId of hostIds) await work.heartbeat(hostId);
     const placements: string[] = [];
     const observedFailures: string[] = [];
