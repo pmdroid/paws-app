@@ -3,9 +3,19 @@ import { readCsrfToken } from "./csrf";
 import { esc } from "./format";
 import { renderMarkup } from "./theme";
 
-type KeyName = "exeDev" | "tailscale";
+type KeyName = "exeDev" | "boat" | "instabox" | "tailscale";
 const KEYS: [KeyName, string, string][] = [
   ["exeDev", "exe.dev API token", "Create VM uses it to make runner VMs on exe.dev."],
+  [
+    "boat",
+    "boat API key",
+    "Create VM uses it to make runner VMs on boat. It needs to create, read, stop, resume and delete sandboxes, and to run commands.",
+  ],
+  [
+    "instabox",
+    "InstaBox API key",
+    "Create VM uses it to make runner VMs on InstaBox. It needs the scopes machines:read, machines:write and machines:delete.",
+  ],
   [
     "tailscale",
     "Tailscale auth key",
