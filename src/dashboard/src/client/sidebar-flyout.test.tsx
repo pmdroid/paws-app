@@ -142,8 +142,9 @@ test("Right arrow opens Settings on its first entry, Down moves, Escape returns 
   expect(focused()).toBe(settings);
   await key(settings, "Enter");
   expect(paths.at(-1)).toBe("/issues");
-  expect(focused()).toBe(entries[0]!);
-  await key(entries[0]!, "ArrowLeft");
+  const first = menu("Settings pages")!.querySelector('[role="menuitem"]')!;
+  expect(focused()).toBe(first);
+  await key(first, "ArrowLeft");
   expect(menu("Settings pages")).toBeNull();
   expect(focused()).toBe(settings);
   await key(settings, "ArrowRight");
