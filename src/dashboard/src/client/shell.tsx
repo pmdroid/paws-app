@@ -45,6 +45,7 @@ import {
   SidebarMenu,
   SidebarMenuLink,
 } from "./ui/sidebar";
+import { SidebarFlyoutItem } from "./sidebar-flyout";
 
 const ICONS = {
   overview: LayoutDashboard,
@@ -114,10 +115,12 @@ export function Navigation({
   route,
   counts,
   onNavigate,
+  flyout = false,
 }: {
   route: Route;
   counts: NavigationCounts;
   onNavigate?: () => void;
+  flyout?: boolean;
 }) {
   return (
     <nav aria-label="Main navigation">
@@ -158,49 +161,49 @@ export function Navigation({
               );
             })}
             {group.label === "Manage" && settingsAreEditable() && (
-              <li>
-                <SidebarMenuLink
-                  to={routePath({ view: "workspace" })}
-                  active={route.view === "workspace"}
-                  aria-current={undefined}
-                  onClick={onNavigate}
-                >
-                  <Building2 className="size-4 shrink-0" aria-hidden="true" />
-                  <span>{PAGES.workspace.title}</span>
-                </SidebarMenuLink>
-                {route.view === "workspace" && (
+              <SidebarFlyoutItem
+                to={routePath({ view: "workspace" })}
+                active={route.view === "workspace"}
+                flyout={flyout}
+                label="Workspace pages"
+                pages={WORKSPACE_PAGES}
+                onNavigate={onNavigate}
+                submenu={
                   <SidebarSubmenu
                     label="Workspace pages"
                     pages={WORKSPACE_PAGES}
                     route={route}
                     onNavigate={onNavigate}
                   />
-                )}
-              </li>
+                }
+              >
+                <Building2 className="size-4 shrink-0" aria-hidden="true" />
+                <span>{PAGES.workspace.title}</span>
+              </SidebarFlyoutItem>
             )}
           </SidebarMenu>
         </SidebarGroup>
       ))}
       <SidebarMenu className="mt-5">
-        <li>
-          <SidebarMenuLink
-            to={routePath({ view: "settings" })}
-            active={route.view === "settings"}
-            aria-current={undefined}
-            onClick={onNavigate}
-          >
-            <Settings className="size-4 shrink-0" aria-hidden="true" />
-            <span>Settings</span>
-          </SidebarMenuLink>
-          {route.view === "settings" && (
+        <SidebarFlyoutItem
+          to={routePath({ view: "settings" })}
+          active={route.view === "settings"}
+          flyout={flyout}
+          label="Settings pages"
+          pages={USER_SETTINGS_PAGES}
+          onNavigate={onNavigate}
+          submenu={
             <SidebarSubmenu
               label="Settings pages"
               pages={USER_SETTINGS_PAGES}
               route={route}
               onNavigate={onNavigate}
             />
-          )}
-        </li>
+          }
+        >
+          <Settings className="size-4 shrink-0" aria-hidden="true" />
+          <span>Settings</span>
+        </SidebarFlyoutItem>
       </SidebarMenu>
     </nav>
   );
@@ -389,7 +392,7 @@ export function mountShell(): {
                 </Link>
               </SidebarHeader>
               <SidebarContent>
-                <Navigation route={route} counts={counts} />
+                <Navigation route={route} counts={counts} flyout />
               </SidebarContent>
             </div>
           </Sidebar>
