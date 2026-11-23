@@ -68,9 +68,11 @@ const FIX = {
     "Give the GitHub App Contents, Pull requests and Issues write permission and accept the new permissions on the installation (docs/github-app.md).",
   githubRate: "Wait for the GitHub rate limit to recover.",
   exeDev:
-    "Generate an exe.dev API token that may run new, ls, ssh and rm, and save it to ~/.paws/secrets/exe-dev-token.",
+    "Generate an exe.dev API token that may run new, ls, ssh and rm, and save it on Settings › Runner VMs (docs/create-vm.md).",
+  boat: "Create a boat API key and save it on Settings › Runner VMs (docs/create-vm.md).",
+  instabox: "Create an InstaBox API key and save it on Settings › Runner VMs (docs/create-vm.md).",
   tailscaleAuthKey:
-    "Create a reusable, pre-authorized Tailscale auth key tagged tag:paws-runner and save it to ~/.paws/secrets/tailscale-authkey (docs/create-vm.md).",
+    "Create a reusable, pre-authorized Tailscale auth key tagged tag:paws-runner and save it on Settings › Runner VMs (docs/create-vm.md).",
   githubWebhook:
     "Enable the GitHub App webhook at PAWS_PUBLIC_URL/webhooks/github with GITHUB_WEBHOOK_SECRET and the Check runs, Check suites, Statuses, Pull requests, Pull request reviews, Pull request review comments, Issue comments and Merge groups events (docs/github-app.md).",
   githubEvents:
@@ -123,7 +125,12 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
   if (facts.databaseRefused)
     checks.push(check("database", false, facts.databaseRefused, FIX.database));
   if (facts.secrets) checks.push(secretsCheck(facts.secrets));
-  if (facts.exeDevToken !== undefined) checks.push(exeDevCheck(facts.exeDevToken));
+  if (facts.exeDevToken !== undefined)
+    checks.push(providerKeyCheck("exe-dev", "exe.dev", facts.exeDevToken, FIX.exeDev));
+  if (facts.boatToken !== undefined)
+    checks.push(providerKeyCheck("boat", "boat", facts.boatToken, FIX.boat));
+  if (facts.instaboxToken !== undefined)
+    checks.push(providerKeyCheck("instabox", "InstaBox", facts.instaboxToken, FIX.instabox));
   if (facts.tailscaleAuthKey !== undefined)
     checks.push(tailscaleAuthKeyCheck(facts.tailscaleAuthKey, isTailnetUrl(facts.publicUrl)));
   for (const slack of facts.slack ?? []) checks.push(...slackChecks(slack));
@@ -334,16 +341,21 @@ function grokCheck(status: GrokLoginStatus | null | undefined): DoctorCheck {
   return check("grok", true, status.detail);
 }
 
-function exeDevCheck(status: ExeDevTokenStatus): DoctorCheck {
+function providerKeyCheck(
+  name: string,
+  label: string,
+  status: ExeDevTokenStatus,
+  fix: string,
+): DoctorCheck {
   switch (status) {
     case "readable":
-      return check("exe-dev", true, "token present and readable");
+      return check(name, true, "token present and readable");
     case "absent":
-      return note("exe-dev", "no exe.dev token; Paws cannot create runner VMs");
+      return note(name, `no ${label} key; Paws cannot create runner VMs on ${label}`);
     case "empty":
-      return check("exe-dev", false, "exe.dev token file is empty", FIX.exeDev);
+      return check(name, false, `the saved ${label} key is empty`, fix);
     case "unreadable":
-      return check("exe-dev", false, "exe.dev token file cannot be read", FIX.exeDev);
+      return check(name, false, `the saved ${label} key cannot be read`, fix);
   }
 }
 
@@ -364,14 +376,14 @@ function tailscaleAuthKeyCheck(status: TailscaleAuthKeyStatus, tailnet: boolean)
       return check(
         "tailscale-authkey",
         false,
-        "Tailscale auth key file is empty",
+        "the saved Tailscale auth key is empty",
         FIX.tailscaleAuthKey,
       );
     case "unreadable":
       return check(
         "tailscale-authkey",
         false,
-        "Tailscale auth key file cannot be read",
+        "the saved Tailscale auth key cannot be read",
         FIX.tailscaleAuthKey,
       );
   }

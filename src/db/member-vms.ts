@@ -144,6 +144,7 @@ type NewMemberVm = {
   userId: string;
   vmName: string;
   pool: string | null;
+  provider?: MemberVmProvider;
   now: number;
 };
 
@@ -154,6 +155,12 @@ export function* insertMemberVmSteps(q: Q, input: NewMemberVm) {
       .insert(q.t.memberVm)
       .values({ ...row, step: "create", stepStartedAt: now, createdAt: now, updatedAt: now }),
   );
+}
+
+export function* memberVmProvidersSteps(q: Q) {
+  const { memberVm: m } = q.t;
+  const rows = yield* q.all(q.orm.selectDistinct({ provider: m.provider }).from(m));
+  return rows.map((row) => row.provider as MemberVmProvider);
 }
 
 export async function insertMemberVm(store: Db, input: NewMemberVm): Promise<void> {

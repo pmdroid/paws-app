@@ -1,5 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { parseConfigToml, renderMemberVmSettings } from "../src/config";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  boatTokenPath,
+  ensureLayout,
+  memberVmKeyReadable,
+  parseConfigToml,
+  pawsPaths,
+  renderMemberVmSettings,
+  vmProviderTokenStatus,
+} from "../src/config";
+import { removeSecret, writeSecretFile } from "../src/credentials";
 
 describe("[member_vm]", () => {
   test("a missing section or key leaves the size to exe.dev", () => {
@@ -58,5 +70,36 @@ describe("[member_vm]", () => {
     ];
     for (const [line, message] of cases)
       expect(() => parseConfigToml(`[member_vm]\ncpu = 2\n${line}\n`)).toThrow(message);
+  });
+
+  test("provider round-trips and defaults to exe-dev", () => {
+    const size = parseConfigToml(
+      '[member_vm]\nprovider = "boat"\ncpu = 8\nmemory_gb = 16\n',
+    ).memberVm;
+    expect(size).toEqual({ provider: "boat", cpu: 8, memoryGb: 16 });
+    expect(renderMemberVmSettings(size)).toBe(
+      '\n[member_vm]\nprovider = "boat"\ncpu = 8\nmemory_gb = 16\n',
+    );
+    expect(() => parseConfigToml('[member_vm]\nprovider = "aws"\n')).toThrow(
+      "member_vm.provider must be exe-dev, boat or instabox",
+    );
+  });
+
+  test("Create VM is offered only once the configured provider's key is saved", async () => {
+    const home = mkdtempSync(join(tmpdir(), "paws-vm-keys-"));
+    try {
+      ensureLayout(pawsPaths(home));
+      writeSecretFile(join(pawsPaths(home).secretsDir, "exe-dev-token"), "exe1.token");
+      expect(memberVmKeyReadable(home, undefined)).toBe(true);
+      expect(memberVmKeyReadable(home, { provider: "boat" })).toBe(false);
+      expect(vmProviderTokenStatus(home, "boat")).toBe("absent");
+      writeSecretFile(boatTokenPath(home), "boat-key\n");
+      expect(memberVmKeyReadable(home, { provider: "boat" })).toBe(true);
+      expect(memberVmKeyReadable(home, { provider: "instabox" })).toBe(false);
+      await removeSecret(boatTokenPath(home));
+      expect(memberVmKeyReadable(home, { provider: "boat" })).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

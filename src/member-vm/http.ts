@@ -14,6 +14,7 @@ import {
   type ExeDev,
   type ExeDevPool,
   type ExeDevVmSize,
+  type VmProviderId,
 } from "../provisioning";
 import type { WorkspacePrincipal } from "../workspace";
 import {
@@ -211,6 +212,7 @@ export function createMemberVmHttp(options: {
   available: () => boolean | Promise<boolean>;
   /** The VM size from Settings. */
   size?: () => ExeDevVmSize;
+  provider?: () => VmProviderId;
   /** For `pool list` and `pool adopt`. Without it the pool routes answer 404. */
   exeDev?: Pick<ExeDev, "listPools" | "adoptVm">;
   now?: () => number;
@@ -273,7 +275,8 @@ export function createMemberVmHttp(options: {
         const body = await createBody(request);
         if (body === null)
           return json({ error: "Send an optional exe.dev pool name as JSON." }, 400);
-        await startMemberVm(store, { ...member, ...body, now: at });
+        const provider = options.provider?.() ?? "exe-dev";
+        await startMemberVm(store, { ...member, ...body, provider, now: at });
       } else if (pools !== undefined && path === "/api/runners/vm/pool") {
         const body = await poolBody(request);
         if (body === null)

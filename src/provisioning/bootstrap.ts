@@ -21,7 +21,7 @@ import { isProvisioningError, type ExeDevExecResult, type VmProvider } from "./t
  * root-owned mode 0600 token file. Only ciphertext crosses a command line.
  *
  * When Paws is reachable only inside a Tailscale tailnet, the `tailnet` step installs a pinned
- * Tailscale release and joins the VM with the auth key from `~/.paws/secrets/tailscale-authkey`,
+ * Tailscale release and joins the VM with the saved `tailscale-authkey` key,
  * sent the same way: encrypted to a fresh VM key and decrypted into a root-only file that is
  * removed after `tailscale up`, whatever its outcome.
  */
@@ -72,7 +72,7 @@ export type TailscaleRelease = {
 
 export type ExeDevBootstrapTailnet = {
   /**
-   * Reads the auth key at join time, from `~/.paws/secrets/tailscale-authkey`. Null skips the
+   * Reads the `tailscale-authkey` key at join time. Null skips the
    * `tailnet` step, so a Paws on a public URL provisions as before.
    */
   authKey: () => string | null | Promise<string | null>;
@@ -150,7 +150,6 @@ export const BOOTSTRAP_LOG_DIR = "/var/log/paws-bootstrap";
 const TAILSCALE_BINARY = "/usr/bin/tailscale";
 const TAILSCALED_BINARY = "/usr/sbin/tailscaled";
 const TAILSCALED_SERVICE = "tailscaled.service";
-const AUTHKEY_SECRET = "~/.paws/secrets/tailscale-authkey";
 const RUNNER_BINARY = "/opt/paws-runner/bin/paws-runner";
 const RUNNER_SERVICE = "paws-runner.service";
 /**
@@ -288,13 +287,16 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
     try {
       key = await tailnet.authKey();
     } catch {
-      throw new BootstrapError("tailnet", `tailnet: could not read ${AUTHKEY_SECRET}.`);
+      throw new BootstrapError(
+        "tailnet",
+        "tailnet: could not read the Tailscale auth key saved on Settings › Runner VMs.",
+      );
     }
     if (key === null) return null;
     if (typeof key !== "string" || !AUTHKEY.test(key))
       throw new BootstrapError(
         "tailnet",
-        `tailnet: ${AUTHKEY_SECRET} does not hold a Tailscale auth key (tskey-…).`,
+        "tailnet: the key saved on Settings › Runner VMs is not a Tailscale auth key (tskey-…).",
       );
     return key;
   }

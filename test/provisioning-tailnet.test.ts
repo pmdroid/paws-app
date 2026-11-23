@@ -313,7 +313,7 @@ test("an auth key that is not a Tailscale key is refused before any command", as
       createExeDevBootstrap(options(exe, () => key)).joinTailnet(VM),
     );
     expect(error.step).toBe("tailnet");
-    expect(error.message).toContain("~/.paws/secrets/tailscale-authkey");
+    expect(error.message).toContain("Settings › Runner VMs");
     expect(error.message).not.toContain(key);
     expect(exe.calls).toEqual([]);
   }

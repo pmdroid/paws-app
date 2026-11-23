@@ -286,7 +286,7 @@ async function bearer(operation: ProvisioningOperation, read: ExeDevTokenReader)
     throw new ProvisioningError(
       operation,
       "no_token",
-      `exe.dev ${operation}: the exe.dev token in ~/.paws/secrets/exe-dev-token is missing or unreadable.`,
+      `exe.dev ${operation}: the exe.dev token is missing or unreadable. Save it on Settings › Runner VMs.`,
     );
   }
   return trimmed;

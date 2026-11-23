@@ -427,7 +427,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   "runner-models": ["journal", "db", "runner-work", "runner-protocol"],
   provisioning: ["journal", "config"],
-  "member-vm": ["journal", "db", "provisioning", "workspace"],
+  "member-vm": ["journal", "config", "db", "provisioning", "workspace"],
   "review-score": ["db"],
 };
 

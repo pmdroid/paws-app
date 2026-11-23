@@ -151,6 +151,8 @@ Each workspace spends at most one helper turn per UTC day, including **Run now**
 
 Workspace › Member VMs › **Member VM size**: **CPUs**, **Memory (GB)**, **Disk (GB)**, **Image** and **Default pool** for newly created VMs. An empty field uses the exe.dev default. Existing VMs keep their size.
 
+In `config.toml`, `[member_vm]` also takes `provider`: `exe-dev` (the default), `boat` or `instabox`. It applies to VMs created from then on, and each VM keeps the provider it was created with. boat and InstaBox accept only their own sizes, and Settings refuses any other; see [Choose the provider](create-vm.md#choose-the-provider). Save each provider's API key, and the Tailscale auth key, on Settings › Runner VMs.
+
 ### Linear comments
 
 Workspace › Linear › **Comment agents** › **Agents**: Linear app user IDs, one per line, of external Linear agents whose issue comments reach Paws. A change applies to the next comment without a restart.

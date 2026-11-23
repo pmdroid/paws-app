@@ -73,7 +73,7 @@ export function exeDevTokenReader(home: string): ExeDevTokenReader {
   return () => readExeDevToken(home);
 }
 
-/** Reads `~/.paws/secrets/tailscale-authkey` each time, so a key saved later is picked up. */
+/** Reads the `tailscale-authkey` key each time, so a key saved later is picked up. */
 export function tailscaleAuthKeyReader(home: string): () => string | null {
   return () => readTailscaleAuthKey(home);
 }

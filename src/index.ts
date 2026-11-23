@@ -103,6 +103,11 @@ import {
   githubMirrorsOn,
   useActiveGitHubMirrors,
   loadConfigFile,
+  MEMBER_VM_PROVIDERS,
+  memberVmKeyReadable,
+  memberVmProvider,
+  memberVmSizeOnly,
+  readVmProviderToken,
   resolveLinearCommentAgents,
   resolveTimeLimits,
   loadRunnerControl,
@@ -1018,9 +1023,19 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     });
 
   const exeDevToken = exeDevTokenReader(paths.home);
-  // Create VM is offered only once an exe.dev token is in ~/.paws/secrets.
+  const memberVmSettings = () => loadConfigFile(paths.configFile).memberVm;
+  const memberVmProviderSetting = () => memberVmProvider(memberVmSettings());
   const createVmAvailable = async () =>
-    options?.memberVm !== undefined || (await exeDevToken()) !== null;
+    options?.memberVm !== undefined || memberVmKeyReadable(paths.home, memberVmSettings());
+  const vmProviderKeys = () =>
+    MEMBER_VM_PROVIDERS.map((provider) =>
+      Promise.resolve()
+        .then(() => readVmProviderToken(paths.home, provider))
+        .catch((error: unknown) => {
+          journalCaught(error, "index.vmProviderKeys", null);
+          return null;
+        }),
+    );
   if (linear?.memberships) members = cacheLinearMemberships(linear.memberships);
   if (publicDashboard) {
     if (linear?.memberships === null || linear?.memberships === undefined) {
@@ -1240,7 +1255,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const tailscaleAuthKey = tailscaleAuthKeyReader(paths.home);
   const memberVmExeDev = createExeDev({ readToken: exeDevToken });
   const MEMBER_VM_STOP_WAIT_MS = 15_000;
-  const memberVmSize = () => loadConfigFile(paths.configFile).memberVm ?? {};
+  const memberVmSize = () => memberVmSizeOnly(memberVmSettings());
   const memberVmProvisioning = createMemberVmProvisioning({
     readToken: exeDevToken,
     tailscaleAuthKey,
@@ -1347,6 +1362,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     store,
     available: createVmAvailable,
     size: memberVmSize,
+    provider: memberVmProviderSetting,
     exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
   });
   const githubCommits = (repository: { owner: string; repo: string }): GitHubCommits => {
@@ -1816,7 +1832,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         .catch((error: unknown) => journalCaught(error, "index.startPaws.parents", null));
       registerMemberVmJob(created.jobs, {
         provision: memberVmProvisioning,
-        secrets: () => [exeDevToken(), tailscaleAuthKey()],
+        secrets: () => [...vmProviderKeys(), tailscaleAuthKey()],
         ...(options?.memberVm?.pollMs === undefined ? {} : { pollMs: options.memberVm.pollMs }),
       });
       registerMemberVmDeleteJob(created.jobs, {
@@ -1842,7 +1858,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             .catch((caughtError8) => {
               journalCaught(caughtError8, "index.disconnect.then", null);
             }),
-        secrets: () => [exeDevToken(), tailscaleAuthKey()],
+        secrets: () => [...vmProviderKeys(), tailscaleAuthKey()],
       });
       const slackThreads = createSlackThreads({
         store,

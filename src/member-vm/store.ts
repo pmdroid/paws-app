@@ -24,7 +24,7 @@ import {
   type Steps,
 } from "../db";
 import { isWorkspaceAdmin, workspaceId as mintId } from "../workspace";
-import { isExeDevVmName } from "../provisioning";
+import { isExeDevVmName, type VmProviderId } from "../provisioning";
 
 export const MEMBER_VM_QUEUE = "member_vm.provision";
 export const MEMBER_VM_DELETE_QUEUE = "member_vm.delete";
@@ -55,7 +55,7 @@ export class MemberVmLimitReached extends Error {
 
 export async function startMemberVm(
   store: Db,
-  input: MemberRef & { now?: number; pool?: string | null },
+  input: MemberRef & { now?: number; pool?: string | null; provider?: VmProviderId },
 ): Promise<MemberVm> {
   const now = input.now ?? Date.now();
   const vm = await store.transaction(function* (q) {
@@ -71,6 +71,7 @@ export async function startMemberVm(
       userId: input.userId,
       vmName: yield* freeVmNameSteps(q, input),
       pool: input.pool ?? null,
+      provider: input.provider ?? "exe-dev",
       now,
     });
     yield* ensureJobSteps(q, id, now);

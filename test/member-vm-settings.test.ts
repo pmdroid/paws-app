@@ -113,6 +113,33 @@ test("invalid values get 400 with a message and members get 403", async () => {
   expect(await readSetting(db, CONFIG_SETTINGS_KEY)).toBe(SEEDED);
 });
 
+test("boat takes only its own sizes and no pool, image or disk", async () => {
+  const { configPath, options, read } = await instance();
+  const save = (body: unknown) => handleMemberVmSettingsRequest(put(body), options("admin"));
+  for (const [body, message] of [
+    [
+      { provider: "boat", cpu: 6, memoryGb: 12 },
+      "boat has no 6 vCPU / 12 GB size. Use 2/4, 4/8, 8/16 or 16/32.",
+    ],
+    [{ provider: "boat", cpu: 6 }, "boat has no 6 vCPU size without memory_gb."],
+    [{ provider: "boat", pool: "build" }, "boat has no pool setting."],
+    [{ provider: "boat", diskGb: 20 }, "boat has no disk_gb setting."],
+    [{ provider: "instabox", image: "ubuntu:24.04" }, "InstaBox has no image setting."],
+    [{ provider: "instabox", diskGb: 2048 }, "InstaBox has no 2048 GB data disk. Use 1 to 1024."],
+    [{ provider: "aws" }, "member_vm.provider must be exe-dev, boat or instabox"],
+  ] as const) {
+    const response = await save(body);
+    expect(response!.status).toBe(400);
+    expect(((await response!.json()) as { error: string }).error).toContain(message);
+  }
+  expect(await read()).toEqual({ cpu: 2, image: "ubuntu:24.04" });
+  expect((await save({ provider: "boat", cpu: 8, memoryGb: 16 }))!.status).toBe(200);
+  expect(loadConfigFile(configPath).memberVm).toEqual({ provider: "boat", cpu: 8, memoryGb: 16 });
+  const insta = { provider: "instabox", cpu: 32, memoryGb: 64, diskGb: 1024 };
+  expect((await save(insta))!.status).toBe(200);
+  expect(await read()).toEqual(insta);
+});
+
 test("a saved empty size resets the defaults", async () => {
   const { db, configPath, options, read } = await instance();
   expect((await handleMemberVmSettingsRequest(put({}), options("admin")))!.status).toBe(200);
