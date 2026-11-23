@@ -611,6 +611,7 @@ describe("live status provider", () => {
     expect(records.issues.find((item) => item.id === "ENG-3")?.pr).toEqual({
       number: 7,
       url: "https://github.com/pmdroid/paws-demo/pull/7",
+      state: "open",
     });
     expect(JSON.stringify(list)).not.toContain("Audit log export");
   });

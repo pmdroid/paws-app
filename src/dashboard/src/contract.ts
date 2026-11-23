@@ -87,9 +87,31 @@ export interface StatusLink {
   href: string;
 }
 
+export type PullState = "open" | "merged" | "closed";
+
+export interface StatusPullCi {
+  state: "pending" | "passed" | "failed";
+  failed: string[];
+  at: string;
+}
+
+export interface StatusPullSize {
+  files: number;
+  additions: number;
+  deletions: number;
+}
+
 export interface StatusPullRequest {
   number: number;
   url: string;
+  title?: string;
+  state?: PullState;
+  openedAt?: string;
+  head?: string;
+  mergeSha?: string;
+  mergedAt?: string;
+  ci?: StatusPullCi;
+  size?: StatusPullSize;
 }
 
 export interface StatusItem {
@@ -801,7 +823,7 @@ export interface StatusFollowUp {
   started?: boolean;
   state?: ItemState;
   path?: string;
-  pull?: { number: number; url: string; state: "open" | "merged" | "closed" };
+  pull?: { number: number; url: string; state: PullState } & Pick<StatusPullRequest, "ci" | "size">;
 }
 
 export interface StatusFiledFrom {
@@ -1642,13 +1664,37 @@ function readFollowUpPull(input: unknown, path: string): NonNullable<StatusFollo
   return {
     number: positiveInteger(body, "number", path),
     url: text(body, "url", path),
-    state: oneOf(
-      string(body, "state", path),
-      ["open", "merged", "closed"] as const,
-      `${path}.state`,
-    ),
+    state: oneOf(string(body, "state", path), PULL_STATES, `${path}.state`),
+    ...readPullCiAndSize(body, path),
   };
 }
+
+const PULL_STATES = ["open", "merged", "closed"] as const;
+
+function readPullCiAndSize(
+  body: Record<string, unknown>,
+  path: string,
+): Pick<StatusPullRequest, "ci" | "size"> {
+  const [c, z] = [`${path}.ci`, `${path}.size`];
+  const ci = body.ci === undefined ? null : object(body.ci, c);
+  const size = body.size === undefined ? null : object(body.size, z);
+  const state = ci && oneOf(string(ci, "state", c), CI_STATES, `${c}.state`);
+  return {
+    ...(ci &&
+      state && {
+        ci: { state, failed: stringArray(ci, "failed", c), at: dateString(ci, "at", c) },
+      }),
+    ...(size && {
+      size: {
+        files: count(size, "files", z),
+        additions: count(size, "additions", z),
+        deletions: count(size, "deletions", z),
+      },
+    }),
+  };
+}
+
+const CI_STATES = ["pending", "passed", "failed"] as const;
 
 function readFiledFrom(input: unknown, path: string): StatusFiledFrom {
   const body = object(input, path);
@@ -2460,7 +2506,23 @@ function readPr(input: unknown, path: string): StatusPullRequest | null {
   if (typeof number !== "number" || !Number.isInteger(number) || number < 1) {
     throw new DashboardContractError(`${path}.number must be an integer >= 1`);
   }
-  return { number, url: text(body, "url", path) };
+  const optional = (key: string) =>
+    body[key] === undefined ? {} : { [key]: text(body, key, path) };
+  const date = (key: string) =>
+    body[key] === undefined ? {} : { [key]: dateString(body, key, path) };
+  return {
+    number,
+    url: text(body, "url", path),
+    ...optional("title"),
+    ...(body.state === undefined
+      ? {}
+      : { state: oneOf(string(body, "state", path), PULL_STATES, `${path}.state`) }),
+    ...date("openedAt"),
+    ...optional("head"),
+    ...optional("mergeSha"),
+    ...date("mergedAt"),
+    ...readPullCiAndSize(body, path),
+  };
 }
 
 function readLinks(input: unknown, path: string): StatusLink[] {
