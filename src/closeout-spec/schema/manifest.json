@@ -7,7 +7,7 @@
   "files": {
     "decision.schema.json": "f6db18d3e20add29b078615277517dd124f9d380ac5f2da4c20e2084f2549ea1",
     "evidence.schema.json": "4930ac747f9bc042eac55244af171b26978aee7dfe4e3d9df79bc85149bd7bdb",
-    "policy.schema.json": "419462f34234f82440eb2780d8e3d083978b0ef2ae195731b1a9426eead66906"
+    "policy.schema.json": "7fca5c66d8bce2db6bac7bc85bc1e2a1706e53e34486d48572c5b3a99f76c39e"
   },
   "pawsExtensions": [
     "retry.attempts_per_check",

@@ -110,6 +110,7 @@ export type TestSelect = {
   always?: string[];
   full_on?: string[];
   max_selected?: number;
+  package_roots?: string[];
 };
 
 export type PolicyReview = {

@@ -60,6 +60,7 @@ export async function snapshotAt(
   cwd: string,
   commit: string,
   env: Record<string, string>,
+  read = READ,
 ): Promise<Snapshot> {
   const tree = await gitBytes(cwd, ["ls-tree", "-r", "-z", "--full-tree", commit], env);
   const paths = new Set<string>();
@@ -71,7 +72,7 @@ export async function snapshotAt(
     const path = entry.slice(tab + 1);
     if (type !== "blob") continue;
     paths.add(path);
-    if (mode !== "120000" && oid && READ.test(path) && !SKIPPED.test(path)) {
+    if (mode !== "120000" && oid && read.test(path) && !SKIPPED.test(path)) {
       wanted.push({ oid, path });
     }
   }

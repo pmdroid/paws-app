@@ -52,7 +52,7 @@ export async function runTestCheck<R extends TestExecuted>(input: {
       changes: () => testChanges(cwd, base, head, env),
       readAtBase: (path) => readAt(cwd, base, path, env),
       readAtHead: (path) => readAt(cwd, head, path, env),
-      snapshot: (commit) => snapshotAt(cwd, commit, env),
+      snapshot: (commit, read) => snapshotAt(cwd, commit, env, read),
     };
     const adapter = input.adapter ?? adapterFor(item.select.runner);
     const plan = await planOf(adapter, context);
