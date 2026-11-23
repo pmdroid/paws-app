@@ -300,6 +300,21 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   api("POST", "/api/settings/storage-usage/refresh", "preserved", "src/settings", {
     sample: "/api/settings/storage-usage/refresh",
   }),
+  api("GET", "/api/settings/storage-cleanup", "preserved", "src/settings", {
+    sample: "/api/settings/storage-cleanup",
+  }),
+  api("PUT", "/api/settings/storage-cleanup", "preserved", "src/settings", {
+    sample: "/api/settings/storage-cleanup",
+  }),
+  api("POST", "/api/settings/storage-cleanup/preview", "preserved", "src/settings", {
+    sample: "/api/settings/storage-cleanup/preview",
+  }),
+  api("POST", "/api/settings/storage-cleanup/run", "preserved", "src/settings", {
+    sample: "/api/settings/storage-cleanup/run",
+  }),
+  api("GET", "/api/settings/storage-cleanup/history", "preserved", "src/settings", {
+    sample: "/api/settings/storage-cleanup/history",
+  }),
   api("*", "/api/retros/*", "delegated", "src/retros"),
   api("GET PUT", "/api/retros/settings", "delegated", "src/retros", {
     sample: "/api/retros/settings",

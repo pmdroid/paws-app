@@ -88,6 +88,7 @@ const MODULES = [
   "project-context",
   "notebook",
   "storage-usage",
+  "storage-cleanup",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -138,7 +139,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   acp: ["assets", "journal", "core", "config", "process", "worktree-checkout", "closeout-spec"],
   closeout: ["journal", "core", "closeout-spec"],
   "closeout-spec": ["journal", "core", "worktree-checkout"],
-  github: ["journal", "core", "process", "webhook-body"],
+  github: ["journal", "core", "process", "webhook-body", "host-operation"],
   merge: ["journal", "core", "db", "github", "questions"],
   questions: ["core", "db", "workspace"],
   decisions: ["db", "scheduler"],
@@ -192,6 +193,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "live-preview": ["journal", "runner-protocol"],
   "dashboard-links": [],
   "storage-usage": ["config", "db", "journal"],
+  "storage-cleanup": ["config", "db", "journal", "storage-usage"],
   "project-context": ["db", "linear"],
   notebook: ["db", "improvements", "project-context"],
   retros: [

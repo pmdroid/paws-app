@@ -3,4 +3,5 @@ export {
   trackHostOperation,
   sampleHostOperations,
   measureHostOperation,
+  hostOperationOwner,
 } from "./operation";

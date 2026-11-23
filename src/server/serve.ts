@@ -85,7 +85,9 @@ import {
   handleStorageSettingsRequest,
   STORAGE_CHECK_PATH,
   STORAGE_SETTINGS_PATH,
+  handleStorageCleanupRequest,
   handleStorageUsageRequest,
+  STORAGE_CLEANUP_PATH,
   STORAGE_USAGE_PATH,
   STORAGE_USAGE_REFRESH_PATH,
   MEMBER_VM_SETTINGS_PATH,
@@ -93,6 +95,7 @@ import {
   TIME_LIMIT_SETTINGS_PATH,
   type AgentSettingsOptions,
   type BriefSettingsOptions,
+  type StorageCleanupSettingsOptions,
   type StorageUsageSettingsOptions,
   type HighRiskFile,
   type OverlapHoldView,
@@ -141,6 +144,7 @@ export type ServerOptions = {
     sessionIds: readonly string[],
   ) => Promise<Response | null>;
   storageUsage?: StorageUsageSettingsOptions["usage"];
+  storageCleanup?: StorageCleanupSettingsOptions["cleanup"];
   retros?: (
     request: Request,
     principal: WorkspacePrincipal,
@@ -331,6 +335,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
           ...(options.retros ? { retros: options.retros } : {}),
           ...(options.storageUsage ? { storageUsage: options.storageUsage } : {}),
+          ...(options.storageCleanup ? { storageCleanup: options.storageCleanup } : {}),
           ...(options.improvements ? { improvements: options.improvements } : {}),
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
           ...(options.blockerChecks ? { blockerChecks: options.blockerChecks } : {}),
@@ -392,6 +397,7 @@ type Secrets = {
   runnerControl?: ServerOptions["runnerControl"];
   retros?: ServerOptions["retros"];
   storageUsage?: ServerOptions["storageUsage"];
+  storageCleanup?: ServerOptions["storageCleanup"];
   improvements?: ServerOptions["improvements"];
   executionControls?: ServerOptions["executionControls"];
   blockerChecks?: ServerOptions["blockerChecks"];
@@ -808,6 +814,15 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ...(principal === undefined ? {} : { role: principal.role }),
       ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     }))!;
+  if (path.startsWith(STORAGE_CLEANUP_PATH) && secrets.storageCleanup) {
+    const response = await handleStorageCleanupRequest(request, {
+      cleanup: secrets.storageCleanup,
+      csrfToken,
+      ...(principal === undefined ? {} : { role: principal.role, actor: principal.userId }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    });
+    if (response) return response;
+  }
   if ((path === STORAGE_SETTINGS_PATH || path === STORAGE_CHECK_PATH) && secrets.store) {
     const store = secrets.store;
     return (

@@ -1,4 +1,4 @@
-import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { githubMirrorsOn, loadConfigFile } from "./file";
 
@@ -56,16 +56,5 @@ export function ensureLayout(paths: PawsPaths): void {
   for (const dir of dirs) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     chmodSync(dir, 0o700);
-  }
-}
-
-const TMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-
-/** Remove entries under `tmpDir` older than 24 hours, left behind by a process that did not finish. */
-export function sweepTmpDir(paths: PawsPaths, now = Date.now()): void {
-  for (const name of readdirSync(paths.tmpDir)) {
-    const entry = join(paths.tmpDir, name);
-    if (now - lstatSync(entry).mtimeMs > TMP_MAX_AGE_MS)
-      rmSync(entry, { recursive: true, force: true });
   }
 }

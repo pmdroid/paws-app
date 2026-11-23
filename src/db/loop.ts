@@ -352,7 +352,12 @@ export class JobLoop {
     const renew = () => context.extendLease();
     this.renewals.set(job.id, renew);
     try {
-      await trackHostOperation(`job:${job.queue}`, () => handler(job, context));
+      await trackHostOperation(
+        `job:${job.queue}`,
+        () => handler(job, context),
+        undefined,
+        journalItemId(job.payload) ?? undefined,
+      );
       if (await stillCurrent()) {
         await this.settleAwake(job, "ending");
         const now = this.clock.now();

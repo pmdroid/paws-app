@@ -1,8 +1,6 @@
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import {
-  clearCloseoutOutputSteps,
-  closeoutLogRetentionDays,
-  expiredCloseoutOutputsSteps,
+  closeoutLogCandidates,
   pendingCloseoutOutputsSteps,
   pruneFinishedAgentModelProbesSteps,
   pruneFinishedJobsSteps,
@@ -16,6 +14,7 @@ import {
   pruneRunnerQuestionAnswersSteps,
   pruneSentOutboxSteps,
   pruneSupersededRunnerResultsSteps,
+  removeCloseoutOutputs,
   type Db,
   type Q,
   type Steps,
@@ -129,9 +128,7 @@ export async function pruneRunnerTables(options: PruneOptions) {
 export async function pruneCloseoutLogs(
   options: PruneOptions & { storage: EvidenceStorage; remove: (key: string) => Promise<void> },
 ): Promise<number> {
-  const days = await closeoutLogRetentionDays(options.store);
   const now = options.now ?? Date.now();
-  const cutoff = now - days * DAY;
   let after: { progressId: string; stepId: string } | undefined;
   for (;;) {
     options.signal?.throwIfAborted();
@@ -150,16 +147,12 @@ export async function pruneCloseoutLogs(
     after = last;
     await yieldToLoop();
   }
-  if (days === 0) return 0;
   let deleted = 0;
   for (;;) {
     options.signal?.throwIfAborted();
-    const expired = await options.store.run((q) => expiredCloseoutOutputsSteps(q, cutoff, 100));
+    const expired = await closeoutLogCandidates(options.store, now, 100);
     if (expired.length === 0) return deleted;
-    for (const { key, ref } of expired) {
-      if (key !== null) await options.remove(key);
-      await options.store.transaction((q) => clearCloseoutOutputSteps(q, ref));
-    }
+    await removeCloseoutOutputs(options.store, expired, options.remove);
     deleted += expired.length;
     await yieldToLoop();
   }

@@ -10,6 +10,8 @@ import {
   ne,
   notInArray,
   or,
+  sql,
+  type AnyColumn,
   type SQL,
 } from "drizzle-orm";
 import type { Db, Q, Steps } from "./db";
@@ -29,7 +31,12 @@ export type StoredCloseoutOutput = {
   stderr: string;
 };
 
-export type ExpiredCloseoutOutput = { ref: CloseoutOutputRef; key: string | null };
+export type ExpiredCloseoutOutput = { ref: CloseoutOutputRef; key: string | null; bytes: number };
+
+const outputSize = (bytes: AnyColumn, stdout: AnyColumn, stderr: AnyColumn) =>
+  sql<number>`coalesce(${bytes}, octet_length(${stdout}) + octet_length(${stderr}))`.mapWith(
+    Number,
+  );
 
 const ENDED = ["merged", "cancelled", "completed"];
 const NO_OUTPUT = {
@@ -144,7 +151,12 @@ export function* expiredCloseoutOutputsSteps(
   const ended = and(inArray(w.state, ENDED), inArray(w.id, quiet));
   const steps = yield* q.all(
     q.orm
-      .select({ progressId: s.progressId, stepId: s.stepId, key: s.outputKey })
+      .select({
+        progressId: s.progressId,
+        stepId: s.stepId,
+        key: s.outputKey,
+        bytes: outputSize(s.outputBytes, s.stdout, s.stderr),
+      })
       .from(s)
       .innerJoin(p, eq(p.id, s.progressId))
       .innerJoin(w, eq(w.id, p.itemId))
@@ -153,19 +165,26 @@ export function* expiredCloseoutOutputsSteps(
   );
   const events = yield* q.all(
     q.orm
-      .select({ runId: e.runId, sequence: e.sequence, key: e.outputKey })
+      .select({
+        runId: e.runId,
+        sequence: e.sequence,
+        key: e.outputKey,
+        bytes: outputSize(e.outputBytes, e.stdout, e.stderr),
+      })
       .from(e)
       .innerJoin(w, eq(w.id, e.itemId))
       .where(and(ended, or(isNotNull(e.outputKey), ne(e.stdout, ""), ne(e.stderr, ""))))
       .limit(Math.max(0, limit - steps.length)),
   );
   return [
-    ...steps.map(({ key, progressId, stepId }) => ({
+    ...steps.map(({ key, bytes, progressId, stepId }) => ({
       key,
+      bytes,
       ref: { table: "closeout_step" as const, progressId, stepId },
     })),
-    ...events.map(({ key, runId, sequence }) => ({
+    ...events.map(({ key, bytes, runId, sequence }) => ({
       key,
+      bytes,
       ref: { table: "agent_closeout_event" as const, runId, sequence },
     })),
   ];
@@ -202,6 +221,27 @@ export async function closeoutLogRetentionDays(store: Db): Promise<number> {
   const stored = await readSetting(store, CLOSEOUT_LOG_RETENTION_KEY);
   const days = stored === null ? NaN : Number(stored);
   return Number.isInteger(days) && days >= 0 ? days : DEFAULT_CLOSEOUT_LOG_RETENTION_DAYS;
+}
+
+export async function closeoutLogCandidates(
+  store: Db,
+  now: number,
+  limit: number,
+): Promise<ExpiredCloseoutOutput[]> {
+  const days = await closeoutLogRetentionDays(store);
+  if (days === 0) return [];
+  return store.run((q) => expiredCloseoutOutputsSteps(q, now - days * 86_400_000, limit));
+}
+
+export async function removeCloseoutOutputs(
+  store: Db,
+  outputs: ExpiredCloseoutOutput[],
+  remove: (key: string) => Promise<void>,
+): Promise<void> {
+  for (const { key, ref } of outputs) {
+    if (key !== null) await remove(key);
+    await store.transaction((q) => clearCloseoutOutputSteps(q, ref));
+  }
 }
 
 export async function saveCloseoutLogRetentionDays(store: Db, days: number, now: number) {
