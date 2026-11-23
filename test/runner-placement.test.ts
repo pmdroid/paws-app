@@ -677,66 +677,79 @@ async function withPool(
   }
 }
 
-test("simultaneous tasks spread across runners instead of filling one runner first", () =>
-  withPool(async (pool) => {
-    const placedOn: string[] = [];
-    for (let task = 0; task < 6; task++) {
-      const [first] = await pool.ids();
-      placedOn.push(first!);
-      await pool.occupy(first!);
-    }
-    expect(placedOn.slice(0, 3).toSorted()).toEqual(["a", "b", "c"]);
-    expect(placedOn.slice(3).toSorted()).toEqual(["a", "b", "c"]);
-  }));
+test("tasks placed one after another fill one runner before the next runner gets any", () =>
+  withPool(
+    async (pool) => {
+      const placedOn: string[] = [];
+      for (let task = 0; task < 5; task++) {
+        const [first] = await pool.ids();
+        placedOn.push(first!);
+        await pool.occupy(first!);
+      }
+      expect(new Set(placedOn.slice(0, 4)).size).toBe(1);
+      expect(placedOn[4]).not.toBe(placedOn[0]);
+    },
+    { a: 4, b: 4 },
+  ));
 
-test("current load is a share of each runner's slots", () =>
+test("the fullest runner with a free slot comes first, and a full runner comes last", () =>
   withPool(
     async (pool) => {
       await pool.occupy("big");
       await pool.occupy("small");
-      // big holds 1 of 4 slots and small 1 of 2.
-      expect(await pool.ids()).toEqual(["big", "small"]);
+      expect(await pool.ids()).toEqual(["small", "big", "idle"]);
       await pool.occupy("big");
       await pool.occupy("big");
-      expect(await pool.ids()).toEqual(["small", "big"]);
+      expect(await pool.ids()).toEqual(["big", "small", "idle"]);
+      await pool.occupy("big");
+      await pool.occupy("small");
+      expect(await pool.ids()).toEqual(["idle", "big", "small"]);
     },
-    { big: 4, small: 2 },
+    { big: 4, small: 2, idle: 2 },
   ));
 
-test("a runner that just finished long work yields to one that stayed idle", () =>
+test("between equally loaded runners the one with more slots comes first", () =>
+  withPool(
+    async (pool) => {
+      expect(await pool.ids()).toEqual(["six", "two"]);
+    },
+    { two: 2, six: 6 },
+  ));
+
+test("a runner that worked most recently comes before one that stayed idle", () =>
   withPool(async (pool) => {
     const at = pool.now();
     await pool.worked("a", at - 90 * 60_000, at - 60_000);
     await pool.worked("b", at - 10 * 60_000, at - 5 * 60_000);
-    expect(await pool.ids()).toEqual(["c", "b", "a"]);
+    expect(await pool.ids()).toEqual(["a", "b", "c"]);
   }));
 
-test("recent load decays, so old work counts less than fresh work", () =>
+test("recent load decays, so a runner with fresh work comes before one with old work", () =>
   withPool(async (pool) => {
     const at = pool.now();
-    // Two hours of work that ended five hours ago weighs less than 20 minutes ending now.
     await pool.worked("a", at - 7 * 60 * 60_000, at - 5 * 60 * 60_000);
     await pool.worked("b", at - 20 * 60_000, at);
     await pool.worked("c", at - LOAD_HISTORY_MS - 60 * 60_000, at - LOAD_HISTORY_MS - 1);
-    expect(await pool.ids()).toEqual(["c", "a", "b"]);
+    expect(await pool.ids()).toEqual(["b", "a", "c"]);
   }));
 
-test("an idle runner with history still precedes a busy runner without history", () =>
+test("a busy runner with a free slot comes before an idle runner with history", () =>
   withPool(
     async (pool) => {
       const at = pool.now();
       await pool.worked("old", at - 3 * 60 * 60_000, at - 60_000);
-      // A newly paired runner used to win every placement on its empty virtual_finish counter.
       await setAgentPolicy(pool.db, "old", { virtualFinish: 100 });
       await pool.occupy("new");
-      expect(await pool.ids()).toEqual(["old", "new"]);
+      await pool.occupy("new");
+      await pool.occupy("new");
+      expect(await pool.ids()).toEqual(["new", "old"]);
     },
-    { old: 2, new: 2 },
+    { old: 4, new: 4 },
   ));
 
 test("slots the caller reserved but has not assigned count as current load", () =>
   withPool(async (pool) => {
-    expect(await pool.ids({ reserved: new Map([["a", 1]]) })).toEqual(["b", "c", "a"]);
+    expect(await pool.ids({ reserved: new Map([["a", 1]]) })).toEqual(["a", "b", "c"]);
     expect(
       await pool.ids({
         reserved: new Map([
@@ -744,18 +757,18 @@ test("slots the caller reserved but has not assigned count as current load", () 
           ["b", 2],
         ]),
       }),
-    ).toEqual(["c", "a", "b"]);
+    ).toEqual(["a", "c", "b"]);
   }));
 
-test("a runner low on quota follows equally loaded runners", () =>
+test("a runner low on quota follows runners with quota left, even busier ones", () =>
   withPool(async (pool) => {
     const at = pool.now();
     await pool.worked("b", at - 30 * 60_000, at);
     await setAgentPolicy(pool.db, "a", { quotaState: "low" });
-    expect(await pool.ids()).toEqual(["c", "b", "a"]);
+    expect(await pool.ids()).toEqual(["b", "c", "a"]);
     await pool.occupy("c");
     await pool.occupy("b");
-    expect(await pool.ids()).toEqual(["a", "c", "b"]);
+    expect(await pool.ids()).toEqual(["b", "c", "a"]);
   }));
 
 test("a runner with quota left goes before one running on extra usage, which names it", () =>
