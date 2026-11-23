@@ -56,8 +56,7 @@ beforeEach(() => {
     requests.push({ url: path, init });
     if (path === "/api/runners") return Response.json({ runners: [runner], serverVersion: null });
     if (path === "/api/auth/session") return Response.json({ userId: "owner", role: "member" });
-    if (path === `/api/runners/${RUNNER}/policy`)
-      return Response.json({ ownerUserId: "owner", sharing: 0 });
+    if (path === `/api/runners/${RUNNER}/policy`) return Response.json({ ownerUserId: "owner" });
     if (path === "/api/runners/usage") return Response.json({ usage: [] });
     if (path === "/api/runners/vm") return Response.json({ available: false });
     return Response.json({ ok: true });
@@ -98,6 +97,11 @@ test("the Agents block lists agents and versions without sign-in or usage", asyn
   expect(block.querySelector("a")!.getAttribute("href")).toBe("/dashboard/settings/agent-accounts");
   expect(root.querySelector("input[data-runner-extra-usage]")).toBeNull();
   expect(requests.some((request) => request.url.endsWith("/extra-usage"))).toBe(false);
+  expect(root.querySelector("input[data-runner-sharing]")).toBeNull();
+  expect(root.textContent).not.toContain("Share this runner");
+  expect(requests.some((request) => String(request.init?.body ?? "").includes("sharing"))).toBe(
+    false,
+  );
 });
 
 test("Add a runner shows the server's refusal instead of a command", async () => {

@@ -211,7 +211,7 @@ describe("runner card", () => {
         {
           now,
           serverVersion: "1.4.0",
-          policy: { ownerUserId: "owner", sharing: 1 },
+          policy: { ownerUserId: "owner" },
           userId: "owner",
           role: "admin",
           busy: false,

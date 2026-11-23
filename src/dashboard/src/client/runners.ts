@@ -106,7 +106,6 @@ export type RunningSession = {
 };
 export type HostPolicy = {
   ownerUserId: string;
-  sharing?: number;
   fixSlots?: number;
 };
 type Session = { userId: string; role: string };
@@ -1208,7 +1207,6 @@ export function runnerDetailMarkup(
     view.userId === view.policy.ownerUserId &&
     view.role !== null &&
     !revoked;
-  const editable = owns && !view.busy ? "" : " disabled";
   const slots = runner.slots;
   const capacity = slots
     ? `<span class="gauge-value${slots.total > 0 && slots.used >= slots.total ? " high" : ""}">${esc(runnerSlotsLabel(runner.running ?? [], slots))}</span>`
@@ -1287,10 +1285,6 @@ export function runnerDetailMarkup(
     workspace: view.workspaceRepositories ?? [],
     ...(view.repositoryDraft === undefined ? {} : { draft: view.repositoryDraft }),
   });
-  const sharing =
-    view.policy === null || revoked
-      ? ""
-      : `<label class="runner-consent"><input type="checkbox" data-runner-sharing="${id}" data-focus="sharing:${id}"${view.policy.sharing ? " checked" : ""}${editable}><span>Share this runner with members of the same Linear project</span></label>${owns ? "" : '<p class="muted">The runner owner controls its sharing settings.</p>'}`;
   const settings = [
     concurrency ? `<div class="runner-setting"><h3>Slots</h3><div>${concurrency}</div></div>` : "",
     fixSlots
@@ -1299,7 +1293,6 @@ export function runnerDetailMarkup(
     repositories
       ? `<div class="runner-setting"><h3>Repositories</h3><div>${repositories}</div></div>`
       : "",
-    sharing ? `<div class="runner-setting"><h3>Sharing</h3><div>${sharing}</div></div>` : "",
   ].join("");
   const actions = runnerActionsMarkup(runner, { manages, busy: view.busy });
   const footer = actions
@@ -1694,18 +1687,8 @@ export function createRunners() {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     pendingFocus = key;
   }
-  function savePolicy(runnerId: string, body: { sharing: boolean }) {
-    void change(async () => {
-      await api(`/api/runners/${encodeURIComponent(runnerId)}/policy`, body);
-      feedback = "Runner settings saved.";
-    }, false);
-  }
   function bind() {
     root!.querySelector("[data-runners-setup]")?.addEventListener("click", () => void load());
-    for (const box of root!.querySelectorAll<HTMLInputElement>("input[data-runner-sharing]"))
-      box.addEventListener("change", () =>
-        savePolicy(box.dataset.runnerSharing!, { sharing: box.checked }),
-      );
     root!
       .querySelector<HTMLSelectElement>("[data-vm-pool]")
       ?.addEventListener("change", (event) => {
