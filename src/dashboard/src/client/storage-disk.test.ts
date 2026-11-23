@@ -124,13 +124,13 @@ test("shows every machine, previews and runs a cleanup, and opens history", asyn
     button("Preview cleanup").click();
     await settleReactWork();
     expect(root.querySelector("dialog")?.textContent).toContain("1.0 GB in 1 item");
-    expect(root.querySelector("dialog")?.textContent).toContain("1 newer than 24 hours");
+    expect(root.querySelector("dialog")?.textContent).toContain("1 item kept, newer than 24 hours");
     button("Delete 1 item").click();
     await settleReactWork();
     await settleReactWork();
     expect(calls.find((call) => call.path.endsWith("/run"))?.body).toEqual({ previewId: "p1" });
     expect(root.querySelector("dialog")).toBeNull();
-    expect(text()).toContain("Deleted 1 items and freed 1.0 GB.");
+    expect(text()).toContain("Deleted 1 item and freed 1.0 GB.");
     button("Show items").click();
     await settleReactWork();
     expect(text()).toContain("paws-new  newer than 24 hours");

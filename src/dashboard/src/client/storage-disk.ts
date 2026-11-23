@@ -106,6 +106,7 @@ const label = (category: string) => LABELS[category] ?? category;
 const percent = (fs: Fs) =>
   fs.totalBytes > 0 ? Math.round(((fs.totalBytes - fs.freeBytes) / fs.totalBytes) * 100) : 0;
 const when = (at: number) => `${new Date(at).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+const count = (n: number) => `${n} ${n === 1 ? "item" : "items"}`;
 const sum = (items: Item[]) => items.reduce((total, item) => total + item.bytes, 0);
 
 function ago(at: number, now: number): string {
@@ -311,14 +312,14 @@ export function createStorageDisk() {
       .filter(([, items]) => items.length > 0)
       .map(
         ([category, items]) =>
-          `<h3>${label(category)}: ${items.length} items, ${bytes(sum(items))}</h3>${preCategory(items)}`,
+          `<h3>${label(category)}: ${count(items.length)}, ${bytes(sum(items))}</h3>${preCategory(items)}`,
       )
       .join("");
     const kept = preview.kept.length
-      ? `<h3>Kept</h3><ul>${preview.kept.map((entry) => `<li>${esc(label(entry.category))}: ${entry.count} ${esc(entry.reason)}</li>`).join("")}</ul>`
+      ? `<h3>Kept</h3><ul>${preview.kept.map((entry) => `<li>${esc(label(entry.category))}: ${count(entry.count)} kept, ${esc(entry.reason)}</li>`).join("")}</ul>`
       : "";
-    const count = preview.items.length;
-    return `<dialog id="cleanup-preview" aria-labelledby="cleanup-preview-heading"><div class="dialog-body"><h2 id="cleanup-preview-heading">Clean up the Paws server</h2><p><b>${bytes(sum(preview.items))}</b> in ${count} ${count === 1 ? "item" : "items"}</p>${groups || '<p class="sub">Nothing to delete.</p>'}${kept}${actions(`<button class="btn !bg-state-failed !text-main-foreground" type="button" data-disk="run"${count === 0 || busy ? " disabled" : ""}>Delete ${count} ${count === 1 ? "item" : "items"}</button>`)}</div></dialog>`;
+    const total = preview.items.length;
+    return `<dialog id="cleanup-preview" aria-labelledby="cleanup-preview-heading"><div class="dialog-body"><h2 id="cleanup-preview-heading">Clean up the Paws server</h2><p><b>${bytes(sum(preview.items))}</b> in ${count(total)}</p>${groups || '<p class="sub">Nothing to delete.</p>'}${kept}${actions(`<button class="btn !bg-state-failed !text-main-foreground" type="button" data-disk="run"${total === 0 || busy ? " disabled" : ""}>Delete ${count(total)}</button>`)}</div></dialog>`;
   };
 
   const paint = () => {
@@ -492,7 +493,7 @@ export function createStorageDisk() {
           history = await call<Cleanup[]>("/api/settings/storage-cleanup/history");
           await Promise.all([loadUsage().catch(() => undefined), loadBackground()]);
           if (done.error) throw new Error(`The cleanup stopped: ${done.error}`);
-          return `Deleted ${done.deleted.length} items and freed ${bytes(done.freedBytes)}.`;
+          return `Deleted ${count(done.deleted.length)} and freed ${bytes(done.freedBytes)}.`;
         } catch (cause) {
           const status = (cause as { status?: number }).status;
           if (status !== 410 && status !== 404) throw cause;
