@@ -101,24 +101,20 @@ describe("issue journey", () => {
   });
 
   test("the stepper marks earlier steps done, the current one, and a past fix round", () => {
-    const value = journey(
-      item("merge_queue", [
-        event("queued", "running", "dispatched"),
-        event("running", "verifying", "turn_ended"),
-        event("verifying", "queued", "restart", "ci"),
-        event("queued", "running", "dispatched"),
-        event("running", "verifying", "turn_ended"),
-        event("verifying", "merge_queue", "closeout_accepted"),
-      ]),
-      undefined,
-      undefined,
-    );
-    const html = journeyStepper(value, { queue: 2 });
-    expect(html).toContain('<li class="run-step done">✓ Fixed · 1 round</li>');
-    expect(html).toContain(
-      '<li class="run-step now" aria-current="step">Waiting to merge · #2 in queue</li>',
-    );
-    expect(html).toContain('<li class="run-step wait">Done</li>');
+    const subject = item("merge_queue", [
+      event("queued", "running", "dispatched"),
+      event("running", "verifying", "turn_ended"),
+      event("verifying", "queued", "restart", "ci"),
+      event("queued", "running", "dispatched"),
+      event("running", "verifying", "turn_ended"),
+      event("verifying", "merge_queue", "closeout_accepted"),
+    ]);
+    const value = journey(subject, undefined, undefined);
+    const html = journeyStepper(value, { queue: 2, timeline: subject.timeline ?? [] });
+    expect(html).toContain('<li class="run-step done">✓ Working · 2 turns · 1 fix</li>');
+    expect(html).toContain('<li class="run-step done">✓ Closeout · 2 rounds</li>');
+    expect(html).toContain('<li class="run-step now" aria-current="step">Merge queue · #2</li>');
+    expect(html).toContain('<li class="run-step wait">Merged</li>');
   });
 });
 

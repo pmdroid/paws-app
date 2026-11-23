@@ -390,91 +390,113 @@ a.evidence-thumb:focus-visible {
 .run-heading h1 {
   line-height: 1.15;
 }
-.run-stepper {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  list-style: none;
-  padding: 0;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--secondary-background);
-}
-.run-stepper.with-review {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-}
 .visual-review-rounds {
   margin: 0;
   padding: 0;
   list-style: none;
 }
-.run-stepper .run-step {
-  padding: 0.7rem 0.9rem;
-  font-size: 0.875rem;
-  font-weight: 700;
-}
-.run-step + .run-step {
-  border-left: 1px solid var(--border);
-}
-.run-step.done,
 .closeout-result.accepted {
   background: color-mix(in srgb, var(--state-ok) 12%, transparent);
   color: var(--state-ok);
 }
-.run-step.failed,
 .closeout-result:is(.exhausted, .rejected, .blocked) {
   background: color-mix(in srgb, var(--state-failed) 12%, transparent);
   color: var(--state-failed);
-}
-.run-step.now {
-  background: var(--main);
-  color: var(--main-foreground);
 }
 .journey {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  overflow: hidden;
+  gap: 0.5rem;
+}
+.journey-stepper {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.375rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.journey-stepper .run-step {
+  min-width: 0;
+  border-top: 4px solid var(--border);
+  padding: 0.375rem 0 0;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.journey-stepper .run-step.done {
+  border-color: var(--state-ok);
+  color: var(--state-ok);
+}
+.journey-stepper .run-step.now {
+  border-color: var(--main);
+  color: var(--foreground);
+}
+.journey-stepper .run-step.needs {
+  border-color: var(--state-awaiting);
+  color: var(--state-awaiting);
+}
+.journey-stepper .run-step.failed {
+  border-color: var(--state-failed);
+  color: var(--state-failed);
+}
+.journey-activity {
+  margin: 0;
+  font-size: 0.875rem;
+}
+.journey-needs b {
+  color: var(--state-awaiting);
+}
+.journey-failed b {
+  color: var(--state-failed);
+}
+.issue-card {
   border: 1px solid var(--border);
   border-radius: 6px;
+  padding: 1rem 1.25rem;
   background: var(--secondary-background);
 }
-.journey .journey-stepper {
-  grid-template-columns: none;
-  grid-auto-columns: minmax(0, 1fr);
-  grid-auto-flow: column;
+.issue-card > h2,
+.issue-card > .between h2 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+.issue-card .results-card {
   border: 0;
-  border-bottom: 1px solid var(--border);
-  border-radius: 0;
+  padding: 0;
+  background: transparent;
 }
-.run-step.needs {
-  background: color-mix(in srgb, var(--state-awaiting) 12%, transparent);
-  color: var(--state-awaiting);
-}
-.journey-now {
+.closeout-rows {
   display: flex;
+  min-width: 0;
   flex-direction: column;
-  gap: 0.35rem;
-  padding: 1rem 1.15rem 1.1rem;
+  margin: 0;
 }
-.journey-now h2 {
-  font-size: 1.375rem;
-  line-height: 1.2;
+.closeout-rows > div {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 1rem;
+  border-top: 1px solid var(--border);
+  padding-block: 0.5rem;
 }
-.journey-now p {
-  max-width: 70ch;
+.closeout-rows dt {
+  flex: none;
+  overflow-wrap: normal;
 }
-.journey-needs {
-  background: color-mix(in srgb, var(--state-awaiting) 8%, transparent);
+.closeout-rows dd {
+  margin: 0;
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
-.journey-failed {
-  background: color-mix(in srgb, var(--state-failed) 8%, transparent);
-}
-.journey-needs h2 {
-  color: var(--state-awaiting);
-}
-.journey-failed h2 {
-  color: var(--state-failed);
+.history-transcript {
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 4px;
 }
 .results-card {
   display: flex;
@@ -490,7 +512,7 @@ a.evidence-thumb:focus-visible {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: 1.5rem;
 }
 .issue-fold-body {
   display: flex;
@@ -775,19 +797,8 @@ a.evidence-thumb:focus-visible {
   }
 }
 @media (max-width: 500px) {
-  .run-stepper,
-  .run-stepper.with-review {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .journey .journey-stepper {
-    grid-auto-flow: row;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .run-step:nth-child(odd) {
-    border-left: 0;
-  }
-  .run-step:nth-child(n + 3) {
-    border-top: 1px solid var(--border);
+  .issue-card {
+    padding: 0.875rem;
   }
   .closeout-result {
     align-items: start;
@@ -1054,18 +1065,25 @@ dialog.review-draw {
 }
 .merge-steps {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem 1rem;
+  flex-direction: column;
+  gap: 0.25rem;
   list-style: none;
   margin: 0;
   padding: 0;
 }
 .merge-steps > li {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  align-items: baseline;
+  padding-block: 0;
   gap: 0.5rem;
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+.merge-steps > li[data-step="run"] .merge-step-mark {
+  color: var(--main);
+}
+.merge-steps > li[data-step="done"] .merge-step-mark {
+  color: var(--state-ok);
 }
 /* The finding or output tail of a check the "Closeout needs your help" card offers to bypass. */
 .bypass-finding {

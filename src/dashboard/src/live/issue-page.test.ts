@@ -261,7 +261,7 @@ describe("one page per issue", () => {
     const own = issuePage(snapshot);
     const sibling = issuePage(snapshot, "PAS-368");
     expect(own).toContain(
-      'session <span class="text-foreground"><a href="https://linear.app/issue/PAS-367"',
+      '<span class="min-w-0"><a href="https://linear.app/issue/PAS-367" target="_blank" rel="noopener noreferrer">Linear session</a>',
     );
     expect(own).toContain('shared with <a class="lin-id" href="/issues/PAS-368">PAS-368</a>');
     expect(sibling).toContain('shared with <a class="lin-id" href="/issues/PAS-367">PAS-367</a>');

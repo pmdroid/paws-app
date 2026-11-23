@@ -254,7 +254,7 @@ describe("status views", () => {
     const preparing = views();
     expect(preparing.overview).toContain(label);
     expect(preparing.issues).toContain(label);
-    expect(preparing.page).toContain(`Implementing · ${label}`);
+    expect(preparing.page).toMatch(new RegExp(`class="journey-activity[^"]*">.*${label}`));
     item.doing = { ...item.doing, phase: "agent" };
     const agent = views();
     for (const html of Object.values(agent)) expect(html).not.toContain("Preparing");
@@ -572,7 +572,7 @@ describe("status views", () => {
     item.mergeQueue = { repository: "acme/platform", position: 2, total: 3, ahead: "ENG-101" };
     const page = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
     expect(page).toContain("Second in the acme/platform queue");
-    expect(page).toContain("Waiting to merge · #2 in queue");
+    expect(page).toContain("Merge queue · #2");
     expect(page).toContain("ENG-101 merges first.");
     item.mergeQueue = { repository: "acme/platform", position: 1, total: 1, ahead: null };
     const issue = render(model({ snapshot, route: { view: "issues", id: item.id } })).content;
@@ -654,8 +654,8 @@ describe("status views", () => {
       expect(section).toContain("bun test");
       expect(section).toContain("data-follow");
       const actions = section.slice(0, section.indexOf('class="log"'));
+      expect(actions).toContain('aria-label="Open full agent transcript">Transcript</a>');
       expect(actions).toContain('<div class="row wrap"><a class="btn" href="');
-      expect(actions).toContain(">Open full agent transcript</a>");
       expect(actions).toContain(
         '<a class="btn" href="https://linear.app/acme/issue/ENG-1" target="_blank" rel="noopener noreferrer">Linear issue</a>',
       );

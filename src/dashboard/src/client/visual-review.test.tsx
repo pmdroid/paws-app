@@ -176,13 +176,11 @@ describe("visual review on the run page", () => {
     const html = runPage(snapshot, runId);
     expect(steps(html)).toEqual([
       "done ✓ Queued",
-      "done ✓ Implementing",
       "needs Visual review · round 1",
-      "wait Checking",
-      "wait Waiting to merge",
-      "wait Done",
+      "wait Closeout",
+      "wait Merge queue",
+      "wait Merged",
     ]);
-    expect(html).toContain('class="run-stepper journey-stepper with-review"');
     expect(html).toContain('<span class="st awaiting_input">awaiting_input</span>');
     expect(html).toContain("Waiting for Ada Reviewer or the project lead · round 1");
     expect(html).toContain(`href="${LINK}"`);
@@ -196,11 +194,10 @@ describe("visual review on the run page", () => {
     const html = runPage(snapshot, runId);
     expect(steps(html)).toEqual([
       "done ✓ Queued",
-      "done ✓ Implementing",
-      "done ✓ Visual review",
-      "now Checking",
-      "wait Waiting to merge",
-      "wait Done",
+      "done ✓ Working · visual review",
+      "now Closeout",
+      "wait Merge queue",
+      "wait Merged",
     ]);
     expect(html).toContain("Accepted by Ada Reviewer · 20m ago");
     expect(html).toContain("Ada Reviewer requested changes · 50m ago");
@@ -217,11 +214,10 @@ describe("visual review on the run page", () => {
     const html = runPage(snapshot, runId);
     expect(steps(html)).toEqual([
       "done ✓ Queued",
-      "now Implementing",
-      "wait Visual review",
-      "wait Checking",
-      "wait Waiting to merge",
-      "wait Done",
+      "now Working · visual review",
+      "wait Closeout",
+      "wait Merge queue",
+      "wait Merged",
     ]);
     expect(html).toContain('<span class="tag bad">Changes requested</span>');
     expect(html).toContain("The agent is addressing these changes.");
@@ -267,7 +263,7 @@ describe("visual review on the run page", () => {
   test("carried over: the review passes and names the approval it came from", () => {
     const { snapshot, runId } = carried();
     const html = runPage(snapshot, runId);
-    expect(steps(html)).toContain("done ✓ Visual review");
+    expect(steps(html)).toContain("done ✓ Working · visual review");
     expect(html).toContain("Carried over from Ada Reviewer's approval in round 1 · 50m ago");
     expect(html).toContain("look the same as the ones Ada Reviewer accepted");
     expect(html).toContain("<b>Carried over</b>");
@@ -300,10 +296,10 @@ describe("visual review on the run page", () => {
       for (const value of classNames(html, "ctx")) expect(value).toContain("break-words");
     }
     const css = readFileSync(new URL("./theme.css", import.meta.url), "utf8");
-    const phone = css.slice(css.indexOf("@media (max-width: 500px)"));
-    expect(phone).toMatch(
-      /\.run-stepper,\s*\.run-stepper\.with-review \{\s*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/,
+    expect(css).toMatch(
+      /\.journey-stepper \{[^}]*grid-template-columns: repeat\(5, minmax\(0, 1fr\)\);/,
     );
+    expect(css).toMatch(/\.journey-stepper \.run-step \{[^}]*overflow-wrap: anywhere;/);
     expect(css).toContain(".evidence-more {\n  display: grid;");
   });
 });

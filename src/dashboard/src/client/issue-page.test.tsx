@@ -63,8 +63,13 @@ function page(snapshot: FullStatus, id = "ENG-101"): string {
 describe("issue page", () => {
   test("desktop: state, project, runner and agent, then the timeline and the pull request", () => {
     const html = page(redelegated());
-    for (const term of ["project", "runner", "agent", "session", "repository"])
-      expect(html).toContain(`<span class="min-w-0">${term} <span class="text-foreground">`);
+    const meta = html.slice(
+      html.indexOf('<p class="issue-facts'),
+      html.indexOf("</p>", html.indexOf('<p class="issue-facts')),
+    );
+    for (const fact of ["acme/platform", "runner ", "Linear session", "started "])
+      expect(meta).toContain(fact);
+    expect(html).not.toContain('<span class="tag">agent: ');
     expect(html).toContain('id="activity-heading">History</h2>');
     expect(html).toContain('id="results-heading" class="text-base font-semibold">Results</h2>');
     expect(html).toContain('shared with <a class="lin-id" href="/issues/ENG-102">ENG-102</a>');
@@ -97,14 +102,17 @@ describe("issue page", () => {
       },
     ];
     const html = page(snapshot);
-    const history = html.slice(html.indexOf('aria-label="History"'), html.indexOf("Run details"));
+    const history = html.slice(
+      html.indexOf('aria-label="History"'),
+      html.indexOf("</section>", html.indexOf('aria-label="History"')),
+    );
     const list = history.slice(0, history.indexOf("data-action"));
     const text = list.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
     expect(text).toContain("Started");
     expect(text).toContain("Closeout round 1: sent back for Closeout findings");
     expect(text).toContain("Closeout round 2: accepted");
     expect(text).toContain("Opened pull request #479");
-    expect(list).toContain("Open full agent transcript");
+    expect(history.slice(0, history.indexOf("</h2>") + 300)).toContain(">Transcript</a>");
     expect(history).toMatch(/<b>Every event \(\d+\)<\/b>/);
     expect(history).toContain('data-log="activity-r-101"');
     expect(history).toContain('href="https://github.com/acme/app/runs/1"');
@@ -126,7 +134,7 @@ describe("issue page", () => {
     for (const id of ["ENG-102", "ENG-101"]) {
       const html = page(snapshot, id);
       expect(html).not.toMatch(/Agent Closeout/i);
-      expect(html).toContain("Implementing");
+      expect(html).toContain("Working");
     }
     expect(page(snapshot, "ENG-101")).toContain('aria-label="Closeout"');
   });
@@ -182,7 +190,7 @@ describe("issue page", () => {
     );
   });
 
-  test("open run details lay out facts, a dotted state timeline and the run setup as panels", () => {
+  test("Every event holds the facts, a dotted state timeline and the run setup as panels", () => {
     const snapshot = fullStatusFixture();
     const item = snapshot.items.find((entry) => entry.id === "ENG-101")!;
     const run = snapshot.runs.find((entry) => entry.itemId === "ENG-101")!;
@@ -207,14 +215,20 @@ describe("issue page", () => {
       skills: [{ name: "impeccable", version: "2.4.1", installing: false }],
       hooks: [],
     };
-    const closed = page(snapshot, "ENG-101");
-    expect(closed).toContain('<section class="issue-fold" aria-label="Run details">');
+    const closed = render({
+      phase: "ready",
+      error: null,
+      engineUrl: null,
+      closeout: openedView({ "section\nhistory:ENG-101": false }),
+      ...pageData(snapshot, { view: "issues", id: "ENG-101" }),
+    }).content;
+    expect(closed).not.toContain('aria-label="Run details"');
     expect(closed).not.toContain('class="run-details"');
     const html = render({
       phase: "ready",
       error: null,
       engineUrl: null,
-      closeout: openedView({ "section\ndetails:ENG-101": true }),
+      closeout: openedView({ "section\nhistory:ENG-101": true }),
       ...pageData(snapshot, { view: "issues", id: "ENG-101" }),
     }).content;
     const body = html.slice(html.indexOf('<div class="run-details">'));
@@ -246,7 +260,7 @@ describe("issue page", () => {
       html.indexOf("</header>"),
     );
     expect(header).toContain(`<span class="st ${item.state}">${item.state}</span>`);
-    expect(header).toContain('<span class="tag">project: Exports</span>');
+    expect(header).toContain('<span class="min-w-0">Exports</span>');
     expect(header).toMatch(
       /<a class="btn" href="https:\/\/linear\.app\/acme\/issue\/ENG-101"[^>]*>Open in Linear <svg/,
     );
@@ -309,9 +323,7 @@ describe("issue page", () => {
     expect(html).toContain('<article class="run-page issue-page">');
     expect(html).toContain('id="activity-heading">History</h2>');
     expect(html).not.toContain("Earlier attempt");
-    expect(html).toContain(
-      'blocks <span class="text-foreground"><a href="/issues/ENG-105">ENG-105</a>',
-    );
+    expect(html).toContain('blocks <a href="/issues/ENG-105">ENG-105</a>');
     expect(html).toContain('aria-label="Closeout"');
     const other = render({
       route: { view: "issues", id: "ENG-102" },
@@ -389,7 +401,7 @@ describe("issue page", () => {
     );
     expect(results).toContain("CI running");
     expect(results).toContain("Waiting to merge.");
-    expect(results).toContain('class="merge-steps"');
+    expect(results).toMatch(/data-result-pull[^]*class="merge-steps/);
     expect(results).toContain("Second in the acme/platform queue");
     expect(results).toContain(
       "Second in the acme/platform GitHub merge queue, waiting for checks.",
