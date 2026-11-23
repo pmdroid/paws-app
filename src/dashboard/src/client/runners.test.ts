@@ -71,7 +71,6 @@ const view = {
   serverVersion: "1.2.0",
   policy: {
     ownerUserId: "owner",
-    sharing: 1,
   },
   userId: "owner",
   role: "admin",
@@ -588,7 +587,7 @@ test("runner routes carry the selected runner", () => {
 });
 
 describe("runner details", () => {
-  test("an idle runner shows its host metrics, agents, sharing and controls", () => {
+  test("an idle runner shows its host metrics, agents and controls", () => {
     const html = runnerDetailMarkup(runner, view);
     expect(html).toContain("build-box");
     expect(statusLine(html)).toBe('<span class="tag ok">Idle</span>');
@@ -610,7 +609,8 @@ describe("runner details", () => {
     ).toContain('title="2 of 10 slots in use"');
     expect(html).toContain('<span class="tag ok">Up to date</span>');
     expect(html).not.toContain("Signed in");
-    expect(html).toMatch(/data-runner-sharing="[^"]+"[^>]* checked/);
+    expect(html).not.toContain("data-runner-sharing");
+    expect(html).not.toContain("Share this runner");
     expect(html).toContain(">Pause<");
     expect(html).toContain(">Drain<");
     expect(html).toContain("Revoke access");
@@ -689,10 +689,10 @@ describe("runner details", () => {
     expect(html).toContain("Update available");
   });
 
-  test("members who do not own the host see disabled sharing settings", () => {
+  test("members who do not own the host see no sharing control or owner controls", () => {
     const html = runnerDetailMarkup(runner, { ...view, userId: "someone", role: "member" });
-    expect(html).toMatch(/data-runner-sharing="[^"]+"[^>]* disabled/);
-    expect(html).toContain("The runner owner controls its sharing settings.");
+    expect(html).not.toContain("data-runner-sharing");
+    expect(html).not.toContain("The runner owner controls its sharing settings.");
     expect(html).not.toContain(">Pause<");
   });
 
