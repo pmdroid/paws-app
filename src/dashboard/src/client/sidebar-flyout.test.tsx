@@ -66,26 +66,28 @@ async function sidebar({
   const item = (name: string) =>
     [...container.querySelectorAll("a")].find((link) => link.textContent === name)!;
   const menu = (name: string) => container.querySelector(`[role="menu"][aria-label="${name}"]`);
-  const fire = (target: Element, event: Event) => act(() => void target.dispatchEvent(event));
-  const pointer = (target: Element, type: "pointerover" | "pointerout") =>
+  type Target = { dispatchEvent(event: never): unknown };
+  const fire = (target: Target, event: unknown) =>
+    act(() => void target.dispatchEvent(event as never));
+  const pointer = (target: Target, type: "pointerover" | "pointerout") =>
     fire(
       target,
       new window.PointerEvent(type, {
         bubbles: true,
         pointerType: "mouse",
         relatedTarget: window.document.body,
-      }) as unknown as Event,
+      }),
     );
-  const key = (target: Element, name: string) =>
+  const key = (target: Target, name: string) =>
     fire(
       target,
       new window.KeyboardEvent("keydown", {
         key: name,
         bubbles: true,
         cancelable: true,
-      }) as unknown as Event,
+      }),
     );
-  const focused = () => window.document.activeElement;
+  const focused = (): unknown => window.document.activeElement;
   return { item, menu, pointer, key, focused, paths };
 }
 
@@ -109,7 +111,7 @@ test("hovering opens the pages after a delay, clicking one opens it, and leaving
   await pointer(panel, "pointerover");
   await wait(300);
   expect(menu("Workspace pages")).not.toBeNull();
-  await act(() => (entries[1] as HTMLElement).click());
+  await act(() => (entries[1] as unknown as HTMLElement).click());
   expect(paths.at(-1)).toBe(`/workspace/${WORKSPACE_PAGES[1]!.id}`);
   expect(menu("Workspace pages")).toBeNull();
   await pointer(item("Settings"), "pointerover");
@@ -140,8 +142,8 @@ test("Right arrow opens Settings on its first entry, Down moves, Escape returns 
   expect(focused()).toBe(settings);
   await key(settings, "Enter");
   expect(paths.at(-1)).toBe("/issues");
-  expect(focused()?.textContent).toBe("Your account");
-  await key(focused()!, "ArrowLeft");
+  expect(focused()).toBe(entries[0]!);
+  await key(entries[0]!, "ArrowLeft");
   expect(menu("Settings pages")).toBeNull();
   expect(focused()).toBe(settings);
   await key(settings, "ArrowRight");
