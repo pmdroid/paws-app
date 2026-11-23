@@ -294,6 +294,12 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   api("POST", "/api/settings/storage/check", "preserved", "src/settings", {
     sample: "/api/settings/storage/check",
   }),
+  api("GET", "/api/settings/storage-usage", "preserved", "src/settings", {
+    sample: "/api/settings/storage-usage",
+  }),
+  api("POST", "/api/settings/storage-usage/refresh", "preserved", "src/settings", {
+    sample: "/api/settings/storage-usage/refresh",
+  }),
   api("*", "/api/retros/*", "delegated", "src/retros"),
   api("GET PUT", "/api/retros/settings", "delegated", "src/retros", {
     sample: "/api/retros/settings",

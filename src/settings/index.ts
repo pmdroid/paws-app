@@ -37,6 +37,12 @@ export { CLOSEOUT_SUMMARY_PATH, handleCloseoutSummaryRequest } from "./closeout-
 export type { CloseoutSummaryOptions } from "./closeout-summary";
 export { STORAGE_CHECK_PATH, STORAGE_SETTINGS_PATH, handleStorageSettingsRequest } from "./storage";
 export type { StorageSettingsOptions } from "./storage";
+export {
+  STORAGE_USAGE_PATH,
+  STORAGE_USAGE_REFRESH_PATH,
+  handleStorageUsageRequest,
+} from "./storage-usage";
+export type { StorageUsageSettingsOptions } from "./storage-usage";
 export { MEMBER_VM_SETTINGS_PATH, handleMemberVmSettingsRequest } from "./member-vm";
 export type { MemberVmSettingsOptions } from "./member-vm";
 export { RUNNER_VM_KEYS_SETTINGS_PATH, handleRunnerVmKeysSettingsRequest } from "./runner-vm-keys";

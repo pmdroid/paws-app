@@ -85,11 +85,15 @@ import {
   handleStorageSettingsRequest,
   STORAGE_CHECK_PATH,
   STORAGE_SETTINGS_PATH,
+  handleStorageUsageRequest,
+  STORAGE_USAGE_PATH,
+  STORAGE_USAGE_REFRESH_PATH,
   MEMBER_VM_SETTINGS_PATH,
   MERGE_SETTINGS_PATH,
   TIME_LIMIT_SETTINGS_PATH,
   type AgentSettingsOptions,
   type BriefSettingsOptions,
+  type StorageUsageSettingsOptions,
   type HighRiskFile,
   type OverlapHoldView,
 } from "../settings";
@@ -136,6 +140,7 @@ export type ServerOptions = {
     principal: WorkspacePrincipal,
     sessionIds: readonly string[],
   ) => Promise<Response | null>;
+  storageUsage?: StorageUsageSettingsOptions["usage"];
   retros?: (
     request: Request,
     principal: WorkspacePrincipal,
@@ -325,6 +330,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
             : {}),
           ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
           ...(options.retros ? { retros: options.retros } : {}),
+          ...(options.storageUsage ? { storageUsage: options.storageUsage } : {}),
           ...(options.improvements ? { improvements: options.improvements } : {}),
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
           ...(options.blockerChecks ? { blockerChecks: options.blockerChecks } : {}),
@@ -385,6 +391,7 @@ type Secrets = {
   runnerHostEnrollment?: ServerOptions["runnerHostEnrollment"];
   runnerControl?: ServerOptions["runnerControl"];
   retros?: ServerOptions["retros"];
+  storageUsage?: ServerOptions["storageUsage"];
   improvements?: ServerOptions["improvements"];
   executionControls?: ServerOptions["executionControls"];
   blockerChecks?: ServerOptions["blockerChecks"];
@@ -794,6 +801,13 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     }))!;
   }
+  if ((path === STORAGE_USAGE_PATH || path === STORAGE_USAGE_REFRESH_PATH) && secrets.storageUsage)
+    return (await handleStorageUsageRequest(request, {
+      usage: secrets.storageUsage,
+      csrfToken,
+      ...(principal === undefined ? {} : { role: principal.role }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
   if ((path === STORAGE_SETTINGS_PATH || path === STORAGE_CHECK_PATH) && secrets.store) {
     const store = secrets.store;
     return (

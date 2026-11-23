@@ -344,6 +344,7 @@ import {
   RETRO_SCHEDULE_TICK_MS,
   type RetroDispatcher,
 } from "./retros";
+import { createStorageUsage } from "./storage-usage";
 import {
   createImprovementsHttp,
   startImprovementDeliveries,
@@ -1474,8 +1475,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   });
   let jobLoop: JobLoop | null = null;
   let server: Bun.Server<undefined>;
+  const storageUsage = createStorageUsage({ paths, store });
   try {
     server = startServer({
+      storageUsage,
       server: options?.server,
       linearUsage: linear === null ? undefined : () => linear.usage(),
       riskApproval: async (itemId) => orchestrator?.riskDisplay(itemId) ?? null,
@@ -1676,6 +1679,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     throw error;
   }
 
+  storageUsage.start();
   let running: LinearRunning = linear ? await linear.start() : down();
   if (linear)
     periodic.push({
@@ -2574,6 +2578,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           [
             { name: "Linear", stop: () => running.stop() },
             { name: "server", stop: () => server.stop(true) },
+            { name: "storage usage", stop: () => storageUsage.stop() },
             { name: "reconciler", stop: () => reconciler?.close() },
             { name: "orchestrator", stop: () => orchestrator?.shutdown() },
           ],
