@@ -306,6 +306,9 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   api("PUT", "/api/settings/storage-cleanup", "preserved", "src/settings", {
     sample: "/api/settings/storage-cleanup",
   }),
+  api("GET", "/api/settings/storage-cleanup/preview", "preserved", "src/settings", {
+    sample: "/api/settings/storage-cleanup/preview",
+  }),
   api("POST", "/api/settings/storage-cleanup/preview", "preserved", "src/settings", {
     sample: "/api/settings/storage-cleanup/preview",
   }),

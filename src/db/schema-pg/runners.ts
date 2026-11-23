@@ -619,7 +619,7 @@ export const runnerCommand = pgTable(
     index("runner_command_pending").on(table.runnerId, table.acknowledgedAt, table.ordinal),
     check(
       "runner_command_check_1",
-      sql`kind IN ('run','review','check','task','cancel','handover','checkpoint','probe','login_check','login','upgrade','storage.report')`,
+      sql`kind IN ('run','review','check','task','cancel','handover','checkpoint','probe','login_check','login','upgrade','storage.report','storage.cleanup')`,
     ),
   ],
 );

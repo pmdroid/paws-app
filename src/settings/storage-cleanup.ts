@@ -11,6 +11,7 @@ export type StorageCleanupSettingsOptions = {
     settings(): Promise<unknown>;
     save(body: unknown): Promise<Reply>;
     preview(body: unknown): Promise<Reply>;
+    readPreview(id: string): Promise<Reply>;
     run(body: unknown, actor: string): Promise<Reply>;
     history(): Promise<Reply>;
   };
@@ -22,7 +23,7 @@ export type StorageCleanupSettingsOptions = {
 
 const ROUTES: Record<string, string> = {
   "/api/settings/storage-cleanup": "GET PUT",
-  "/api/settings/storage-cleanup/preview": "POST",
+  "/api/settings/storage-cleanup/preview": "GET POST",
   "/api/settings/storage-cleanup/run": "POST",
   "/api/settings/storage-cleanup/history": "GET",
 };
@@ -42,10 +43,13 @@ export async function handleStorageCleanupRequest(
   if (!methods.split(" ").includes(request.method))
     return json({ error: "Method not allowed" }, 405);
   try {
-    if (request.method === "GET")
-      return action === ""
-        ? json(await options.cleanup.settings())
-        : reply(await options.cleanup.history());
+    if (request.method === "GET") {
+      if (action === "") return json(await options.cleanup.settings());
+      if (action === "/history") return reply(await options.cleanup.history());
+      return reply(
+        await options.cleanup.readPreview(new URL(request.url).searchParams.get("id") ?? ""),
+      );
+    }
     if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))
       return json({ error: "CSRF token missing" }, 403);
     let body: unknown;

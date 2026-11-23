@@ -4,6 +4,7 @@ import { RunnerAccountSchema } from "./accounts";
 import { RunnerInputFilesSchema, RunnerPromptContextSchema } from "./inputs";
 import { HostToolDefinitionsSchema } from "./host-tools";
 import { RunnerLivePreviewSchema } from "./preview";
+import { RunnerStorageCleanupFields } from "./storage";
 
 /** Maximum time granted by a work assignment or heartbeat renewal. */
 export const RUNNER_LEASE_MS = 60_000;
@@ -382,6 +383,11 @@ export const RunnerCommandSchema = z
     z.strictObject({ ...common, type: z.literal("login_check"), agent, account: work.account }),
     z.strictObject({ ...common, type: z.literal("cancel"), runId: id, generation }),
     z.strictObject({ ...common, type: z.literal("storage.report") }),
+    z.strictObject({
+      ...common,
+      type: z.literal("storage.cleanup"),
+      ...RunnerStorageCleanupFields,
+    }),
     /** Stop the run's agent at a safe point and publish what another runner needs to continue. */
     z.strictObject({ ...common, type: z.literal("handover"), runId: id, generation }),
     /** Publish the run's worktree as a WIP commit now, without stopping its agent. */

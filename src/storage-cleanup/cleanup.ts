@@ -1,25 +1,43 @@
 import { lstatSync, readdirSync, rmSync, type Stats } from "node:fs";
 import { basename, join } from "node:path";
 import type { PawsPaths } from "../config";
+import { randomUUID } from "node:crypto";
 import {
+  answerStorageCleanupPreviewSteps,
   closeoutLogCandidates,
+  expireStorageCleanupsSteps,
   finishStorageCleanupSteps,
   lastStorageCleanupStartedSteps,
   listStorageCleanupsSteps,
   readSetting,
+  readStorageCleanupPreviewSteps,
   removeCloseoutOutputs,
   saveStorageCleanupPreviewSteps,
   startStorageCleanupSteps,
+  storageCleanupPendingSteps,
+  storageCleanupRunnerSteps,
   takeStorageCleanupPreviewSteps,
   updateSetting,
   workItemStatesSteps,
   type Db,
   type ExpiredCloseoutOutput,
+  type Q,
+  type StorageCleanupPreviewRow,
+  type Steps,
 } from "../db";
 import { journalCaught } from "../journal";
+import {
+  RunnerStorageCleanupResultSchema,
+  STORAGE_CLEANUP_RUNNER_VERSION,
+  runnerReleaseAtLeast,
+  type RunnerCommand,
+} from "../runner-protocol";
 import { SERVER_MACHINE } from "../storage-usage";
+import { readWebhookBody } from "../webhook-body";
 
-export const CLEANUP_CATEGORIES = ["temporary", "closeout_logs"] as const;
+export const CLEANUP_CATEGORIES = ["temporary", "closeout_logs", "worker_logs"] as const;
+const SERVER_CATEGORIES: readonly CleanupCategory[] = ["temporary", "closeout_logs"];
+const RUNNER_CATEGORIES: readonly CleanupCategory[] = ["worker_logs"];
 export type CleanupCategory = (typeof CLEANUP_CATEGORIES)[number];
 export const STORAGE_CLEANUP_KEY = "storage.cleanup";
 export const STORAGE_CLEANUP_JOB = "storage.cleanup.schedule";
@@ -30,6 +48,7 @@ const DAY = 24 * HOUR;
 const PREVIEW_MS = 15 * 60_000;
 const OWNERLESS_MS = 7 * DAY;
 const LIMIT = 10_000;
+const COMMAND_MS = DAY;
 const ACTIVE = new Set(["running", "queued", "paused", "recovering", "verifying"]);
 const OWNED = /^paws-[a-z]+-([0-9A-HJKMNP-TV-Z]{26})-/;
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -40,6 +59,7 @@ export type CleanupSettings = {
   categories: {
     temporary: { enabled: boolean; olderThanHours: number };
     closeout_logs: { enabled: boolean };
+    worker_logs: { enabled: boolean; olderThanDays: number };
   };
 };
 
@@ -48,6 +68,7 @@ export const DEFAULT_CLEANUP_SETTINGS: CleanupSettings = {
   categories: {
     temporary: { enabled: true, olderThanHours: 24 },
     closeout_logs: { enabled: true },
+    worker_logs: { enabled: false, olderThanDays: 7 },
   },
 };
 
@@ -61,6 +82,13 @@ export type CleanupPreview = {
   kept: CleanupKept[];
 };
 export type CleanupReply = { status: number; body: unknown };
+export type CleanupRunners = { enqueueSteps(q: Q, command: RunnerCommand): Steps<unknown> };
+
+class Refused extends Error {
+  constructor(readonly reply: CleanupReply) {
+    super("Storage cleanup refused");
+  }
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -92,6 +120,17 @@ export function parseCleanupSettings(value: unknown): CleanupSettings | string {
     return "categories.temporary needs enabled and olderThanHours from 1 to 8760.";
   if (!isRecord(logs) || typeof logs.enabled !== "boolean")
     return "categories.closeout_logs needs enabled.";
+  const workers = categories.worker_logs ?? DEFAULT_CLEANUP_SETTINGS.categories.worker_logs;
+  const days = isRecord(workers) ? workers.olderThanDays : undefined;
+  if (
+    !isRecord(workers) ||
+    typeof workers.enabled !== "boolean" ||
+    typeof days !== "number" ||
+    !Number.isInteger(days) ||
+    days < 1 ||
+    days > 3650
+  )
+    return "categories.worker_logs needs enabled and olderThanDays from 1 to 3650.";
   return {
     schedule: {
       enabled: schedule.enabled,
@@ -101,6 +140,7 @@ export function parseCleanupSettings(value: unknown): CleanupSettings | string {
     categories: {
       temporary: { enabled: temporary.enabled, olderThanHours: hours },
       closeout_logs: { enabled: logs.enabled },
+      worker_logs: { enabled: workers.enabled, olderThanDays: days },
     },
   };
 }
@@ -144,6 +184,7 @@ export type StorageCleanupOptions = {
   paths: PawsPaths;
   store: Db;
   removeCloseoutLog: (key: string) => Promise<void>;
+  runners?: () => Promise<CleanupRunners | undefined>;
   now?: () => number;
 };
 
@@ -290,11 +331,118 @@ export function createStorageCleanup(options: StorageCleanupOptions) {
     return { id, machine, actor, startedAt, categories, ...result };
   };
 
+  const refusing = async (work: () => Promise<CleanupReply>): Promise<CleanupReply> => {
+    try {
+      return await work();
+    } catch (error) {
+      if (error instanceof Refused) return error.reply;
+      throw error;
+    }
+  };
+
+  function* targetSteps(q: Q, machine: string, at: number): Steps<string> {
+    const target = yield* storageCleanupRunnerSteps(q, machine);
+    if (!target) throw new Refused({ status: 404, body: { error: "No such runner." } });
+    if (!runnerReleaseAtLeast(target.version, STORAGE_CLEANUP_RUNNER_VERSION))
+      throw new Refused({
+        status: 409,
+        body: { state: "unsupported", error: "This runner is too old to clean up worker logs." },
+      });
+    if (yield* storageCleanupPendingSteps(q, machine, at, at - COMMAND_MS))
+      throw new Refused({
+        status: 409,
+        body: { error: "This runner already has a cleanup waiting." },
+      });
+    return target.workspaceId;
+  }
+
+  const command = (
+    machine: string,
+    workspaceId: string,
+    input: { cleanupId: string; mode: "preview" | "run"; olderThanDays: number; items?: string[] },
+    at: number,
+  ): RunnerCommand => ({
+    id: randomUUID(),
+    type: "storage.cleanup",
+    runnerId: machine,
+    workspaceId,
+    issuedAt: at,
+    expiresAt: at + COMMAND_MS,
+    category: "worker_logs",
+    ...input,
+  });
+
+  const connected = async () => {
+    const runners = await options.runners?.();
+    if (!runners) throw new Refused({ status: 503, body: { error: "Runners are not available." } });
+    return runners;
+  };
+
+  const previewRunner = (machine: string, actor: string | null) =>
+    refusing(async () => {
+      const runners = await connected();
+      const { olderThanDays } = (await settings()).categories.worker_logs;
+      const at = now();
+      const expiresAt = at + COMMAND_MS;
+      const id = await store.transaction(function* (q) {
+        const workspaceId = yield* targetSteps(q, machine, at);
+        const pending = { machine, categories: RUNNER_CATEGORIES, items: [], kept: [] };
+        const cleanupId = yield* saveStorageCleanupPreviewSteps(
+          q,
+          { ...pending, expiresAt, pending: true, actor },
+          at,
+        );
+        const mode = "preview";
+        yield* runners.enqueueSteps(
+          q,
+          command(machine, workspaceId, { cleanupId, mode, olderThanDays }, at),
+        );
+        return cleanupId;
+      });
+      return { status: 202, body: { id, machine, pending: true, expiresAt } };
+    });
+
+  const runRunner = (row: StorageCleanupPreviewRow, actor: string) =>
+    refusing(async () => {
+      const runners = await connected();
+      const { olderThanDays } = (await settings()).categories.worker_logs;
+      const at = now();
+      const categories = row.categories as CleanupCategory[];
+      const cleanup = {
+        machine: row.machine,
+        actor,
+        startedAt: at,
+        finishedAt: null,
+        categories,
+        deleted: [],
+        skipped: [],
+        freedBytes: 0,
+        error: null,
+      };
+      const items = (row.items as CleanupItem[]).map((item) => item.ref);
+      const id = await store.transaction(function* (q) {
+        const workspaceId = yield* targetSteps(q, row.machine, at);
+        const cleanupId = yield* startStorageCleanupSteps(q, cleanup);
+        yield* runners.enqueueSteps(
+          q,
+          command(row.machine, workspaceId, { cleanupId, mode: "run", olderThanDays, items }, at),
+        );
+        return cleanupId;
+      });
+      return { status: 202, body: { id, ...cleanup, pending: true } };
+    });
+
   const run = async (previewId: string, actor: string): Promise<CleanupReply> => {
     const row = await store.transaction((q) => takeStorageCleanupPreviewSteps(q, previewId));
-    if (!row) return { status: 404, body: { error: "No such cleanup preview." } };
+    if (!row) {
+      const waiting = await store.run((q) => readStorageCleanupPreviewSteps(q, previewId));
+      if (waiting?.pending)
+        return { status: 409, body: { error: "The runner has not answered this preview yet." } };
+      return { status: 404, body: { error: "No such cleanup preview." } };
+    }
     if (row.expiresAt <= now())
       return { status: 410, body: { error: "This preview expired. Preview again." } };
+    if (row.machine !== SERVER_MACHINE) return runRunner(row, actor);
     const body = await execute(
       row.machine,
       row.categories as CleanupCategory[],
@@ -304,8 +452,10 @@ export function createStorageCleanup(options: StorageCleanupOptions) {
     return { status: 200, body };
   };
 
-  const enabledCategories = (rules: CleanupSettings) =>
-    CLEANUP_CATEGORIES.filter((category) => rules.categories[category].enabled);
+  const enabledCategories = (rules: CleanupSettings, machine: string) =>
+    (machine === SERVER_MACHINE ? SERVER_CATEGORIES : RUNNER_CATEGORIES).filter(
+      (category) => rules.categories[category].enabled,
+    );
 
   return {
     settings,
@@ -317,18 +467,24 @@ export function createStorageCleanup(options: StorageCleanupOptions) {
     },
     async preview(body: unknown): Promise<CleanupReply> {
       const { machine, categories } = isRecord(body) ? body : {};
-      if (machine !== SERVER_MACHINE)
-        return { status: 400, body: { error: 'Only the "server" machine can be cleaned up.' } };
-      const chosen = categories === undefined ? enabledCategories(await settings()) : categories;
-      if (
-        !Array.isArray(chosen) ||
-        !chosen.every((c) => (CLEANUP_CATEGORIES as readonly unknown[]).includes(c))
-      )
+      if (typeof machine !== "string" || !MACHINE.test(machine))
+        return { status: 400, body: { error: 'machine must be "server" or a runner id.' } };
+      const allowed = machine === SERVER_MACHINE ? SERVER_CATEGORIES : RUNNER_CATEGORIES;
+      const chosen =
+        categories === undefined ? enabledCategories(await settings(), machine) : categories;
+      if (!Array.isArray(chosen) || !chosen.every((c) => (allowed as unknown[]).includes(c)))
         return {
           status: 400,
-          body: { error: `categories must list ${CLEANUP_CATEGORIES.join(" or ")}.` },
+          body: { error: `categories for ${machine} must list ${allowed.join(" or ")}.` },
         };
+      if (machine !== SERVER_MACHINE && chosen.length > 0) return previewRunner(machine, null);
       return { status: 200, body: await preview(machine, [...new Set(chosen)]) };
+    },
+    async readPreview(id: string): Promise<CleanupReply> {
+      const row = await store.run((q) => readStorageCleanupPreviewSteps(q, id));
+      if (!row) return { status: 404, body: { error: "No such cleanup preview." } };
+      const { id: found, machine, pending, expiresAt, items, kept } = row;
+      return { status: 200, body: { id: found, machine, pending, expiresAt, items, kept } };
     },
     async run(body: unknown, actor: string): Promise<CleanupReply> {
       const previewId = isRecord(body) ? body.previewId : undefined;
@@ -341,16 +497,79 @@ export function createStorageCleanup(options: StorageCleanupOptions) {
     },
     async tick(): Promise<void> {
       const rules = await settings();
-      const categories = enabledCategories(rules);
-      if (!rules.schedule.enabled || categories.length === 0) return;
-      const due = lastScheduledAt(rules.schedule.timeUtc, now());
+      const at = now();
+      await store.transaction((q) =>
+        expireStorageCleanupsSteps(q, {
+          exceptMachine: SERVER_MACHINE,
+          startedBefore: at - COMMAND_MS,
+          now: at,
+          error: "The runner did not answer.",
+        }),
+      );
+      if (!rules.schedule.enabled) return;
+      const due = lastScheduledAt(rules.schedule.timeUtc, at);
       for (const machine of rules.schedule.machines) {
-        if (machine !== SERVER_MACHINE) continue;
+        const categories = enabledCategories(rules, machine);
+        if (categories.length === 0) continue;
         const last = await store.run((q) => lastStorageCleanupStartedSteps(q, machine, "schedule"));
         if (last !== null && last >= due) continue;
+        if (machine !== SERVER_MACHINE) {
+          await previewRunner(machine, "schedule");
+          continue;
+        }
         const { id } = await preview(machine, categories);
         await run(id, "schedule");
       }
+    },
+    async fetch(request: Request, runnerId: string): Promise<Response | null> {
+      if (new URL(request.url).pathname !== "/v1/storage-cleanup") return null;
+      if (request.method !== "POST") return Response.json({ error: "Use POST." }, { status: 405 });
+      const body = await readWebhookBody(request, 4 * 1024 * 1024);
+      if (body instanceof Response) return body;
+      const parsed = RunnerStorageCleanupResultSchema.safeParse(
+        (() => {
+          try {
+            return JSON.parse(body.toString("utf8"));
+          } catch {
+            return null;
+          }
+        })(),
+      );
+      if (!parsed.success)
+        return Response.json({ error: "Storage cleanup result was rejected." }, { status: 400 });
+      const result = parsed.data;
+      const at = now();
+      const category = "worker_logs" as const;
+      if (result.mode === "preview") {
+        const answer = {
+          id: result.cleanupId,
+          machine: runnerId,
+          items: result.items.map((item) => ({ category, ...item })),
+          kept: result.kept.map((group) => ({ category, ...group })),
+          expiresAt: at + PREVIEW_MS,
+        };
+        const row = await store.transaction((q) => answerStorageCleanupPreviewSteps(q, answer, at));
+        if (row?.actor === "schedule")
+          await run(row.id, "schedule").catch((error: unknown) =>
+            journalCaught(error, "storage-cleanup.schedule.runner", null),
+          );
+        return Response.json({ duplicate: row === undefined });
+      }
+      const finished = await store.transaction((q) =>
+        finishStorageCleanupSteps(
+          q,
+          result.cleanupId,
+          {
+            finishedAt: at,
+            deleted: result.deleted.map((item) => ({ category, ...item })),
+            skipped: result.skipped.map((item) => ({ category, ...item })),
+            freedBytes: result.freedBytes,
+            error: null,
+          },
+          runnerId,
+        ),
+      );
+      return Response.json({ duplicate: !finished });
     },
     async sweep(): Promise<void> {
       const rules = await settings();

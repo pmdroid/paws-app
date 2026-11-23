@@ -8,3 +8,4 @@ export type RunnerVersion = readonly [major: number, minor: number, patch: numbe
 export const MINIMUM_RUNNER_VERSION: RunnerVersion = [0, 1, 100];
 export const REVIEW_COMMAND_OAUTH_RUNNER_VERSION: RunnerVersion = [0, 1, 88];
 export const STORAGE_REPORT_RUNNER_VERSION: RunnerVersion = [0, 1, 101];
+export const STORAGE_CLEANUP_RUNNER_VERSION: RunnerVersion = [0, 1, 102];

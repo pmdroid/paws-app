@@ -13,6 +13,7 @@ import {
   type RunnerWorkCleaner,
 } from "../runner-execution";
 import { openRunnerAgents, openRunnerRuntime } from "../runner-runtime";
+import { createRunnerStorageCleaner } from "../storage-cleanup";
 import { createRunnerStorageReporter } from "../storage-usage";
 
 export const RUNNER_WORK_ROOT = "/var/lib/paws-agent/work";
@@ -107,6 +108,11 @@ export async function runPairedDaemon(
     signal.throwIfAborted();
     signal.addEventListener("abort", interrupt, { once: true });
     const [healthNow, retroNow] = [health, retro];
+    const cleanups = createRunnerStorageCleaner({
+      root,
+      daemon,
+      workers: () => [runtime.workerLogs, healthNow.workerLogs, retroNow.workerLogs],
+    });
     cleaner = createRunnerWorkCleaner({
       workRoot: RUNNER_WORK_ROOT,
       signal,
@@ -135,6 +141,7 @@ export async function runPairedDaemon(
         if (!signal.aborted) await health.tick();
         if (!signal.aborted) await retro.tick();
         if (!signal.aborted) await storage.tick();
+        if (!signal.aborted) await cleanups.tick();
       } catch (error) {
         if (!isIdentityRejected(error)) journalCaught(error, "daemon.runPairedDaemon.tick", null);
         if (!signal.aborted)

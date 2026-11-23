@@ -39,6 +39,7 @@ import {
   RunnerArtifactChunkSchema,
   RunnerHealthResultSchema,
   RunnerHelperResultSchema,
+  RunnerStorageCleanupResultSchema,
   RunnerStorageReportSchema,
   RunnerRepositoryCommandResultSchema,
   RunnerRetroCommandSchema,
@@ -53,6 +54,7 @@ import {
   type RunnerCommandVerification,
   type RunnerHealthResult,
   type RunnerHelperResult,
+  type RunnerStorageCleanupResult,
   type RunnerStorageReport,
   type RunnerAgentUser,
   type RunnerHostStatus,
@@ -1020,6 +1022,12 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       return z
         .strictObject({ duplicate: z.boolean() })
         .parse(await authenticated("/v1/storage-report", "POST", body));
+    },
+    async postStorageCleanup(result: RunnerStorageCleanupResult) {
+      const body = RunnerStorageCleanupResultSchema.parse(result);
+      return z
+        .strictObject({ duplicate: z.boolean() })
+        .parse(await authenticated("/v1/storage-cleanup", "POST", body));
     },
     async uploadArtifact(runId: string, chunk: RunnerArtifactChunk, grantToken: string) {
       identifier.parse(runId);

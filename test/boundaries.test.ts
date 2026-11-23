@@ -193,7 +193,14 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "live-preview": ["journal", "runner-protocol"],
   "dashboard-links": [],
   "storage-usage": ["config", "db", "journal", "runner-protocol", "webhook-body"],
-  "storage-cleanup": ["config", "db", "journal", "storage-usage"],
+  "storage-cleanup": [
+    "config",
+    "db",
+    "journal",
+    "runner-protocol",
+    "storage-usage",
+    "webhook-body",
+  ],
   "project-context": ["db", "linear"],
   notebook: ["db", "improvements", "project-context"],
   retros: [
@@ -289,6 +296,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-runtime",
     "runner-health-runtime",
     "runner-retro-runtime",
+    "storage-cleanup",
     "storage-usage",
   ],
   "runner-worker": [

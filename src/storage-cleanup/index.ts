@@ -5,3 +5,5 @@ export {
   createStorageCleanup,
 } from "./cleanup";
 export type { CleanupCategory, CleanupPreview, CleanupSettings, StorageCleanup } from "./cleanup";
+export { createRunnerStorageCleaner } from "./runner";
+export type { RunnerCleanupDaemon, RunnerStorageCleaner, RunnerWorkerLogs } from "./runner";
