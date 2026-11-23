@@ -6,13 +6,23 @@ A runner Paws creates always gets Docker for agent jobs. The install step adds D
 
 ## Give Paws an exe.dev token
 
-Generate an exe.dev API token that may run `new`, `ls`, `ssh`, `rm`, `pool list` and `pool adopt`, and save it on the Paws machine. exe.dev lists each subcommand on its own: `"pool"` does not allow `pool list`. Without `pool list` the Runners page cannot list pools and shows HTTP 403, and only team admins may `pool adopt`:
+Generate an exe.dev API token that may run `new`, `ls`, `ssh`, `rm`, `pool list` and `pool adopt`, and save it on Settings › Runner VMs. exe.dev lists each subcommand on its own: `"pool"` does not allow `pool list`. Without `pool list` the Runners page cannot list pools and shows HTTP 403, and only team admins may `pool adopt`.
 
-```sh
-printf '%s' '<exe.dev token>' | install -m 0600 /dev/stdin ~/.paws/secrets/exe-dev-token
-```
+Create VM appears on the Runners page once the key of the configured provider is saved. `bun run paws doctor` reports it as `exe-dev`.
 
-Create VM appears on the Runners page once the token is there. `bun run paws doctor` reports it as `exe-dev`.
+## Choose the provider
+
+`provider` in `[member_vm]` names where Create VM makes new VMs: `exe-dev` (the default), `boat` or `instabox`. Each VM keeps the provider it was created with, so changing the setting affects only VMs created afterwards. Save the provider's API key on Settings › Runner VMs: the boat key or the InstaBox key. `bun run paws doctor` reports them as `boat` and `instabox` once the setting or a VM names that provider.
+
+boat and InstaBox offer fixed sizes, and Paws refuses a size the provider can't give instead of rounding it:
+
+| Provider   | `cpu` / `memory_gb`                        | `disk_gb`   | `image`, `pool` |
+| ---------- | ------------------------------------------ | ----------- | --------------- |
+| `exe-dev`  | any                                        | any         | allowed         |
+| `boat`     | 2/4, 4/8, 8/16 or 16/32, or neither        | not allowed | not allowed     |
+| `instabox` | 2/4, 4/8, 8/16, 16/32 or 32/64, or neither | 1 to 1024   | not allowed     |
+
+The same check runs again before Create VM calls the provider, so a size saved for another provider fails the VM's `create` step with the same message, for example `boat has no 6 vCPU / 12 GB size. Use 2/4, 4/8, 8/16 or 16/32.`
 
 exe.dev VM names are global, so another account may already hold `<name>-paws`. When exe.dev answers that a name is not available, Create VM tries `<name>-paws-2`, `<name>-paws-3` and so on.
 
@@ -29,11 +39,7 @@ The VM must reach Paws on both ports: 8787 for enrollment and 8788 for the runne
    - **Tagged** `tag:paws-runner`, so the ACL below applies and the VM is not owned by your user.
    - **Not ephemeral**, so a stopped VM is not removed from the tailnet.
 
-   Save it on the Paws machine:
-
-   ```sh
-   printf '%s' 'tskey-auth-…' | install -m 0600 /dev/stdin ~/.paws/secrets/tailscale-authkey
-   ```
+   Save it on Settings › Runner VMs.
 
 2. In the tailnet policy file, declare the tag and let `tag:paws-runner` reach only the Paws host on ports 8787 and 8788. Replace `100.x.y.z` with the Paws machine's Tailscale IP, and keep your existing rules:
 
@@ -57,6 +63,6 @@ With the key saved, Create VM adds a `tailnet` step after the install and before
 
 The auth key never appears on a command line. The VM makes a fresh RSA key in its root-only stage directory, Paws sends the auth key encrypted to it, and the VM decrypts it into a root-only mode 0600 file. That file is deleted right after `tailscale up`, whether the join succeeded or failed. The key is not logged and not put in the agent environment.
 
-Without `~/.paws/secrets/tailscale-authkey`, the step is skipped and a Paws on a public URL provisions as before. When `PAWS_PUBLIC_URL` or `PAWS_RUNNER_URL` ends in `.ts.net` and the key is missing, Create VM refuses before it calls exe.dev and names the missing file and the URL that needs it. With `PAWS_RUNNER_URL` set, the VM's runner connects to that origin instead of the `PAWS_PUBLIC_URL` host.
+Without a saved Tailscale auth key, the step is skipped and a Paws on a public URL provisions as before. When `PAWS_PUBLIC_URL` or `PAWS_RUNNER_URL` ends in `.ts.net` and the key is missing, Create VM refuses before it calls exe.dev and names the missing key and the URL that needs it. With `PAWS_RUNNER_URL` set, the VM's runner connects to that origin instead of the `PAWS_PUBLIC_URL` host.
 
 If the step fails, the Runners page shows a `tailnet:` message. `cannot resolve <host>` usually means MagicDNS is off for the tailnet. `<url> did not answer` usually means the ACL does not let `tag:paws-runner` reach port 8787.
