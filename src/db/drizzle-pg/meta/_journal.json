@@ -176,6 +176,13 @@
       "when": 1795382119980,
       "tag": "0024_closeout_step_tests",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1795393998805,
+      "tag": "0025_storage_snapshot",
+      "breakpoints": true
     }
   ]
 }
