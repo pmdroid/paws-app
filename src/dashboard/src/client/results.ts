@@ -1,4 +1,4 @@
-import type { IssueDetailResponse, StatusFollowUp, StatusItem } from "../contract";
+import type { IssueDetailResponse, StatusFollowUp, StatusItem, StepState } from "../contract";
 import { clock24, esc, itemLabel, mergeQueueLine, safeHref, statePill } from "./format";
 import { routeHref } from "./route";
 
@@ -7,13 +7,14 @@ const NOT_HANDED = "In Linear, not handed to Paws";
 type PullState = "open" | "merged" | "closed";
 
 export function resultsSection(snapshot: IssueDetailResponse, item: StatusItem): string {
-  const pull = pullRequestCard(snapshot, item);
+  const steps = mergeSteps(snapshot, item);
+  const pull = pullRequestCard(snapshot, item, steps);
   const followUps = followUpsCard(snapshot.followUps);
-  const below = mergeNotices(snapshot, item);
+  const below = (item.pr ? "" : steps) + mergeQueueNotice(item) + githubQueueNotice(item);
   if (!pull && !followUps && !below) return "";
   const cards =
     pull && followUps ? "grid grid-cols-1 gap-4 md:grid-cols-2" : "grid grid-cols-1 gap-4";
-  return `<section class="issue-results flex min-w-0 flex-col gap-3" aria-labelledby="results-heading">
+  return `<section class="issue-results issue-card flex min-w-0 flex-col gap-3" aria-labelledby="results-heading">
     <h2 id="results-heading" class="text-base font-semibold">Results</h2>
     ${pull || followUps ? `<div class="${cards}">${pull}${followUps}</div>` : ""}
     ${below}</section>`;
@@ -28,7 +29,7 @@ function pullPill(state: PullState): string {
   return statePill(state, state);
 }
 
-function pullRequestCard(snapshot: IssueDetailResponse, item: StatusItem): string {
+function pullRequestCard(snapshot: IssueDetailResponse, item: StatusItem, steps: string): string {
   if (!item.pr) return "";
   const state = pullState(snapshot, item);
   const ci = state === "open" ? ciLine(snapshot, item) : "";
@@ -36,7 +37,7 @@ function pullRequestCard(snapshot: IssueDetailResponse, item: StatusItem): strin
     <h3 id="results-pull-${esc(item.id)}" class="text-sm font-semibold text-muted-foreground">Pull request</h3>
     <p class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 [overflow-wrap:anywhere]"><a href="${esc(item.pr.url)}" target="_blank" rel="noopener noreferrer"><span class="lin-id">#${item.pr.number}</span> ${esc(item.title)}</a>${pullPill(state)}</p>
     ${ci ? `<p class="text-sm text-muted-foreground" data-result-ci>${esc(ci)}</p>` : ""}
-    ${mergeLine(snapshot, item, state)}
+    ${mergeLine(snapshot, item, state)}${steps}
   </section>`;
 }
 
@@ -66,12 +67,16 @@ function mergeLine(snapshot: IssueDetailResponse, item: StatusItem, state: PullS
   return line ? `<p class="text-sm" data-result-merge>${esc(line)}</p>` : "";
 }
 
-function mergeNotices(snapshot: IssueDetailResponse, item: StatusItem): string {
+const STEP_MARKS: Record<StepState, [string, string]> = {
+  done: ["✓", "done"],
+  run: ["●", "in progress"],
+  wait: ["○", "waiting"],
+};
+
+function mergeSteps(snapshot: IssueDetailResponse, item: StatusItem): string {
   const entry = snapshot.mergeQueue.find((candidate) => candidate.itemId === item.id);
-  const steps = entry?.steps.length
-    ? `<ol class="merge-steps" role="list">${entry.steps.map((step) => `<li>${statePill(step.state, step.name)}${step.detail ? `<span class="muted">${esc(step.detail)}</span>` : ""}</li>`).join("")}</ol>`
-    : "";
-  return mergeQueueNotice(item) + githubQueueNotice(item) + steps;
+  if (!entry?.steps.length) return "";
+  return `<ol class="merge-steps text-sm" role="list" aria-label="Merge steps">${entry.steps.map((step) => `<li data-step="${esc(step.state)}"><span class="merge-step-mark" aria-hidden="true">${STEP_MARKS[step.state][0]}</span><span>${esc(step.name)}${step.detail ? ` <span class="text-muted-foreground">${esc(step.detail)}</span>` : ""}</span><span class="sr-only">, ${STEP_MARKS[step.state][1]}</span></li>`).join("")}</ol>`;
 }
 
 function mergeQueueNotice(item: StatusItem): string {

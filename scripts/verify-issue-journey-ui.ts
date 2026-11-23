@@ -85,7 +85,28 @@ try {
     await expect(page.getByRole("heading", { level: 1, name: /Export job worker/ })).toBeVisible();
     if (!before) {
       const stepper = page.getByRole("list", { name: "Issue progress" });
-      await expect(stepper.locator('[aria-current="step"]')).toHaveText(/Fixing merge conflicts/);
+      await expect(stepper.locator("li")).toHaveText([
+        "✓ Queued",
+        "Working · 3 turns · 2 fixes",
+        "Closeout · 2 rounds",
+        "Merge queue",
+        "Merged",
+      ]);
+      await expect(stepper.locator('[aria-current="step"]')).toHaveText(/^Working/);
+      await expect(page.locator("#journey-now")).toHaveText("Fixing merge conflicts");
+      await expect(page.getByRole("button", { name: /Run details/ })).toHaveCount(0);
+      await expect(page.getByRole("link", { name: "Open full agent transcript" })).toHaveText(
+        "Transcript",
+      );
+      const pull = page.locator("[data-result-pull]");
+      await expect(pull.getByRole("list", { name: "Merge steps" })).toContainText(
+        "Rebase onto main",
+      );
+      for (const name of ["Results", "Closeout", "History"])
+        await expect(page.locator(`.issue-card:has(h2:text-is("${name}"))`).first()).toHaveCSS(
+          "border-top-style",
+          "solid",
+        );
       await expect(page.getByText(/Main moved under this pull request/)).toBeVisible();
       await expect(page.getByRole("button", { name: /View verification details/ })).toHaveAttribute(
         "aria-expanded",
@@ -109,9 +130,7 @@ try {
       if (!before) {
         const stepper = page.getByRole("list", { name: "Issue progress" });
         await expect(stepper.locator('[aria-current="step"]')).toHaveClass(/needs/);
-        await expect(
-          page.getByRole("heading", { level: 2, name: "Closeout exhausted" }),
-        ).toBeVisible();
+        await expect(page.locator("#journey-now")).toHaveText("Closeout exhausted");
         const rules = page.getByRole("button", { name: /View verification details/ });
         if ((await rules.getAttribute("aria-expanded")) === "false") await rules.click();
         await expect(rules).toHaveAttribute("aria-expanded", "true");

@@ -46,7 +46,7 @@ import {
   type CloseoutView,
 } from "./closeout";
 import { renderRuleResults } from "./rules";
-import { closeoutOverview } from "./closeout-section";
+import { closeoutOverview, closeoutPill } from "./closeout-section";
 import { filedFromLine } from "./follow-ups";
 import { resultsSection } from "./results";
 import { reviewFindingsSection } from "./review-findings";
@@ -62,14 +62,7 @@ import { renderIntake } from "./intake";
 import { renderSetupChecklist } from "./setup-checklist";
 import { renderPushOutages } from "./push-outage";
 import { hoursLabel, itemAge, mergedTimesSection, stateTimeBar } from "./state-times";
-import {
-  doingLabel,
-  doingTimeLine,
-  issueTimeLine,
-  itemPill,
-  itemTime,
-  PREPARING_LABEL,
-} from "./doing";
+import { doingLabel, doingTimeLine, issueTimeLine, itemPill, itemTime } from "./doing";
 import { journey, journeyStepper } from "./journey";
 import { deadDeliveriesSection } from "./dead-deliveries";
 import { visualReviewSection } from "./visual-review";
@@ -553,18 +546,17 @@ function issuePage(
   return `${pageHeading("issues")}<article class="run-page issue-page">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="${routeHref({ view: "issues", id: null })}">Issues</a><span>/</span><span class="lin-id">${esc(item.id)}</span></nav>
     <header class="issue-heading flex min-w-0 flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-      <div class="flex min-w-0 flex-col gap-2"><div class="flex flex-wrap gap-2 items-center"><span class="lin-id">${esc(item.id)}</span>${statePill(item.state, item.state)}${item.project ? `<span class="tag">project: ${esc(item.project.name)}</span>` : ""}<span class="tag">agent: ${esc(run?.agent ?? item.agent)}</span>${time ? `<span class="muted" data-item-now>${esc(time)}</span>` : ""}</div>
-      <h1 class="issue-title text-xl font-semibold">${esc(item.title)}</h1>${filedFromLine(snapshot)}
-      ${factLine([...issueFacts(snapshot, item, run, blocked), ["Repository", `<span${item.branch ? ` title="${esc(`Branch ${item.branch}`)}"` : ""}>${esc(snapshot.project.repo)}</span>`]])}</div>
+      <div class="flex min-w-0 flex-col gap-2"><div class="flex flex-wrap gap-2 items-center"><span class="lin-id">${esc(item.id)}</span>${statePill(item.state, item.state)}${time ? `<span class="muted" data-item-now>${esc(time)}</span>` : ""}</div>
+      <h1 class="issue-title text-xl font-semibold">${esc(item.title)}</h1>
+      ${metaLine(issueFacts(snapshot, item, run, blocked))}${filedFromLine(snapshot)}</div>
       ${issueActions(item, run)}
     </header>
     ${journeyStepper(now, {
-      ...(item.doing?.phase === "preparing"
-        ? { implementing: doingLabel(item) ?? PREPARING_LABEL }
-        : {}),
       ...(item.state === "merge_queue" && item.mergeQueue
         ? { queue: item.mergeQueue.position }
         : {}),
+      ...(item.timeline ? { timeline: item.timeline } : {}),
+      merged: item.state !== "completed",
     })}
     ${hostDiskFullNotice(item)}
     ${queueNotice(item, snapshot.generatedAt)}
@@ -583,25 +575,8 @@ function issuePage(
     ${closeoutSection(snapshot, item, verdict, run, closeout, engineUrl, asked)}
     ${verdict || !run ? "" : evidenceSlot(snapshot, run.id)}
     ${historySection(snapshot, item, run, closeout, transcriptHref)}
-    ${runDetails(item, run, closeout)}
     </div>
   </article>`;
-}
-
-/** A collapsed section: its title and one-line summary, the body only once opened. */
-function fold(
-  view: CloseoutView,
-  key: string,
-  title: string,
-  summary: string,
-  body: string,
-  pending = false,
-  headingId = "",
-): string {
-  if (!body.trim()) return "";
-  const open = sectionOpen(view, key, pending);
-  const heading = `<h2${headingId ? ` id="${headingId}"` : ""}>${esc(title)}</h2>`;
-  return `<section class="issue-fold" aria-label="${esc(title)}">${sectionToggle(key, open, heading, summary)}${open ? `<div class="issue-fold-body">${body}</div>` : ""}</section>`;
 }
 
 function closeoutSection(
@@ -633,7 +608,7 @@ function closeoutSection(
   const disclosure = details
     ? `${sectionToggle(key, open, "<b>View verification details</b>", "")}${open ? `<div class="issue-fold-body">${details}</div>` : ""}`
     : "";
-  return `<section class="issue-fold closeout-overview flex min-w-0 flex-col gap-3" aria-label="Closeout"><h2>Closeout</h2>${closeoutOverview(verdict, snapshot.risk, asked)}${disclosure}</section>`;
+  return `<section class="issue-fold closeout-overview issue-card flex min-w-0 flex-col gap-3" aria-label="Closeout"><div class="between"><h2>Closeout</h2>${closeoutPill(verdict)}</div>${closeoutOverview(verdict, snapshot.risk, asked)}${disclosure}</section>`;
 }
 
 /** The kept approval, unless a risk ask on the item is open again. */
@@ -645,42 +620,35 @@ function riskCarryOverSection(snapshot: IssueDetailResponse, item: StatusItem): 
   return asking ? "" : riskCarryOverCard(item.riskCarryOver);
 }
 
-/** State, project, runner and agent, and the Linear session it belongs to. */
 function issueFacts(
   snapshot: IssueDetailResponse,
   item: StatusItem,
   run: StatusRun | undefined,
   blocked: readonly string[],
-): Array<[string, string]> {
-  const facts: Array<[string, string]> = [
-    ["Project", item.project ? esc(item.project.name) : "No project"],
-    ["Runner", esc(run?.runner ?? "Not placed yet")],
-    ["Agent", esc(run?.agent ?? item.agent)],
+): string[] {
+  const facts = [
+    item.project ? esc(item.project.name) : "No project",
+    `<span${item.branch ? ` title="${esc(`Branch ${item.branch}`)}"` : ""}>${esc(snapshot.project.repo)}</span>`,
+    esc(run?.agent ?? item.agent),
   ];
-  if (item.owner) facts.push(["Delegated by", esc(item.owner)]);
-  if (run) facts.push(["Started", esc(ago(run.startedAt, snapshot.generatedAt))]);
-  if (item.pr)
-    facts.push([
-      "Pull request",
-      `<a href="${esc(item.pr.url)}" target="_blank" rel="noopener noreferrer">#${item.pr.number}</a>${item.state === "merged" ? " · merged" : ""}`,
-    ]);
-  if (item.blockers.length) facts.push(["Blocked by", issueLinks(item.blockers, ", ")]);
-  if (blocked.length) facts.push(["Blocks", issueLinks(blocked, ", ")]);
+  if (item.owner) facts.push(`delegated by ${esc(item.owner)}`);
+  facts.push(`runner ${esc(run?.runner ?? "not placed yet")}`);
+  if (run) facts.push(`started ${esc(ago(run.startedAt, snapshot.generatedAt))}`);
+  if (item.blockers.length) facts.push(`blocked by ${issueLinks(item.blockers, ", ")}`);
+  if (blocked.length) facts.push(`blocks ${issueLinks(blocked, ", ")}`);
   if (item.session) {
     const link = `<a href="${esc(item.session.url)}" target="_blank" rel="noopener noreferrer">Linear session</a>`;
-    facts.push([
-      "Session",
+    facts.push(
       item.session.shared.length
         ? `${link} shared with ${item.session.shared.map((other) => `<a class="lin-id" href="${routeHref({ view: "issues", id: other })}">${esc(other)}</a>`).join(", ")}`
         : link,
-    ]);
+    );
   }
   return facts;
 }
 
-/** The header's facts as one mono line of `key value` pairs that wraps at any width. */
-function factLine(facts: ReadonlyArray<[string, string]>): string {
-  return `<div class="issue-facts flex flex-wrap gap-x-4 gap-y-1 font-mono text-[11px] text-muted-foreground [overflow-wrap:anywhere]">${facts.map(([term, value]) => `<span class="min-w-0">${esc(term.toLowerCase())} <span class="text-foreground">${value}</span></span>`).join("")}</div>`;
+function metaLine(facts: readonly string[]): string {
+  return `<p class="issue-facts text-sm text-muted-foreground [overflow-wrap:anywhere]">${facts.map((fact) => `<span class="min-w-0">${fact}</span>`).join('<span aria-hidden="true">·</span>')}</p>`;
 }
 
 const EXTERNAL_LINK =
@@ -716,29 +684,15 @@ function factList(facts: ReadonlyArray<[string, string]>): string {
   return `<dl class="issue-facts-grid">${facts.map(([term, value]) => `<div><dt>${term}</dt><dd>${value}</dd></div>`).join("")}</dl>`;
 }
 
-function runDetails(item: StatusItem, run: StatusRun | undefined, view: CloseoutView): string {
-  const facts: Array<[string, string]> =
-    item.linearRequests === undefined ? [] : [["Linear requests", String(item.linearRequests)]];
+function runDetails(item: StatusItem, run: StatusRun | undefined): string {
   const parts = [
-    facts.length ? factList(facts) : "",
+    item.linearRequests === undefined
+      ? ""
+      : factList([["Linear requests", String(item.linearRequests)]]),
     itemTimeline(item),
     run?.setup ? runSetupSection(run.setup) : "",
   ].filter(Boolean);
-  if (!parts.length) return "";
-  const summary = [
-    stateChanges(item) ? `${stateChanges(item)} state changes` : "",
-    run?.setup ? "skills and hooks" : "",
-    facts.length ? "Linear requests" : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  return fold(
-    view,
-    `details:${item.id}`,
-    "Run details",
-    summary,
-    `<div class="run-details">${parts.join("")}</div>`,
-  );
+  return parts.length ? `<div class="run-details">${parts.join("")}</div>` : "";
 }
 
 const RESTART_REASON_LABELS: Record<string, string> = {
@@ -749,10 +703,6 @@ const RESTART_REASON_LABELS: Record<string, string> = {
   follow_up: "a follow-up in Linear",
   answer: "an answer",
 };
-
-function stateChanges(item: StatusItem): number {
-  return (item.timeline ?? []).filter((entry) => entry.kind !== "ci_rerun").length;
-}
 
 /** Every committed state change of the item and its agent's CI re-runs, oldest first. */
 function itemTimeline(item: StatusItem): string {
@@ -913,14 +863,15 @@ function historySection(
   transcriptHref: string | null,
 ): string {
   const rounds = fixRounds(snapshot, item, run);
-  if (!run && !rounds) return "";
+  const extra = runDetails(item, run);
+  if (!run && !rounds && !extra) return "";
   const events = historyEvents(item, run);
   const key = `history:${item.id}`;
   const open = sectionOpen(view, key, false);
   const transcript =
     transcriptHref === null
       ? ""
-      : `<a class="btn sm" href="${esc(transcriptHref)}" target="_blank" rel="noopener">Open full agent transcript</a>`;
+      : `<a class="history-transcript text-sm" href="${esc(transcriptHref)}" target="_blank" rel="noopener" aria-label="Open full agent transcript">Transcript</a>`;
   const list = events.length
     ? `<ol class="history-list" role="list">${events.map(([at, text]) => `<li>${timelineTime(at)}<span>${text}</span></li>`).join("")}</ol>`
     : "";
@@ -931,8 +882,8 @@ function historySection(
           run.links.filter((link) => !item.links.some((shown) => shown.href === link.href)),
         )}${activityLog(`activity-${run.id}`, run)}`
       : ""
-  }${rounds}`;
-  return `<section class="issue-fold history-section flex min-w-0 flex-col gap-3" aria-label="History"><div class="between"><h2 id="activity-heading">History</h2>${transcript}</div>${list}${sectionToggle(key, open, `<b>Every event (${run?.activity.length ?? 0})</b>`, "")}${open ? `<div class="issue-fold-body">${details}</div>` : ""}</section>`;
+  }${rounds}${extra}`;
+  return `<section class="issue-fold history-section issue-card flex min-w-0 flex-col gap-3" aria-label="History"><div class="between"><h2 id="activity-heading">History</h2>${transcript}</div>${list}${sectionToggle(key, open, `<b>Every event (${run?.activity.length ?? 0})</b>`, "")}${open ? `<div class="issue-fold-body">${details}</div>` : ""}</section>`;
 }
 
 /** CI reads that failed on the pull request, and what Paws did next. */

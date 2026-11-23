@@ -6,13 +6,13 @@ import type {
   VerdictDecision,
 } from "../contract";
 import { attemptsOf, roundAttempt } from "./closeout";
-import { esc } from "./format";
+import { esc, statePill } from "./format";
 import { LINK_ASK_ANCHORS } from "./link-ask";
 import { riskReason } from "./risk";
 
 const DECISIONS: Record<VerdictDecision, string> = {
   accepted: "Accepted",
-  rejected: "Failed",
+  rejected: "Rejected",
   exhausted: "Exhausted",
   running: "Running",
   blocked: "Blocked",
@@ -47,6 +47,11 @@ function outcome(check: StatusCheck): string {
     : broke(check)
       ? "failed"
       : check.state;
+}
+
+export function closeoutPill(verdict: StatusVerdict | undefined): string {
+  const latest = verdict ? attemptsOf(verdict).at(-1) : undefined;
+  return latest ? statePill(latest.decision, DECISIONS[latest.decision]) : "";
 }
 
 export function closeoutOverview(
@@ -159,5 +164,5 @@ function blockerList(blockers: ReadonlyArray<[string, string]>): string {
 }
 
 function rowList(rows: ReadonlyArray<[string, string]>): string {
-  return `<dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">${rows.map(([term, value]) => `<dt class="text-muted-foreground">${term}</dt><dd class="m-0 [overflow-wrap:anywhere]" data-closeout-row="${term.toLowerCase()}">${value}</dd>`).join("")}</dl>`;
+  return `<dl class="closeout-rows text-sm">${rows.map(([term, value]) => `<div><dt class="text-muted-foreground">${term}</dt><dd data-closeout-row="${term.toLowerCase()}">${value}</dd></div>`).join("")}</dl>`;
 }

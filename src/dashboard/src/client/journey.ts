@@ -279,58 +279,71 @@ function pillFor(
   return [tones[value.step], value.headline];
 }
 
-export const JOURNEY_ORDER: readonly JourneyStepId[] = [
-  "queued",
-  "implementing",
-  "review",
-  "checking",
-  "fixing",
-  "merging",
-  "done",
-];
+type BarStep = "queued" | "working" | "closeout" | "merging" | "done";
+
+const BAR_OF: Record<JourneyStepId, BarStep> = {
+  queued: "queued",
+  implementing: "working",
+  review: "working",
+  fixing: "working",
+  checking: "closeout",
+  merging: "merging",
+  done: "done",
+};
+
+const BAR_ORDER: readonly BarStep[] = ["queued", "working", "closeout", "merging", "done"];
+
+function count(value: number, word: string): string {
+  return `${value} ${word}${value === 1 ? "" : "s"}`;
+}
 
 export function journeyStepper(
   value: Journey,
-  notes: { implementing?: string; queue?: number } = {},
+  notes: {
+    queue?: number;
+    timeline?: readonly StatusItemEvent[];
+    merged?: boolean;
+  } = {},
 ): string {
-  const showFix = value.step === "fixing" || value.fixRounds > 0;
-  const names: Record<JourneyStepId, string> = {
+  const events = notes.timeline ?? [];
+  const turns = events.filter((event) => event.event === "dispatched").length;
+  const rounds = events.filter(
+    (event) => event.kind !== "ci_rerun" && event.to === "verifying",
+  ).length;
+  const names: Record<BarStep, string> = {
     queued: "Queued",
-    implementing: notes.implementing ? `Implementing · ${notes.implementing}` : "Implementing",
-    checking: "Checking",
-    review:
+    working:
       value.step === "review"
         ? `Visual review · round ${value.review?.round ?? 1}`
-        : "Visual review",
-    fixing:
-      value.step === "fixing"
-        ? (value.fixLabel ?? "Fixing")
-        : `Fixed · ${value.fixRounds} round${value.fixRounds === 1 ? "" : "s"}`,
-    merging: notes.queue ? `Waiting to merge · #${notes.queue} in queue` : "Waiting to merge",
-    done: "Done",
+        : [
+            "Working",
+            turns ? count(turns, "turn") : "",
+            value.fixRounds ? `${value.fixRounds} fix${value.fixRounds === 1 ? "" : "es"}` : "",
+            value.review ? "visual review" : "",
+          ]
+            .filter(Boolean)
+            .join(" · "),
+    closeout: rounds ? `Closeout · ${count(rounds, "round")}` : "Closeout",
+    merging: notes.queue ? `Merge queue · #${notes.queue}` : "Merge queue",
+    done: notes.merged === false ? "Done" : "Merged",
   };
-  const steps = JOURNEY_ORDER.filter(
-    (id) => (id !== "fixing" || showFix) && (id !== "review" || value.review !== null),
-  );
-  const current = steps.indexOf(value.step);
-  const marks = steps
-    .map((id, index) => {
-      const here = index === current;
-      const cls = here
-        ? value.tone === "done"
-          ? "done"
-          : value.tone === "failed"
-            ? "failed"
-            : value.tone === "needs"
-              ? "needs"
-              : "now"
-        : index < current
-          ? "done"
-          : "wait";
-      const mark = cls === "done" ? "✓ " : cls === "failed" ? "✕ " : "";
-      return `<li class="run-step ${cls}"${here ? ' aria-current="step"' : ""}>${mark}${esc(names[id])}</li>`;
-    })
-    .join("");
-  return `<section class="journey" aria-labelledby="journey-now"><ol class="run-stepper journey-stepper${value.review ? " with-review" : ""}" aria-label="Issue progress">${marks}</ol>
-    <div class="journey-now journey-${value.tone}"><h2 id="journey-now">${esc(value.headline)}</h2><p>${esc(value.reason)}</p></div></section>`;
+  const current = BAR_ORDER.indexOf(BAR_OF[value.step]);
+  const marks = BAR_ORDER.map((id, index) => {
+    const here = index === current;
+    const cls = here
+      ? value.tone === "done"
+        ? "done"
+        : value.tone === "failed"
+          ? "failed"
+          : value.tone === "needs"
+            ? "needs"
+            : "now"
+      : index < current
+        ? "done"
+        : "wait";
+    const mark = cls === "done" ? "✓ " : cls === "failed" ? "✕ " : "";
+    return `<li class="run-step ${cls}"${here ? ' aria-current="step"' : ""}>${mark}${esc(names[id])}</li>`;
+  }).join("");
+  return `<section class="journey" aria-labelledby="journey-now"><ol class="run-stepper journey-stepper" aria-label="Issue progress">${marks}</ol>
+    <p class="journey-activity journey-${value.tone}"><b id="journey-now">${esc(value.headline)}</b> <span>${esc(value.reason)}</span></p></section>`;
 }
