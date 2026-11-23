@@ -306,6 +306,25 @@ describe("member VM", () => {
     expect(view.provider).toBe("boat");
   });
 
+  test("the create step refuses a size the row's provider can't give, before calling it", async () => {
+    const f = await fixture();
+    await startMemberVm(f.db, { ...f.member, provider: "boat", now: f.clock.now() });
+    const loop = new JobLoop(f.db, f.clock, { leaseMs: LEASE_MS });
+    registerMemberVmJob(loop, {
+      provider: { ...f.exeDev, id: "boat" },
+      bootstrap: f.bootstrap,
+      size: { cpu: 6, memoryGb: 12 },
+      mintEnrollment: (ref, request) =>
+        f.control.createEnrollment({ ...f.member, userId: ref.userId }, request),
+      now: () => f.clock.now(),
+    });
+    const row = await drive(f, loop, settled);
+    expect(row.step).toBe("create");
+    expect(row.provider).toBe("boat");
+    expect(row.failure).toBe("boat has no 6 vCPU / 12 GB size. Use 2/4, 4/8, 8/16 or 16/32.");
+    expect(f.exeDev.calls).toHaveLength(0);
+  });
+
   test("a conflict on a name Paws never asked for is a failure", async () => {
     const f = await fixture();
     f.exeDev.addVm("ada-lovelace-paws");

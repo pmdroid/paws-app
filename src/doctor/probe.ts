@@ -4,14 +4,17 @@ import { existsSync } from "node:fs";
 import { resolveAdapter } from "../acp";
 import {
   closeoutPolicyRoot,
-  exeDevTokenStatus,
   loadConfigFile,
   loadRuntime,
+  memberVmProvider,
   tailscaleAuthKeyStatus,
+  vmProviderTokenStatus,
   pawsPaths,
   type AgentProfiles,
   type EnvSource,
   type ExeDevTokenStatus,
+  type MemberVmProviderName,
+  type MemberVmSize,
   type PawsConfigFile,
   type RuntimeConfig,
   type TailscaleAuthKeyStatus,
@@ -22,6 +25,7 @@ import {
   distinctWorkspaceRepositoriesSteps,
   latestGitHubDeliverySteps,
   linearWebhookWarningSteps,
+  memberVmProvidersSteps,
   oldestWorkspaceNameSteps,
   type Db,
   type LinearWebhookWarning,
@@ -77,6 +81,8 @@ export type ProbeFacts = {
   workspace?: string | null;
   githubDelivery?: { event: string; receivedAt: number } | null;
   exeDevToken?: ExeDevTokenStatus;
+  boatToken?: ExeDevTokenStatus;
+  instaboxToken?: ExeDevTokenStatus;
   tailscaleAuthKey?: TailscaleAuthKeyStatus;
   slack?: { teamId: string; capabilities: SlackCapabilities }[] | null;
   publicUrl: string | null;
@@ -150,8 +156,29 @@ export async function realProbeFacts(env: EnvSource, saved: SavedStore): Promise
     codexLogin,
     closeout: await closeoutPolicyFact(runtime, repos),
     linear,
-    exeDevToken: exeDevTokenStatus(runtime.env.home),
+    ...(await vmProviderKeyFacts(runtime.env.home, runtime.file.memberVm, store)),
     tailscaleAuthKey: tailscaleAuthKeyStatus(runtime.env.home),
+  };
+}
+
+export async function vmProviderKeyFacts(
+  home: string,
+  settings: MemberVmSize | undefined,
+  store: Db | null,
+): Promise<Pick<ProbeFacts, "exeDevToken" | "boatToken" | "instaboxToken">> {
+  const used = new Set([
+    memberVmProvider(settings),
+    ...((await readPawsDb(store, (db) => db.run(memberVmProvidersSteps))) ?? []),
+  ]);
+  const status = (provider: MemberVmProviderName) =>
+    used.has(provider) ? { status: vmProviderTokenStatus(home, provider) } : null;
+  const exeDev = status("exe-dev");
+  const boat = status("boat");
+  const instabox = status("instabox");
+  return {
+    ...(exeDev && { exeDevToken: exeDev.status }),
+    ...(boat && { boatToken: boat.status }),
+    ...(instabox && { instaboxToken: instabox.status }),
   };
 }
 

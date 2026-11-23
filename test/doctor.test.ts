@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GROK_AGENT_ARGS, GROK_LOGIN_MESSAGE } from "../src/acp";
@@ -15,17 +15,22 @@ import {
   type DoctorProbe,
   type GitHubDoctorFacts,
   type ProbeFacts,
+  vmProviderKeyFacts,
 } from "../src/doctor";
 import {
   CONFIG_SETTINGS_KEY,
   LINEAR_WEBHOOK_FIX,
+  consumeWorkspaceBootstrap,
+  insertMemberVmSteps,
   openPawsStore,
+  putWorkspaceUser,
   updateSetting,
   type Db,
 } from "../src/db";
 import { grokLoginStatus } from "../src/install";
 import { slackCapabilities } from "../src/slack";
-import { copyMigratedPglite, pgliteServer, sqlRun } from "./pglite";
+import { issueWorkspaceBootstrap, workspaceTokenHash } from "../src/workspace";
+import { copyMigratedPglite, pgliteServer, sqlRun, tempStore } from "./pglite";
 
 async function seedWorkspace(store: Db): Promise<void> {
   await store.run(function* (q) {
@@ -174,7 +179,49 @@ test("doctor reports whether the exe.dev token is present and readable", () => {
   for (const status of ["empty", "unreadable"] as const) {
     const item = exeDev(status);
     expect(item?.ok).toBe(false);
-    expect(item?.fix).toContain("~/.paws/secrets/exe-dev-token");
+    expect(item?.fix).toContain("Settings › Runner VMs");
+  }
+});
+
+test("doctor checks a VM provider's key only when the setting or a VM names it", async () => {
+  const home = mkdtempSync(join(tmpdir(), "paws-doctor-vm-"));
+  const { db, close } = await tempStore();
+  try {
+    const names = async (settings?: { provider?: "exe-dev" | "boat" | "instabox" }) => {
+      const ready = probe(true);
+      Object.assign(ready.facts, await vmProviderKeyFacts(home, settings, db));
+      return doctorChecks(ready)
+        .map((item) => item.name)
+        .filter((name) => ["exe-dev", "boat", "instabox"].includes(name));
+    };
+    expect(await names()).toEqual(["exe-dev"]);
+    expect(await names({ provider: "boat" })).toEqual(["boat"]);
+    await putWorkspaceUser(db, { id: "me", linearUserId: "me", name: "me", email: "me@x.invalid" });
+    await consumeWorkspaceBootstrap(db, {
+      id: "ws",
+      organizationId: "org",
+      name: "Test",
+      userId: "me",
+      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", 1)),
+      now: 1,
+    });
+    await db.run((q) =>
+      insertMemberVmSteps(q, {
+        id: "vm",
+        workspaceId: "ws",
+        userId: "me",
+        vmName: "me-paws",
+        pool: null,
+        provider: "instabox",
+        now: 1,
+      }),
+    );
+    expect(await names()).toEqual(["exe-dev", "instabox"]);
+    const boat = (await vmProviderKeyFacts(home, { provider: "boat" }, null)).boatToken;
+    expect(boat).toBe("absent");
+  } finally {
+    await close();
+    rmSync(home, { recursive: true, force: true });
   }
 });
 
@@ -194,7 +241,7 @@ test("doctor reports the Tailscale auth key like the exe.dev token", () => {
   expect(tailscale("absent", "https://paws.example.com")).toMatchObject({ ok: true, note: true });
   const tailnet = tailscale("absent", "https://agentbox.taile07e4.ts.net:8787");
   expect(tailnet?.ok).toBe(false);
-  expect(tailnet?.fix).toContain("~/.paws/secrets/tailscale-authkey");
+  expect(tailnet?.fix).toContain("Settings › Runner VMs");
   for (const status of ["empty", "unreadable"] as const) {
     const item = tailscale(status);
     expect(item?.ok).toBe(false);

@@ -1,3 +1,4 @@
+import { checkMemberVmSize } from "../config";
 import { journalCaught } from "../journal";
 import {
   advanceMemberVmStepSteps,
@@ -147,15 +148,13 @@ async function runStep(
   switch (row.step) {
     case "create": {
       if (row.providerVmId === null) {
+        const size = row.pool === null ? options.size : { ...options.size, pool: row.pool };
+        checkMemberVmSize(row.provider, size ?? {});
         const asked = row.createRequestedAt;
         await update(store, row, { createRequestedAt: asked ?? now() }, now());
         let providerVmId = vm;
         try {
-          const created = await provider.createVm(
-            vm,
-            row.pool === null ? options.size : { ...options.size, pool: row.pool },
-            { key: row.id },
-          );
+          const created = await provider.createVm(vm, size, { key: row.id });
           providerVmId = created.id;
         } catch (error) {
           const ours = isProvisioningError(error) && error.code === "conflict" && asked !== null;

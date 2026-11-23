@@ -47,13 +47,17 @@ export {
   writeGitHubAccess,
 } from "./github-access";
 export {
+  checkMemberVmSize,
   checkMemberVmValue,
   isMemberVmPool,
+  MEMBER_VM_PROVIDERS,
+  memberVmProvider,
+  memberVmSizeOnly,
   parseMemberVmSettings,
   renderMemberVmSettings,
   writeMemberVmSize,
 } from "./member-vm";
-export type { MemberVmKey, MemberVmSize } from "./member-vm";
+export type { MemberVmKey, MemberVmProviderName, MemberVmSize } from "./member-vm";
 export { ensureLayout, pawsPaths } from "./paths";
 export { parseRepositoryList } from "./repositories";
 export type { PawsPaths } from "./paths";
@@ -149,6 +153,13 @@ export { loadRunnerControl } from "./runner-control";
 
 export { EXE_DEV_TOKEN_FILE, exeDevTokenPath, exeDevTokenStatus, readExeDevToken } from "./exe-dev";
 export type { ExeDevTokenStatus } from "./exe-dev";
+export {
+  boatTokenPath,
+  instaboxTokenPath,
+  memberVmKeyReadable,
+  readVmProviderToken,
+  vmProviderTokenStatus,
+} from "./vm-provider-tokens";
 export {
   isTailnetUrl,
   readTailscaleAuthKey,

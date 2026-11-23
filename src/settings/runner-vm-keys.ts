@@ -1,6 +1,9 @@
 import { removeSecret, saveSecret } from "../credentials";
 import {
+  boatTokenPath,
   exeDevTokenPath,
+  instaboxTokenPath,
+  vmProviderTokenStatus,
   exeDevTokenStatus,
   tailscaleAuthKeyPath,
   tailscaleAuthKeyStatus,
@@ -25,9 +28,20 @@ const KEYS = {
     status: tailscaleAuthKeyStatus,
     label: "Tailscale auth key",
   },
+  boat: {
+    path: boatTokenPath,
+    status: (home: string) => vmProviderTokenStatus(home, "boat"),
+    label: "boat API key",
+  },
+  instabox: {
+    path: instaboxTokenPath,
+    status: (home: string) => vmProviderTokenStatus(home, "instabox"),
+    label: "InstaBox API key",
+  },
 } as const;
 type KeyName = keyof typeof KEYS;
-const isKey = (name: unknown): name is KeyName => name === "exeDev" || name === "tailscale";
+const isKey = (name: unknown): name is KeyName =>
+  typeof name === "string" && Object.hasOwn(KEYS, name);
 
 export async function handleRunnerVmKeysSettingsRequest(
   request: Request,
@@ -40,7 +54,13 @@ export async function handleRunnerVmKeysSettingsRequest(
   if (options.role !== undefined && !isWorkspaceAdmin(options.role))
     return json({ error: "Only workspace admins can manage runner VM keys." }, 403);
   const set = (name: KeyName) => KEYS[name].status(options.home) === "readable";
-  const status = () => json({ exeDev: set("exeDev"), tailscale: set("tailscale") });
+  const status = () =>
+    json({
+      exeDev: set("exeDev"),
+      tailscale: set("tailscale"),
+      boat: set("boat"),
+      instabox: set("instabox"),
+    });
   if (request.method === "GET") return status();
   if (request.method !== "PUT" && request.method !== "DELETE")
     return json({ error: "Method not allowed" }, 405);

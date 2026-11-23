@@ -122,11 +122,11 @@ test("a Paws on a .ts.net host without a Tailscale auth key is refused before an
   ]) {
     const { value, exeDev } = source({ publicUrl, tailscaleAuthKey: () => null });
     await expect(createMemberVmProvisioning(value)("exe-dev")).rejects.toThrow(
-      /~\/\.paws\/secrets\/tailscale-authkey/,
+      /Settings › Runner VMs/,
     );
     const absent = source({ publicUrl });
     await expect(createMemberVmProvisioning(absent.value)("exe-dev")).rejects.toThrow(
-      /tailscale-authkey/,
+      /Tailscale auth key/,
     );
     expect(exeDev.calls).toHaveLength(0);
     expect(absent.exeDev.calls).toHaveLength(0);

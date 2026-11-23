@@ -20,7 +20,12 @@ import {
   type MemberVmResponse,
   type MemberVmView,
 } from "../src/member-vm";
-import { createFakeBootstrap, createFakeExeDev, type ExeDevVmSize } from "../src/provisioning";
+import {
+  createFakeBootstrap,
+  createFakeExeDev,
+  type ExeDevVmSize,
+  type VmProviderId,
+} from "../src/provisioning";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import {
@@ -112,9 +117,11 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
     now: () => clock.now(),
   });
   let available = true;
+  let provider: VmProviderId = "exe-dev";
   const http = createMemberVmHttp({
     store: db,
     available: () => available,
+    provider: () => provider,
     exeDev,
     ...(options.size === undefined ? {} : { size: () => options.size! }),
     now: () => clock.now(),
@@ -157,6 +164,7 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
     call,
     drive,
     setAvailable: (value: boolean) => (available = value),
+    setProvider: (value: VmProviderId) => (provider = value),
   };
 }
 
@@ -213,6 +221,17 @@ describe("member VM routes", () => {
       throw new Error("Saved settings line 3 member_vm.cpu must be a whole number from 1 to 512");
     };
     expect((await get()).size).toBeUndefined();
+  });
+
+  test("Create VM writes the configured provider into the row, and a later change leaves it", async () => {
+    const f = await fixture();
+    f.setProvider("boat");
+    expect((await f.call(f.member, "POST")).status).toBe(200);
+    const row = (await findMemberVm(f.db, f.member))!;
+    expect(row.provider).toBe("boat");
+    f.setProvider("instabox");
+    expect((await f.call(f.member, "GET")).status).toBe(200);
+    expect((await findMemberVm(f.db, f.member))!.provider).toBe("boat");
   });
 
   test("a configured pool becomes --pool on new, and no pool is a bare new", async () => {

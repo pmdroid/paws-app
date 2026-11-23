@@ -26,7 +26,7 @@ export type MemberVmProvisioningSource = {
   serverCa?: string | null;
   runnerControl: () => Promise<MemberVmRunnerControl | null | undefined>;
   latestRelease: () => Promise<string | null>;
-  /** Reads `~/.paws/secrets/tailscale-authkey`. Absent or null: the VM joins no tailnet. */
+  /** Reads the `tailscale-authkey` key. Absent or null: the VM joins no tailnet. */
   tailscaleAuthKey?: () => string | null;
   /** Reads the VM size from Settings for each Create VM step. */
   size?: () => ExeDevVmSize;
@@ -51,7 +51,7 @@ export function createMemberVmProvisioning(
         : null;
     if (tailnetUrl !== null && authKey() === null)
       throw new Error(
-        `Create VM needs a Tailscale auth key in ~/.paws/secrets/tailscale-authkey: ${tailnetUrl} is on a tailnet (.ts.net), so the VM must join it to reach this Paws.`,
+        `Create VM needs a Tailscale auth key: ${tailnetUrl} is on a tailnet (.ts.net), so the VM must join it to reach this Paws. Save the key on Settings › Runner VMs.`,
       );
     const control = await source.runnerControl();
     if (!control) throw new Error("Create VM needs runner control to be configured.");

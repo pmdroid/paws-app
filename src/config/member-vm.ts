@@ -6,7 +6,11 @@ import { updateConfigText, withoutConfigSection } from "./settings-store";
  * uses its default (2 CPUs, the team's VM placement). exe.dev enforces the plan limits and the
  * pool's capacity, and Paws shows its refusal.
  */
+export const MEMBER_VM_PROVIDERS = ["exe-dev", "boat", "instabox"] as const;
+export type MemberVmProviderName = (typeof MEMBER_VM_PROVIDERS)[number];
+
 export type MemberVmSize = {
+  provider?: MemberVmProviderName;
   cpu?: number;
   memoryGb?: number;
   diskGb?: number;
@@ -15,7 +19,7 @@ export type MemberVmSize = {
   pool?: string;
 };
 
-const MEMBER_VM_KEYS = ["cpu", "memory_gb", "disk_gb", "image", "pool"] as const;
+const MEMBER_VM_KEYS = ["provider", "cpu", "memory_gb", "disk_gb", "image", "pool"] as const;
 
 /** Upper bounds that catch typos. exe.dev's plan limits are lower and it says so itself. */
 const MAX_MEMBER_VM_CPU = 512;
@@ -59,7 +63,8 @@ export function assignMemberVmKey(
   } catch (error) {
     throw new Error(`Saved settings line ${line} ${(error as Error).message}`, { cause: error });
   }
-  if (key === "cpu") size.cpu = checked as number;
+  if (key === "provider") size.provider = checked as MemberVmProviderName;
+  else if (key === "cpu") size.cpu = checked as number;
   else if (key === "memory_gb") size.memoryGb = checked as number;
   else if (key === "disk_gb") size.diskGb = checked as number;
   else if (key === "image") size.image = checked as string;
@@ -71,6 +76,11 @@ export function checkMemberVmValue(
   key: MemberVmKey,
   value: string | number | boolean | string[],
 ): number | string {
+  if (key === "provider") {
+    if (!(MEMBER_VM_PROVIDERS as readonly unknown[]).includes(value))
+      throw new Error("member_vm.provider must be exe-dev, boat or instabox");
+    return value as MemberVmProviderName;
+  }
   if (key === "cpu") return positive(value, key, MAX_MEMBER_VM_CPU);
   if (key === "memory_gb") return positive(value, key, MAX_MEMBER_VM_MEMORY_GB);
   if (key === "disk_gb") return positive(value, key, MAX_MEMBER_VM_DISK_GB);
@@ -94,6 +104,7 @@ function positive(value: string | number | boolean | string[], key: string, max:
 
 export function renderMemberVmSettings(size: MemberVmSize | undefined): string {
   const lines = [
+    ...(size?.provider === undefined ? [] : [`provider = "${size.provider}"`]),
     ...(size?.cpu === undefined ? [] : [`cpu = ${size.cpu}`]),
     ...(size?.memoryGb === undefined ? [] : [`memory_gb = ${size.memoryGb}`]),
     ...(size?.diskGb === undefined ? [] : [`disk_gb = ${size.diskGb}`]),
@@ -117,7 +128,75 @@ export function parseMemberVmSettings(value: unknown): MemberVmSize {
     if (raw !== undefined && raw !== null)
       size[field(key)] = checkMemberVmValue(key, raw as string | number | boolean | string[]);
   }
+  checkMemberVmSize(memberVmProvider(size), size);
   return size as MemberVmSize;
+}
+
+export function memberVmProvider(settings: MemberVmSize | undefined): MemberVmProviderName {
+  return settings?.provider ?? "exe-dev";
+}
+
+export function memberVmSizeOnly(
+  settings: MemberVmSize | undefined,
+): Omit<MemberVmSize, "provider"> {
+  const { provider: _provider, ...size } = settings ?? {};
+  return size;
+}
+
+const FIXED_SIZES = {
+  boat: {
+    name: "boat",
+    pairs: [
+      [2, 4],
+      [4, 8],
+      [8, 16],
+      [16, 32],
+    ],
+    maxDiskGb: null,
+  },
+  instabox: {
+    name: "InstaBox",
+    pairs: [
+      [2, 4],
+      [4, 8],
+      [8, 16],
+      [16, 32],
+      [32, 64],
+    ],
+    maxDiskGb: 1024,
+  },
+} as const;
+
+export function checkMemberVmSize(
+  provider: MemberVmProviderName,
+  size: Omit<MemberVmSize, "provider">,
+): void {
+  if (provider === "exe-dev") return;
+  const { name, pairs, maxDiskGb } = FIXED_SIZES[provider];
+  const unsupported = (
+    [
+      ["image", size.image],
+      ["pool", size.pool],
+      ["disk_gb", maxDiskGb === null ? size.diskGb : undefined],
+    ] as const
+  ).find(([, value]) => value !== undefined && value !== null);
+  if (unsupported !== undefined)
+    throw new Error(
+      `${name} has no ${unsupported[0]} setting. Remove member_vm.${unsupported[0]}.`,
+    );
+  if (maxDiskGb !== null && size.diskGb !== undefined && size.diskGb > maxDiskGb)
+    throw new Error(`${name} has no ${size.diskGb} GB data disk. Use 1 to ${maxDiskGb}.`);
+  if (size.cpu === undefined && size.memoryGb === undefined) return;
+  if (pairs.some(([cpu, memory]) => cpu === size.cpu && memory === size.memoryGb)) return;
+  const sizes = pairs.map(([cpu, memory]) => `${cpu}/${memory}`);
+  const allowed = `${sizes.slice(0, -1).join(", ")} or ${sizes.at(-1)}`;
+  const asked =
+    size.cpu === undefined
+      ? `${size.memoryGb} GB size without cpu`
+      : size.memoryGb === undefined
+        ? `${size.cpu} vCPU size without memory_gb`
+        : `${size.cpu} vCPU / ${size.memoryGb} GB size`;
+  throw new Error(`${name} has no ${asked}. Use ${allowed}.`);
 }
 
 export function setMemberVmText(current: string, size: MemberVmSize): string {
