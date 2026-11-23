@@ -136,9 +136,9 @@ describePglite((connect) => {
         .onConflictDoUpdate({ target: q.t.runnerHostStatus.runnerId, set: { runnerVersion } });
     await seed(
       db,
-      (q) => host(q, current, "0.1.101"),
+      (q) => host(q, current, "0.1.102"),
       (q) => host(q, old, "0.1.100"),
-      (q) => host(q, away, "0.1.101"),
+      (q) => host(q, away, "0.1.102"),
       (q) =>
         q.orm
           .update(q.t.runner)
