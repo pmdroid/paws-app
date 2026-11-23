@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
-type Operation = { name: string; now: () => number };
+type Operation = { name: string; now: () => number; owner?: string };
 const context = new AsyncLocalStorage<Operation>();
 let stalled = "idle";
 let longest = 5000;
@@ -32,11 +32,14 @@ export function trackHostOperation<T>(
   name: string,
   run: () => T,
   now: () => number = () => performance.now(),
+  owner = context.getStore()?.owner,
 ): T {
   active.set(name, (active.get(name) ?? 0) + 1);
   let result: T;
   try {
-    result = context.run({ name, now }, () => measureHostOperation(run));
+    result = context.run({ name, now, ...(owner === undefined ? {} : { owner }) }, () =>
+      measureHostOperation(run),
+    );
   } catch (error) {
     leave(name);
     throw error;
@@ -57,4 +60,8 @@ export function sampleHostOperations(): string {
   stalled = "idle";
   longest = 5000;
   return name;
+}
+
+export function hostOperationOwner(): string | undefined {
+  return context.getStore()?.owner;
 }

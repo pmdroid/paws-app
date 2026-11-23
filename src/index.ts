@@ -115,7 +115,6 @@ import {
   type PawsEnv,
   type PawsPaths,
   type RuntimeConfig,
-  sweepTmpDir,
 } from "./config";
 import { type LinearCommand, type GitCommitPolicy, type Clock, isTransient } from "./core";
 import {
@@ -346,6 +345,11 @@ import {
 } from "./retros";
 import { createStorageUsage } from "./storage-usage";
 import {
+  STORAGE_CLEANUP_JOB,
+  STORAGE_CLEANUP_TICK_MS,
+  createStorageCleanup,
+} from "./storage-cleanup";
+import {
   createImprovementsHttp,
   startImprovementDeliveries,
   startImprovementOutcomeSync,
@@ -531,7 +535,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         : undefined;
   const earlyTranscripts = databaseUrl === null ? loadTranscripts() : undefined;
   ensureLayout(paths);
-  sweepTmpDir(paths);
   useGitTempDirectory(paths.tmpDir);
   usePublicationRepositories(paths.publicationDir);
   const database = await withDatabaseSecrets(
@@ -1476,9 +1479,15 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   let jobLoop: JobLoop | null = null;
   let server: Bun.Server<undefined>;
   const storageUsage = createStorageUsage({ paths, store });
+  const storageCleanup = createStorageCleanup({
+    paths,
+    store,
+    removeCloseoutLog: (key) => removeEvidenceFile(store, closeoutLogs, key),
+  });
   try {
     server = startServer({
       storageUsage,
+      storageCleanup,
       server: options?.server,
       linearUsage: linear === null ? undefined : () => linear.usage(),
       riskApproval: async (itemId) => orchestrator?.riskDisplay(itemId) ?? null,
@@ -1680,6 +1689,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   }
 
   storageUsage.start();
+  void storageCleanup
+    .sweep()
+    .catch((error: unknown) => journalCaught(error, "storage-cleanup.sweep", null));
   let running: LinearRunning = linear ? await linear.start() : down();
   if (linear)
     periodic.push({
@@ -2461,6 +2473,13 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         queue: RUNNER_EVENT_PRUNE_JOB,
         jobKey: RUNNER_EVENT_PRUNE_JOB,
         recurringEveryMs: RUNNER_EVENT_PRUNE_EVERY_MS,
+        now: Date.now(),
+      });
+      created.jobs.register(STORAGE_CLEANUP_JOB, () => storageCleanup.tick());
+      await enqueueJobOnce(store, {
+        queue: STORAGE_CLEANUP_JOB,
+        jobKey: STORAGE_CLEANUP_JOB,
+        recurringEveryMs: STORAGE_CLEANUP_TICK_MS,
         now: Date.now(),
       });
       created.jobs.register(RETRO_SCHEDULE_JOB, async () => {

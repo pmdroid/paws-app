@@ -103,6 +103,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/settings`                                           | Settings API for agents, merge policy, hooks and skills               |
 | `src/skills`                                             | Skill discovery, sources, bundles, hooks and updates                  |
 | `src/slack`                                              | Slack OAuth, identity, authorization and webhooks                     |
+| `src/storage-cleanup`                                    | Admin cleanups: preview, run, daily schedule and history              |
 | `src/storage-usage`                                      | Disk use per category under the Paws home, and stored snapshots       |
 | `src/webhook-body`                                       | Bounded webhook request bodies and raw signature checks               |
 | `src/workspace`                                          | Workspace membership, integrations, assignments and policies          |

@@ -43,6 +43,8 @@ export {
   handleStorageUsageRequest,
 } from "./storage-usage";
 export type { StorageUsageSettingsOptions } from "./storage-usage";
+export { STORAGE_CLEANUP_PATH, handleStorageCleanupRequest } from "./storage-cleanup";
+export type { StorageCleanupSettingsOptions } from "./storage-cleanup";
 export { MEMBER_VM_SETTINGS_PATH, handleMemberVmSettingsRequest } from "./member-vm";
 export type { MemberVmSettingsOptions } from "./member-vm";
 export { RUNNER_VM_KEYS_SETTINGS_PATH, handleRunnerVmKeysSettingsRequest } from "./runner-vm-keys";
