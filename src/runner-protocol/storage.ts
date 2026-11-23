@@ -32,3 +32,36 @@ export const RunnerStorageReportSchema = z.strictObject({
 });
 
 export type RunnerStorageReport = z.infer<typeof RunnerStorageReportSchema>;
+
+export const STORAGE_CLEANUP_ITEM_LIMIT = 10_000;
+const cleanupId = z.string().regex(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
+const ref = z.string().min(1).max(128);
+const reason = z.string().min(1).max(256);
+
+export const RunnerStorageCleanupFields = {
+  cleanupId,
+  mode: z.enum(["preview", "run"]),
+  category: z.literal("worker_logs"),
+  olderThanDays: z.number().int().min(1).max(3650),
+  items: z.array(ref).max(STORAGE_CLEANUP_ITEM_LIMIT).optional(),
+};
+
+const items = z.array(z.strictObject({ ref, bytes: count })).max(STORAGE_CLEANUP_ITEM_LIMIT);
+
+export const RunnerStorageCleanupResultSchema = z.discriminatedUnion("mode", [
+  z.strictObject({
+    cleanupId,
+    mode: z.literal("preview"),
+    items,
+    kept: z.array(z.strictObject({ reason, count })).max(64),
+  }),
+  z.strictObject({
+    cleanupId,
+    mode: z.literal("run"),
+    deleted: items,
+    skipped: z.array(z.strictObject({ ref, reason })).max(STORAGE_CLEANUP_ITEM_LIMIT),
+    freedBytes: count,
+  }),
+]);
+
+export type RunnerStorageCleanupResult = z.infer<typeof RunnerStorageCleanupResultSchema>;

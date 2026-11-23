@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, lt, max } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, lt, max, ne } from "drizzle-orm";
 import type { Q, Steps } from "./db";
 import { ulid } from "./ulid";
 
@@ -11,6 +11,8 @@ export type StorageCleanupPreviewRow = {
   items: unknown;
   kept: unknown;
   expiresAt: number;
+  pending: boolean;
+  actor: string | null;
 };
 
 export type StorageCleanupRow = {
@@ -28,7 +30,8 @@ export type StorageCleanupRow = {
 
 export function* saveStorageCleanupPreviewSteps(
   q: Q,
-  preview: Omit<StorageCleanupPreviewRow, "id">,
+  preview: Omit<StorageCleanupPreviewRow, "id" | "pending" | "actor"> &
+    Partial<Pick<StorageCleanupPreviewRow, "pending" | "actor">>,
   now: number,
 ): Steps<string> {
   const table = q.t.storageCleanupPreview;
@@ -43,7 +46,106 @@ export function* takeStorageCleanupPreviewSteps(
   id: string,
 ): Steps<StorageCleanupPreviewRow | undefined> {
   const table = q.t.storageCleanupPreview;
-  return yield* q.one(q.orm.delete(table).where(eq(table.id, id)).returning());
+  return yield* q.one(
+    q.orm
+      .delete(table)
+      .where(and(eq(table.id, id), eq(table.pending, false)))
+      .returning(),
+  );
+}
+
+export function* readStorageCleanupPreviewSteps(
+  q: Q,
+  id: string,
+): Steps<StorageCleanupPreviewRow | undefined> {
+  const table = q.t.storageCleanupPreview;
+  return yield* q.one(q.orm.select().from(table).where(eq(table.id, id)));
+}
+
+export function* answerStorageCleanupPreviewSteps(
+  q: Q,
+  input: { id: string; machine: string; items: unknown; kept: unknown; expiresAt: number },
+  now: number,
+): Steps<StorageCleanupPreviewRow | undefined> {
+  const table = q.t.storageCleanupPreview;
+  const { id, machine, ...answer } = input;
+  return yield* q.one(
+    q.orm
+      .update(table)
+      .set({ ...answer, pending: false })
+      .where(
+        and(
+          eq(table.id, id),
+          eq(table.machine, machine),
+          eq(table.pending, true),
+          gt(table.expiresAt, now),
+        ),
+      )
+      .returning(),
+  );
+}
+
+export function* storageCleanupPendingSteps(
+  q: Q,
+  machine: string,
+  now: number,
+  startedAfter: number,
+): Steps<boolean> {
+  const { storageCleanupPreview: preview, storageCleanup: cleanup } = q.t;
+  const previewing = yield* q.one(
+    q.orm
+      .select({ id: preview.id })
+      .from(preview)
+      .where(
+        and(eq(preview.machine, machine), eq(preview.pending, true), gt(preview.expiresAt, now)),
+      )
+      .limit(1),
+  );
+  if (previewing) return true;
+  const running = yield* q.one(
+    q.orm
+      .select({ id: cleanup.id })
+      .from(cleanup)
+      .where(
+        and(
+          eq(cleanup.machine, machine),
+          isNull(cleanup.finishedAt),
+          gt(cleanup.startedAt, startedAfter),
+        ),
+      )
+      .limit(1),
+  );
+  return running !== undefined;
+}
+
+export function* expireStorageCleanupsSteps(
+  q: Q,
+  input: { exceptMachine: string; startedBefore: number; now: number; error: string },
+): Steps<void> {
+  const table = q.t.storageCleanup;
+  yield* q.exec(
+    q.orm
+      .update(table)
+      .set({ finishedAt: input.now, error: input.error })
+      .where(
+        and(
+          ne(table.machine, input.exceptMachine),
+          isNull(table.finishedAt),
+          lt(table.startedAt, input.startedBefore),
+        ),
+      ),
+  );
+}
+
+export function* storageCleanupRunnerSteps(q: Q, runnerId: string) {
+  const { runner, runnerHostStatus } = q.t;
+  return yield* q.one(
+    q.orm
+      .select({ workspaceId: runner.workspaceId, version: runnerHostStatus.runnerVersion })
+      .from(runner)
+      .leftJoin(runnerHostStatus, eq(runnerHostStatus.runnerId, runner.id))
+      .where(and(eq(runner.id, runnerId), isNull(runner.revokedAt), ne(runner.status, "revoked"))),
+  );
 }
 
 export function* startStorageCleanupSteps(
@@ -62,9 +164,19 @@ export function* finishStorageCleanupSteps(
   q: Q,
   id: string,
   result: Pick<StorageCleanupRow, "finishedAt" | "deleted" | "skipped" | "freedBytes" | "error">,
-): Steps<void> {
+  machine?: string,
+): Steps<boolean> {
   const table = q.t.storageCleanup;
-  yield* q.exec(q.orm.update(table).set(result).where(eq(table.id, id)));
+  const where = [eq(table.id, id), isNull(table.finishedAt)];
+  if (machine !== undefined) where.push(eq(table.machine, machine));
+  const row = yield* q.one(
+    q.orm
+      .update(table)
+      .set(result)
+      .where(and(...where))
+      .returning({ id: table.id }),
+  );
+  return row !== undefined;
 }
 
 export function* listStorageCleanupsSteps(q: Q, limit: number): Steps<StorageCleanupRow[]> {

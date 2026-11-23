@@ -37,4 +37,6 @@ export const storageCleanupPreview = pgTable("storage_cleanup_preview", {
   items: jsonb().notNull(),
   kept: jsonb().notNull(),
   expiresAt: bigint("expires_at", { mode: "number" }).notNull(),
+  pending: boolean().notNull().default(false),
+  actor: text(),
 });

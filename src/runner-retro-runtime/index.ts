@@ -263,6 +263,18 @@ export async function openRunnerRetroRuntime(options: {
   }
 
   return {
+    workerLogs: {
+      root: join(options.root, "workers"),
+      finished(id: string) {
+        const row = q
+          .select({ phase: retroExecution.phase })
+          .from(retroExecution)
+          .where(eq(retroExecution.id, id))
+          .get();
+        if (!row) return undefined;
+        return row.phase === "complete" && !broker.alive?.(id);
+      },
+    },
     status: () => ({
       active: q
         .select({

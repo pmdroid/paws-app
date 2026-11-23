@@ -2359,6 +2359,19 @@ export async function openRunnerRuntime(options: {
     }
   }, 250);
   return {
+    workerLogs: {
+      root: join(options.root, "workers"),
+      finished(id: string) {
+        let phase: string | undefined;
+        try {
+          phase = journal.execution(id)?.phase;
+        } catch {
+          return undefined;
+        }
+        if (phase === undefined) return undefined;
+        return ["complete", "interrupted"].includes(phase) && !broker.alive?.(id);
+      },
+    },
     holds: () => [
       ...unconfirmed,
       ...[...active.values()].flatMap(({ execution }) => [execution.id, execution.command.runId]),

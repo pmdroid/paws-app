@@ -170,7 +170,11 @@ describePglite((connect) => {
       },
     };
     expect((await request(cleanup, "PUT", "", settings))?.status).toBe(200);
-    expect(await (await request(cleanup, "GET", ""))!.json()).toEqual(settings);
+    const workerLogs = { enabled: false, olderThanDays: 7 };
+    expect(await (await request(cleanup, "GET", ""))!.json()).toEqual({
+      ...settings,
+      categories: { ...settings.categories, worker_logs: workerLogs },
+    });
     const runs = async () => (await db.orm.select().from(storageCleanup)).length;
     await cleanup.tick();
     expect(await runs()).toBe(1);

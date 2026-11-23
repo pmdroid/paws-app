@@ -702,6 +702,18 @@ export async function openRunnerHealthRuntime(options: {
     }
   }, 250);
   return {
+    workerLogs: {
+      root: join(options.root, "workers"),
+      finished(id: string) {
+        const row = q
+          .select({ phase: healthExecution.phase })
+          .from(healthExecution)
+          .where(eq(healthExecution.id, id))
+          .get();
+        if (!row) return undefined;
+        return ["complete", "interrupted"].includes(row.phase) && !broker.alive?.(id);
+      },
+    },
     holds: () =>
       [...(active ? [active] : []), ...talks.values()].flatMap(({ id, command }) => [
         id,
