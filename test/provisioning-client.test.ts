@@ -420,6 +420,29 @@ describe("token", () => {
   });
 });
 
+describe("listVms", () => {
+  test("sends ls and returns every listed VM", async () => {
+    const { exe, sent } = client(() => json(LISTED));
+    expect(await exe.listVms()).toEqual([
+      {
+        name: "ada-paws",
+        status: "running",
+        region: "lon",
+        sshDest: "ada-paws.exe.xyz",
+        httpsUrl: "https://ada-paws.exe.xyz",
+      },
+    ]);
+    expect(sent[0]?.body).toBe("ls");
+  });
+
+  test("a 401 is unauthorized and an odd listing is invalid_response", async () => {
+    const refused = client(() => json({ error: "invalid token" }, 401));
+    expectCode(await failure(refused.exe.listVms()), "listVms", "unauthorized");
+    const odd = client(() => json({ vms: [{ vm_name: 3 }] }));
+    expectCode(await failure(odd.exe.listVms()), "listVms", "invalid_response");
+  });
+});
+
 describe("getVm", () => {
   test("lists the one VM and returns its status", async () => {
     const { exe, sent } = client(() => json(LISTED));

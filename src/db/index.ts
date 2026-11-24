@@ -161,6 +161,7 @@ export * from "./runner-health";
 export * from "./agent-models";
 export * from "./member-vms";
 export * from "./issue-vms";
+export * from "./vm-provider-checks";
 export * from "./runner-file-objects";
 export * from "./run-file-chunks";
 export * from "./runner-transcripts";

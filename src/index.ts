@@ -24,6 +24,12 @@ import {
   registerMemberVmJob,
 } from "./member-vm";
 import {
+  createVmProviderChecks,
+  exeDevKeyCheck,
+  VM_PROVIDER_CHECK_EVERY_MS,
+  VM_PROVIDER_CHECK_JOB,
+} from "./vm-provider-checks";
+import {
   createExeDev,
   exeDevTokenReader,
   tailscaleAuthKeyReader,
@@ -1822,6 +1828,20 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         queue: RUN_TAKEOVER_JOB,
         jobKey: RUN_TAKEOVER_JOB,
         recurringEveryMs: RUN_TAKEOVER_MS,
+        now: Date.now(),
+      });
+      const vmProviderChecks = createVmProviderChecks({
+        db: store,
+        home: paths.home,
+        checks: { "exe-dev": exeDevKeyCheck(options?.memberVm?.exeDev ?? memberVmExeDev) },
+      });
+      created.jobs.register(VM_PROVIDER_CHECK_JOB, (_job, context) =>
+        vmProviderChecks.runVmProviderChecks(context.signal),
+      );
+      await enqueueJobOnce(store, {
+        queue: VM_PROVIDER_CHECK_JOB,
+        jobKey: VM_PROVIDER_CHECK_JOB,
+        recurringEveryMs: VM_PROVIDER_CHECK_EVERY_MS,
         now: Date.now(),
       });
       void assignments
