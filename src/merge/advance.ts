@@ -66,6 +66,7 @@ import {
   type OrderCapabilities,
 } from "./orders";
 import type { RebaseConflict } from "./budget";
+import { baseHasMergeQueue, forgetBaseQueue, refusedForMergeQueue } from "./base-queue";
 import { recordLaneMerge } from "./batch";
 import { mainMoved as checkQueueBehind } from "./queue-conflicts";
 import { rebaseBudgetForSteps } from "./returns";
@@ -229,7 +230,8 @@ export async function advanceMerge(
   const { repository, github, pull } = published;
   const { voice } = caps;
   const mergeSettings = await caps.settings(item, published.signal);
-  if (mergeSettings.order === "github-queue") {
+  const githubQueue = mergeSettings.order === "github-queue";
+  if (githubQueue || (await baseHasMergeQueue(store, published, caps.now()))) {
     const refused = await githubQueuePolicy(merge, caps, published, input.payload);
     if (refused) return refused;
     const handed = await mergeThroughGitHubQueue(merge, input.payload, published);
@@ -242,6 +244,7 @@ export async function advanceMerge(
         });
       return handed;
     }
+    if (!githubQueue) forgetBaseQueue(store, published);
   }
   const queued = mergeSettings.order === "queue";
   if (queued) {
@@ -557,6 +560,16 @@ export async function advanceMerge(
   // A person merged the pull request on GitHub during the turn, so the lane found it closed.
   const late = await mergedOutsideLane(store, item, caps);
   if (late) return late;
+  if (!githubQueue && refusedForMergeQueue(result)) {
+    forgetBaseQueue(store, published);
+    return {
+      kind: "wait",
+      reason: "ci",
+      message:
+        "GitHub merges this pull request only through its merge queue. Adding it there next.",
+      head: result?.head ?? published.head,
+    };
+  }
   const denials = (head: string) => store.run((q) => countMergeDenialsSteps(q, item.id, head));
   if (
     result?.outcome === "merge_denied" &&

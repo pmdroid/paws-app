@@ -795,6 +795,62 @@ describe("advanceMerge with the GitHub merge queue order", () => {
   });
 });
 
+describe("advanceMerge when main has a GitHub merge queue under another order", () => {
+  async function defaultOrder(branches?: string[]) {
+    let head = async (): Promise<string> => "";
+    const queue = createFakeMergeQueue({
+      ...(branches ? { branches } : {}),
+      headOf: () => head(),
+    });
+    const h = await start({ settings: { order: "queue" }, queue });
+    await h.addItem("ENG-1");
+    head = () => h.remoteHead("ENG-1");
+    return { h, queue };
+  }
+
+  test("the accepted pull request is queued on GitHub, never squashed, and merges with the queue", async () => {
+    const { h, queue } = await defaultOrder();
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", githubQueue: { queued: true } });
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", githubQueue: { queued: true } });
+    queue.merge(1, "queue-merge-sha");
+    expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
+    expect(queue.enqueued).toHaveLength(1);
+    expect(queue.calls.filter((call) => call === "exists")).toHaveLength(2);
+    expect(h.github.merged).toEqual([]);
+    expect((await getConfirmedRemoteMerge(h.db, "ENG-1"))?.mergeSha).toBe("queue-merge-sha");
+  });
+
+  test("without a merge queue on main, Paws squashes as before", async () => {
+    const { h, queue } = await defaultOrder([]);
+    expect(await passUntilMerged(h, "ENG-1")).toEqual({ kind: "merged" });
+    expect(queue.enqueued).toEqual([]);
+    expect(queue.calls).toEqual(["exists"]);
+    expect(h.github.merged).toHaveLength(1);
+  });
+
+  test("a squash refused for the merge queue after a stale answer is queued next instead of asking", async () => {
+    const { h, queue } = await defaultOrder([]);
+    h.state.mergeDenial = async () => {
+      queue.branches.add("main");
+      return {
+        status: 405,
+        body: {
+          message: "Repository rule violations found",
+          errors: [{ message: "Changes must be made through the merge queue" }],
+        },
+      };
+    };
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
+    h.state.mergeDenial = null;
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", githubQueue: { queued: true } });
+    expect(await findOpenQuestion(h.db, "ses-ENG-1")).toBeNull();
+    queue.merge(1);
+    expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
+    expect(queue.enqueued).toHaveLength(1);
+    expect(h.github.merged).toEqual([]);
+  });
+});
+
 describe("advanceMerge while the pull request waits for a review", () => {
   const NOTICE =
     "Waiting for an approving review on [pull request #1](https://github.com/acme/app/pull/1). It joins the acme/app merge queue once approved.";

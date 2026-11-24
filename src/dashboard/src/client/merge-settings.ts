@@ -139,7 +139,8 @@ function orderNames(
 }
 
 function orderHelp(order: MergeOrder, queues: readonly string[]): string {
-  if (order !== "github-queue") return ORDER_HELP[order];
+  if (order !== "github-queue")
+    return `${ORDER_HELP[order]} A base branch with a GitHub merge queue always merges through it.`;
   if (queues.length === 0)
     return "No configured repository has a GitHub merge queue, so Paws merges each pull request itself when its CI is green.";
   return `GitHub's merge queue on ${queues.join(", ")}. A repository without one merges each pull request when its CI is green.`;

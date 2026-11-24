@@ -181,6 +181,25 @@ export async function hasMergeQueue(
   }
 }
 
+export async function branchHasMergeQueue(input: {
+  owner: string;
+  repo: string;
+  branch: string;
+  client: GitHubClient;
+  appId?: string;
+  installationId?: string;
+  privateKeyPem?: string;
+  tokenProvider?: GitHubTokenProvider;
+  signal?: AbortSignal;
+}): Promise<boolean | null> {
+  const token = await acquireOperationToken(input, "merge").catch((error: unknown) => {
+    journalCaught(error, "merge-queue.branchHasMergeQueue.token", null);
+    return null;
+  });
+  if (token === null) return null;
+  return hasMergeQueue({ ...input, token });
+}
+
 /** The pull request's merge queue entry, or how it left the queue. Null when unreadable. */
 export async function readMergeQueueEntry(
   input: GraphQLInput & { prNumber: number },
