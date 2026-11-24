@@ -364,6 +364,15 @@ function decodeSelect(item: PolicyCommand, value: unknown): TestSelect {
   if (value.always !== undefined) select.always = expectStrings(value.always);
   if (value.full_on !== undefined) select.full_on = expectStrings(value.full_on);
   if (value.max_selected !== undefined) select.max_selected = expectInt(value.max_selected);
+  if (value.over_max !== undefined) {
+    if (value.over_max !== "full" && value.over_max !== "direct")
+      throw new Error("document does not match the schema");
+    if (value.over_max === "direct" && !["bun", "vitest", "jest"].includes(runner))
+      throw new Error(
+        `item ${item.id}: select.over_max direct needs select.runner bun, vitest or jest`,
+      );
+    select.over_max = value.over_max;
+  }
   if (value.package_roots !== undefined) {
     if (runner !== "pytest")
       throw new Error(`item ${item.id}: select.package_roots needs select.runner pytest`);

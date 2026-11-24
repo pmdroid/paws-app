@@ -18,6 +18,7 @@ export type FakeExeDevCall =
   | { operation: "createVm"; vm: string; command: string | null }
   | { operation: "deleteVm"; vm: string }
   | { operation: "getVm"; vm: string }
+  | { operation: "listVms" }
   | { operation: "listPools" }
   | { operation: "adoptVm"; vm: string; command: string }
   | { operation: "execVm"; vm: string; command: string; timeoutMs: number | null };
@@ -193,6 +194,12 @@ export function createFakeExeDev(): FakeExeDev {
         throw error;
       }
       return vms.delete(vm) ? "deleted" : "missing";
+    },
+
+    async listVms() {
+      calls.push({ operation: "listVms" });
+      failIfScripted("listVms", "");
+      return [...vms.values()].map((vm) => ({ ...vm }));
     },
 
     async listPools() {

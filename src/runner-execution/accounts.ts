@@ -581,31 +581,52 @@ export function shareRunnerAgentState(
   home: string,
   owners: RunnerAccountOwners,
   limit = 1_000_000,
-): void {
+): string[] {
   let names: string[];
   try {
     names = readdirSync(home);
   } catch (error) {
-    if (["ENOENT", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) return;
+    if (["ENOENT", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) return [];
     throw error;
   }
+  shareAgentConfigFolders(home, owners);
   const top = names.filter((name) => !SHARED_ELSEWHERE.has(name)).map((name) => join(home, name));
   shareRunnerPaths(top, owners, { depth: 0 });
+  const unreadable = new Set<string>();
   for (const folder of AGENT_STATE) {
     const parts = folder.split("/");
     const parents = parts.slice(1).map((_, i) => join(home, ...parts.slice(0, i + 1)));
-    if (!parents.every((parent) => lstatSync(parent, { throwIfNoEntry: false })?.isDirectory()))
-      continue;
+    if (!parents.every((parent) => directory(parent, unreadable))) continue;
     shareRunnerPaths([join(home, folder)], owners, {
       limit,
       skip: join(home, ".local/share/mise"),
       over: (root) => journal(`runner agent state not fully shared folder=${root} limit=${limit}`),
     });
   }
-  shareAgentConfigFolders(home, owners);
+  const problems = [...unreadable].map((path) => {
+    const mode = (lstatSync(path).mode & 0o7777).toString(8).padStart(4, "0");
+    return `${path} is not readable by the runner: mode ${mode}`;
+  });
+  for (const [index, path] of [...unreadable].entries()) {
+    if (refusedFolders.has(path)) continue;
+    refusedFolders.set(path, Date.now());
+    journal(`runner agent state folder unreadable: ${problems[index]}`);
+  }
+  return problems;
 }
 
-const AGENT_CONFIG_FOLDERS = [".claude", ".codex", ".grok", ".config"] as const;
+function directory(path: string, unreadable: Set<string>): boolean {
+  try {
+    return lstatSync(path, { throwIfNoEntry: false })?.isDirectory() ?? false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EACCES") throw error;
+    unreadable.add(dirname(path));
+    return false;
+  }
+}
+
+const AGENT_CONFIG_FOLDERS = [".claude", ".codex", ".grok", ".config", ".local", ".local/share"];
+const CREATED_CONFIG_FOLDERS = new Set([".local", ".local/share"]);
 const REFUSED_LOG_MS = 3_600_000;
 const refusedFolders = new Map<string, number>();
 
@@ -625,7 +646,17 @@ export function shareAgentConfigFolders(
     if (now() - at >= REFUSED_LOG_MS) refusedFolders.delete(path);
   for (const name of AGENT_CONFIG_FOLDERS) {
     const path = join(home, name);
-    const info = lstatSync(path, { throwIfNoEntry: false });
+    let info;
+    try {
+      info = lstatSync(path, { throwIfNoEntry: false });
+      if (!info && CREATED_CONFIG_FOLDERS.has(name)) {
+        mkdirSync(path, { mode: 0o770 });
+        info = lstatSync(path);
+      }
+    } catch (error) {
+      journalCaught(error, "accounts.shareAgentConfigFolders.lstatSync", null, "folder unreadable");
+      continue;
+    }
     if (!info?.isDirectory()) continue;
     const mode = info.mode & 0o7777;
     if (info.gid === owners.agentGid && (mode | SETGID | 0o070) === mode) continue;

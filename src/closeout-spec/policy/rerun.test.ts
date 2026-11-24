@@ -188,6 +188,23 @@ describe("rerun and since", () => {
     );
   });
 
+  test("select over_max direct parses for JavaScript runners and is refused for the others", () => {
+    const loaded = load(
+      `${BASE}${TEST}    select: { runner: bun, max_selected: 120, over_max: direct }\n`,
+    );
+    if (!loaded.ok || loaded.absent) throw new Error("expected a policy");
+    expect(loaded.policy.items[2]).toMatchObject({
+      select: { runner: "bun", max_selected: 120, over_max: "direct" },
+    });
+    expect(failure(`${BASE}${TEST}    select: { runner: bun, over_max: some }\n`)).toBe(
+      `${PUBLIC_POLICY_PATH}: /items/2/select/over_max must be equal to one of the allowed values`,
+    );
+    const go = `${BASE}${TEST.replace('["bun", "test"]', '["go", "test", "./..."]')}    select: { runner: go, over_max: direct }\n`;
+    expect(failure(go)).toBe(
+      `${PUBLIC_POLICY_PATH}: item test: select.over_max direct needs select.runner bun, vitest or jest`,
+    );
+  });
+
   test("select runner go needs go test with flags and exactly one ./... pattern", () => {
     const go = (exec: string) =>
       `${BASE}${TEST.replace('["bun", "test"]', exec)}    select: { runner: go, max_selected: 20 }\n`;

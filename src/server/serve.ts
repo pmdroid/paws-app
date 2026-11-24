@@ -71,6 +71,8 @@ import {
   handleHookSettingsRequest,
   handleSkillSettingsRequest,
   handleMemberVmSettingsRequest,
+  handleIssueVmSettingsRequest,
+  ISSUE_VM_SETTINGS_PATH,
   handleRunnerVmKeysSettingsRequest,
   RUNNER_VM_KEYS_SETTINGS_PATH,
   handleTimeLimitSettingsRequest,
@@ -126,6 +128,7 @@ import {
   type WorkspacePrincipal,
 } from "../workspace";
 import { createNotebookHttp, type NotebookChannelAccess } from "../notebook";
+import { handleIssueVmGrantRequest, isIssueVmGrantPath } from "../issue-vm";
 import type { WorkspaceSession } from "../db";
 import { isDashboardPage, isDashboardPath } from "../dashboard-links";
 
@@ -863,6 +866,31 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (path === MEMBER_VM_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
     const store = secrets.store;
     return (await handleMemberVmSettingsRequest(request, {
+      configPath: secrets.agentSettings.configPath,
+      csrfToken,
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(store, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
+  if (isIssueVmGrantPath(path) && secrets.store && principal) {
+    return (await handleIssueVmGrantRequest(request, {
+      db: secrets.store,
+      principal,
+      csrfToken,
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
+  if (path === ISSUE_VM_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
+    const store = secrets.store;
+    return (await handleIssueVmSettingsRequest(request, {
       configPath: secrets.agentSettings.configPath,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),

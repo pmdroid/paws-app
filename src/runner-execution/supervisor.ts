@@ -482,11 +482,11 @@ export function createDirectWorkerSupervisor(options: {
       if (asAgent && options.spool)
         for (const folder of new Set([agentHome, home])) {
           if (shared.has(folder)) continue;
-          shareRunnerAgentState(folder, {
+          const problems = shareRunnerAgentState(folder, {
             runnerUid: options.spool.runnerUid,
             agentGid: options.spool.agentGid,
           });
-          shared.add(folder);
+          if (problems.length === 0) shared.add(folder);
         }
       options.skills?.prepareHome(home);
       const skills = options.skills?.hold(home, executionId);

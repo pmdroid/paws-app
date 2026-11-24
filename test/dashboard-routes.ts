@@ -264,6 +264,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     "closeout",
     "findings",
     "hooks",
+    "issue-vm",
     "linear-comments",
     "member-vm",
     "merging",
@@ -287,6 +288,15 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   }),
   api("GET PUT DELETE", "/api/settings/repository-descriptions", "preserved", "src/settings", {
     sample: "/api/settings/repository-descriptions",
+  }),
+  api("GET", "/api/settings/issue-vm/members", "preserved", "src/issue-vm", {
+    sample: "/api/settings/issue-vm/members",
+  }),
+  api("POST", "/api/settings/issue-vm/grants", "preserved", "src/issue-vm", {
+    sample: "/api/settings/issue-vm/grants",
+  }),
+  api("DELETE", "/api/settings/issue-vm/grants/:id", "preserved", "src/issue-vm", {
+    sample: "/api/settings/issue-vm/grants/01HZY",
   }),
   api("GET PUT DELETE", "/api/settings/runner-vm-keys", "preserved", "src/settings", {
     sample: "/api/settings/runner-vm-keys",
