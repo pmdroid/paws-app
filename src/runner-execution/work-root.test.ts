@@ -213,6 +213,7 @@ test("the sweep does not follow .paws or .paws/runs when either is a symbolic li
 test("a run state folder that cannot be removed is tried again only once its access changes", async () => {
   const { root, cleaner, lines } = fixture();
   const stuck = runState(root, EXECUTION, 30 * 24);
+  chmodSync(stuck, 0o700);
   chmodSync(join(stuck, "src"), 0o500);
   const uid = spyOn(process, "getuid").mockReturnValue(process.getuid!() + 1);
   try {
