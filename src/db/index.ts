@@ -160,6 +160,7 @@ export * from "./runner-work";
 export * from "./runner-health";
 export * from "./agent-models";
 export * from "./member-vms";
+export * from "./issue-vms";
 export * from "./runner-file-objects";
 export * from "./run-file-chunks";
 export * from "./runner-transcripts";

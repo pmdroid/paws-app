@@ -92,7 +92,7 @@ async function saveSettings(
 
 export function knownConfigSection(section: string): boolean {
   return (
-    /^(github_access|closeout|merge|queue|findings|agents|member_vm|brief|linear_comments|time_limits|skills)$/.test(
+    /^(github_access|closeout|merge|queue|findings|agents|member_vm|issue_vm|brief|linear_comments|time_limits|skills)$/.test(
       section,
     ) ||
     /^(closeout|merge|checkout|skills|brief|time_limits)\./.test(section) ||
@@ -125,6 +125,7 @@ function isSettingsSection(section: string): boolean {
     name === "github_access" ||
     name === "findings" ||
     name === "member_vm" ||
+    name === "issue_vm" ||
     name === "linear_comments"
   );
 }

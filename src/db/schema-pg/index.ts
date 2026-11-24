@@ -20,3 +20,4 @@ export * from "./notebook";
 export * from "./item-filed-issues";
 export * from "./linear-project-team";
 export * from "./storage";
+export * from "./issue-vms";

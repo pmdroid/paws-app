@@ -80,6 +80,7 @@ const MODULES = [
   "agent-catalog",
   "provisioning",
   "member-vm",
+  "issue-vm",
   "review-score",
   "finding-issues",
   "live-preview",
@@ -428,6 +429,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-models": ["journal", "db", "runner-work", "runner-protocol"],
   provisioning: ["journal", "config"],
   "member-vm": ["journal", "config", "db", "provisioning", "workspace"],
+  "issue-vm": ["config", "db"],
   "review-score": ["db"],
 };
 
