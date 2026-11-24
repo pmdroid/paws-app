@@ -36,7 +36,7 @@ export type {
   TailscaleRelease,
 } from "./bootstrap";
 export { BOAT_ENDPOINT, createBoat } from "./boat";
-export type { BoatOptions } from "./boat";
+export type { Boat, BoatOptions } from "./boat";
 export {
   createExeDev,
   DEFAULT_MAX_RESPONSE_BYTES,
@@ -46,7 +46,7 @@ export {
 } from "./client";
 export type { ExeDevFetch, ExeDevOptions, ExeDevTokenReader } from "./client";
 export { createInstaBox, INSTABOX_ENDPOINT, INSTABOX_TEMPLATE } from "./instabox";
-export type { InstaBoxLookup, InstaBoxOptions } from "./instabox";
+export type { InstaBox, InstaBoxLookup, InstaBoxOptions } from "./instabox";
 export { createFakeExeDev, FAKE_UNSCRIPTED_EXIT } from "./fake";
 export { createFakeBootstrap } from "./fake-bootstrap";
 export { PINNED_MISE, PINNED_MISE_VERSION } from "./mise";

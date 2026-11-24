@@ -20,15 +20,28 @@ export type InstaBoxOptions = {
   readToken: ExeDevTokenReader;
   lookup: InstaBoxLookup;
   fetch?: ExeDevFetch;
-  timeoutMs?: Partial<Record<"createVm" | "deleteVm" | "getVm", number>>;
+  timeoutMs?: Partial<Record<"createVm" | "deleteVm" | "getVm" | "listVms", number>>;
 };
 
-type Operation = Extract<ProvisioningOperation, "createVm" | "deleteVm" | "execVm" | "getVm">;
+type Operation = Extract<
+  ProvisioningOperation,
+  "createVm" | "deleteVm" | "execVm" | "getVm" | "listVms"
+>;
+
+export type InstaBoxMachine = { id: string; state: VmState };
+
+export type InstaBoxSpec = { vcpus: number; memMiB: number };
+
+export type InstaBox = VmProvider & {
+  listVms(): Promise<InstaBoxMachine[]>;
+  listSizes(): Promise<InstaBoxSpec[]>;
+};
 
 const TIMEOUT_MS: Readonly<Record<Exclude<Operation, "execVm">, number>> = {
   createVm: 60_000,
   deleteVm: 60_000,
   getVm: 15_000,
+  listVms: 10_000,
 };
 const EXEC_MARGIN_MS = 15_000;
 const DEFAULT_EXEC_SECONDS = 60;
@@ -36,6 +49,7 @@ const MAX_BYTES: Readonly<Record<Operation, number>> = {
   createVm: 64 * 1024,
   deleteVm: 64 * 1024,
   getVm: 256 * 1024,
+  listVms: 1024 * 1024,
   execVm: 8 * 1024 * 1024,
 };
 const TOKEN = /^[A-Za-z0-9._~+/=-]+$/;
@@ -68,7 +82,7 @@ type Request = {
   timeoutMs: number;
 };
 
-export function createInstaBox(options: InstaBoxOptions): VmProvider {
+export function createInstaBox(options: InstaBoxOptions): InstaBox {
   const fetcher: ExeDevFetch = options.fetch ?? ((url, init) => fetch(url, init));
   const timeout = { ...TIMEOUT_MS, ...options.timeoutMs };
 
@@ -232,6 +246,42 @@ export function createInstaBox(options: InstaBoxOptions): VmProvider {
       )
         throw invalid("execVm", name, status);
       return { exitCode, stdout, stderr };
+    },
+
+    async listVms() {
+      const { status, body } = await call("listVms", "machines", {
+        method: "GET",
+        path: "/v1/machines",
+        timeoutMs: timeout.listVms,
+      });
+      const list = isRecord(body) ? body["machines"] : undefined;
+      if (!Array.isArray(list)) throw invalid("listVms", "machines", status);
+      return list.map((entry: unknown) => {
+        const id = isRecord(entry) ? entry["id"] : undefined;
+        const state = isRecord(entry) ? entry["state"] : undefined;
+        if (typeof id !== "string" || typeof state !== "string" || !STATE_WORD.test(state))
+          throw invalid("listVms", "machines", status);
+        return { id, state: instaBoxVmState(state) };
+      });
+    },
+
+    async listSizes() {
+      const { status, body } = await call("listVms", "orgs", {
+        method: "GET",
+        path: "/v1/orgs",
+        timeoutMs: timeout.listVms,
+      });
+      const orgs = isRecord(body) ? body["orgs"] : undefined;
+      const org: unknown = Array.isArray(orgs) ? orgs[0] : undefined;
+      const specs = isRecord(org) ? org["allowedSpecs"] : undefined;
+      if (!Array.isArray(specs)) throw invalid("listVms", "orgs", status);
+      return specs.map((spec: unknown) => {
+        const vcpus = isRecord(spec) ? spec["vcpus"] : undefined;
+        const memMiB = isRecord(spec) ? spec["memMiB"] : undefined;
+        if (!Number.isInteger(vcpus) || !Number.isInteger(memMiB))
+          throw invalid("listVms", "orgs", status);
+        return { vcpus: vcpus as number, memMiB: memMiB as number };
+      });
     },
 
     async deleteVm(name) {

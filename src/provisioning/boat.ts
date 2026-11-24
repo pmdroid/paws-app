@@ -20,13 +20,21 @@ export type BoatOptions = {
   timeoutMs?: Partial<Record<BoatOperation, number>>;
 };
 
-type BoatOperation = Extract<ProvisioningOperation, "createVm" | "deleteVm" | "execVm" | "getVm">;
+type BoatOperation = Extract<
+  ProvisioningOperation,
+  "createVm" | "deleteVm" | "execVm" | "getVm" | "listVms"
+>;
+
+export type BoatSandbox = { id: string; state: VmState };
+
+export type Boat = VmProvider & { listVms(): Promise<BoatSandbox[]> };
 
 const TIMEOUT_MS: Readonly<Record<BoatOperation, number>> = {
   createVm: 120_000,
   deleteVm: 60_000,
   getVm: 15_000,
   execVm: 75_000,
+  listVms: 10_000,
 };
 
 const SIZES = [
@@ -65,7 +73,7 @@ function boatSandboxType(size: ExeDevVmSize | undefined): string {
   throw new ProvisioningError("createVm", "unknown", "boat has no such size.");
 }
 
-export function createBoat(options: BoatOptions): VmProvider {
+export function createBoat(options: BoatOptions): Boat {
   const fetcher: ExeDevFetch = options.fetch ?? ((url, init) => fetch(url, init));
   const timeout = { ...TIMEOUT_MS, ...options.timeoutMs };
 
@@ -243,6 +251,24 @@ export function createBoat(options: BoatOptions): VmProvider {
       if (typeof exitCode !== "number" || !Number.isInteger(exitCode) || exitCode < 0)
         throw invalid("execVm", vm, status);
       return { exitCode, stdout, stderr };
+    },
+
+    async listVms() {
+      const { status, body } = await call(
+        "listVms",
+        "sandboxes",
+        { method: "GET", path: "/sandboxes?limit=200" },
+        timeout.listVms,
+      );
+      const list = record(body)?.["sandboxes"];
+      if (!Array.isArray(list)) throw invalid("listVms", "sandboxes", status);
+      return list.map((entry: unknown) => {
+        const id = record(entry)?.["id"];
+        const state = record(entry)?.["state"];
+        if (typeof id !== "string" || typeof state !== "string" || !STATE_WORD.test(state))
+          throw invalid("listVms", "sandboxes", status);
+        return { id, state: boatVmState(state) };
+      });
     },
 
     async deleteVm(name) {
