@@ -223,4 +223,48 @@ describe("boat client", () => {
     );
     expect(sent).toHaveLength(0);
   });
+
+  test("create from a saved snapshot sends from, and the type only for a given size", async () => {
+    const { boat, sent } = client(() => created());
+    await boat.createVm("ada-paws", undefined, { key: "row-2", from: "paws-issue-vm" });
+    await boat.createVm("ada-paws", { cpu: 2, memoryGb: 4 }, { key: "row-3", from: "bsh_abc123" });
+    expect(sent[0]?.body).toEqual({
+      name: "ada-paws",
+      from: "paws-issue-vm",
+      ttlSeconds: null,
+      labels: { paws: "runner" },
+    });
+    expect(sent[1]?.body).toMatchObject({ type: "small", from: "bsh_abc123" });
+    const refused = await failure(boat.createVm("ada-paws", undefined, { key: "k", from: "a b" }));
+    expect(refused.code).toBe("invalid_name");
+    expect(sent).toHaveLength(2);
+  });
+
+  test("stop and resume post to the sandbox's id", async () => {
+    const { boat, sent } = client(() => json({ ok: true, status: "archiving" }, 202));
+    await boat.stopVm("ada-paws");
+    await boat.resumeVm("ada-paws");
+    expect(sent.map((request) => `${request.method} ${request.url}`)).toEqual([
+      `POST ${BOAT_ENDPOINT}/sandboxes/${ID}/stop`,
+      `POST ${BOAT_ENDPOINT}/sandboxes/${ID}/resume`,
+    ]);
+    expect((await failure(boat.stopVm("other-vm"))).code).toBe("missing");
+  });
+
+  test("Retry-After, or the body's wait, is kept on the error", async () => {
+    const limited = client(
+      () =>
+        new Response(JSON.stringify({ ok: false, code: "rate_limited" }), {
+          status: 429,
+          headers: { "retry-after": "12" },
+        }),
+    );
+    const error = await failure(limited.boat.resumeVm("ada-paws"));
+    expect(error.code).toBe("rate_limited");
+    expect(error.retryAfterMs).toBe(12_000);
+    const busy = client(() => json({ ok: false, retryAfterSeconds: 2.5 }, 503));
+    expect((await failure(busy.boat.createVm("ada-paws"))).retryAfterMs).toBe(2_500);
+    const plain = client(() => json({ ok: false, code: "not_found" }, 404));
+    expect((await failure(plain.boat.stopVm("ada-paws"))).retryAfterMs).toBeNull();
+  });
 });

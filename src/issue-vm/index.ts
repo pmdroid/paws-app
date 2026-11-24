@@ -4,3 +4,7 @@ export { recordIssueVmSteps, setIssueVmStateSteps } from "./records";
 export type { IssueVmStateChange } from "./records";
 export { handleIssueVmGrantRequest, isIssueVmGrantPath } from "./http";
 export type { IssueVmGrantView, IssueVmHttpOptions, IssueVmMemberView } from "./http";
+export { BOAT_PREPARE_COMMAND, BoatIssueVmError, createBoatIssueVms } from "./boat";
+export type { BoatIssueVm, BoatIssueVmCreate, BoatIssueVmOptions, BoatIssueVms } from "./boat";
+export { createStartQueue } from "./start-queue";
+export type { StartQueue, StartQueueOptions } from "./start-queue";
