@@ -1892,6 +1892,7 @@ export async function openRunnerRuntime(options: {
         "optional file may be absent",
       );
     }
+    if ((await broker.unitResult?.(id)) === "oom-kill") return false;
     check(entry);
     entry.restarts = (entry.restarts ?? 0) + 1;
     entry.resuming = broker.resume(id);

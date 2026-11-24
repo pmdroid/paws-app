@@ -20,6 +20,8 @@ import {
   setRunnerWorkConsumedSequenceSteps,
   askedQuestionRowSteps,
   answeredRunQuestionSteps,
+  largerRunnerIdsSteps,
+  workspaceRunnerIdsSteps,
   questionRowByIdSteps,
   anyActiveRunnerSteps,
   endLostRunnerWorkSteps,
@@ -841,7 +843,7 @@ export function createRemoteAgentRunner(options: {
           profile,
           role: input.role,
           purpose: input.prepareOnly ? "prepare" : "work",
-          excludeRunnerIds: excluded,
+          excludeRunnerIds: move.exclude ? [...excluded, ...move.exclude] : excluded,
           ...(pinnedRunnerId ? { pinnedRunnerId } : {}),
           ...(preferRunnerId ? { preferRunnerId } : {}),
           ...(move.from ? { handedOverFrom: move.from } : {}),
@@ -2945,7 +2947,7 @@ const HANDOVER_FAILURE_STEP = {
 } as const;
 
 /** A run's handover within one failover call: the runner it left, and whether Linear heard why it waits. */
-type HandoverMove = { from?: string; repository?: string; waiting?: boolean };
+type HandoverMove = { from?: string; repository?: string; waiting?: boolean; exclude?: string[] };
 
 /**
  * The owner checks of `ask()` for a question this run already opened. The item version is left
@@ -2995,8 +2997,18 @@ async function handedOverFrom(store: Db, itemId: string): Promise<HandoverMove |
     ),
   ) as { repository?: { owner?: string; repo?: string } };
   const repository = command.repository;
+  const exclude =
+    result.handedOver === true
+      ? []
+      : await store.run(function* (q) {
+          const larger = (yield* largerRunnerIdsSteps(q, row.runnerId)) ?? [];
+          return (yield* workspaceRunnerIdsSteps(q, row.runnerId)).filter(
+            (id) => id !== row.runnerId && !larger.includes(id),
+          );
+        });
   return {
     from: row.runnerId,
+    ...(exclude.length ? { exclude } : {}),
     ...(repository?.owner && repository.repo
       ? { repository: `${repository.owner}/${repository.repo}` }
       : {}),

@@ -67,12 +67,8 @@ export function* onlineMemberRunnersSteps(q: Q, seenAfter: number) {
   );
 }
 
-export function* largerOnlineRunnerSteps(
-  q: Q,
-  runnerId: string,
-  seenAfter: number,
-): Steps<boolean> {
-  const { runner, runnerHostStatus: host, workspaceMember: member } = q.t;
+export function* largerRunnerIdsSteps(q: Q, runnerId: string): Steps<string[] | null> {
+  const { runner, runnerHostStatus: host } = q.t;
   const memory = yield* q.one(
     q.orm
       .select({ bytes: host.memoryTotalBytes, workspaceId: runner.workspaceId })
@@ -80,30 +76,33 @@ export function* largerOnlineRunnerSteps(
       .leftJoin(host, eq(host.runnerId, runner.id))
       .where(eq(runner.id, runnerId)),
   );
-  if (!memory || memory.bytes === null) return false;
-  const row = yield* q.one(
+  if (!memory || memory.bytes === null) return null;
+  const rows = yield* q.all(
     q.orm
       .select({ id: runner.id })
       .from(runner)
       .innerJoin(host, eq(host.runnerId, runner.id))
-      .innerJoin(
-        member,
-        and(eq(member.workspaceId, runner.workspaceId), eq(member.userId, runner.ownerUserId)),
-      )
       .where(
         and(
           eq(runner.workspaceId, memory.workspaceId),
           ne(runner.id, runnerId),
-          eq(runner.status, "active"),
-          isNull(runner.revokedAt),
-          workspaceMemberUsableWhere(member),
-          gt(runner.lastSeenAt, seenAfter),
           gt(host.memoryTotalBytes, memory.bytes),
         ),
-      )
-      .limit(1),
+      ),
   );
-  return row !== undefined;
+  return rows.map((row) => row.id);
+}
+
+export function* workspaceRunnerIdsSteps(q: Q, runnerId: string): Steps<string[]> {
+  const { runner } = q.t;
+  const owner = yield* q.one(
+    q.orm.select({ workspaceId: runner.workspaceId }).from(runner).where(eq(runner.id, runnerId)),
+  );
+  if (!owner) return [];
+  const rows = yield* q.all(
+    q.orm.select({ id: runner.id }).from(runner).where(eq(runner.workspaceId, owner.workspaceId)),
+  );
+  return rows.map((row) => row.id);
 }
 
 export function* runnerOnlineSteps(q: Q, runnerId: string, seenAfter: number): Steps<boolean> {

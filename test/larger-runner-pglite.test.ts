@@ -1,6 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { largerOnlineRunnerSteps, recordRunnerHostStatusSteps, type Db } from "../src/db";
-import { describePglite, seed, withoutForeignKeys, type PgliteTestDb } from "./pglite-fixtures";
+import {
+  largerRunnerIdsSteps,
+  recordRunnerHostStatusSteps,
+  workspaceRunnerIdsSteps,
+  type Db,
+} from "../src/db";
+import { describePglite, withoutForeignKeys, type PgliteTestDb } from "./pglite-fixtures";
 
 const GB = 1024 ** 3;
 const opened: PgliteTestDb[] = [];
@@ -12,45 +17,43 @@ async function connect(open: () => Promise<PgliteTestDb>): Promise<Db> {
   const handle = await open();
   opened.push(handle);
   await withoutForeignKeys(handle.db);
-  await seed(handle.db, (q) =>
-    q.orm.insert(q.t.workspaceMember).values({
-      workspaceId: "acme",
-      userId: "owner",
-      role: "member",
-      source: "linear",
-      active: 1,
-      checkedAt: 0,
-    }),
-  );
   return handle.db;
 }
 
-function addRunner(db: Db, id: string, memoryGb: number, lastSeenAt: number) {
+function addRunner(db: Db, id: string, workspaceId: string, memoryGb: number | null) {
   return db.run(function* (q) {
     yield* q.exec(
       q.orm.insert(q.t.runner).values({
         id,
-        workspaceId: "acme",
+        workspaceId,
         ownerUserId: "owner",
         name: id,
         status: "active",
         createdAt: 0,
-        lastSeenAt,
+        lastSeenAt: 0,
       }),
     );
-    yield* recordRunnerHostStatusSteps(q, id, { memoryTotalBytes: memoryGb * GB }, 0);
+    if (memoryGb !== null)
+      yield* recordRunnerHostStatusSteps(q, id, { memoryTotalBytes: memoryGb * GB }, 0);
   });
 }
 
 describePglite((open) => {
-  test("another runner with more memory is offered only while it is online", async () => {
+  test("only runners in the same workspace with more memory count as larger", async () => {
     const db = await connect(open);
-    await addRunner(db, "small", 4, 1_000);
-    await addRunner(db, "same", 4, 1_000);
-    expect(await db.run((q) => largerOnlineRunnerSteps(q, "small", 500))).toBe(false);
-    await addRunner(db, "large", 16, 400);
-    expect(await db.run((q) => largerOnlineRunnerSteps(q, "small", 500))).toBe(false);
-    expect(await db.run((q) => largerOnlineRunnerSteps(q, "small", 300))).toBe(true);
-    expect(await db.run((q) => largerOnlineRunnerSteps(q, "large", 300))).toBe(false);
+    await addRunner(db, "small", "acme", 4);
+    await addRunner(db, "same", "acme", 4);
+    await addRunner(db, "large", "acme", 16);
+    await addRunner(db, "unknown", "acme", null);
+    await addRunner(db, "elsewhere", "other", 32);
+    expect(await db.run((q) => largerRunnerIdsSteps(q, "small"))).toEqual(["large"]);
+    expect(await db.run((q) => largerRunnerIdsSteps(q, "large"))).toEqual([]);
+    expect(await db.run((q) => largerRunnerIdsSteps(q, "unknown"))).toBeNull();
+    expect((await db.run((q) => workspaceRunnerIdsSteps(q, "small"))).sort()).toEqual([
+      "large",
+      "same",
+      "small",
+      "unknown",
+    ]);
   });
 });
