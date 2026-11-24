@@ -25,8 +25,10 @@ import {
   registerMemberVmJob,
 } from "./member-vm";
 import {
+  boatKeyCheck,
   createVmProviderChecks,
   exeDevKeyCheck,
+  instaBoxKeyCheck,
   VM_PROVIDER_CHECK_EVERY_MS,
   VM_PROVIDER_CHECK_JOB,
 } from "./vm-provider-checks";
@@ -1853,7 +1855,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       const vmProviderChecks = createVmProviderChecks({
         db: store,
         home: paths.home,
-        checks: { "exe-dev": exeDevKeyCheck(options?.memberVm?.exeDev ?? memberVmExeDev) },
+        checks: {
+          "exe-dev": exeDevKeyCheck(options?.memberVm?.exeDev ?? memberVmExeDev),
+          boat: boatKeyCheck(memberVmBoat),
+          instabox: instaBoxKeyCheck(memberVmInstaBox),
+        },
       });
       created.jobs.register(VM_PROVIDER_CHECK_JOB, (_job, context) =>
         vmProviderChecks.runVmProviderChecks(context.signal),
