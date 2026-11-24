@@ -6,6 +6,7 @@ import {
   boatTokenPath,
   ensureLayout,
   memberVmKeyReadable,
+  memberVmSizeOnly,
   parseConfigToml,
   pawsPaths,
   renderMemberVmSettings,
@@ -52,6 +53,23 @@ describe("[member_vm]", () => {
       expect(() => parseConfigToml(`[member_vm]\n${line}\n`)).toThrow(
         "Saved settings line 2 member_vm.pool must be an exe.dev pool name",
       );
+  });
+
+  test("off_providers round-trips, is empty by default and must name providers", () => {
+    const size = parseConfigToml(
+      '[member_vm]\nprovider = "boat"\noff_providers = ["boat", "instabox"]\n',
+    ).memberVm;
+    expect(size).toEqual({ provider: "boat", offProviders: ["boat", "instabox"] });
+    const rendered = renderMemberVmSettings(size);
+    expect(rendered).toBe(
+      '\n[member_vm]\nprovider = "boat"\noff_providers = ["boat", "instabox"]\n',
+    );
+    expect(parseConfigToml(rendered).memberVm).toEqual(size);
+    expect(renderMemberVmSettings({ offProviders: [] })).toBe("");
+    expect(memberVmSizeOnly({ cpu: 2, offProviders: ["boat"] })).toEqual({ cpu: 2 });
+    expect(() => parseConfigToml('[member_vm]\noff_providers = ["aws"]\n')).toThrow(
+      "Saved settings line 2 member_vm.off_providers must be a list",
+    );
   });
 
   test("invalid values are refused with their line", () => {

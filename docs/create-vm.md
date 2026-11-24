@@ -22,7 +22,9 @@ boat and InstaBox offer fixed sizes, and Paws refuses a size the provider can't 
 | `boat`     | 2/4, 4/8, 8/16 or 16/32, or neither        | not allowed | not allowed     |
 | `instabox` | 2/4, 4/8, 8/16, 16/32 or 32/64, or neither | 1 to 1024   | not allowed     |
 
-The same check runs again before Create VM calls the provider, so a size saved for another provider fails the VM's `create` step with the same message, for example `boat has no 6 vCPU / 12 GB size. Use 2/4, 4/8, 8/16 or 16/32.`
+To stop Create VM from using a provider without removing its key, list it in `off_providers`, for example `off_providers = ["boat"]`. Create VM also refuses a provider whose key the background check last found rejected. In both cases it creates nothing and names the reason, for example `boat is turned off on Settings › Runner VMs.` It doesn't fall back to another provider. VMs already on that provider can still be read, woken and deleted.
+
+The size check runs again before Create VM calls the provider, so a size saved for another provider fails the VM's `create` step with the same message, for example `boat has no 6 vCPU / 12 GB size. Use 2/4, 4/8, 8/16 or 16/32.`
 
 exe.dev VM names are global, so another account may already hold `<name>-paws`. When exe.dev answers that a name is not available, Create VM tries `<name>-paws-2`, `<name>-paws-3` and so on.
 

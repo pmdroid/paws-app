@@ -20,6 +20,7 @@ import { createOnboardingReadiness } from "./onboarding-readiness";
 import {
   createMemberVmHttp,
   createMemberVmProvisioning,
+  usableVmProvider,
   registerMemberVmDeleteJob,
   registerMemberVmJob,
 } from "./member-vm";
@@ -1369,6 +1370,13 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     available: createVmAvailable,
     size: memberVmSize,
     provider: memberVmProviderSetting,
+    usable: (provider) =>
+      usableVmProvider(provider, {
+        store,
+        keySaved: (id) =>
+          options?.memberVm !== undefined || readVmProviderToken(paths.home, id) !== null,
+        offProviders: () => memberVmSettings()?.offProviders,
+      }),
     exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
   });
   const githubCommits = (repository: { owner: string; repo: string }): GitHubCommits => {
