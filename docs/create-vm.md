@@ -26,6 +26,19 @@ To stop Create VM from using a provider without removing its key, list it in `of
 
 The size check runs again before Create VM calls the provider, so a size saved for another provider fails the VM's `create` step with the same message, for example `boat has no 6 vCPU / 12 GB size. Use 2/4, 4/8, 8/16 or 16/32.`
 
+## boat
+
+[boat](https://boat.dev) rents Ubuntu VMs in Germany, Finland and France, billed per second. Create an API key (it starts with `boat_`) with boat's `full-sandbox` scopes: create, read, update, stop, resume, delete and exec. Save it on Settings › Runner VMs as the boat key and set `provider = "boat"` in `[member_vm]`.
+
+| `cpu` / `memory_gb` | boat type |
+| ------------------- | --------- |
+| 2/4                 | `small`   |
+| 4/8 or neither      | `default` |
+| 8/16                | `large`   |
+| 16/32               | `xlarge`  |
+
+Paws creates each boat VM with auto-stop turned off, since a runner that stops after an hour is no use. boat's trial plan refuses that, and Create VM fails with "boat's plan does not allow turning auto-stop off; a runner VM needs that." Turn off zero data retention on the boat account too: with it on, boat deletes a stopped VM, and Paws then reports the VM as missing.
+
 exe.dev VM names are global, so another account may already hold `<name>-paws`. When exe.dev answers that a name is not available, Create VM tries `<name>-paws-2`, `<name>-paws-3` and so on.
 
 Each Create VM makes a new VM, so a member may have several: `<name>-paws`, then `<name>-paws-2` and so on. A member may have at most 5 VMs that are not being deleted; the sixth Create VM is refused with "You already have 5 VMs. Delete one on its runner page first." Retry a failed VM from its runner page.
@@ -61,7 +74,7 @@ The VM must reach Paws on both ports: 8787 for enrollment and 8788 for the runne
 
 3. Run `bun run paws doctor`. The `tailscale-authkey` check passes when the key is present and readable.
 
-With the key saved, Create VM adds a `tailnet` step after the install and before enrollment. The VM installs a pinned Tailscale static release whose SHA-256 Paws checks before unpacking. No install script runs. Before the join it installs and enables `systemd-resolved` with exe.dev's resolver (`169.254.169.254`) as its upstream in `/etc/systemd/resolved.conf.d/paws-upstream.conf`, and links `/etc/resolv.conf` to its stub. tailscaled then configures MagicDNS through resolved, and `*.localhost` names resolve to loopback as on Ubuntu CI. The VM then joins with `tailscale up --hostname=<vm name>` and waits until it resolves the Paws host and `/health` answers. Last, it checks that it resolves github.com, the Paws host and `probe.localhost` (to a loopback address); a failure ends the step with "the VM cannot resolve *.localhost names" and the check's output. A VM that is already on the tailnet repeats the resolved setup, which changes nothing once in place, and both checks.
+With the key saved, Create VM adds a `tailnet` step after the install and before enrollment. The VM installs a pinned Tailscale static release whose SHA-256 Paws checks before unpacking. No install script runs. On an exe.dev VM, before the join it installs and enables `systemd-resolved` with exe.dev's resolver (`169.254.169.254`) as its upstream in `/etc/systemd/resolved.conf.d/paws-upstream.conf`, and links `/etc/resolv.conf` to its stub. A boat VM keeps its own systemd-resolved, which already works with Tailscale. tailscaled then configures MagicDNS through resolved, and `*.localhost` names resolve to loopback as on Ubuntu CI. The VM then joins with `tailscale up --hostname=<vm name>` and waits until it resolves the Paws host and `/health` answers. Last, it checks that it resolves github.com, the Paws host and `probe.localhost` (to a loopback address); a failure ends the step with "the VM cannot resolve *.localhost names" and the check's output. A VM that is already on the tailnet repeats the resolved setup, which changes nothing once in place, and both checks.
 
 The auth key never appears on a command line. The VM makes a fresh RSA key in its root-only stage directory, Paws sends the auth key encrypted to it, and the VM decrypts it into a root-only mode 0600 file. That file is deleted right after `tailscale up`, whether the join succeeded or failed. The key is not logged and not put in the agent environment.
 

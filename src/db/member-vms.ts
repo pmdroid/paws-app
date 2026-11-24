@@ -134,6 +134,16 @@ export function* memberVmNameTakenSteps(q: Q, name: string) {
   return (yield* q.one(q.orm.select({ id: m.id }).from(m).where(eq(m.vmName, name)))) !== undefined;
 }
 
+export function* memberVmProviderIdSteps(q: Q, name: string) {
+  const { memberVm: m } = q.t;
+  const row = yield* q.one(q.orm.select({ id: m.providerVmId }).from(m).where(eq(m.vmName, name)));
+  return row?.id ?? null;
+}
+
+export async function memberVmProviderId(store: Db, name: string): Promise<string | null> {
+  return store.run((q) => memberVmProviderIdSteps(q, name));
+}
+
 export async function memberVmNameTaken(store: Db, name: string): Promise<boolean> {
   return store.run((q) => memberVmNameTakenSteps(q, name));
 }

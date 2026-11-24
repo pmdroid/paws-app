@@ -306,6 +306,30 @@ describe("member VM", () => {
     expect(view.provider).toBe("boat");
   });
 
+  test("a row on boat creates, installs and turns ready through the provider named boat", async () => {
+    const f = await fixture();
+    await startMemberVm(f.db, { ...f.member, provider: "boat", now: f.clock.now() });
+    const loop = new JobLoop(f.db, f.clock, { leaseMs: LEASE_MS });
+    registerMemberVmJob(loop, {
+      provision: (id) => ({
+        provider: id === "boat" ? { ...f.exeDev, id: "boat" } : f.exeDev,
+        bootstrap: f.bootstrap,
+        size: { cpu: 4, memoryGb: 8 },
+        mintEnrollment: (ref, request) =>
+          f.control.createEnrollment({ ...f.member, userId: ref.userId }, request),
+      }),
+      now: () => f.clock.now(),
+    });
+    const health = await drive(f, loop, (row) => row.step === "health" || row.failure !== null);
+    expect(health.failure).toBeNull();
+    expect(health.provider).toBe("boat");
+    expect(f.bootstrap.calls.map((call) => call.step)).toContain("startInstall");
+    await heartbeat(f.db, health.runnerId!, f.clock.now());
+    const ready = await drive(f, loop, settled);
+    expect(ready.step).toBe("ready");
+    expect(ready.failure).toBeNull();
+  });
+
   test("the create step refuses a size the row's provider can't give, before calling it", async () => {
     const f = await fixture();
     await startMemberVm(f.db, { ...f.member, provider: "boat", now: f.clock.now() });

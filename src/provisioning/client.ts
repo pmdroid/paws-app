@@ -313,7 +313,7 @@ async function bearer(operation: ProvisioningOperation, read: ExeDevTokenReader)
   return trimmed;
 }
 
-function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+export function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(new Error("aborted"));
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(new Error("aborted"));
@@ -332,7 +332,7 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
-async function readCapped(
+export async function readCapped(
   response: Response,
   limit: number,
   signal: AbortSignal,
