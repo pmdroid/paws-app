@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withoutJournalTime, type RunnerCommand } from "../src/runner-protocol";
+import { setJournalSink } from "../src/journal";
 import { openExecutionJournal } from "../src/runner-journal";
 import { executeRunnerCommand } from "../src/runner-worker";
 
@@ -375,4 +376,78 @@ test("an aborted adapter turn persists its agent failure reason", async () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+async function failedTurn(ended: Record<string, unknown>): Promise<string | undefined> {
+  const root = mkdtempSync(join(tmpdir(), "paws-worker-failed-"));
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  try {
+    const workRoot = join(root, "work");
+    const outputDirectory = join(root, "output");
+    const home = join(root, "home");
+    for (const path of [join(workRoot, executionId), outputDirectory, home])
+      mkdirSync(path, { recursive: true, mode: 0o700 });
+    chmodSync(join(workRoot, executionId), 0o770);
+    const result = await executeRunnerCommand({
+      job: { executionId, command: command("answer") },
+      outputDirectory,
+      workRoot,
+      home,
+      resultsGid: process.getgid!(),
+      async runAgent() {
+        return {
+          role: "implementer",
+          stopReason: "error",
+          agentExited: true,
+          cancelled: false,
+          timedOut: false,
+          authRequired: false,
+          ...ended,
+        };
+      },
+    });
+    expect(lines.filter((line) => line.includes("agent turn failed"))).toEqual([
+      expect.stringContaining(result.run.errorMessage!),
+    ]);
+    return result.run.errorMessage;
+  } finally {
+    restore();
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("a killed agent's failure reason names the signal and how long the turn ran", async () => {
+  expect(
+    await failedTurn({
+      errorMessage: "ACP connection closed",
+      exitSignal: "SIGKILL",
+      durationMs: 7_200_000,
+    }),
+  ).toBe(
+    "Run failed during agent: ACP connection closed. The agent process was killed by SIGKILL. The turn ran 2 hours.",
+  );
+});
+
+test("an agent's own error stays in the failure reason", async () => {
+  const reason = await failedTurn({
+    errorMessage: "rate limited",
+    exitCode: 1,
+    durationMs: 95_000,
+  });
+  expect(reason).toBe(
+    "Run failed during agent: rate limited. The agent process exited with code 1. The turn ran 1 minute.",
+  );
+});
+
+test("a turn stopped at its time limit names the limit", async () => {
+  const reason = await failedTurn({
+    stopReason: "timeout",
+    timedOut: true,
+    timeLimitMs: 10_800_000,
+    durationMs: 10_801_000,
+  });
+  expect(reason).toBe(
+    "Run failed during agent: Paws stopped it at its time limit of 3 hours. The turn ran 3 hours.",
+  );
 });

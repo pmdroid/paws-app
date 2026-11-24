@@ -121,6 +121,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       agentExited: true,
     };
   }
+  const startedAt = Date.now();
   assertSafeSegment(options.itemId, "item id");
   assertSafeSegment(options.runId, "run id");
   if (!isAbsolute(options.worktreePath)) throw new Error("worktreePath must be absolute");
@@ -660,6 +661,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     }
   } finally {
     runAbort.abort();
+    const exitCode = child.exitCode;
+    const exitSignal = child.signalCode;
     result.agentExited = await stopChild(child, graceMs);
     stopWatchingHooks?.();
     result.pid = child.pid;
@@ -727,6 +730,10 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       result.stopReason = state.kind === "timeout" ? "timeout" : "cancelled";
       result.authRequired = false;
     }
+    if (exitSignal) result.exitSignal = exitSignal;
+    else if (exitCode != null) result.exitCode = exitCode;
+    result.durationMs = Date.now() - startedAt;
+    if (state.kind === "timeout") result.timeLimitMs = options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
   }
   if (commitPolicy && result.agentExited && !result.cancelled && !options.signal?.aborted) {
     try {
