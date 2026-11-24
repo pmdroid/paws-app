@@ -22,7 +22,9 @@ usage() {
 }
 
 attach() {
-  [[ -f $image && ! -L $image ]] || die "No pool image at $image"
+  [[ -d $dir && ! -L $dir && -f $image && ! -L $image ]] || die "No pool image at $image"
+  [[ $(stat -c %u:%a "$dir") == 0:700 && $(stat -c %u "$image") == 0 ]] ||
+    die "$dir must be root's with mode 0700"
   if [[ -z $(losetup -n -O NAME -j "$image") ]]; then
     losetup -f "$image"
     pvscan -q --cache >/dev/null 2>&1 || true
