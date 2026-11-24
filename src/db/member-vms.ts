@@ -136,9 +136,7 @@ export function* memberVmNameTakenSteps(q: Q, name: string) {
 
 export function* memberVmProviderIdSteps(q: Q, name: string) {
   const { memberVm: m } = q.t;
-  const row = yield* q.one(
-    q.orm.select({ id: m.providerVmId }).from(m).where(eq(m.vmName, name)),
-  );
+  const row = yield* q.one(q.orm.select({ id: m.providerVmId }).from(m).where(eq(m.vmName, name)));
   return row?.id ?? null;
 }
 

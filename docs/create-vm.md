@@ -24,6 +24,19 @@ boat and InstaBox offer fixed sizes, and Paws refuses a size the provider can't 
 
 The same check runs again before Create VM calls the provider, so a size saved for another provider fails the VM's `create` step with the same message, for example `boat has no 6 vCPU / 12 GB size. Use 2/4, 4/8, 8/16 or 16/32.`
 
+## boat
+
+[boat](https://boat.dev) rents Ubuntu VMs in Germany, Finland and France, billed per second. Create an API key (it starts with `boat_`) with boat's `full-sandbox` scopes: create, read, update, stop, resume, delete and exec. Save it on Settings › Runner VMs as the boat key and set `provider = "boat"` in `[member_vm]`.
+
+| `cpu` / `memory_gb` | boat type |
+| ------------------- | --------- |
+| 2/4                 | `small`   |
+| 4/8 or neither      | `default` |
+| 8/16                | `large`   |
+| 16/32               | `xlarge`  |
+
+Paws creates each boat VM with auto-stop turned off, since a runner that stops after an hour is no use. boat's trial plan refuses that, and Create VM fails with "boat's plan does not allow turning auto-stop off; a runner VM needs that." Turn off zero data retention on the boat account too: with it on, boat deletes a stopped VM, and Paws then reports the VM as missing.
+
 exe.dev VM names are global, so another account may already hold `<name>-paws`. When exe.dev answers that a name is not available, Create VM tries `<name>-paws-2`, `<name>-paws-3` and so on.
 
 Each Create VM makes a new VM, so a member may have several: `<name>-paws`, then `<name>-paws-2` and so on. A member may have at most 5 VMs that are not being deleted; the sixth Create VM is refused with "You already have 5 VMs. Delete one on its runner page first." Retry a failed VM from its runner page.

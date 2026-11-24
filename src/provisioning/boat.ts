@@ -63,7 +63,8 @@ const TOKEN = /^[A-Za-z0-9._~+/=-]+$/;
 const SANDBOX_ID = /^bx_[A-Za-z0-9]{1,64}$/;
 const STATE_WORD = /^[a-z][a-z0-9_-]{0,31}$/;
 const MAX_DETAIL = 300;
-const AUTO_STOP_REFUSED = "boat's plan does not allow turning auto-stop off; a runner VM needs that.";
+const AUTO_STOP_REFUSED =
+  "boat's plan does not allow turning auto-stop off; a runner VM needs that.";
 
 type Answer = { status: number; body: unknown };
 
