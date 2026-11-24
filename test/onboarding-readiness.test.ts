@@ -7,7 +7,6 @@ import {
   putWorkspaceUser,
   syncWorkspaceMember,
   type Db,
-  type Q,
 } from "../src/db";
 import { createOnboardingReadiness } from "../src/onboarding-readiness";
 import {
@@ -73,7 +72,7 @@ async function runner(
     owner?: string;
     status?: string;
     seenAgoMs?: number;
-    sharing?: number;
+    isolation?: "none" | "issue_vm";
     accountOwner?: string;
     agents?: Record<string, { ready: number; authExpired?: number }>;
   } = {},
@@ -89,14 +88,9 @@ async function runner(
         status: input.status ?? "active",
         createdAt: NOW,
         lastSeenAt: NOW - (input.seenAgoMs ?? 0),
+        isolation: input.isolation ?? "none",
       }),
     (q) => currentRunnerHost(q, id, NOW),
-    ...(input.sharing === undefined
-      ? []
-      : [
-          (q: Q) =>
-            q.orm.insert(q.t.runnerPolicy).values({ runnerId: id, sharing: input.sharing! }),
-        ]),
   );
   for (const [agent, policy] of Object.entries(input.agents ?? {})) {
     const accountId = `${id}-${agent}`;
@@ -172,15 +166,15 @@ test("a member with no runner needs one, and another member's runner does not co
   expect(await w.read()).toEqual(NEEDED);
 });
 
-test("a member whose only runner is the project lead's shared one still needs their own", async () => {
+test("a member whose only runner is another member's issue VM runner still needs their own", async () => {
   const w = await workspace();
   await runner(w.db, "shared", {
     owner: "lead",
-    sharing: 1,
+    isolation: "issue_vm",
     agents: { claude: { ready: 1 }, codex: { ready: 1 } },
   });
   expect(await w.read(["lead"])).toEqual(NEEDED);
-  await runner(w.db, "stopped", { owner: "lead", sharing: 1, seenAgoMs: 10 * 60_000 });
+  await runner(w.db, "stopped", { owner: "lead", isolation: "issue_vm", seenAgoMs: 10 * 60_000 });
   expect(await w.read(["lead"])).toEqual(NEEDED);
   await runner(w.db, "mine");
   expect(await w.read(["lead"])).toEqual({

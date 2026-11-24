@@ -130,12 +130,9 @@ async function signIn(db: Db, runnerId: string, agent?: string) {
   await bindFixtureAccounts(db, runnerId, agent);
 }
 
-function share(db: Db, runnerId: string, sharing: number) {
+function isolate(db: Db, runnerId: string) {
   return seed(db, (q) =>
-    q.orm
-      .insert(q.t.runnerPolicy)
-      .values({ runnerId, sharing })
-      .onConflictDoUpdate({ target: q.t.runnerPolicy.runnerId, set: { sharing } }),
+    q.orm.update(q.t.runner).set({ isolation: "issue_vm" }).where(eq(q.t.runner.id, runnerId)),
   );
 }
 
@@ -363,20 +360,13 @@ const TRIGGERS: {
     runner: "own",
   },
   {
-    name: "the project lead turns on sharing",
-    async prepare(db) {
-      await seed(db, (q) =>
-        q.orm.insert(q.t.workItemScheduling).values({
-          itemId: "mine",
-          projectId: "project",
-          projectKnown: 1,
-          projectLeadId: "linear-other",
-        }),
-      );
-      await share(db, "theirs", 0);
+    name: "another member's issue VM runner heartbeats back online",
+    async prepare(db, _users, now) {
+      await seen(db, now - 10 * 60_000, "theirs");
+      await isolate(db, "theirs");
     },
-    async fire(db) {
-      await share(db, "theirs", 1);
+    async fire(db, _users, now) {
+      await seen(db, now, "theirs");
     },
     runner: "theirs",
   },
@@ -444,12 +434,11 @@ test("startup resumes an item held before its runner became ready", async () => 
 });
 
 test("a runner that becomes usable for another member leaves this member's hold alone", async () => {
-  const fixture = await held((db) => share(db, "theirs", 0));
+  const fixture = await held(async () => {});
   try {
     const { db, users, clock } = fixture;
     await addRunner(db, "third", users.other!, clock.now(), 1);
     await seen(db, clock.now() + 120_000, "theirs");
-    await share(db, "theirs", 1);
     await enqueueRunnerSetupCheck(db, users.me!, clock.now());
     expect(await checkJobs(db)).toEqual([users.me!]);
     await fixture.runChecks();

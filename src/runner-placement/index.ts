@@ -14,13 +14,11 @@ export {
 
 export type PlacementPurpose = "prepare" | "work" | "helper";
 
-/** Why a runner may or may not run a person's work. `own` and `lead-shared` are eligible. */
+/** Why a runner may or may not run a person's work. `own` and `issue-vm` are eligible. */
 export type EligibleRunnerReason =
   | "own"
-  | "lead-shared"
+  | "issue-vm"
   | "not-yours"
-  | "not-shared"
-  | "no-project-lead"
   | "outdated"
   | "offline"
   | "paused"
@@ -35,8 +33,6 @@ export type EligibleRunnersInput = {
   teamId: string;
   /** The `workspace_user` who owns the work. */
   ownerUserId: string | null;
-  /** The `workspace_user` ids of the Linear project leads across the delegation. */
-  leadUserIds: readonly string[];
   agent: string;
   purpose: PlacementPurpose;
   now?: number;
@@ -47,7 +43,7 @@ export type EligibleRunner = {
   id: string;
   workspaceId: string;
   ownerId: string;
-  sharing: number;
+  isolation: string;
   quotaState: string;
   cooldownUntil: number;
   virtualFinish: number;

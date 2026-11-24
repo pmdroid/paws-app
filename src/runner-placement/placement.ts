@@ -4,7 +4,6 @@ import {
   enqueueJobSteps,
   commandAccountSteps,
   delegatedLinearUserIdSteps,
-  delegationProjectLeadIdsSteps,
   findingGroupingAdminsSteps,
   finishRunnerExecutionUsageSteps,
   getLinearSessionAccessSteps,
@@ -163,13 +162,7 @@ export function createRunnerPlacement(options: {
     const issueId =
       item?.linearIssueId ?? session.issueId ?? (input.findingGroups ? session.sessionId : null);
     if (!issueId) throw new PlacementUnavailableError("Runner issue authority is unavailable");
-    const placement = item
-      ? {
-          ownerUserId: yield* itemOwnerUserIdSteps(q, item.id),
-          // The leads of the Linear projects across the item's delegation lend their shared runners.
-          leadUserIds: yield* delegationProjectLeadIdsSteps(q, item.delegationId),
-        }
-      : null;
+    const placement = item ? { ownerUserId: yield* itemOwnerUserIdSteps(q, item.id) } : null;
     const ownership = item
       ? yield* delegatedLinearUserIdSteps(q, item.id)
       : ((options.sessionActorSteps
@@ -191,7 +184,6 @@ export function createRunnerPlacement(options: {
             version: item.version,
             cancelRequested: item.cancelRequested,
             ownerUserId: current.placement?.ownerUserId ?? null,
-            leadUserIds: current.placement?.leadUserIds ?? [],
           }
         : null,
       session: current.session,
@@ -259,7 +251,6 @@ export function createRunnerPlacement(options: {
       workspaceId: current.workspace.id,
       teamId,
       ownerUserId: current.placement?.ownerUserId ?? requester,
-      leadUserIds: current.placement?.leadUserIds ?? [],
     };
   }
   function* observeAccountSteps(
@@ -352,8 +343,8 @@ export function createRunnerPlacement(options: {
         }
     const binding = yield* authoritySteps(q, current);
     const at = now();
-    // A task runs on the runners of the person who delegated it, then on the shared runners
-    // of its Linear project leads.
+    // A task runs on the runners of the person who delegated it, or on a runner that gives
+    // each issue its own VM.
     // Preparation probes identities without moving a checkout or resuming an agent session.
     const pinnedRunnerId = input.purpose === "prepare" ? undefined : input.pinnedRunnerId;
     const pinned =
@@ -376,7 +367,6 @@ export function createRunnerPlacement(options: {
       workspaceId: string;
       teamId: string;
       ownerUserId: string | null;
-      leadUserIds: readonly string[];
     }[] = [];
     if (input.findingGroups && input.purpose === "helper") {
       for (const admin of yield* findingGroupingAdminsSteps(q, current.workspace.id))
@@ -393,7 +383,6 @@ export function createRunnerPlacement(options: {
             workspaceId: current.workspace.id,
             teamId: groupingSession.teamId!,
             ownerUserId: admin.userId,
-            leadUserIds: [],
           });
     } else scopes.push(yield* eligibilitySteps(q, current));
     const agent = input.profile.agent as RunnerCodingAgent;

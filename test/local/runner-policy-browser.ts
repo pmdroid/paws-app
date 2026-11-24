@@ -79,37 +79,30 @@ export async function probeRunnerPolicyBrowser(
       }),
       actor,
     );
-  const policy = { sharing: true };
+  const policy = {};
   try {
     const memberPrincipal = principal(member, "member");
-    assert.equal(
-      (await request(`/api/runners/${runnerId}/policy`, memberPrincipal, policy))!.status,
-      200,
-    );
-    assert.equal(
-      (await request(`/api/runners/${runnerId}/policy`, principal(admin, "admin"), policy))!.status,
-      403,
-    );
+    const refused = (await request(`/api/runners/${runnerId}/policy`, memberPrincipal, {
+      sharing: true,
+    }))!;
+    assert.equal(refused.status, 400);
+    assert.deepEqual(await refused.json(), { error: "Choose a valid setting." });
     const saved = (await (await request(
       `/api/runners/${runnerId}/policy`,
       memberPrincipal,
-    ))!.json()) as { sharing: number };
-    assert.equal(saved.sharing, 1);
-    observe(
-      "The host owner can consent to sharing; an administrator cannot consent for them",
-      true,
-      { ownerSaved: true, administratorDenied: true },
-    );
+    ))!.json()) as Record<string, unknown>;
+    assert.deepEqual(saved, { ownerUserId: member, fixSlots: 1 });
+    observe("The policy route refuses sharing and reports none", true, {
+      sharingRejected: true,
+      sharingRead: false,
+    });
     for (const removed of [
       { agent: "codex", seat: "organization" },
       { hostOwner: "member" },
       { fallback: true },
     ])
       assert.equal(
-        (await request(`/api/runners/${runnerId}/policy`, memberPrincipal, {
-          ...policy,
-          ...removed,
-        }))!.status,
+        (await request(`/api/runners/${runnerId}/policy`, memberPrincipal, removed))!.status,
         400,
       );
     assert.equal(

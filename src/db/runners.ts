@@ -1057,21 +1057,6 @@ export function* workspaceRunnerHostSteps(q: Q, runnerId: string, workspaceId: s
   return row ?? null;
 }
 
-export function* setRunnerSharingSteps(q: Q, runnerId: string, sharing: boolean, now: number) {
-  const { runnerPolicy: p } = q.t;
-  const value = sharing ? 1 : 0;
-  const before = yield* q.one(
-    q.orm.select({ sharing: p.sharing }).from(p).where(eq(p.runnerId, runnerId)),
-  );
-  yield* q.exec(
-    q.orm
-      .insert(p)
-      .values({ runnerId, sharing: value })
-      .onConflictDoUpdate({ target: p.runnerId, set: { sharing: value } }),
-  );
-  if (sharing && before?.sharing !== 1) yield* enqueueRunnerSetupChecksSteps(q, now, { runnerId });
-}
-
 export async function recentRunners(
   store: Db,
   seenAfter: number,
@@ -1172,14 +1157,7 @@ const usageNewest = (q: Q) => desc(q.t.runnerExecutionUsage.commandId);
 
 /** What placement admitted a runner against: its identity, policy, capacity and owner's standing. */
 export function* runnerPlacementPolicySteps(q: Q, runnerId: string, agent?: string) {
-  const {
-    runner,
-    runnerAgentPolicy,
-    runnerCapacity,
-    runnerPolicy,
-    workspaceMember,
-    workspaceUserTeam,
-  } = q.t;
+  const { runner, runnerAgentPolicy, runnerCapacity, workspaceMember, workspaceUserTeam } = q.t;
   const identity = yield* q.one(
     q.orm
       .select({
@@ -1189,15 +1167,10 @@ export function* runnerPlacementPolicySteps(q: Q, runnerId: string, agent?: stri
         status: runner.status,
         fence: runner.fence,
         revokedAt: runner.revokedAt,
+        isolation: runner.isolation,
       })
       .from(runner)
       .where(eq(runner.id, runnerId)),
-  );
-  const host = yield* q.one(
-    q.orm
-      .select({ runnerId: runnerPolicy.runnerId, sharing: runnerPolicy.sharing })
-      .from(runnerPolicy)
-      .where(eq(runnerPolicy.runnerId, runnerId)),
   );
   const capacity = yield* q.one(
     q.orm
@@ -1251,7 +1224,6 @@ export function* runnerPlacementPolicySteps(q: Q, runnerId: string, agent?: stri
   );
   return {
     runner: identity ?? null,
-    host: host ?? null,
     capacity: capacity ?? null,
     agent: agentPolicy ?? null,
     membership: membership ?? null,

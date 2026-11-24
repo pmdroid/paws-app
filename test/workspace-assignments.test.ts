@@ -1278,7 +1278,7 @@ test("the creator's link sign-in resumes the held session and lands on its onboa
   }
 });
 
-test("the runner step counts only the member's own runner, not a lead's or colleague's shared one", async () => {
+test("the runner step counts only the member's own runner, not a lead's or colleague's issue VM runner", async () => {
   const f = await fixture({ projectLeadId: "lead" });
   try {
     for (const id of ["lead", "colleague"]) {
@@ -1297,7 +1297,7 @@ test("the runner step counts only the member's own runner, not a lead's or colle
         now: f.clock.now(),
       });
     }
-    const addRunner = async (id: string, owner: string, sharing: number) => {
+    const addRunner = async (id: string, owner: string, isolation: "none" | "issue_vm") => {
       await write(f.db, (q) =>
         q.orm.insert(q.t.runner).values({
           id,
@@ -1307,13 +1307,12 @@ test("the runner step counts only the member's own runner, not a lead's or colle
           status: "active",
           createdAt: f.clock.now(),
           lastSeenAt: f.clock.now(),
+          isolation,
         }),
       );
-      await write(f.db, (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId: id, sharing }));
       await write(f.db, (q) => currentRunnerHost(q, id, f.clock.now()));
     };
-    // A colleague who does not lead the project shares a runner; it does not count.
-    await addRunner("colleague-box", "colleague", 1);
+    await addRunner("colleague-box", "colleague", "issue_vm");
     await f.assignments.authorize(f.event);
     const link = await f.link();
     const done = await f.callback(await f.begin(link));
@@ -1327,7 +1326,7 @@ test("the runner step counts only the member's own runner, not a lead's or colle
       /<h2>Runner<\/h2><p class="detail">You need a runner of your own\. Add a host with an enrollment token\. This step completes when it pairs\.<\/p><div class="actions"><button type="button" class="action" data-action="add-host">Add a host<\/button><\/div><\/div><span class="label">Needed<\/span>/,
     );
     expect(needed).not.toContain("colleague-box");
-    await addRunner("lead-box", "lead", 1);
+    await addRunner("lead-box", "lead", "issue_vm");
     expect(await open()).toContain("You need a runner of your own.");
     const outbox = (await listOutbox(f.db)).length;
     const [me] = await f.db.run((q) =>
@@ -1338,7 +1337,7 @@ test("the runner step counts only the member's own runner, not a lead's or colle
           .where(eq(q.t.workspaceUser.linearUserId, "member")),
       ),
     );
-    await addRunner("my-box", me!.id, 0);
+    await addRunner("my-box", me!.id, "none");
     expect(await open()).toMatch(
       /<h2>Runner<\/h2><p class="detail">my-box-host will run this task\.<\/p><\/div><span class="label">Ready<\/span>/,
     );

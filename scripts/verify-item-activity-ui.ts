@@ -92,7 +92,7 @@ const server = Bun.serve({
       });
     if (path === "/api/runners")
       return Response.json({ runners: [runner], serverVersion: null, agentVersions: [] });
-    if (path.endsWith("/policy")) return Response.json({ ownerUserId: "owner", sharing: 0 });
+    if (path.endsWith("/policy")) return Response.json({ ownerUserId: "owner" });
     if (path === "/api/runners/vm") return Response.json({ available: false, vm: null });
     if (path === "/api/runners/usage") return Response.json({ usage: [] });
     return (

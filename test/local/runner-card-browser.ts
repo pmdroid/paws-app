@@ -159,7 +159,7 @@ const server = Bun.serve({
         usage: usage(new URL(request.url).searchParams.get("runner") ?? ""),
       });
     if (/^\/api\/runners\/[^/]+\/policy$/.test(path))
-      return Response.json({ ownerUserId: "owner", sharing: 1 });
+      return Response.json({ ownerUserId: "owner" });
     return (
       (await handleStatusRequest(request, {
         provider: fixtureProvider(snapshot),
