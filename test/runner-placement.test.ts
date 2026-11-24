@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { eq, inArray, isNotNull, type SQL } from "drizzle-orm";
 import {
   recordAccountObservation,
+  recordRunnerHostStatus,
   bindLinearSessionTask,
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
@@ -28,6 +29,7 @@ import {
   SESSION_GRACE_MS,
   type PlacementRequest,
 } from "../src/runner-placement";
+import { MINIMUM_RUNNER_VERSION } from "../src/runner-protocol";
 import { RunnerCapacityWait, placementWaitMs } from "../src/core";
 import { saveSchedulingContextSteps } from "../src/scheduler";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
@@ -606,6 +608,15 @@ async function ownerPool(capacities: Record<string, number> = { a: 2, b: 2, c: 2
         leaseUntil: placed.now() + 60 * 60_000,
       });
     },
+    /** Records the runner's host report of `cpuPercent`, `ageMs` ago. */
+    cpu(runnerId: string, cpuPercent: number | undefined, ageMs = 0) {
+      return recordRunnerHostStatus(
+        db,
+        runnerId,
+        { cpuPercent, runnerVersion: MINIMUM_RUNNER_VERSION.join(".") },
+        placed.now() - ageMs,
+      );
+    },
     /** Records a finished execution that kept the runner busy from `startedAt` to `endedAt`. */
     worked(runnerId: string, startedAt: number, endedAt: number) {
       return insertUsage(db, {
@@ -661,6 +672,55 @@ test("the fullest runner with a free slot comes first, and a full runner comes l
       expect(await pool.ids()).toEqual(["idle", "big", "small"]);
     },
     { big: 4, small: 2, idle: 2 },
+  ));
+
+test("a runner at 90 % CPU is passed over for one at 10 % with a free slot", () =>
+  withPool(
+    async (pool) => {
+      for (let task = 0; task < 3; task++) await pool.occupy("goldbox");
+      expect(await pool.ids()).toEqual(["goldbox", "agentbox"]);
+      await pool.cpu("goldbox", 90);
+      await pool.cpu("agentbox", 10);
+      expect(await pool.ids()).toEqual(["agentbox", "goldbox"]);
+    },
+    { goldbox: 6, agentbox: 2 },
+  ));
+
+test("when every runner with a free slot is CPU-saturated, the fullest still comes first", () =>
+  withPool(
+    async (pool) => {
+      for (let task = 0; task < 3; task++) await pool.occupy("goldbox");
+      await pool.cpu("goldbox", 95);
+      await pool.cpu("agentbox", 85);
+      expect(await pool.ids()).toEqual(["goldbox", "agentbox"]);
+    },
+    { goldbox: 6, agentbox: 2 },
+  ));
+
+test("a saturated runner still comes first when the only cool runner is full", () =>
+  withPool(
+    async (pool) => {
+      await pool.occupy("goldbox");
+      await pool.occupy("agentbox");
+      await pool.occupy("agentbox");
+      await pool.cpu("goldbox", 90);
+      await pool.cpu("agentbox", 10);
+      expect(await pool.ids()).toEqual(["goldbox", "agentbox"]);
+    },
+    { goldbox: 6, agentbox: 2 },
+  ));
+
+test("a missing or stale CPU report leaves packing as it is", () =>
+  withPool(
+    async (pool) => {
+      for (let task = 0; task < 3; task++) await pool.occupy("goldbox");
+      await pool.cpu("goldbox", undefined);
+      await pool.cpu("agentbox", 10);
+      expect(await pool.ids()).toEqual(["goldbox", "agentbox"]);
+      await pool.cpu("goldbox", 90, 3 * 60_000);
+      expect(await pool.ids()).toEqual(["goldbox", "agentbox"]);
+    },
+    { goldbox: 6, agentbox: 2 },
   ));
 
 test("between equally loaded runners the one with more slots comes first", () =>
