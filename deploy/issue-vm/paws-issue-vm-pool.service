@@ -1,0 +1,14 @@
+[Unit]
+Description=Attach the Paws issue VM thin pool
+DefaultDependencies=no
+After=local-fs.target systemd-udevd.service
+Before=paws-runner.service
+ConditionPathExists=/var/lib/paws-runner/issue-vms/pool.img
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/paws-issue-vm-disk attach
+
+[Install]
+WantedBy=multi-user.target paws-runner.service

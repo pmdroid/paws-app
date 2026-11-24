@@ -79,6 +79,18 @@ export function* updateLiveIssueVmStateSteps(
   return rows.length;
 }
 
+export function* deletingHostIssueVmIdsSteps(q: Q, hostRunnerId: string) {
+  const { issueVm: v } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ id: v.id })
+      .from(v)
+      .where(and(eq(v.hostRunnerId, hostRunnerId), eq(v.state, "deleting")))
+      .orderBy(v.id),
+  );
+  return rows.map((row) => row.id);
+}
+
 export function* issueVmsInUseSteps(q: Q, input: { workspaceId: string; memberUserId?: string }) {
   const { issueVm: v } = q.t;
   const row = yield* q.one(

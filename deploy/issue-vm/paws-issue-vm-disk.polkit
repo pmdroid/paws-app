@@ -1,0 +1,9 @@
+polkit.addRule(function (action, subject) {
+  if (action.id !== "org.freedesktop.systemd1.manage-units" || subject.user !== "paws-runner") return;
+  var unit = action.lookup("unit");
+  if (
+    action.lookup("verb") === "start" &&
+    /^paws-issue-vm-disk@(pool|list|create-[0-7][0-9A-HJKMNP-TV-Z]{25}-[1-9][0-9]{1,2}|delete-[0-7][0-9A-HJKMNP-TV-Z]{25})\.service$/.test(unit || "")
+  )
+    return polkit.Result.YES;
+});
