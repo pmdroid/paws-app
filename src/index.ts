@@ -180,6 +180,7 @@ import {
   commandInstance,
   delegatedLinearUserIdSteps,
   enqueueJobOnce,
+  jobRunAtByKeySteps,
   getLinearSessionAccessSteps,
   getLinearSessionInstallationSteps,
   getLinearSessionSteps,
@@ -1267,6 +1268,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     readToken: () => readVmProviderToken(paths.home, "boat"),
     lookup: (name) => memberVmProviderId(store, name),
   });
+  const vmProviderChecks = createVmProviderChecks({
+    db: store,
+    home: paths.home,
+    checks: { "exe-dev": exeDevKeyCheck(options?.memberVm?.exeDev ?? memberVmExeDev) },
+  });
   const MEMBER_VM_STOP_WAIT_MS = 15_000;
   const memberVmSize = () => memberVmSizeOnly(memberVmSettings());
   const memberVmProvisioning = createMemberVmProvisioning({
@@ -1528,6 +1534,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   try {
     server = startServer({
       storageUsage,
+      vmProviderChecks: {
+        run: (name, signal) => vmProviderChecks.runVmProviderCheck(name, signal),
+        nextCheckAt: () => store.run((q) => jobRunAtByKeySteps(q, VM_PROVIDER_CHECK_JOB)),
+      },
       storageCleanup,
       server: options?.server,
       linearUsage: linear === null ? undefined : () => linear.usage(),
@@ -1844,11 +1854,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         jobKey: RUN_TAKEOVER_JOB,
         recurringEveryMs: RUN_TAKEOVER_MS,
         now: Date.now(),
-      });
-      const vmProviderChecks = createVmProviderChecks({
-        db: store,
-        home: paths.home,
-        checks: { "exe-dev": exeDevKeyCheck(options?.memberVm?.exeDev ?? memberVmExeDev) },
       });
       created.jobs.register(VM_PROVIDER_CHECK_JOB, (_job, context) =>
         vmProviderChecks.runVmProviderChecks(context.signal),

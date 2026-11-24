@@ -301,6 +301,12 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   api("GET PUT DELETE", "/api/settings/runner-vm-keys", "preserved", "src/settings", {
     sample: "/api/settings/runner-vm-keys",
   }),
+  api("GET PUT", "/api/settings/vm-providers", "preserved", "src/settings", {
+    sample: "/api/settings/vm-providers",
+  }),
+  api("POST", "/api/settings/vm-providers/check", "preserved", "src/settings", {
+    sample: "/api/settings/vm-providers/check",
+  }),
   api("POST", "/api/settings/storage/check", "preserved", "src/settings", {
     sample: "/api/settings/storage/check",
   }),
