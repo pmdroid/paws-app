@@ -225,7 +225,12 @@ test("a run state folder that cannot be removed is tried again only once its acc
     uid.mockRestore();
     chmodSync(join(stuck, "src"), 0o700);
   }
+  const recorded = statSync(stuck).ctimeMs;
   chmodSync(stuck, 0o770);
+  while (statSync(stuck).ctimeMs === recorded) {
+    await Bun.sleep(5);
+    chmodSync(stuck, 0o770);
+  }
   await cleaner.sweep();
   expect(existsSync(stuck)).toBe(false);
 });
