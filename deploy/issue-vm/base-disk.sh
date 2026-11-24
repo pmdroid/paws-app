@@ -167,7 +167,16 @@ inspect() {
   [ -z "$(ls -A "$root/var/lib/paws-runner" 2>/dev/null)" ] || fail "runner state is left in /var/lib/paws-runner"
   [ -z "$(find "$root/root" "$root/home" -name authorized_keys 2>/dev/null)" ] || fail "an authorized_keys file is left"
   [ -z "$(find "$root/var/lib/docker" "$root/var/lib/paws-agent-docker" "$root/var/lib/paws-runner-docker" -name engine-id 2>/dev/null)" ] || fail "a Docker engine id is left"
-  [ -x "$root/opt/paws-runner/bin/paws-runner" ] || fail "paws-runner is missing"
+  local release=$root/opt/paws-runner/releases/$PAWS_RUNNER_VERSION/bin/paws-runner
+  if [ ! -f "$release" ] || [ -L "$release" ] || [ ! -x "$release" ]; then
+    fail "paws-runner $PAWS_RUNNER_VERSION is missing"
+  fi
+  case $(readlink "$root/opt/paws-runner/current" 2>/dev/null) in
+    "/opt/paws-runner/releases/$PAWS_RUNNER_VERSION"|"releases/$PAWS_RUNNER_VERSION") ;;
+    *) fail "the runner's current release is not $PAWS_RUNNER_VERSION" ;;
+  esac
+  [ "$(readlink "$root/opt/paws-runner/bin/paws-runner" 2>/dev/null)" = ../current/bin/paws-runner ] || fail "the paws-runner command does not point at the current release"
+  grep -qx 'vm.overcommit_memory = 1' "$root/etc/sysctl.d/90-paws-overcommit.conf" 2>/dev/null || fail "vm.overcommit_memory is not set to 1"
   [ -x "$root/usr/local/bin/kind" ] || fail "kind is missing"
   [ -x "$root/usr/bin/dockerd" ] || fail "Docker Engine is missing"
   [ "$failed" -eq 0 ]
@@ -249,6 +258,8 @@ check() {
     esac
   done
   [ -f "$image" ] || die "No image at $image"
+  local repo
+  repo=$(git -C "$here" rev-parse --show-toplevel) || die "check runs knip on the paws-app checkout around $here, which is not a Git checkout"
   local sums
   sums=$(dirname "$image")/SHA256SUMS
   if [ -f "$sums" ]; then
@@ -299,12 +310,15 @@ sudo runuser -u paws-agent -- docker --host unix:///run/paws-agent-docker/docker
 kind create cluster --name paws-check --wait 180s
 docker exec paws-check-control-plane kubectl get nodes
 kind delete cluster --name paws-check
+[ "$(cat /proc/sys/vm/overcommit_memory)" = 1 ]
 EOF
+  git -C "$repo" archive --format=tar HEAD | ssh "${ssh_options[@]}" "paws@$guest_ip" 'rm -rf paws-app && mkdir paws-app && tar -x -C paws-app'
+  ssh "${ssh_options[@]}" "paws@$guest_ip" 'cd paws-app && /opt/paws-runner/bin/bun install --frozen-lockfile && /opt/paws-runner/bin/bun --bun run knip'
   ssh "${ssh_options[@]}" "paws@$guest_ip" sudo systemctl --no-block poweroff || true
   wait "$vm_pid" || true
   vm_pid=""
   rm -rf "$dir"
-  printf '%s boots to SSH, runs Docker and a kind cluster\n' "$image"
+  printf '%s boots to SSH, runs Docker, a kind cluster and knip\n' "$image"
 }
 
 [ $# -ge 1 ] || { usage >&2; exit 1; }
@@ -316,5 +330,5 @@ case $command in
   *) usage >&2; exit 1 ;;
 esac
 [ "$(id -u)" -eq 0 ] || die "Run base-disk.sh as root: it creates a tap device, NAT rules and loop devices"
-need curl sha256sum qemu-img mkfs.vfat mcopy losetup nft ip sysctl timeout ssh ssh-keygen
+need curl git sha256sum qemu-img mkfs.vfat mcopy losetup nft ip sysctl timeout ssh ssh-keygen
 "$command" "$@"

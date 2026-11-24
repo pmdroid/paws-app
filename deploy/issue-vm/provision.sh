@@ -24,6 +24,10 @@ fetch() {
   printf '%s  %s\n' "$3" "$1" | sha256sum -c --quiet - || die "Checksum mismatch for $2"
 }
 
+printf '%s\n' 'vm.overcommit_memory = 1' > /etc/sysctl.d/90-paws-overcommit.conf
+chmod 0644 /etc/sysctl.d/90-paws-overcommit.conf
+sysctl -q -p /etc/sysctl.d/90-paws-overcommit.conf
+
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get -y -o Dpkg::Options::=--force-confold full-upgrade
