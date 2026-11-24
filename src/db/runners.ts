@@ -8,7 +8,6 @@ import {
   exists,
   getTableColumns,
   gt,
-  gte,
   inArray,
   isNull,
   lte,
@@ -989,14 +988,20 @@ export function* runnerHostVersionSteps(q: Q, runnerId: string) {
 }
 
 export function* runnerCpuPercentSteps(q: Q, runnerId: string, since: number) {
-  const { runnerHostStatus } = q.t;
+  const { runner, runnerHostStatus } = q.t;
   const row = yield* q.one(
     q.orm
-      .select({ cpuPercent: runnerHostStatus.cpuPercent })
+      .select({
+        cpuPercent: runnerHostStatus.cpuPercent,
+        reportedAt: runnerHostStatus.reportedAt,
+        lastSeenAt: runner.lastSeenAt,
+      })
       .from(runnerHostStatus)
-      .where(and(eq(runnerHostStatus.runnerId, runnerId), gte(runnerHostStatus.reportedAt, since))),
+      .innerJoin(runner, eq(runner.id, runnerHostStatus.runnerId))
+      .where(eq(runnerHostStatus.runnerId, runnerId)),
   );
-  return row?.cpuPercent ?? null;
+  if (!row || Math.max(row.reportedAt, row.lastSeenAt ?? 0) < since) return null;
+  return row.cpuPercent;
 }
 
 export async function runnerTargetForRestore(

@@ -710,15 +710,24 @@ test("a saturated runner still comes first when the only cool runner is full", (
     { goldbox: 6, agentbox: 2 },
   ));
 
-test("a missing or stale CPU report leaves packing as it is", () =>
+test("a missing CPU report leaves packing as it is", () =>
   withPool(
     async (pool) => {
       for (let task = 0; task < 3; task++) await pool.occupy("goldbox");
       await pool.cpu("goldbox", undefined);
       await pool.cpu("agentbox", 10);
       expect(await pool.ids()).toEqual(["goldbox", "agentbox"]);
+    },
+    { goldbox: 6, agentbox: 2 },
+  ));
+
+test("an unchanged CPU report from a runner still heartbeating keeps counting after 2 minutes", () =>
+  withPool(
+    async (pool) => {
+      for (let task = 0; task < 3; task++) await pool.occupy("goldbox");
       await pool.cpu("goldbox", 90, 3 * 60_000);
-      expect(await pool.ids()).toEqual(["goldbox", "agentbox"]);
+      await pool.cpu("agentbox", 10);
+      expect(await pool.ids()).toEqual(["agentbox", "goldbox"]);
     },
     { goldbox: 6, agentbox: 2 },
   ));
