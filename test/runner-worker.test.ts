@@ -1,12 +1,11 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { probeRunnerWorker } from "./local/runner-worker";
+import { scratchDirectory } from "./local/scratch";
 
 test("remote worker executes real ACP against exact Git snapshots through a credential-free job", async () => {
-  const root = mkdtempSync(join(tmpdir(), "paws-runner-worker-"));
+  const root = scratchDirectory("paws-runner-worker-");
   const observations: string[] = [];
   try {
     await probeRunnerWorker(root, (name, passed) => {
