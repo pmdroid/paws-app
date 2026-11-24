@@ -110,6 +110,7 @@ export type TestSelect = {
   always?: string[];
   full_on?: string[];
   max_selected?: number;
+  over_max?: "full" | "direct";
   package_roots?: string[];
 };
 

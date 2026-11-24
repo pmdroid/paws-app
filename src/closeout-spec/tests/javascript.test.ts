@@ -215,6 +215,50 @@ test("a changed module selects exactly the tests that reach it at base or head",
   ).toEqual(["test/always.test.ts"]);
 });
 
+test("over_max direct runs the change's direct tests when the selection is over max_selected", async () => {
+  const colocated = {
+    "lib/math.ts": "export const add = 2;\n",
+    "lib/math.test.ts": 'import { add } from "./math";\nadd;\n',
+  };
+  const direct = await planned(colocated, {
+    max_selected: 1,
+    over_max: "direct",
+    always: ["test/always.test.ts"],
+  });
+  expect(direct.selection).toEqual({
+    mode: "selected",
+    targets: ["lib/math.test.ts", "test/always.test.ts"],
+    reasons: [
+      "4 test files are selected, more than max_selected 1; running the change's direct tests and leaving 2 to CI",
+      "lib/math.test.ts is a direct test of the change",
+      "test/always.test.ts is in select.always",
+    ],
+  });
+  expect(direct.invocations[0]?.argv.slice(-2)).toEqual([
+    "./lib/math.test.ts",
+    "./test/always.test.ts",
+  ]);
+  const elsewhere = await planned(
+    {
+      "lib/math.ts": "export const add = 2;\n",
+      "test/new.test.ts": 'import { add } from "../lib/math";\nadd;\n',
+    },
+    { max_selected: 1, over_max: "direct" },
+  );
+  expect(targets(elsewhere)).toEqual(["test/new.test.ts"]);
+  const fullOn = await planned(colocated, {
+    max_selected: 1,
+    over_max: "direct",
+    full_on: ["lib/**"],
+  });
+  expect(fullOn.selection).toEqual({
+    mode: "full",
+    reasons: ["lib/math.ts matches select.full_on"],
+  });
+  const under = await planned(colocated, { max_selected: 10, over_max: "direct" });
+  expect(targets(under)).toEqual(["lib/math.test.ts", "test/barrel.test.ts", "test/lazy.test.ts"]);
+});
+
 test("the bun runner runs the full suite when it can't prove the selection", async () => {
   const math = { "lib/math.ts": "export const add = 2;\n" };
   const reasons = async (...args: Parameters<typeof planned>) => {
@@ -250,6 +294,14 @@ test("the bun runner runs the full suite when it can't prove the selection", asy
   ).toEqual([
     "at head: test/odd.test.ts imports ./generated, which the graph can't follow",
     "at head: test/odd.test.ts imports left-pad-2, which the graph can't follow",
+  ]);
+  expect(
+    await reasons(
+      { "lib/math.ts": "export const add = 2;\n" },
+      { max_selected: 1, over_max: "direct" },
+    ),
+  ).toEqual([
+    "2 test files are selected, more than max_selected 1, and the change has no direct test",
   ]);
   const missing = await planned(math, { always: ["test/gone.test.ts"] });
   expect([missing.invocations, missing.problem]).toEqual([
