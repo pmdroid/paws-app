@@ -232,6 +232,13 @@
       "when": 1795479032305,
       "tag": "0032_issue_vm",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1795481997906,
+      "tag": "0033_vm_host",
+      "breakpoints": true
     }
   ]
 }
