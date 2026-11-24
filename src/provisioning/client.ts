@@ -42,6 +42,7 @@ export const DEFAULT_TIMEOUT_MS: Readonly<Record<ProvisioningOperation, number>>
   createVm: 120_000,
   deleteVm: 120_000,
   getVm: 15_000,
+  listVms: 10_000,
   // A little past exe.dev's own limit, so its 504 arrives before Paws gives up.
   execVm: EXE_DEV_EXEC_LIMIT_MS + 5_000,
   listPools: 15_000,
@@ -52,6 +53,7 @@ export const DEFAULT_MAX_RESPONSE_BYTES: Readonly<Record<ProvisioningOperation, 
   createVm: 64 * 1024,
   deleteVm: 64 * 1024,
   getVm: 64 * 1024,
+  listVms: 1024 * 1024,
   execVm: 8 * 1024 * 1024,
   listPools: 64 * 1024,
   adoptVm: 64 * 1024,
@@ -166,6 +168,25 @@ export function createExeDev(options: ExeDevOptions): ExeDev {
         if (!sizeRefusal(error, size)) throw error;
         throw sizeRefused(error, vm, command, await quietToken(options.readToken));
       }
+    },
+
+    async listVms() {
+      const { status, text } = await call(
+        "listVms",
+        TEAM,
+        "ls",
+        "application/json",
+        timeout.listVms,
+      );
+      const body = parseJson(text);
+      commandFailure("listVms", TEAM, status, body);
+      if (!isRecord(body) || !Array.isArray(body["vms"])) throw invalid("listVms", TEAM, status);
+      const entries: unknown[] = body["vms"];
+      return entries.map((entry) => {
+        const name = isRecord(entry) ? entry["vm_name"] : undefined;
+        if (!isDest(name)) throw invalid("listVms", TEAM, status);
+        return listedVm("listVms", name, status, entry);
+      });
     },
 
     async listPools() {
@@ -485,6 +506,16 @@ function parseListed(vm: string, status: number, text: string): ExeDevVm {
   }
   const entry = matches[0];
   if (matches.length > 1 || entry === undefined) throw invalid("getVm", vm, status);
+  return listedVm("getVm", vm, status, entry);
+}
+
+function listedVm(
+  operation: ProvisioningOperation,
+  vm: string,
+  status: number,
+  entry: unknown,
+): ExeDevVm {
+  if (!isRecord(entry)) throw invalid(operation, vm, status);
   const state = entry["status"];
   const sshDest = entry["ssh_dest"];
   const httpsUrl = entry["https_url"];
@@ -496,7 +527,7 @@ function parseListed(vm: string, status: number, text: string): ExeDevVm {
     !isHttpsUrl(httpsUrl) ||
     (region !== null && (typeof region !== "string" || !STATUS_WORD.test(region)))
   ) {
-    throw invalid("getVm", vm, status);
+    throw invalid(operation, vm, status);
   }
   return { name: vm, status: state, sshDest, httpsUrl, region };
 }

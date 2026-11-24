@@ -94,6 +94,7 @@ export function detaching(exe: FakeExeDev): ExeDev & { outer: OuterCall[] } {
     createVm: (name) => exe.createVm(name),
     deleteVm: (name) => exe.deleteVm(name),
     getVm: (name) => exe.getVm(name),
+    listVms: () => exe.listVms(),
     listPools: () => exe.listPools(),
     adoptVm: (name, pool) => exe.adoptVm(name, pool),
     async execVm(vm, command, options = {}) {
