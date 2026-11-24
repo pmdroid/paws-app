@@ -17,9 +17,18 @@ export type MemberVmSize = {
   image?: string;
   /** The exe.dev pool Create VM places runner VMs in, unless the member picks another. */
   pool?: string;
+  offProviders?: MemberVmProviderName[];
 };
 
-const MEMBER_VM_KEYS = ["provider", "cpu", "memory_gb", "disk_gb", "image", "pool"] as const;
+const MEMBER_VM_KEYS = [
+  "provider",
+  "cpu",
+  "memory_gb",
+  "disk_gb",
+  "image",
+  "pool",
+  "off_providers",
+] as const;
 
 /** Upper bounds that catch typos. exe.dev's plan limits are lower and it says so itself. */
 const MAX_MEMBER_VM_CPU = 512;
@@ -57,7 +66,7 @@ export function assignMemberVmKey(
     throw new Error(
       `Saved settings line ${line} has an unknown key: member_vm.${key} (use ${MEMBER_VM_KEYS.join(", ")})`,
     );
-  let checked: number | string;
+  let checked: number | string | MemberVmProviderName[];
   try {
     checked = checkMemberVmValue(key, value);
   } catch (error) {
@@ -68,6 +77,7 @@ export function assignMemberVmKey(
   else if (key === "memory_gb") size.memoryGb = checked as number;
   else if (key === "disk_gb") size.diskGb = checked as number;
   else if (key === "image") size.image = checked as string;
+  else if (key === "off_providers") size.offProviders = checked as MemberVmProviderName[];
   else size.pool = checked as string;
 }
 
@@ -75,7 +85,15 @@ export function assignMemberVmKey(
 export function checkMemberVmValue(
   key: MemberVmKey,
   value: string | number | boolean | string[],
-): number | string {
+): number | string | MemberVmProviderName[] {
+  if (key === "off_providers") {
+    if (
+      !Array.isArray(value) ||
+      !value.every((id) => (MEMBER_VM_PROVIDERS as readonly unknown[]).includes(id))
+    )
+      throw new Error('member_vm.off_providers must be a list of "exe-dev", "boat" or "instabox"');
+    return [...new Set(value as MemberVmProviderName[])];
+  }
   if (key === "provider") {
     if (!(MEMBER_VM_PROVIDERS as readonly unknown[]).includes(value))
       throw new Error("member_vm.provider must be exe-dev, boat or instabox");
@@ -110,6 +128,9 @@ export function renderMemberVmSettings(size: MemberVmSize | undefined): string {
     ...(size?.diskGb === undefined ? [] : [`disk_gb = ${size.diskGb}`]),
     ...(size?.image === undefined ? [] : [`image = "${size.image}"`]),
     ...(size?.pool === undefined ? [] : [`pool = "${size.pool}"`]),
+    ...(size?.offProviders?.length
+      ? [`off_providers = [${size.offProviders.map((id) => `"${id}"`).join(", ")}]`]
+      : []),
   ];
   return lines.length ? `\n[member_vm]\n${lines.join("\n")}\n` : "";
 }
@@ -122,7 +143,7 @@ export function parseMemberVmSettings(value: unknown): MemberVmSize {
   const unknown = Object.keys(value).find((name) => !(fields as string[]).includes(name));
   if (unknown !== undefined)
     throw new Error(`member_vm has an unknown field: ${unknown} (use ${fields.join(", ")})`);
-  const size: Record<string, number | string> = {};
+  const size: Record<string, number | string | MemberVmProviderName[]> = {};
   for (const key of MEMBER_VM_KEYS) {
     const raw = (value as Record<string, unknown>)[field(key)];
     if (raw !== undefined && raw !== null)
@@ -138,8 +159,8 @@ export function memberVmProvider(settings: MemberVmSize | undefined): MemberVmPr
 
 export function memberVmSizeOnly(
   settings: MemberVmSize | undefined,
-): Omit<MemberVmSize, "provider"> {
-  const { provider: _provider, ...size } = settings ?? {};
+): Omit<MemberVmSize, "provider" | "offProviders"> {
+  const { provider: _provider, offProviders: _off, ...size } = settings ?? {};
   return size;
 }
 
@@ -169,7 +190,7 @@ const FIXED_SIZES = {
 
 export function checkMemberVmSize(
   provider: MemberVmProviderName,
-  size: Omit<MemberVmSize, "provider">,
+  size: Omit<MemberVmSize, "provider" | "offProviders">,
 ): void {
   if (provider === "exe-dev") return;
   const { name, pairs, maxDiskGb } = FIXED_SIZES[provider];

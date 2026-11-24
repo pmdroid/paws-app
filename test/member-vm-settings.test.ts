@@ -72,6 +72,15 @@ test("GET reads the saved size and a save replaces it", async () => {
   expect(await read()).toEqual(saved);
 });
 
+test("saving the size keeps the providers that are turned off", async () => {
+  const { options, read } = await instance('[member_vm]\ncpu = 2\noff_providers = ["boat"]\n');
+  expect(await read()).toEqual({ cpu: 2, offProviders: ["boat"] });
+  await handleMemberVmSettingsRequest(put({ cpu: 4 }), options("admin"));
+  expect(await read()).toEqual({ cpu: 4, offProviders: ["boat"] });
+  await handleMemberVmSettingsRequest(put({ cpu: 4, offProviders: [] }), options("admin"));
+  expect(await read()).toEqual({ cpu: 4 });
+});
+
 test("the next VM is created with the saved size", async () => {
   const { configPath, options } = await instance();
   const provisioning = createMemberVmProvisioning({
