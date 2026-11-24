@@ -47,5 +47,7 @@ export { STORAGE_CLEANUP_PATH, handleStorageCleanupRequest } from "./storage-cle
 export type { StorageCleanupSettingsOptions } from "./storage-cleanup";
 export { MEMBER_VM_SETTINGS_PATH, handleMemberVmSettingsRequest } from "./member-vm";
 export type { MemberVmSettingsOptions } from "./member-vm";
+export { ISSUE_VM_SETTINGS_PATH, handleIssueVmSettingsRequest } from "./issue-vm";
+export type { IssueVmSettingsOptions } from "./issue-vm";
 export { RUNNER_VM_KEYS_SETTINGS_PATH, handleRunnerVmKeysSettingsRequest } from "./runner-vm-keys";
 export type { RunnerVmKeysSettingsOptions } from "./runner-vm-keys";

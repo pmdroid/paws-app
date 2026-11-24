@@ -38,6 +38,7 @@ const WRITER_SECTIONS = [
   "github_access",
   "findings",
   "member_vm",
+  "issue_vm",
   "linear_comments",
 ];
 const BODIES: Record<string, string> = {

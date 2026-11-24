@@ -23,6 +23,7 @@ import {
 import { knownConfigSection, readConfigText, updateConfigText } from "./settings-store";
 import { parseTimeLimitTables, type StoredTimeLimits } from "./time-limits";
 import { assignMemberVmKey, type MemberVmSize } from "./member-vm";
+import { assignIssueVmKey, type StoredIssueVmSettings } from "./issue-vm";
 import { parseProjectSkills, type ProjectSkills } from "./skills";
 
 /** `github.auth`. Paws uses the GitHub App only. */
@@ -94,6 +95,7 @@ export type PawsConfigFile = {
   projectSkills?: ProjectSkills[];
   /** `[member_vm]`: the exe.dev size Create VM asks for. Missing means exe.dev's default. */
   memberVm?: MemberVmSize;
+  issueVm?: StoredIssueVmSettings;
   /** `[brief] template`. Missing means the built-in brief. */
   briefTemplate?: string | null;
   timeLimits?: StoredTimeLimits;
@@ -417,6 +419,10 @@ function assignConfig(
   }
   if (section === "member_vm") {
     assignMemberVmKey((config.memberVm ??= {}), key, value, line);
+    return;
+  }
+  if (section === "issue_vm") {
+    assignIssueVmKey((config.issueVm ??= {}), key, value, line);
     return;
   }
   if (section === "agents") {

@@ -54,6 +54,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/install-host`                                       | Host installation checks and package verification                     |
 | `src/installer`                                          | `paws install`: prompts, env file and the secrets step                |
 | `src/intake`                                             | Delegation intake, dependencies, ordering and repository readiness    |
+| `src/issue-vm`                                           | Issue VMs: records, budget and admission                              |
 | `src/journal`                                            | Durable journal lines for process and workflow events                 |
 | `src/linear`                                             | Tracker adapter, webhooks, polling, sessions and workspace access     |
 | `src/loop`                                               | Agent turns, `restart()` and `ask()`, Closeout, publication, recovery |
