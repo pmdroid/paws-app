@@ -12,10 +12,7 @@ test("the runner installer names the directory it refuses and why", async () => 
     ],
     { env: { PATH: "/usr/bin:/bin", LANG: "C" }, stdout: "ignore", stderr: "pipe" },
   );
-  const [stderr, code] = await Promise.all([
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
+  const [stderr, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
   expect(stderr).toMatch(/Ran 3 tests[\s\S]*\nOK( \(skipped=1\))?\n?$/);
   expect(code).toBe(0);
 });
