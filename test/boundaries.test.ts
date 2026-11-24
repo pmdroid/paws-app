@@ -81,6 +81,7 @@ const MODULES = [
   "provisioning",
   "member-vm",
   "issue-vm",
+  "vm-hosts",
   "vm-provider-checks",
   "review-score",
   "finding-issues",
@@ -177,6 +178,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "deployment",
     "dashboard-links",
     "notebook",
+    "vm-hosts",
   ],
   settings: [
     "acp",
@@ -432,6 +434,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   provisioning: ["journal", "config"],
   "member-vm": ["journal", "config", "db", "provisioning", "workspace"],
   "issue-vm": ["config", "db", "journal", "settings", "workspace"],
+  "vm-hosts": ["db", "journal", "workspace"],
   "vm-provider-checks": ["config", "db", "journal", "provisioning"],
   "review-score": ["db"],
 };

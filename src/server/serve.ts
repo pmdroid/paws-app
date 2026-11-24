@@ -131,6 +131,7 @@ import { createNotebookHttp, type NotebookChannelAccess } from "../notebook";
 import { handleIssueVmGrantRequest, isIssueVmGrantPath } from "../issue-vm";
 import type { WorkspaceSession } from "../db";
 import { isDashboardPage, isDashboardPath } from "../dashboard-links";
+import { handleVmHostRequest, isVmHostPath } from "../vm-hosts";
 
 export type ServerOptions = {
   findingGroups?: FindingGroupServices;
@@ -610,6 +611,8 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         const response = await secrets.blockerChecks(request, access.principal, sessionIds);
         if (response !== null) return response;
       }
+      if (isVmHostPath(path))
+        return (await handleVmHostRequest(request, { db: store, principal: access.principal }))!;
       if (path.startsWith("/api/runners") && secrets.runnerControl !== undefined) {
         const response = await secrets.runnerControl(request, access.principal, sessionIds);
         if (response !== null) return response;
