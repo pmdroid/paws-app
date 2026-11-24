@@ -315,8 +315,10 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
       TAILSCALE_JOIN_TIMEOUT_MS,
       authKey,
     );
-    if (joined.exitCode !== 0)
-      throw failure("tailnet", vm, "tailnet: tailscale up failed", joined, authKey);
+    if (joined.exitCode === 0) return;
+    const explained = explainJoinFailure(joined.stderr);
+    if (explained) throw new BootstrapError("tailnet", `${vm}: ${explained}`);
+    throw failure("tailnet", vm, "tailnet: tailscale up failed", joined, authKey);
   }
 
   return {
@@ -557,6 +559,14 @@ function origin(value: unknown): string | null {
 
 function checkVm(step: BootstrapStep, vm: unknown): asserts vm is string {
   if (!isExeDevVmName(vm)) throw new BootstrapError(step, "The VM name is not an exe.dev name.");
+}
+
+function explainJoinFailure(output: string): string | null {
+  if (/invalid key|does not exist|expired/i.test(output))
+    return "tailnet: the Tailscale auth key saved on Settings › Runner VMs is expired or revoked. Create a new one (reusable, pre-approved, tagged tag:paws-runner) and save it there, then retry.";
+  if (/not yet approved/i.test(output))
+    return "tailnet: the VM is waiting for approval in the Tailscale admin console. Approve it there, or save a pre-approved key on Settings › Runner VMs, then retry.";
+  return null;
 }
 
 function failure(

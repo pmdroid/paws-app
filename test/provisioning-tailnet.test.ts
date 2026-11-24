@@ -37,6 +37,7 @@ type Vm = {
   authFile: boolean;
   joins: string[];
   upExit: number;
+  upOutput: string;
   reachExit: number;
   resolveExit: number;
 };
@@ -56,6 +57,7 @@ function simulate(state: Partial<Vm> = {}): { exe: FakeExeDev; vm: Vm } {
     authFile: false,
     joins: [],
     upExit: 0,
+    upOutput: `backend error: unexpected response for ${AUTHKEY}\n`,
     reachExit: 0,
     resolveExit: 0,
     ...state,
@@ -93,7 +95,7 @@ function simulate(state: Partial<Vm> = {}): { exe: FakeExeDev; vm: Vm } {
     if (up === 0) vm.backend = "Running";
     // The removal runs after `code=$?`, so it happens whatever `tailscale up` returned.
     if (cleanup?.startsWith(`sudo rm -f ${BOOTSTRAP_AUTHKEY_FILE} `)) vm.authFile = false;
-    return up === 0 ? {} : { exitCode: up, stderr: `backend error: invalid key: ${AUTHKEY}\n` };
+    return up === 0 ? {} : { exitCode: up, stderr: vm.upOutput };
   });
   exe.scriptExec(VM, /\/health'/, () =>
     vm.reachExit === 0
@@ -227,6 +229,31 @@ test("the auth key file is removed after the join, whether it succeeded or faile
   // tailscale echoing the key back does not put it in the failure.
   expect(error.message).not.toContain(AUTHKEY);
   expect(error.message).toContain("[redacted]");
+});
+
+test("an expired or revoked auth key fails the tailnet step with how to replace it", async () => {
+  const { exe } = simulate({
+    upExit: 1,
+    upOutput: `backend error: invalid key: API key does not exist ${AUTHKEY}\n`,
+  });
+  const error = await bootstrapError(createExeDevBootstrap(options(exe)).joinTailnet(VM));
+  expect(error.step).toBe("tailnet");
+  expect(error.message).toBe(
+    "ada-paws: tailnet: the Tailscale auth key saved on Settings › Runner VMs is expired or revoked. Create a new one (reusable, pre-approved, tagged tag:paws-runner) and save it there, then retry.",
+  );
+});
+
+test("a key that is not pre-approved fails the tailnet step with how to approve the VM", async () => {
+  const { exe } = simulate({
+    upExit: 1,
+    upOutput:
+      "To approve your machine, visit (as admin):\n\n\thttps://login.tailscale.com/admin\n\nbackend error: Machine is not yet approved by tailnet admin\n",
+  });
+  const error = await bootstrapError(createExeDevBootstrap(options(exe)).joinTailnet(VM));
+  expect(error.step).toBe("tailnet");
+  expect(error.message).toBe(
+    "ada-paws: tailnet: the VM is waiting for approval in the Tailscale admin console. Approve it there, or save a pre-approved key on Settings › Runner VMs, then retry.",
+  );
 });
 
 test("without an auth key the step is skipped and nothing runs on the VM", async () => {
