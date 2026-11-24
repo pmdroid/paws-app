@@ -58,6 +58,11 @@ export {
 } from "./accounts";
 export { clearInheritedSetgid, sharedDirectoryAllowed } from "./shared";
 export {
+  createRunnerSpoolCleaner,
+  removeRunnerJob,
+  type RunnerSpoolCleaner,
+} from "./spool-cleanup";
+export {
   RUNNER_WORK_SWEEP_EVERY_MS,
   createRunnerWorkCleaner,
   openRunnerCheckoutToGroup,
