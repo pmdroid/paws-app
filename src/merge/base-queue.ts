@@ -1,10 +1,10 @@
 import type { Db } from "../db";
-import { branchHasMergeQueue, type SerialMergeResult } from "../github";
+import { branchHasMergeQueue, type GitHubQueueMergeInput, type SerialMergeResult } from "../github";
 import type { MergePull } from "./orders";
 
 const BASE_QUEUE_TTL_MS = 10 * 60_000;
 
-const BASE_BRANCH = "main";
+const PAWS_BASE_BRANCH = "main";
 
 type Answer = { found: boolean; at: number };
 
@@ -19,23 +19,39 @@ function cacheFor(store: Db): Map<string, Answer> {
   return cache;
 }
 
-function key(published: Pick<MergePull, "repository">): string {
-  return `${published.repository.owner}/${published.repository.repo}:${BASE_BRANCH}`;
+type Target = Pick<MergePull, "repository" | "pull">;
+
+function branchKey(published: Pick<MergePull, "repository">, branch: string): string {
+  return `${published.repository.owner}/${published.repository.repo}:${branch}`;
+}
+
+function pullKey(published: Target): string {
+  return `${published.repository.owner}/${published.repository.repo}#${published.pull.number}`;
+}
+
+function fresh(cache: Map<string, Answer>, key: string, now: number): boolean | undefined {
+  const cached = cache.get(key);
+  if (!cached) return undefined;
+  if (now - cached.at < BASE_QUEUE_TTL_MS) return cached.found;
+  cache.delete(key);
+  return undefined;
 }
 
 export async function baseHasMergeQueue(
   store: Db,
-  published: Pick<MergePull, "github" | "repository" | "signal">,
+  published: Pick<MergePull, "github" | "repository" | "pull" | "signal">,
   now: number,
 ): Promise<boolean> {
   const { github, repository } = published;
   const cache = cacheFor(store);
-  const cached = cache.get(key(published));
-  if (cached && now - cached.at < BASE_QUEUE_TTL_MS) return cached.found;
+  if (fresh(cache, pullKey(published), now)) return true;
+  const key = branchKey(published, PAWS_BASE_BRANCH);
+  const cached = fresh(cache, key, now);
+  if (cached !== undefined) return cached;
   const found = await branchHasMergeQueue({
     owner: repository.owner,
     repo: repository.repo,
-    branch: BASE_BRANCH,
+    branch: PAWS_BASE_BRANCH,
     client: github.client,
     appId: github.appId,
     installationId: github.installationId,
@@ -43,19 +59,31 @@ export async function baseHasMergeQueue(
     ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
     signal: published.signal,
   });
-  if (found === null) {
-    cache.delete(key(published));
-    return false;
-  }
-  cache.set(key(published), { found, at: now });
+  if (found === null) return false;
+  cache.set(key, { found, at: now });
   return found;
 }
 
-export function forgetBaseQueue(
+export function baseQueueCache(
   store: Db,
-  published: Pick<MergePull, "github" | "repository">,
-): void {
-  cacheFor(store).delete(key(published));
+  published: Pick<MergePull, "repository">,
+  now: () => number,
+): NonNullable<GitHubQueueMergeInput["queueCache"]> {
+  const cache = cacheFor(store);
+  return {
+    get: (branch) => fresh(cache, branchKey(published, branch), now()),
+    set: (branch, found) => cache.set(branchKey(published, branch), { found, at: now() }),
+  };
+}
+
+export function requireBaseQueue(store: Db, published: Target, now: number): void {
+  const cache = cacheFor(store);
+  cache.delete(branchKey(published, PAWS_BASE_BRANCH));
+  cache.set(pullKey(published), { found: true, at: now });
+}
+
+export function forgetRequiredQueue(store: Db, published: Target): void {
+  cacheFor(store).delete(pullKey(published));
 }
 
 export function refusedForMergeQueue(result: SerialMergeResult | null): boolean {

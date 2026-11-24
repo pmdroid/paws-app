@@ -360,6 +360,10 @@ export type GitHubQueueMergeInput = {
   tokenProvider?: GitHubTokenProvider;
   /** This merge pass already saw the pull request in the queue, so a removal is news. */
   queued: boolean;
+  queueCache?: {
+    get(branch: string): boolean | undefined;
+    set(branch: string, found: boolean): void;
+  };
   isCancelled?: () => Promise<boolean>;
   now?: () => Date;
   signal?: AbortSignal;
@@ -417,7 +421,10 @@ export async function githubQueueMerge(
   if (input.queued && entry.lastRemoval) return { outcome: "removed", removal: entry.lastRemoval };
   if (entry.head !== input.head)
     return { outcome: "sha_moved", message: "pull request head changed before it was queued" };
-  const exists = await hasMergeQueue({ ...base, branch: entry.baseBranch });
+  const exists =
+    input.queueCache?.get(entry.baseBranch) ??
+    (await hasMergeQueue({ ...base, branch: entry.baseBranch }));
+  if (exists !== null) input.queueCache?.set(entry.baseBranch, exists);
   if (exists === null)
     return { outcome: "unreadable", message: "Could not read the GitHub merge queue." };
   if (!exists)

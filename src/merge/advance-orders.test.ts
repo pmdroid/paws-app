@@ -796,10 +796,11 @@ describe("advanceMerge with the GitHub merge queue order", () => {
 });
 
 describe("advanceMerge when main has a GitHub merge queue under another order", () => {
-  async function defaultOrder(branches?: string[]) {
+  async function defaultOrder(branches?: string[], baseBranch?: string) {
     let head = async (): Promise<string> => "";
     const queue = createFakeMergeQueue({
       ...(branches ? { branches } : {}),
+      ...(baseBranch ? { baseBranch } : {}),
       headOf: () => head(),
     });
     const h = await start({ settings: { order: "queue" }, queue });
@@ -815,7 +816,7 @@ describe("advanceMerge when main has a GitHub merge queue under another order", 
     queue.merge(1, "queue-merge-sha");
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(queue.enqueued).toHaveLength(1);
-    expect(queue.calls.filter((call) => call === "exists")).toHaveLength(2);
+    expect(queue.calls.filter((call) => call === "exists")).toHaveLength(1);
     expect(h.github.merged).toEqual([]);
     expect((await getConfirmedRemoteMerge(h.db, "ENG-1"))?.mergeSha).toBe("queue-merge-sha");
   });
@@ -848,6 +849,22 @@ describe("advanceMerge when main has a GitHub merge queue under another order", 
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(queue.enqueued).toHaveLength(1);
     expect(h.github.merged).toEqual([]);
+  });
+
+  test("a pull request retargeted to a branch with a merge queue joins that branch's queue", async () => {
+    const { h, queue } = await defaultOrder(["release"], "release");
+    h.state.mergeDenial = async () => ({
+      status: 405,
+      body: { message: "Changes must be made through the merge queue" },
+    });
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
+    h.state.mergeDenial = null;
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", githubQueue: { queued: true } });
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", githubQueue: { queued: true } });
+    expect(queue.enqueued).toHaveLength(1);
+    expect(queue.calls.filter((call) => call === "exists")).toHaveLength(2);
+    expect(h.github.merged).toEqual([]);
+    expect(await findOpenQuestion(h.db, "ses-ENG-1")).toBeNull();
   });
 });
 

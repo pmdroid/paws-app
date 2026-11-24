@@ -66,7 +66,13 @@ import {
   type OrderCapabilities,
 } from "./orders";
 import type { RebaseConflict } from "./budget";
-import { baseHasMergeQueue, forgetBaseQueue, refusedForMergeQueue } from "./base-queue";
+import {
+  baseHasMergeQueue,
+  baseQueueCache,
+  forgetRequiredQueue,
+  refusedForMergeQueue,
+  requireBaseQueue,
+} from "./base-queue";
 import { recordLaneMerge } from "./batch";
 import { mainMoved as checkQueueBehind } from "./queue-conflicts";
 import { rebaseBudgetForSteps } from "./returns";
@@ -234,7 +240,12 @@ export async function advanceMerge(
   if (githubQueue || (await baseHasMergeQueue(store, published, caps.now()))) {
     const refused = await githubQueuePolicy(merge, caps, published, input.payload);
     if (refused) return refused;
-    const handed = await mergeThroughGitHubQueue(merge, input.payload, published);
+    const handed = await mergeThroughGitHubQueue(
+      merge,
+      input.payload,
+      published,
+      githubQueue ? undefined : baseQueueCache(store, published, () => caps.now()),
+    );
     if (handed !== "no_queue") {
       if (handed.kind === "merged")
         await checkQueueBehind(store, {
@@ -244,7 +255,7 @@ export async function advanceMerge(
         });
       return handed;
     }
-    if (!githubQueue) forgetBaseQueue(store, published);
+    if (!githubQueue) forgetRequiredQueue(store, published);
   }
   const queued = mergeSettings.order === "queue";
   if (queued) {
@@ -561,7 +572,7 @@ export async function advanceMerge(
   const late = await mergedOutsideLane(store, item, caps);
   if (late) return late;
   if (!githubQueue && refusedForMergeQueue(result)) {
-    forgetBaseQueue(store, published);
+    requireBaseQueue(store, published, caps.now());
     return {
       kind: "wait",
       reason: "ci",
