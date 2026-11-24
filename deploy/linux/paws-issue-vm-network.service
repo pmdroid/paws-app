@@ -1,0 +1,14 @@
+[Unit]
+Description=Paws issue VM network rules, rechecked when host addresses change
+StopWhenUnneeded=yes
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/python3 -I -B /opt/paws-runner/current/deploy/linux/issue-vm-network.py watch
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+ProtectHome=yes
+PrivateTmp=yes
