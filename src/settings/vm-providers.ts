@@ -1,7 +1,7 @@
 import {
   loadConfigFile,
   MEMBER_VM_PROVIDERS,
-  writeMemberVmSize,
+  writeMemberVmProviderOff,
   type MemberVmProviderName,
 } from "../config";
 import {
@@ -64,11 +64,7 @@ export async function handleVmProvidersSettingsRequest(
   if (request.method === "POST") {
     const key = body?.key;
     if (!isProviderKey(key)) return json({ error: "Name a VM provider key to check." }, 400);
-    const stored = await options.store.run((q) => vmProviderCheckSteps(q, key));
-    if (stored === null || now() - stored.checkedAt >= VM_PROVIDER_CHECK_REUSE_MS) {
-      await options.checks.run(key, AbortSignal.timeout(VM_PROVIDER_CHECK_BOUND_MS));
-      await options.audit("settings.vm_providers", `Checked the ${key} key`);
-    }
+    await checkOnce(options, key, now);
     return status(options);
   }
   const provider = body?.provider;
@@ -76,18 +72,35 @@ export async function handleVmProvidersSettingsRequest(
     return json({ error: "Tailscale can't be turned off: every provider needs it." }, 400);
   if (!isOffable(provider) || typeof body?.off !== "boolean")
     return json({ error: "Name a provider and whether it is off." }, 400);
-  let size;
   try {
-    size = loadConfigFile(options.configPath).memberVm ?? {};
+    await writeMemberVmProviderOff(options.configPath, provider, body.off);
   } catch (error) {
-    journalCaught(error, "vm-providers.handleVmProvidersSettingsRequest.read", null);
-    return json({ error: "Member VM settings could not be read" }, 503);
+    journalCaught(error, "vm-providers.handleVmProvidersSettingsRequest.write", null);
+    return json({ error: "Member VM settings could not be saved" }, 503);
   }
-  const others = (size.offProviders ?? []).filter((name) => name !== provider);
-  const offProviders = body.off ? [...others, provider] : others;
-  await writeMemberVmSize(options.configPath, { ...size, offProviders });
   await options.audit("settings.vm_providers", `Turned ${provider} ${body.off ? "off" : "on"}`);
   return status(options);
+}
+
+const inFlight = new WeakMap<VmProviderCheckService, Map<VmProviderKeyName, Promise<void>>>();
+
+function checkOnce(
+  options: VmProvidersSettingsOptions,
+  key: VmProviderKeyName,
+  now: () => number,
+): Promise<void> {
+  const flights = inFlight.get(options.checks) ?? new Map<VmProviderKeyName, Promise<void>>();
+  inFlight.set(options.checks, flights);
+  const running = flights.get(key);
+  if (running !== undefined) return running;
+  const flight = (async () => {
+    const stored = await options.store.run((q) => vmProviderCheckSteps(q, key));
+    if (stored !== null && now() - stored.checkedAt < VM_PROVIDER_CHECK_REUSE_MS) return;
+    await options.checks.run(key, AbortSignal.timeout(VM_PROVIDER_CHECK_BOUND_MS));
+    await options.audit("settings.vm_providers", `Checked the ${key} key`);
+  })().finally(() => flights.delete(key));
+  flights.set(key, flight);
+  return flight;
 }
 
 async function status(options: VmProvidersSettingsOptions): Promise<Response> {

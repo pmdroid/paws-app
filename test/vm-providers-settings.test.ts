@@ -132,6 +132,28 @@ test("two checks within 30 s call the provider once, and a later one calls it ag
   ]);
 });
 
+test("overlapping checks of one key call the provider once", async () => {
+  const { exe, providers, keys, tick } = await instance();
+  await keys(send("PUT", "/runner-vm-keys", { exeDev: "exe-token-1" }));
+  tick(60_000);
+  const check = () => providers(send("POST", "/vm-providers/check", { key: "exe-dev" }));
+  const answers = await Promise.all([check(), check(), check()]);
+  expect(answers.map((answer) => answer.status)).toEqual([200, 200, 200]);
+  expect(exe.calls).toHaveLength(2);
+});
+
+test("overlapping toggles of different providers both stay saved", async () => {
+  const { configPath, providers } = await instance();
+  await Promise.all([
+    providers(send("PUT", "/vm-providers", { provider: "boat", off: true })),
+    providers(send("PUT", "/vm-providers", { provider: "instabox", off: true })),
+  ]);
+  expect(loadConfigFile(configPath).memberVm?.offProviders?.toSorted()).toEqual([
+    "boat",
+    "instabox",
+  ]);
+});
+
 test("saving a key returns its check result beside the set flags", async () => {
   const { exe, keys } = await instance();
   const saved = await (
