@@ -129,6 +129,10 @@ export function redactGitHubTokens(text: string, exact: readonly string[] = []):
     .replace(GITHUB_TOKENS, "[redacted]");
 }
 
+export function redactAgentText(text: string, exact: readonly string[] = []): string {
+  return publicText(redactGitHubTokens(text, exact));
+}
+
 export function redactedJson(value: unknown, exact: readonly string[] = []): string {
   return JSON.stringify(value, (_key, entry: unknown) =>
     typeof entry === "string" ? redactGitHubTokens(entry, exact) : entry,

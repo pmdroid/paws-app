@@ -8,6 +8,7 @@ import {
   type LivePreviewSystem,
 } from "../live-preview";
 import {
+  redactAgentText,
   redactGitHubTokens,
   redactedJson,
   runnerCommandAccount,
@@ -1200,13 +1201,18 @@ export async function executeRunnerCommand(
     fsyncSync(eventJournal);
     journalSize += length;
   }
-  const workerFailure = (name: string, error: unknown, ended?: string) => {
+  const workerFailure = (
+    name: string,
+    error: unknown,
+    ended?: string,
+    secrets: readonly string[] = [],
+  ) => {
     const message = redactGitHubTokens(
       error instanceof Error ? error.message : String(error),
       githubRead?.tokens(),
     );
     const cause = describeRunnerFailure(new Error(message), githubRead?.tokens() ?? [], true);
-    const said = message
+    const said = redactAgentText(message, [...(githubRead?.tokens() ?? []), ...secrets])
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 500)
@@ -2532,6 +2538,9 @@ export async function executeRunnerCommand(
         "agent",
         new Error(run.errorMessage ?? ""),
         turnEnded(run, lifetime.signal.aborted && !options.signal?.aborted),
+        ["claude", "codex", "grok", "opencode"].flatMap((name) =>
+          Object.values(accountAgentEnv(name, agentEnv.HOME ?? home)),
+        ),
       );
       writeJournal(
         `execution ${job.executionId} agent turn failed: ${run.errorMessage.replace(/\s+/g, " ")}`,

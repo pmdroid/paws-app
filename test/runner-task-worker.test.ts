@@ -378,7 +378,10 @@ test("an aborted adapter turn persists its agent failure reason", async () => {
   }
 });
 
-async function failedTurn(ended: Record<string, unknown>): Promise<string | undefined> {
+async function failedTurn(
+  ended: Record<string, unknown>,
+  setup: (home: string) => void = () => {},
+): Promise<string | undefined> {
   const root = mkdtempSync(join(tmpdir(), "paws-worker-failed-"));
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));
@@ -389,6 +392,7 @@ async function failedTurn(ended: Record<string, unknown>): Promise<string | unde
     for (const path of [join(workRoot, executionId), outputDirectory, home])
       mkdirSync(path, { recursive: true, mode: 0o700 });
     chmodSync(join(workRoot, executionId), 0o770);
+    setup(home);
     const result = await executeRunnerCommand({
       job: { executionId, command: command("answer") },
       outputDirectory,
@@ -450,4 +454,24 @@ test("a turn stopped at its time limit names the limit", async () => {
   expect(reason).toBe(
     "Run failed during agent: Paws stopped it at its time limit of 3 hours. The turn ran 3 hours.",
   );
+});
+
+test("an agent error keeps provider credentials out of the failure reason", async () => {
+  const key = "account-key-0123456789";
+  const reason = await failedTurn(
+    {
+      errorMessage: `Incorrect API key provided: sk-abcdefghijklmnopqrstuvwxyz ${key} Authorization: Bearer abc.def`,
+    },
+    (home) => {
+      mkdirSync(join(home, ".paws"), { recursive: true });
+      writeFileSync(
+        join(home, ".paws", "api-key.json"),
+        JSON.stringify({ kind: "api_key", agent: "codex", key }),
+      );
+    },
+  );
+  expect(reason).toStartWith("Run failed during agent: Incorrect API key provided: [redacted]");
+  expect(reason).not.toContain("sk-abcdefghij");
+  expect(reason).not.toContain(key);
+  expect(reason).not.toContain("abc.def");
 });
