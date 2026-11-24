@@ -92,19 +92,7 @@ export function createVmProviderChecks(options: VmProviderChecksOptions): VmProv
     }
     const result = await checkVmProviderKey(name, signal);
     if (result === null) return null;
-    const at = now();
-    const previous = await options.db.run((q) => vmProviderCheckSteps(q, name));
-    const works = result.state === "working" || result.state === "limited";
-    const row: VmProviderCheckRow = {
-      name,
-      ...result,
-      checkedAt: at,
-      lastWorkingAt: works ? at : (previous?.lastWorkingAt ?? null),
-    };
-    await options.db.run((q) => putVmProviderCheckSteps(q, row));
-    if (previous?.state !== row.state)
-      journal(`vm provider key ${name}: ${previous?.state ?? "unchecked"} -> ${row.state}`);
-    return row;
+    return saveVmProviderCheck(options.db, name, result, now());
   }
 
   async function runVmProviderChecks(signal?: AbortSignal) {
@@ -115,4 +103,24 @@ export function createVmProviderChecks(options: VmProviderChecksOptions): VmProv
   }
 
   return { checkVmProviderKey, runVmProviderCheck, runVmProviderChecks };
+}
+
+export async function saveVmProviderCheck(
+  db: Db,
+  name: VmProviderKeyName,
+  result: VmProviderCheckResult,
+  at: number,
+): Promise<VmProviderCheckRow> {
+  const previous = await db.run((q) => vmProviderCheckSteps(q, name));
+  const works = result.state === "working" || result.state === "limited";
+  const row: VmProviderCheckRow = {
+    name,
+    ...result,
+    checkedAt: at,
+    lastWorkingAt: works ? at : (previous?.lastWorkingAt ?? null),
+  };
+  await db.run((q) => putVmProviderCheckSteps(q, row));
+  if (previous?.state !== row.state)
+    journal(`vm provider key ${name}: ${previous?.state ?? "unchecked"} -> ${row.state}`);
+  return row;
 }

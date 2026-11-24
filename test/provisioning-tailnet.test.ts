@@ -226,6 +226,7 @@ test("the auth key file is removed after the join, whether it succeeded or faile
   expect(failed.vm.authFile).toBe(false);
   expect(error.step).toBe("tailnet");
   expect(error.message).toContain("tailnet: tailscale up failed (exit 1)");
+  expect(error.join).toBe("failed");
   // tailscale echoing the key back does not put it in the failure.
   expect(error.message).not.toContain(AUTHKEY);
   expect(error.message).toContain("[redacted]");
@@ -241,6 +242,7 @@ test("an expired or revoked auth key fails the tailnet step with how to replace 
   expect(error.message).toBe(
     "ada-paws: tailnet: the Tailscale auth key saved on Settings › Runner VMs is expired or revoked. Create a new one (reusable, pre-approved, tagged tag:paws-runner) and save it there, then retry.",
   );
+  expect(error.join).toBe("rejected");
 });
 
 test("a key that is not pre-approved fails the tailnet step with how to approve the VM", async () => {
@@ -254,6 +256,7 @@ test("a key that is not pre-approved fails the tailnet step with how to approve 
   expect(error.message).toBe(
     "ada-paws: tailnet: the VM is waiting for approval in the Tailscale admin console. Approve it there, or save a pre-approved key on Settings › Runner VMs, then retry.",
   );
+  expect(error.join).toBe("unapproved");
 });
 
 test("without an auth key the step is skipped and nothing runs on the VM", async () => {

@@ -851,6 +851,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     return (await handleRunnerVmKeysSettingsRequest(request, {
       home: loadRuntime(secrets.statusEnv ?? process.env).env.home,
       csrfToken,
+      store,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
         auditWorkspaceAccess(store, {

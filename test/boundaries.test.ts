@@ -430,7 +430,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   "runner-models": ["journal", "db", "runner-work", "runner-protocol"],
   provisioning: ["journal", "config"],
-  "member-vm": ["journal", "config", "db", "provisioning", "workspace"],
+  "member-vm": ["journal", "config", "db", "provisioning", "vm-provider-checks", "workspace"],
   "issue-vm": ["config", "db", "journal", "settings", "workspace"],
   "vm-provider-checks": ["config", "db", "journal", "provisioning"],
   "review-score": ["db"],

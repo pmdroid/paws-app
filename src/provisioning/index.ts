@@ -31,6 +31,8 @@ export type {
   MiseRelease,
   StartInstallResult,
   TailscalePlatform,
+  TailnetJoinFailure,
+  TailnetJoinOutcome,
   TailscaleRelease,
 } from "./bootstrap";
 export {
