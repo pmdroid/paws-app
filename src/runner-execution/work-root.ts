@@ -33,7 +33,7 @@ function list(path: string): string[] {
   }
 }
 
-function* measureSteps(path: string): Generator<void, { bytes: number; newest: number }> {
+export function* measureSteps(path: string): Generator<void, { bytes: number; newest: number }> {
   let bytes = 0;
   let newest = 0;
   const pending = [path];
@@ -49,7 +49,10 @@ function* measureSteps(path: string): Generator<void, { bytes: number; newest: n
   return { bytes, newest };
 }
 
-async function paced<T>(steps: Generator<void, T>, stop: () => boolean): Promise<T | undefined> {
+export async function paced<T>(
+  steps: Generator<void, T>,
+  stop: () => boolean,
+): Promise<T | undefined> {
   for (let count = 1; ; count++) {
     const next = steps.next();
     if (next.done) return next.value;

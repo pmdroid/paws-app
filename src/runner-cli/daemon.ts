@@ -8,6 +8,7 @@ import { openRunnerRetroRuntime } from "../runner-retro-runtime";
 import {
   RUNNER_WORK_SWEEP_EVERY_MS,
   createRunnerSkillInstaller,
+  createRunnerSpoolCleaner,
   createRunnerWorkCleaner,
   type RunnerAgentUser,
   type RunnerWorkCleaner,
@@ -113,16 +114,14 @@ export async function runPairedDaemon(
       daemon,
       workers: () => [runtime.workerLogs, healthNow.workerLogs, retroNow.workerLogs],
     });
-    cleaner = createRunnerWorkCleaner({
-      workRoot: RUNNER_WORK_ROOT,
-      signal,
-      holds: () =>
-        new Set([
-          ...runtime.holds(),
-          ...healthNow.holds(),
-          ...retroNow.status().active.map((entry) => entry.executionId),
-        ]),
-    });
+    const holds = () =>
+      new Set([
+        ...runtime.holds(),
+        ...healthNow.holds(),
+        ...retroNow.status().active.map((entry) => entry.executionId),
+      ]);
+    cleaner = createRunnerWorkCleaner({ workRoot: RUNNER_WORK_ROOT, signal, holds });
+    const spool = createRunnerSpoolCleaner({ spool: shared.spool, signal, holds });
     let sweepAt = 0;
     while (!signal.aborted) {
       if (daemon.identityReplaced()) throw new Error("Runner identity was replaced.");
@@ -136,6 +135,9 @@ export async function runPairedDaemon(
           void cleaner
             .sweep()
             .catch(journalRejection("runner-cli/daemon.runPairedDaemon.sweep", report, null));
+          void spool
+            .sweep()
+            .catch(journalRejection("runner-cli/daemon.runPairedDaemon.spool", report, null));
         }
         if (!signal.aborted) await runtime.tick();
         if (!signal.aborted) await health.tick();

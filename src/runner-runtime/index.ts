@@ -33,6 +33,7 @@ import {
   readRunnerCredentials,
   readRunnerResultFile,
   readRunnerResultRange,
+  removeRunnerJob,
   type RunnerBrokerClient,
   type RunnerSkillInstaller,
   type RunnerSpool,
@@ -616,6 +617,19 @@ export async function openRunnerRuntime(options: {
       } catch (error) {
         journalCaught(error, "runner-runtime.retire.removeRunnerGitHubRead", command.itemId);
       }
+    releaseJob(entry.execution);
+  }
+  function releaseJob(execution: Execution) {
+    if (
+      journal.resultPending(execution.id) ||
+      active.get(key(execution.command))?.execution.id === execution.id
+    )
+      return;
+    try {
+      removeRunnerJob(options.spool, execution.id);
+    } catch (error) {
+      journalCaught(error, "runner-runtime.releaseJob", execution.command.itemId);
+    }
   }
   async function fetchGitHubRead(entry: Active) {
     const command = entry.execution.command;
@@ -1017,6 +1031,7 @@ export async function openRunnerRuntime(options: {
         if (message !== previous?.message) report(error);
       }
     }
+    releaseJob(execution);
   }
   async function prepareFailure(
     execution: Execution,
