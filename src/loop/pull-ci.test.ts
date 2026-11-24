@@ -97,7 +97,7 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
     openedAt: 1,
   });
   const threads = createFakeReviewThreads(THREADS);
-  const queue = createFakeMergeQueue();
+  const queue = createFakeMergeQueue({ branches: [] });
   const state = {
     review: "REVIEW_REQUIRED" as "REVIEW_REQUIRED" | "CHANGES_REQUESTED" | "APPROVED",
     ci: failing as () => Nodes,

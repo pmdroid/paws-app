@@ -26,6 +26,7 @@ export type {
   FakeReviewThread,
 } from "./fake";
 export {
+  branchHasMergeQueue,
   classifyRemoval,
   enqueuePullRequest,
   githubQueueLine,
