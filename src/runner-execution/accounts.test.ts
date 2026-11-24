@@ -264,7 +264,7 @@ test("agent state written by the runner is shared with the agent group before pa
   chmodSync(join(root, ".paws-accounts/binding"), 0o700);
   shareRunnerAgentState(root, owners);
   const mode = (path: string) => statSync(join(root, path)).mode & 0o7777;
-  expect(mode(".local")).toBe(0o770);
+  expect(mode(".local")).toBe(0o2770);
   expect([mode(".cache"), mode(".cache/mise"), mode(".cache/mise/downloads")]).toEqual([
     0o770, 0o700, 0o700,
   ]);
@@ -640,3 +640,37 @@ test("an agent config folder the runner can't fix is journaled once per folder p
   expect(lines[0]).toStartWith("runner agent config folder not shared with the agent group");
   expect(statSync(join(root, ".grok")).mode & 0o7777).toBe(0o700);
 });
+
+test("an agent home's .local without group access is repaired and gets a shared .local/share", () => {
+  const root = agentHome();
+  const owners = { runnerUid: process.getuid!(), agentGid: process.getgid!() };
+  mkdirSync(join(root, ".local/state/wireplumber"), { recursive: true });
+  chmodSync(join(root, ".local"), 0o2700);
+  expect(shareRunnerAgentState(root, owners)).toEqual([]);
+  const mode = (path: string) => statSync(join(root, path)).mode & 0o7777;
+  expect(mode(".local")).toBe(0o2770);
+  expect(mode(".local/share") & 0o2070).toBe(0o2070);
+  expect(statSync(join(root, ".local/share")).gid).toBe(owners.agentGid);
+});
+
+test.skipIf(process.getuid?.() === 0)(
+  "an agent state folder the runner can't read is named instead of failing",
+  () => {
+    const home = join(agentHome(), ".paws-accounts", b.bindingId);
+    const owners = { runnerUid: process.getuid!(), agentGid: process.getgid!() };
+    mkdirSync(join(home, ".local/share/opencode"), { recursive: true });
+    chmodSync(join(home, ".local"), 0o660);
+    const lines: string[] = [];
+    const restore = setJournalSink((line) => lines.push(line));
+    let problems: string[];
+    try {
+      problems = shareRunnerAgentState(home, owners);
+    } finally {
+      restore();
+      chmodSync(join(home, ".local"), 0o700);
+    }
+    const named = `${join(home, ".local")} is not readable by the runner: mode 0660`;
+    expect(problems).toEqual([named]);
+    expect(lines.some((line) => line.includes(named))).toBe(true);
+  },
+);
