@@ -249,7 +249,7 @@ test("over_max direct runs the change's direct tests when the selection is over 
   const fullOn = await planned(colocated, {
     max_selected: 1,
     over_max: "direct",
-    full_on: ["lib/**"],
+    full_on: ["lib/math.ts"],
   });
   expect(fullOn.selection).toEqual({
     mode: "full",

@@ -1,4 +1,4 @@
-import { basename } from "node:path/posix";
+import { basename, dirname } from "node:path/posix";
 import { anyPathMatches, pathMatches } from "../evaluate/paths";
 import type { TestSelect } from "../types";
 import { affectedTests, knownType } from "./graph";
@@ -68,16 +68,55 @@ async function plan(runner: JavaScriptRunner, context: TestContext): Promise<Tes
     full.push("no test file reaches a changed path, and select.always is empty");
   }
   const max = item.select.max_selected;
-  if (max !== undefined && targets.length > max) {
-    full.push(`${targets.length} test files are selected, more than max_selected ${max}`);
-  }
+  const over = max !== undefined && targets.length > max;
+  const overReason = `${targets.length} test files are selected, more than max_selected ${max}`;
+  if (over && item.select.over_max !== "direct") full.push(overReason);
   if (full.length > 0) return fullPlan(runner, context, full);
+  if (over) return directPlan(runner, context, { changed, selected, always, overReason });
   return {
     selection: {
       mode: "selected",
       targets,
       reasons: [
         ...selected.map((path) => `${path} reaches a changed path`),
+        ...always.map((path) => `${path} is in select.always`),
+      ],
+    },
+    ...runner.invocation(context, targets),
+  };
+}
+
+function directPlan(
+  runner: JavaScriptRunner,
+  context: TestContext,
+  input: {
+    changed: ReadonlySet<string>;
+    selected: readonly string[];
+    always: readonly string[];
+    overReason: string;
+  },
+): TestPlan {
+  const { changed, selected, always, overReason } = input;
+  const folders = [...changed]
+    .filter((path) => !selected.includes(path))
+    .map((path) => dirname(path))
+    .filter((folder) => folder !== ".");
+  const direct = selected.filter(
+    (path) =>
+      !always.includes(path) &&
+      (changed.has(path) || folders.some((folder) => path.startsWith(`${folder}/`))),
+  );
+  if (direct.length === 0 && always.length === 0)
+    return fullPlan(runner, context, [`${overReason}, and the change has no direct test`]);
+  const targets = [...direct, ...always].sort();
+  const leftToCi = new Set([...selected, ...always]).size - targets.length;
+  return {
+    selection: {
+      mode: "selected",
+      targets,
+      reasons: [
+        `${overReason}; running the change's direct tests and leaving ${leftToCi} to CI`,
+        ...direct.map((path) => `${path} is a direct test of the change`),
         ...always.map((path) => `${path} is in select.always`),
       ],
     },
