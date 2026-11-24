@@ -11,6 +11,7 @@ import {
   memberVmForMemberSteps,
   memberVmsForMemberSteps,
   memberVmNameTakenSteps,
+  memberVmProviderIdSteps,
   openMemberVmJobSteps,
   recordMemberVmEnrollmentSteps,
   releaseRevokedMemberVmRunnerSteps,
@@ -96,6 +97,10 @@ describePglite((connect) => {
     expect(listed.map((row) => row.id)).toEqual(["first", "later"]);
     expect(await db.run((q) => memberVmNameTakenSteps(q, "first-paws"))).toBe(true);
     expect(await db.run((q) => memberVmNameTakenSteps(q, "free-paws"))).toBe(false);
+    expect(await db.run((q) => memberVmProviderIdSteps(q, "later-paws"))).toBeNull();
+    await setVm(db, "later", { providerVmId: "m_later" });
+    expect(await db.run((q) => memberVmProviderIdSteps(q, "later-paws"))).toBe("m_later");
+    expect(await db.run((q) => memberVmProviderIdSteps(q, "free-paws"))).toBeNull();
   });
 
   test("a step's writes hold only while the VM is on that step and not failed", async () => {

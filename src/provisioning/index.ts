@@ -45,6 +45,8 @@ export {
   EXE_DEV_EXEC_LIMIT_MS,
 } from "./client";
 export type { ExeDevFetch, ExeDevOptions, ExeDevTokenReader } from "./client";
+export { createInstaBox, INSTABOX_ENDPOINT, INSTABOX_TEMPLATE } from "./instabox";
+export type { InstaBoxLookup, InstaBoxOptions } from "./instabox";
 export { createFakeExeDev, FAKE_UNSCRIPTED_EXIT } from "./fake";
 export { createFakeBootstrap } from "./fake-bootstrap";
 export { PINNED_MISE, PINNED_MISE_VERSION } from "./mise";
