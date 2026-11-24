@@ -1,4 +1,3 @@
-import type { askSteps } from "../questions";
 import { journal, journalCaught } from "../journal";
 import { mergeQueueLine, type RepositoryBinding } from "../core";
 import {
@@ -53,12 +52,19 @@ import { mergesAlongside } from "./batch";
 import {
   askMergeHelpSteps,
   rebaseBudgetForSteps,
+  type MergeAsk,
   returnToAgent,
   type MergeRestart,
   type MergeReturnReason,
 } from "./returns";
 import type { MergeStep } from "./step";
-import { ciWaitVerification, githubQueueWatch, type MergeWait } from "./wait";
+import {
+  GITHUB_REVIEW_ASK_AFTER_MS,
+  ciWaitVerification,
+  githubQueueWatch,
+  type GitHubQueueWatch,
+  type MergeWait,
+} from "./wait";
 
 export const REBASE_CONFLICT_INSTRUCTION =
   "The pull request no longer rebases cleanly onto main. Paws already fetched main into origin/main in your checkout. First squash this branch to one commit: note its commit subjects and Co-authored-by trailers, run `git reset --soft $(git merge-base HEAD origin/main)`, and commit once with the pull request title as the subject, the original subjects in the body and each distinct trailer kept once. Then rebase it onto origin/main without fetching again and without a merge commit, resolve every conflict so the change still does what the issue asks, and run the checks again.";
@@ -264,7 +270,7 @@ export type MergeVoice = {
 };
 
 export type OrderCapabilities = {
-  ask: typeof askSteps;
+  ask: MergeAsk;
   now(): number;
   stopped(): Promise<boolean>;
   session(item: WorkItemRecord): string | null;
@@ -342,6 +348,7 @@ export function askHelp(
   body: string,
   reason = "merge_help",
   options?: readonly string[],
+  keepState = false,
 ): Promise<boolean> {
   return store.transaction((q) =>
     askMergeHelpSteps(q, {
@@ -349,6 +356,7 @@ export function askHelp(
       body,
       reason,
       ...(options ? { options } : {}),
+      ...(keepState ? { keepState } : {}),
       now: caps.now(),
       session: caps.session,
       ask: caps.ask,
@@ -731,10 +739,65 @@ export async function mergeThroughGitHubQueue(
         merge,
         `${pull.url ?? `Pull request #${pull.number}`} was closed on GitHub while it waited for the ${name} merge queue.`,
       );
-    case "blocked":
+    case "blocked": {
+      const review = reviewRefusal(result.message);
+      if (review) return waitForGitHubReview(merge, published, watch, review);
+      return { kind: "failed", reason: "merge", message: result.message };
+    }
     case "sha_moved":
       return { kind: "failed", reason: "merge", message: result.message };
   }
+}
+
+const REVIEW_REFUSAL =
+  /\b(?:code owners? review|approving reviews?|reviews? (?:is |are )?required|changes (?:were |are )?requested)\b/i;
+
+function reviewRefusal(message: string): { said: string; wait: string } | null {
+  const said = message
+    .replace(/^.*?merge queue:\s*/i, "")
+    .replace(/^pull request\s+/i, "")
+    .trim();
+  if (!REVIEW_REFUSAL.test(said)) return null;
+  const owners = /waiting on (code owners? review from .+?)\.?$/i.exec(said);
+  return { said, wait: owners ? `Waiting for ${owners[1]}.` : `Waiting for a review: ${said}` };
+}
+
+async function waitForGitHubReview(
+  merge: MergeContext,
+  published: MergePull,
+  watch: GitHubQueueWatch,
+  review: { said: string; wait: string },
+): Promise<MergeStep> {
+  const { store, item, caps } = merge;
+  const { repository, pull, head } = published;
+  const name = `${repository.owner}/${repository.repo}`;
+  const link = pull.url ?? `pull request #${pull.number}`;
+  const since = watch.reviewSince ?? caps.now();
+  const message = `${review.wait} Paws adds ${link} to the ${name} GitHub merge queue once it is approved.`;
+  await store.run((q) =>
+    caps.voice.status(q, item, message, `${item.id}:github-queue:review:${head}`),
+  );
+  let asked = watch.reviewAsked === true;
+  if (!asked && caps.now() - since >= GITHUB_REVIEW_ASK_AFTER_MS)
+    asked = await askHelp(
+      merge,
+      [
+        `${link} has waited 24 hours for a review before it can join the ${name} GitHub merge queue.`,
+        `GitHub says: ${review.said}`,
+        "Paws keeps waiting and adds it to the queue once it is approved. Reply with guidance to send the task back to its agent, or stop the task.",
+      ].join("\n\n"),
+      "merge_review",
+      undefined,
+      true,
+    );
+  await caps.voice.flush();
+  return {
+    kind: "wait",
+    reason: "review",
+    message,
+    head,
+    githubQueue: { queued: false, reviewSince: since, ...(asked ? { reviewAsked: true } : {}) },
+  };
 }
 
 async function githubQueueCiFailed(

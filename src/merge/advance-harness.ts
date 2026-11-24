@@ -48,6 +48,7 @@ import {
 } from "./advance";
 import type { RiskApproval } from "./mergeable";
 import { returnQueuedConflicts } from "./queue-conflicts";
+import type { MergeAsk } from "./returns";
 import type { MergeStep } from "./step";
 
 const exec = promisify(execFile);
@@ -770,9 +771,9 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
 export type MergeHarness = Awaited<ReturnType<typeof mergeHarnessPg>>;
 export type MergeHarnessPg = Awaited<ReturnType<typeof mergeHarnessPg>>;
 
-const ask: typeof rawAsk = function* (q, asker, ...args) {
+const ask: MergeAsk = function* (q, { workspace, ...asker }, ...args) {
   const result = yield* rawAsk(q, asker, ...args);
-  if ((yield* getWorkItemSteps(q, asker.itemId))?.state !== "awaiting_input")
+  if (!workspace && (yield* getWorkItemSteps(q, asker.itemId))?.state !== "awaiting_input")
     yield* applyWorkItemEventSteps(q, asker.itemId, "blocking_question");
   return result;
 };

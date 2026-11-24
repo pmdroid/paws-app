@@ -47,6 +47,46 @@ async function queue() {
   return { db, close, clock };
 }
 
+test("a merge waiting on a GitHub review checks every 15 minutes without expiring, and a review wakes it", async () => {
+  const { db, close, clock } = await queue();
+  try {
+    await insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    const id = await enqueueJob(db, {
+      queue: JOB_KIND.merge,
+      payload: { itemId: "eng-1", head: "h", ciWaitDeadline: clock.now() - 1 },
+      now: clock.now(),
+    });
+    const loop = new JobLoop(db, clock);
+    loop.register(JOB_KIND.merge, async (job) => {
+      expect(
+        await parkMerge(db, job, clock.now(), {
+          reason: "review",
+          message: "Waiting for code owner review from acme/front-end.",
+          head: "h",
+          githubQueue: { queued: false, reviewSince: clock.now() - 2 * 24 * 60 * 60_000 },
+        }),
+      ).toBe("parked");
+    });
+    expect((await loop.tick())?.id).toBe(id);
+    const parked = (await getJob(db, id))!;
+    expect(parked.runAt).toBe(clock.now() + 15 * 60_000);
+    expect(parked.payload).not.toHaveProperty("ciWaitDeadline");
+    const delivery = {
+      deliveryId: "review-approved",
+      event: "pull_request_review",
+      payload: JSON.stringify({
+        action: "submitted",
+        review: { state: "approved" },
+        pull_request: { head: { sha: "h", ref: "elsewhere" } },
+      }),
+    };
+    expect(await acceptGitHubDelivery(db, delivery, clock.now())).toBe(true);
+    expect((await getJob(db, id))!.runAt).toBe(clock.now());
+  } finally {
+    await close();
+  }
+});
+
 test("unknown merge outcomes back off without expiring or spending job attempts", async () => {
   const { db, close, clock } = await queue();
   try {
