@@ -2,12 +2,12 @@
 
 `base-disk.sh` builds the base disk that issue VMs on a VM host start from: Ubuntu 24.04 with Docker, kind, the common build tools and the Paws runner, and no SSH host keys, machine id, cloud-init state, runner enrollment, credentials or logs from the build. It runs on the VM host as root, for the host's own architecture (arm64 or amd64), because the build boots the image once in Cloud Hypervisor under KVM.
 
-| File           | What it holds                                                                                   |
-| -------------- | ----------------------------------------------------------------------------------------------- |
-| `image.env`    | The pinned versions and checksums: Ubuntu cloud image, apt packages, runner, kind, hypervisor   |
-| `provision.sh` | Runs inside the guest as root: installs the packages, the runner and kind from `image.env`      |
-| `seal.sh`      | Runs inside the guest as root: removes identity, credentials, state and logs, then powers off   |
-| `base-disk.sh` | Runs on the host: `build` makes the disk, `check` boots a copy of one and proves it works       |
+| File           | What it holds                                                                                 |
+| -------------- | --------------------------------------------------------------------------------------------- |
+| `image.env`    | The pinned versions and checksums: Ubuntu cloud image, apt packages, runner, kind, hypervisor |
+| `provision.sh` | Runs inside the guest as root: installs the packages, the runner and kind from `image.env`    |
+| `seal.sh`      | Runs inside the guest as root: removes identity, credentials, state and logs, then powers off |
+| `base-disk.sh` | Runs on the host: `build` makes the disk, `check` boots a copy of one and proves it works     |
 
 The boat and InstaBox snapshots run the same `provision.sh` and `seal.sh` with the same `image.env`.
 
