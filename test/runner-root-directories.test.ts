@@ -10,10 +10,9 @@ test("the runner installer names the directory it refuses and why", async () => 
       new URL("../deploy/linux/release.py", import.meta.url).pathname,
       "RootDirectories",
     ],
-    { env: { PATH: "/usr/bin:/bin", LANG: "C" }, stdout: "pipe", stderr: "pipe" },
+    { env: { PATH: "/usr/bin:/bin", LANG: "C" }, stdout: "ignore", stderr: "pipe" },
   );
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(),
+  const [stderr, code] = await Promise.all([
     new Response(child.stderr).text(),
     child.exited,
   ]);
