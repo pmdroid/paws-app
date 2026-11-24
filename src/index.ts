@@ -33,6 +33,7 @@ import {
 import {
   createBoat,
   createExeDev,
+  createInstaBox,
   exeDevTokenReader,
   tailscaleAuthKeyReader,
   latestRunnerRelease,
@@ -1267,13 +1268,17 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     readToken: () => readVmProviderToken(paths.home, "boat"),
     lookup: (name) => memberVmProviderId(store, name),
   });
+  const memberVmInstaBox = createInstaBox({
+    readToken: () => readVmProviderToken(paths.home, "instabox"),
+    lookup: (name) => memberVmProviderId(store, name),
+  });
   const MEMBER_VM_STOP_WAIT_MS = 15_000;
   const memberVmSize = () => memberVmSizeOnly(memberVmSettings());
   const memberVmProvisioning = createMemberVmProvisioning({
     readToken: exeDevToken,
     tailscaleAuthKey,
     size: memberVmSize,
-    providers: [memberVmBoat],
+    providers: [memberVmBoat, memberVmInstaBox],
     ...(options?.memberVm
       ? { exeDev: options.memberVm.exeDev, bootstrap: options.memberVm.bootstrap }
       : {}),
@@ -1871,7 +1876,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         ...(options?.memberVm?.pollMs === undefined ? {} : { pollMs: options.memberVm.pollMs }),
       });
       registerMemberVmDeleteJob(created.jobs, {
-        providers: [options?.memberVm?.exeDev ?? memberVmExeDev, memberVmBoat],
+        providers: [options?.memberVm?.exeDev ?? memberVmExeDev, memberVmBoat, memberVmInstaBox],
         stopTask: async (itemId) => {
           if (orchestrator === null) throw new Error("Paws is still starting. Retry the delete.");
           await submitCommand(store, orchestrator.bus, {

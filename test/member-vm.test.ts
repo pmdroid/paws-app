@@ -354,6 +354,44 @@ describe("member VM", () => {
     expect(f.exeDev.calls).toHaveLength(0);
   });
 
+  test("a row on instabox creates, installs and turns ready through the instabox provider", async () => {
+    const f = await fixture();
+    const started = await startMemberVm(f.db, {
+      ...f.member,
+      provider: "instabox",
+      now: f.clock.now(),
+    });
+    const keys: (string | undefined)[] = [];
+    const loop = new JobLoop(f.db, f.clock, { leaseMs: LEASE_MS });
+    registerMemberVmJob(loop, {
+      provision: () => ({
+        provider: {
+          ...f.exeDev,
+          id: "instabox",
+          async createVm(name, size, request) {
+            keys.push(request?.key);
+            return { ...(await f.exeDev.createVm(name, size)), id: "m_01k0000000000000000000000a" };
+          },
+        },
+        bootstrap: f.bootstrap,
+        size: { cpu: 4, memoryGb: 8 },
+        mintEnrollment: (ref, request) =>
+          f.control.createEnrollment({ ...f.member, userId: ref.userId }, request),
+      }),
+      now: () => f.clock.now(),
+    });
+    const health = await drive(f, loop, (row) => row.step === "health" || row.failure !== null);
+    expect(health.failure).toBeNull();
+    expect(health.provider).toBe("instabox");
+    expect(health.providerVmId).toBe("m_01k0000000000000000000000a");
+    expect(keys).toEqual([started.id]);
+    expect(f.bootstrap.calls.map((call) => call.step)).toContain("startInstall");
+    await heartbeat(f.db, health.runnerId!, f.clock.now());
+    const ready = await drive(f, loop, settled);
+    expect(ready.step).toBe("ready");
+    expect(ready.failure).toBeNull();
+  });
+
   test("a conflict on a name Paws never asked for is a failure", async () => {
     const f = await fixture();
     f.exeDev.addVm("ada-lovelace-paws");
