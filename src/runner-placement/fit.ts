@@ -240,5 +240,10 @@ export function* itemRunnerVerdictsSteps(
     repository,
     agent: input.agent,
     runners,
+    ...(placement.pinnedRunnerId &&
+    order.length &&
+    order.every((id) => id === placement.pinnedRunnerId)
+      ? { pinnedRunnerId: placement.pinnedRunnerId }
+      : {}),
   };
 }

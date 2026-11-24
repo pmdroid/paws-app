@@ -783,3 +783,87 @@ test("an item pinned to a full runner names the pin, not an unavailable runner",
     (await schedulerRunnerSlots(db, NOW)).find((row) => row.itemId === "pinned")?.runnerId,
   ).toBe(agentbox);
 });
+
+async function pinnedBehindFullRunner(pinnedWaits: boolean) {
+  const db = await database();
+  const { pair, queue, pass, workspace } = await workspaceWithRunners(db);
+  const agentbox = await pair("agentbox", 1, [REPOSITORY]);
+  const occupy = async (itemId: string, runnerId: string) => {
+    await queue(itemId);
+    await seed(db, (q) =>
+      q.orm.update(q.t.workItem).set({ state: "running" }).where(eq(q.t.workItem.id, itemId)),
+    );
+    const run = await insertRun(db, { itemId, now: NOW, status: "active" });
+    await insertRunnerWork(db, {
+      runId: run.id,
+      runnerId,
+      workspaceId: workspace.id,
+      commandId: itemId,
+      leaseUntil: NOW + 60 * 60_000,
+    });
+    return run.id;
+  };
+  const occupant = await occupy("busy", agentbox);
+  await queue("early");
+  if (pinnedWaits) {
+    await queue("pinned");
+    const earlier = await insertRun(db, { itemId: "pinned", now: NOW, status: "ended" });
+    await setCurrentRun(db, "pinned", earlier.id);
+    await insertRunnerWork(db, {
+      runId: earlier.id,
+      runnerId: agentbox,
+      workspaceId: workspace.id,
+      commandId: "earlier",
+      leaseUntil: NOW - 1,
+      endedAt: NOW - 1,
+      teardownConfirmedAt: NOW - 1,
+    });
+  }
+  const free = (runId: string, itemId: string) =>
+    seed(
+      db,
+      (q) =>
+        q.orm
+          .update(q.t.runnerWork)
+          .set({ endedAt: NOW, leaseUntil: NOW - 1, teardownConfirmedAt: NOW })
+          .where(eq(q.t.runnerWork.runId, runId)),
+      (q) => q.orm.update(q.t.run).set({ status: "ended" }).where(eq(q.t.run.id, runId)),
+      (q) => q.orm.update(q.t.workItem).set({ state: "merged" }).where(eq(q.t.workItem.id, itemId)),
+    );
+  return { db, pair, pass, agentbox, occupy, free: () => free(occupant, "busy") };
+}
+
+test("a freed slot goes to the item pinned to that runner before unpinned work", async () => {
+  const { db, pair, pass, agentbox, occupy, free } = await pinnedBehindFullRunner(true);
+  const goldbox = await pair("goldbox", 1, [REPOSITORY]);
+  await occupy("elsewhere", goldbox);
+  expect(await pass()).toEqual([]);
+
+  await free();
+  expect(await pass()).toEqual(["pinned"]);
+  expect(
+    (await schedulerRunnerSlots(db, NOW)).find((row) => row.itemId === "pinned")?.runnerId,
+  ).toBe(agentbox);
+  expect((await listItemHolds(db)).some((hold) => hold.itemId === "early")).toBe(true);
+});
+
+test("unpinned work takes another runner's room while a pinned item takes its own", async () => {
+  const { db, pair, pass, agentbox, free } = await pinnedBehindFullRunner(true);
+  const goldbox = await pair("goldbox", 1, [REPOSITORY]);
+  await free();
+  expect((await pass()).sort()).toEqual(["early", "pinned"]);
+  const slots = await schedulerRunnerSlots(db, NOW);
+  expect(slots.find((row) => row.itemId === "pinned")?.runnerId).toBe(agentbox);
+  expect(slots.find((row) => row.itemId === "early")?.runnerId).toBe(goldbox);
+});
+
+test("unpinned work takes a freed slot when no pinned item waits for it", async () => {
+  const { db, pass, agentbox, free } = await pinnedBehindFullRunner(false);
+  expect(await pass()).toEqual([]);
+
+  await free();
+  expect(await pass()).toEqual(["early"]);
+  expect(
+    (await schedulerRunnerSlots(db, NOW)).find((row) => row.itemId === "early")?.runnerId,
+  ).toBe(agentbox);
+});

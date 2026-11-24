@@ -18,6 +18,7 @@ export type ItemRunnerVerdicts = {
   repository: string | null;
   agent: string;
   runners: ItemRunnerVerdict[];
+  pinnedRunnerId?: string;
 };
 
 export type RunnerHostRefusal = {
