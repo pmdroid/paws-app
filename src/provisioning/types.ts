@@ -5,7 +5,9 @@ export type ProvisioningOperation =
   | "getVm"
   | "listVms"
   | "listPools"
-  | "adoptVm";
+  | "adoptVm"
+  | "stopVm"
+  | "resumeVm";
 
 export type ProvisioningErrorCode =
   | "invalid_name"
@@ -27,6 +29,7 @@ export class ProvisioningError extends Error {
   readonly status: number | null;
   /** exe.dev's own `error` text. Kept out of `message`, which may be logged or shown. */
   readonly detail: string | null;
+  readonly retryAfterMs: number | null;
 
   constructor(
     operation: ProvisioningOperation,
@@ -34,6 +37,7 @@ export class ProvisioningError extends Error {
     message: string,
     status: number | null = null,
     detail: string | null = null,
+    retryAfterMs: number | null = null,
   ) {
     super(message);
     this.name = "ProvisioningError";
@@ -41,6 +45,7 @@ export class ProvisioningError extends Error {
     this.code = code;
     this.status = status;
     this.detail = detail;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -96,7 +101,7 @@ export type VmProviderId = "exe-dev" | "boat" | "instabox";
 
 export type VmState = "running" | "starting" | "stopped" | "stopping" | "error" | "unknown";
 
-export type VmCreateRequest = { key: string };
+export type VmCreateRequest = { key: string; from?: string };
 
 export type CreatedVm = { name: string; id: string };
 
@@ -108,6 +113,11 @@ export type VmProvider = {
   deleteVm(name: string): Promise<ExeDevDeleteResult>;
   execVm(name: string, command: string, options?: ExeDevExecOptions): Promise<ExeDevExecResult>;
   getVm(name: string): Promise<ProviderVm>;
+};
+
+export type BoatProvider = VmProvider & {
+  stopVm(name: string): Promise<void>;
+  resumeVm(name: string): Promise<void>;
 };
 
 export type ExeDev = Omit<VmProvider, "createVm" | "getVm"> & {
