@@ -44,7 +44,7 @@ export async function baseHasMergeQueue(
 ): Promise<boolean> {
   const { github, repository } = published;
   const cache = cacheFor(store);
-  if (fresh(cache, pullKey(published), now)) return true;
+  if (cache.has(pullKey(published))) return true;
   const key = branchKey(published, PAWS_BASE_BRANCH);
   const cached = fresh(cache, key, now);
   if (cached !== undefined) return cached;

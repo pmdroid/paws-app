@@ -421,10 +421,9 @@ export async function githubQueueMerge(
   if (input.queued && entry.lastRemoval) return { outcome: "removed", removal: entry.lastRemoval };
   if (entry.head !== input.head)
     return { outcome: "sha_moved", message: "pull request head changed before it was queued" };
-  const exists =
-    input.queueCache?.get(entry.baseBranch) ??
-    (await hasMergeQueue({ ...base, branch: entry.baseBranch }));
-  if (exists !== null) input.queueCache?.set(entry.baseBranch, exists);
+  const cachedQueue = input.queueCache?.get(entry.baseBranch);
+  const exists = cachedQueue ?? (await hasMergeQueue({ ...base, branch: entry.baseBranch }));
+  if (cachedQueue === undefined && exists !== null) input.queueCache?.set(entry.baseBranch, exists);
   if (exists === null)
     return { outcome: "unreadable", message: "Could not read the GitHub merge queue." };
   if (!exists)

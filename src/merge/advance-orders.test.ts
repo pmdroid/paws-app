@@ -860,6 +860,7 @@ describe("advanceMerge when main has a GitHub merge queue under another order", 
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
     h.state.mergeDenial = null;
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", githubQueue: { queued: true } });
+    h.clock.advance(11 * 60_000);
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", githubQueue: { queued: true } });
     expect(queue.enqueued).toHaveLength(1);
     expect(queue.calls.filter((call) => call === "exists")).toHaveLength(2);

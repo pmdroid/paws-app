@@ -44,6 +44,28 @@ function harness(options: { branches?: string[]; failing?: boolean; pending?: bo
 }
 
 describe("GitHub merge queue", () => {
+  test("a cached answer is used without asking GitHub and is not stored again", async () => {
+    const { queue, client } = harness({ pending: true });
+    const sets: [string, boolean][] = [];
+    const queueCache = {
+      get: (branch: string) => (branch === "main" ? true : undefined),
+      set: (branch: string, found: boolean) => void sets.push([branch, found]),
+    };
+    const result = await githubQueueMerge({
+      owner: "acme",
+      repo: "platform",
+      prNumber: 7,
+      head: HEAD,
+      client,
+      tokenProvider: { tokenFor: async () => "ghs_test" } as never,
+      queued: false,
+      queueCache,
+    });
+    expect(result.outcome).toBe("checks_pending");
+    expect(queue.calls).not.toContain("exists");
+    expect(sets).toEqual([]);
+  });
+
   test("detects whether the base branch has a merge queue", async () => {
     const { client } = harness({ branches: ["main"] });
     const read = (branch: string) =>
