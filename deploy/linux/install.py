@@ -101,6 +101,18 @@ def group_inherited(mode):
     return mode & ~stat.S_ISGID
 
 
+def unsafe_reason(path, info):
+    if not stat.S_ISDIR(info.st_mode):
+        return f"{path} is not a directory"
+    if info.st_uid != 0:
+        try:
+            owner = pwd.getpwuid(info.st_uid).pw_name
+        except KeyError:
+            owner = info.st_uid
+        return f"{path} is owned by {owner}, not root"
+    return f"{path} is writable by its group or by others (mode {stat.S_IMODE(info.st_mode):o})"
+
+
 def root_directory(path, mode=0o755):
     if not path.is_absolute():
         raise ValueError("Installation path must be absolute")
@@ -115,7 +127,7 @@ def root_directory(path, mode=0o755):
             pass
         info = current.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
-            raise ValueError("Unsafe root installation directory")
+            raise ValueError(f"{unsafe_reason(current, info)}. The Paws runner installs only under directories that root owns and only root can change.")
     path.chmod(mode)
     sync_directory(path)
 
