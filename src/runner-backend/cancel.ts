@@ -30,6 +30,7 @@ export function createRemoteCancellation(options: {
       const rows = yield* itemRunnerCancelWorkSteps(q, itemId);
       const out: { runId: string; runnerId: string; validUntil: number; deadline: number }[] = [];
       for (const row of rows) {
+        if (row.revoked) continue;
         const at = now();
         if (!row.requested) {
           if ((yield* runTeardownOwnerSteps(q, row.runId)) === null) continue;

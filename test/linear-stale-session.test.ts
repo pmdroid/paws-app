@@ -30,7 +30,10 @@ import { attachOrchestrator } from "../src/loop";
 import { remoteCommandsGoneSteps } from "../src/runner-backend";
 import { RUNNER_LIVE_GRACE_MS } from "../src/runner-work";
 import { pawsPaths } from "../src/config";
+import { createRemoteCancellation } from "../src/runner-backend/cancel";
+import type { RunnerWork } from "../src/runner-work";
 import { seed, withoutForeignKeys } from "./pglite-fixtures";
+import { seedRunner, seedWork } from "./runner-rows";
 import { migratedHome } from "./helpers";
 
 const workItems = (db: Db, state?: string) =>
@@ -331,6 +334,31 @@ test("failed cleanup remains fenced across reopen until teardown succeeds", asyn
     f.setCancel(async () => {});
     await f.orchestrator.onLinearEvent(created("new"));
     expect(await workItems(f.db, "queued")).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a new session creates its item at once when the old run's runner was revoked", async () => {
+  const f = await fixture();
+  try {
+    const [oldRun] = await f.db.run((q) =>
+      q.all(q.orm.select({ id: q.t.run.id }).from(q.t.run).where(eq(q.t.run.itemId, f.oldId))),
+    );
+    await withoutForeignKeys(f.db);
+    await seedRunner(f.db, "goldbox", { status: "revoked", revokedAt: 5 });
+    await seedWork(f.db, oldRun!.id, "goldbox", { endedAt: 1 });
+    const enqueued: unknown[] = [];
+    const work = {
+      enqueueSteps(_q: unknown, command: unknown) {
+        enqueued.push(command);
+        return [][Symbol.iterator]();
+      },
+    } as unknown as RunnerWork;
+    f.setCancel(createRemoteCancellation({ store: f.db, work }));
+    await f.orchestrator.onLinearEvent(created("new"));
+    expect(await workItems(f.db, "queued")).toHaveLength(1);
+    expect(enqueued).toEqual([]);
   } finally {
     await f.close();
   }
