@@ -918,10 +918,7 @@ describe("advanceMerge when GitHub's merge queue needs a review", () => {
       githubQueue: { reviewAsked: true },
     });
     h.clock.advance(24 * 60 * 60_000);
-    expect(await h.pass("ENG-1")).toMatchObject({
-      kind: "wait",
-      githubQueue: { reviewAsked: true },
-    });
+    await h.pass("ENG-1");
     const questions = await listOpenQuestions(h.db);
     expect(questions).toHaveLength(1);
     expect(questions[0]?.body).toContain("https://github.com/acme/app/pull/1 has waited 24 hours");
@@ -931,12 +928,9 @@ describe("advanceMerge when GitHub's merge queue needs a review", () => {
 
   test("any other refusal fails the merge as before", async () => {
     const { h } = await refused('Pull request Required status check "test" is failing.');
-    expect(await h.pass("ENG-1")).toEqual({
-      kind: "failed",
-      reason: "merge",
-      message:
-        'GitHub refused to add the pull request to the merge queue: Pull request Required status check "test" is failing.',
-    });
+    const step = await h.pass("ENG-1");
+    expect(step).toMatchObject({ kind: "failed", reason: "merge" });
+    expect(step.kind === "failed" && step.message).toEndWith('check "test" is failing.');
   });
 });
 

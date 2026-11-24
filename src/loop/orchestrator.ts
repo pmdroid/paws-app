@@ -642,6 +642,7 @@ import { ciCarried, ciChecksFor, type CiChecks, type CiSince } from "./ci-checks
 import { followUpCi, unavailableCi, type FollowUpCi } from "./follow-up-ci";
 import { PULL_REVIEW_POLL_MS, handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
 import {
+  MERGE_REVIEW_REASON,
   REBASE_CONFLICT_INSTRUCTION,
   advanceMerge,
   ciFixHandoff,
@@ -7672,7 +7673,8 @@ export class Orchestrator {
     if (
       open.kind === "push-outage" ||
       open.kind === "policy-outage" ||
-      open.kind === "runner-repository"
+      open.kind === "runner-repository" ||
+      (open.kind === "ci-help" && open.reason === MERGE_REVIEW_REASON)
     ) {
       const outcome = await this.answerInStore(
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },

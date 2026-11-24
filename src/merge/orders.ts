@@ -48,6 +48,7 @@ import {
 } from "../github";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine, type FailedCiCheck } from "./ci-fix";
 import type { RebaseConflict } from "./budget";
+import { MERGE_REVIEW_REASON } from "./merge-denied";
 import { mergesAlongside } from "./batch";
 import {
   askMergeHelpSteps,
@@ -786,7 +787,7 @@ async function waitForGitHubReview(
         `GitHub says: ${review.said}`,
         "Paws keeps waiting and adds it to the queue once it is approved. Reply with guidance to send the task back to its agent, or stop the task.",
       ].join("\n\n"),
-      "merge_review",
+      MERGE_REVIEW_REASON,
       undefined,
       true,
     );

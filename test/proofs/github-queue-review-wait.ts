@@ -1,7 +1,7 @@
-import { join } from "node:path";
 import { JOB_KIND } from "../../src/core";
 import { listJobs } from "../../src/db";
 import { acceptGitHubDelivery } from "../../src/loop";
+import defaultOrder from "./github-queue-default-order";
 import { type Proof } from "./harness";
 
 export default {
@@ -9,21 +9,15 @@ export default {
   summary:
     "GitHub refuses to add the accepted pull request to its merge queue until a code owner reviews it: the item waits in the merge queue instead of failing, and the review event gets it queued and merged.",
   mergeQueue: true,
-  agent: (input) =>
-    input.purpose === "implement"
-      ? [
-          { type: "fs_write", path: join(input.worktree, "widgets.txt"), content: "12\n" },
-          { type: "terminal", command: "git", args: ["add", "widgets.txt"], cwd: input.worktree },
-          {
-            type: "terminal",
-            command: "git",
-            args: ["commit", "-q", "-m", "Count widgets per shelf"],
-            cwd: input.worktree,
-          },
-        ]
-      : [],
+  agent: defaultOrder.agent,
   async run(proof) {
     const queue = proof.github.queue!;
+    const deliver = (deliveryId: string, event: string, body: unknown) =>
+      acceptGitHubDelivery(
+        proof.store,
+        { deliveryId, event, payload: JSON.stringify(body) },
+        Date.now(),
+      );
     queue.refusal = "Pull request Waiting on code owner review from acme/widget-owners.";
     await proof.delegate();
     const refused = await proof.waitFor(
@@ -54,34 +48,18 @@ export default {
     );
     queue.refusal = null;
     const head = queue.enqueued[0]!.head;
-    await acceptGitHubDelivery(
-      proof.store,
-      {
-        deliveryId: "review-approved",
-        event: "pull_request_review",
-        payload: JSON.stringify({
-          action: "submitted",
-          review: { state: "approved" },
-          pull_request: { number: 1, head: { sha: head } },
-        }),
-      },
-      Date.now(),
-    );
+    await deliver("review-approved", "pull_request_review", {
+      action: "submitted",
+      review: { state: "approved" },
+      pull_request: { number: 1, head: { sha: head } },
+    });
     const queued = await proof.waitFor(
       "the review event gets the pull request queued",
       () => queue.isQueued(1),
       120_000,
     );
     queue.merge(1, "queue-merge-sha");
-    await acceptGitHubDelivery(
-      proof.store,
-      {
-        deliveryId: "queue-merged",
-        event: "merge_group",
-        payload: JSON.stringify({ action: "destroyed", reason: "merged" }),
-      },
-      Date.now(),
-    );
+    await deliver("queue-merged", "merge_group", { action: "destroyed", reason: "merged" });
     const merged = await proof.waitFor(
       "the item is merged",
       async () => ["merged", "failed", "manual"].includes((await proof.itemState()) ?? ""),

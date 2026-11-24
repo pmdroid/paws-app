@@ -33,7 +33,7 @@ export {
   type QueueConflictSweep,
 } from "./queue-conflicts";
 export { ciFixHandoff, ciFixQuestion, ciFixRoundLine, type FailedCiCheck } from "./ci-fix";
-export { RETRY_MERGE, retriesMerge } from "./merge-denied";
+export { MERGE_REVIEW_REASON, RETRY_MERGE, retriesMerge } from "./merge-denied";
 export {
   askMergeHelp,
   postMergeConflictSteps,
