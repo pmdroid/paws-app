@@ -53,6 +53,7 @@ items:
         - "**/tsconfig*.json"
         - "scripts/**"
       max_selected: 120
+      over_max: direct
     timeoutSeconds: 1800
     ci: "test (*)"
   - id: links
