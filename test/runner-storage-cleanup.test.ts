@@ -155,7 +155,7 @@ describePglite((connect) => {
         .insert(q.t.runnerHostStatus)
         .values({ runnerId, runnerVersion, reportedAt: NOW })
         .onConflictDoUpdate({ target: q.t.runnerHostStatus.runnerId, set: { runnerVersion } });
-    await seed(db, host(current, "0.1.102"), host(old, "0.1.101"));
+    await seed(db, host(current, "0.1.103"), host(old, "0.1.101"));
     const clock = { now: NOW };
     const sent: RunnerCommand[] = [];
     const service = createStorageCleanup({
