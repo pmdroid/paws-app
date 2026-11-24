@@ -2,6 +2,7 @@ import { journal as journalLine, journalCaught, journalRejection } from "../jour
 import { closeSync, constants, fsyncSync, openSync, rmSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import { totalmem } from "node:os";
 import { prepareRepositorySnapshot } from "../acp";
 import {
   isPermanentGitFailure,
@@ -143,9 +144,17 @@ const workerResult = z.object({
 });
 type AuthorizedRequest = <T>(operation: (token: string) => Promise<T>) => Promise<T>;
 type PushFailure = NonNullable<RunnerResult["pushFailure"]>;
+type FailureReason = NonNullable<RunnerResult["failureReason"]>;
+class WorkerOutOfMemory extends Error {}
 type Active = {
   execution: Execution;
-  interruption?: { reason: string; notify: boolean; pushFailure?: PushFailure; recover?: boolean };
+  interruption?: {
+    reason: string;
+    notify: boolean;
+    pushFailure?: PushFailure;
+    recover?: boolean;
+    failureReason?: FailureReason;
+  };
   restoring?: Promise<void>;
   abort: AbortController;
   deadline: number;
@@ -775,6 +784,7 @@ export async function openRunnerRuntime(options: {
     notify = false,
     pushFailure?: PushFailure,
     recover = false,
+    failureReason?: FailureReason,
   ) {
     const first = !entry.abort.signal.aborted;
     entry.abort.abort();
@@ -784,7 +794,7 @@ export async function openRunnerRuntime(options: {
           `Runner interrupted execution ${entry.execution.id} for run ${entry.execution.command.runId}: ${reason}`,
         ),
       );
-    entry.interruption ??= { reason, notify, pushFailure, recover };
+    entry.interruption ??= { reason, notify, pushFailure, recover, failureReason };
     entry.cleanupSince ??= monotonic();
     journal.phase(entry.execution.id, "cleaning");
     entry.execution.phase = "cleaning";
@@ -808,7 +818,8 @@ export async function openRunnerRuntime(options: {
             `Runner kept the finished turn of execution ${entry.execution.id} for run ${entry.execution.command.runId} without delivering it: ${intent.reason}`,
           ),
         );
-      } else if (intent.notify) await fail(entry.execution, intent.reason, intent.pushFailure);
+      } else if (intent.notify)
+        await fail(entry.execution, intent.reason, intent.pushFailure, intent.failureReason);
       journal.phase(entry.execution.id, "interrupted");
       entry.execution.phase = "interrupted";
       entry.teardownConfirmed = true;
@@ -818,7 +829,12 @@ export async function openRunnerRuntime(options: {
     });
     await entry.stopped;
   }
-  async function fail(execution: Execution, reason: string, pushFailure?: PushFailure) {
+  async function fail(
+    execution: Execution,
+    reason: string,
+    pushFailure?: PushFailure,
+    failureReason?: FailureReason,
+  ) {
     const { command } = execution;
     if (journal.hasResult(execution.id)) return deliverResult(execution);
     if (command.type !== "run" && command.type !== "review" && command.type !== "task") return;
@@ -843,6 +859,7 @@ export async function openRunnerRuntime(options: {
             16_384,
           ),
         ...(pushFailure ? { pushFailure } : {}),
+        ...(failureReason ? { failureReason } : {}),
       }),
       true,
     );
@@ -1875,6 +1892,7 @@ export async function openRunnerRuntime(options: {
         "optional file may be absent",
       );
     }
+    if ((await broker.unitResult?.(id)) === "oom-kill") return false;
     check(entry);
     entry.restarts = (entry.restarts ?? 0) + 1;
     entry.resuming = broker.resume(id);
@@ -1927,6 +1945,10 @@ export async function openRunnerRuntime(options: {
           [
             ...log.matchAll(/"event":"worker_phase","phase":"(checkout|mise|agent|verify|push)"/g),
           ].at(-1)?.[1];
+        if ((await broker.unitResult?.(entry.execution.id)) === "oom-kill")
+          throw new WorkerOutOfMemory(
+            `the runner ran out of memory${phase ? ` during phase ${phase}` : ""} (${(totalmem() / 1024 ** 3).toFixed(1)} GB on this runner)`,
+          );
         throw new Error(
           `worker exited ${exit ? `with ${exit}` : "without a result"}${phase ? ` during phase ${phase}` : ""}`,
         );
@@ -2294,6 +2316,9 @@ export async function openRunnerRuntime(options: {
         entry,
         error instanceof Error ? error.message : "runner error",
         !refused,
+        undefined,
+        false,
+        error instanceof WorkerOutOfMemory ? "out_of_memory" : undefined,
       ).catch(
         journalRejection(
           "runner-runtime.advance.interrupt",
