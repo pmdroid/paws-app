@@ -13,8 +13,6 @@ import {
 
 export const BOAT_ENDPOINT = "https://boat.dev/api/v1";
 
-const BOAT_EXEC_LIMIT_SECONDS = 600;
-
 export type BoatOptions = {
   readToken: ExeDevTokenReader;
   lookup: (name: string) => string | null | Promise<string | null>;
@@ -31,33 +29,12 @@ const TIMEOUT_MS: Readonly<Record<BoatOperation, number>> = {
   execVm: 75_000,
 };
 
-const MAX_BYTES: Readonly<Record<BoatOperation, number>> = {
-  createVm: 64 * 1024,
-  deleteVm: 64 * 1024,
-  getVm: 64 * 1024,
-  execVm: 16 * 1024 * 1024,
-};
-
 const SIZES = [
   [2, 4, "small"],
   [4, 8, "default"],
   [8, 16, "large"],
   [16, 32, "xlarge"],
 ] as const;
-
-const STATES: Readonly<Record<string, VmState>> = {
-  ready: "running",
-  idle: "running",
-  running: "running",
-  init: "starting",
-  provisioning: "starting",
-  provisioned: "starting",
-  cloning: "starting",
-  archiving: "stopping",
-  archived: "stopped",
-  error: "error",
-  cancelled: "error",
-};
 
 const TOKEN = /^[A-Za-z0-9._~+/=-]+$/;
 const SANDBOX_ID = /^bx_[A-Za-z0-9]{1,64}$/;
@@ -66,10 +43,12 @@ const MAX_DETAIL = 300;
 const AUTO_STOP_REFUSED =
   "boat's plan does not allow turning auto-stop off; a runner VM needs that.";
 
-type Answer = { status: number; body: unknown };
-
 function boatVmState(state: string): VmState {
-  return STATES[state] ?? "unknown";
+  if (["ready", "idle", "running"].includes(state)) return "running";
+  if (["init", "provisioning", "provisioned", "cloning"].includes(state)) return "starting";
+  if (state === "archiving") return "stopping";
+  if (state === "archived") return "stopped";
+  return state === "error" || state === "cancelled" ? "error" : "unknown";
 }
 
 function boatSandboxType(size: ExeDevVmSize | undefined): string {
@@ -95,7 +74,7 @@ export function createBoat(options: BoatOptions): VmProvider {
     vm: string,
     request: { method: string; path: string; body?: unknown; headers?: Record<string, string> },
     timeoutMs: number,
-  ): Promise<Answer> {
+  ): Promise<{ status: number; body: unknown }> {
     const token = await bearer(operation, options.readToken);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -116,7 +95,7 @@ export function createBoat(options: BoatOptions): VmProvider {
         }),
         controller.signal,
       );
-      const limit = MAX_BYTES[operation];
+      const limit = operation === "execVm" ? 16 * 1024 * 1024 : 64 * 1024;
       const text = await readCapped(response, limit, controller.signal);
       if (text === null)
         throw new ProvisioningError(
@@ -229,7 +208,7 @@ export function createBoat(options: BoatOptions): VmProvider {
       const requested = execOptions.timeoutMs;
       const seconds =
         requested !== undefined && Number.isFinite(requested) && requested > 0
-          ? Math.min(BOAT_EXEC_LIMIT_SECONDS, Math.max(1, Math.ceil(requested / 1000)))
+          ? Math.min(600, Math.max(1, Math.ceil(requested / 1000)))
           : 30;
       const { status, body } = await call(
         "execVm",

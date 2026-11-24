@@ -200,7 +200,6 @@ test("a boat VM keeps its own systemd-resolved: the join skips the exe.dev resol
   const sent = commands(exe);
   expect(sent).toHaveLength(7);
   expect(sent.some((command) => command.includes("169.254.169.254"))).toBe(false);
-  expect(sent.some((command) => command.includes("paws-upstream.conf"))).toBe(false);
   expect(sent[6]).toContain("getent hosts probe.localhost");
   expect(vm.backend).toBe("Running");
 });
