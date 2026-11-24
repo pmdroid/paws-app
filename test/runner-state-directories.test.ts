@@ -18,6 +18,6 @@ test("shared runner directories belong to paws-runner and reach agents through a
     child.exited,
   ]);
   expect(stdout + stderr).not.toContain("skipped");
-  expect(stderr).toMatch(/Ran 5 tests[\s\S]*\nOK\n?$/);
+  expect(stderr).toMatch(/Ran 6 tests[\s\S]*\nOK\n?$/);
   expect(code).toBe(0);
 });
