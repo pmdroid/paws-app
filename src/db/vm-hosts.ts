@@ -10,7 +10,12 @@ export type VmHostSettings = {
   slotCap: number | null;
 };
 
-export type VmHostRow = VmHostSettings & { runnerId: string; updatedAt: number; updatedBy: string };
+export type VmHostRow = VmHostSettings & {
+  runnerId: string;
+  poolBytes: number | null;
+  updatedAt: number;
+  updatedBy: string;
+};
 
 export type VmHostMachine = {
   runnerId: string;
@@ -53,4 +58,16 @@ export function* deleteVmHostSteps(q: Q, runnerId: string) {
     q.orm.delete(vmHost).where(eq(vmHost.runnerId, runnerId)).returning({ id: vmHost.runnerId }),
   );
   return removed.length > 0;
+}
+
+export function* recordVmHostPoolSteps(q: Q, runnerId: string, poolBytes: number) {
+  const { vmHost } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .update(vmHost)
+      .set({ poolBytes })
+      .where(eq(vmHost.runnerId, runnerId))
+      .returning({ diskGb: vmHost.vmDiskGb, memoryGb: vmHost.vmMemoryGb }),
+  );
+  return rows[0] ?? null;
 }

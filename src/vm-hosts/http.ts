@@ -37,6 +37,7 @@ export type VmHostView = {
   settings: VmHostSettings;
   cpuCount: number | null;
   memoryTotalBytes: number | null;
+  poolBytes: number | null;
   slots: VmHostSlots;
 };
 
@@ -79,7 +80,8 @@ function view(machine: VmHostMachine): VmHostView {
     settings,
     cpuCount: machine.cpuCount,
     memoryTotalBytes: machine.memoryTotalBytes,
-    slots: vmHostSlots(machine, settings),
+    poolBytes: machine.host?.poolBytes ?? null,
+    slots: vmHostSlots({ ...machine, poolBytes: machine.host?.poolBytes ?? null }, settings),
   };
 }
 

@@ -2,7 +2,14 @@ import { journalCaught, journalRejection } from "../journal";
 import { lstatSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { isIdentityRejected, type RunnerDaemon } from "../runner-daemon";
+import {
+  createIssueVmDiskReconciler,
+  isIdentityRejected,
+  issueVmDiskHelperInstalled,
+  issueVmDisks,
+  systemdIssueVmDiskHelper,
+  type RunnerDaemon,
+} from "../runner-daemon";
 import { openRunnerHealthRuntime } from "../runner-health-runtime";
 import { openRunnerRetroRuntime } from "../runner-retro-runtime";
 import {
@@ -79,6 +86,12 @@ export async function runPairedDaemon(
     concurrency: () => daemon.capacity(),
   });
   const storage = createRunnerStorageReporter({ root, daemon });
+  const disks = issueVmDiskHelperInstalled()
+    ? createIssueVmDiskReconciler({
+        disks: issueVmDisks(systemdIssueVmDiskHelper()),
+        post: (body) => daemon.postIssueVmDisks(body),
+      })
+    : null;
   let health: Awaited<ReturnType<typeof openRunnerHealthRuntime>> | undefined;
   let retro: Awaited<ReturnType<typeof openRunnerRetroRuntime>> | undefined;
   let stopping: Promise<void> | undefined;
@@ -141,6 +154,7 @@ export async function runPairedDaemon(
         if (!signal.aborted) await health.tick();
         if (!signal.aborted) await retro.tick();
         if (!signal.aborted) await storage.tick();
+        if (!signal.aborted) void disks?.tick();
         if (!signal.aborted) await cleanups.tick();
       } catch (error) {
         if (!isIdentityRejected(error)) journalCaught(error, "daemon.runPairedDaemon.tick", null);

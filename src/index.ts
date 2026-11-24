@@ -363,6 +363,7 @@ import {
   STORAGE_CLEANUP_TICK_MS,
   createStorageCleanup,
 } from "./storage-cleanup";
+import { handleIssueVmDiskReport } from "./vm-hosts";
 import {
   createImprovementsHttp,
   startImprovementDeliveries,
@@ -1240,7 +1241,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           retros: () => retroDispatcher?.fetch,
           storageReports: async (request, runnerId) =>
             (await storageUsage.fetch(request, runnerId)) ??
-            storageCleanup.fetch(request, runnerId),
+            (await storageCleanup.fetch(request, runnerId)) ??
+            handleIssueVmDiskReport(request, runnerId, { db: store }),
           slackReplyAuthority: (q, input) => slackReplyAllowedSteps(q, paths.home, input),
           repositorySummaryAuthority: repositorySummaryAllowedSteps,
         }).then(async (value) => {

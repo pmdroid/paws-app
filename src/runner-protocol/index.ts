@@ -100,6 +100,12 @@ export {
 
 export { RunnerHealthResultSchema, type RunnerHealthResult } from "./health";
 export {
+  RunnerIssueVmDiskPlanSchema,
+  RunnerIssueVmDiskReportSchema,
+  type RunnerIssueVmDiskPlan,
+  type RunnerIssueVmDiskReport,
+} from "./issue-vm-disks";
+export {
   RUNNER_STORAGE_CATEGORIES,
   RunnerStorageCleanupResultSchema,
   RunnerStorageReportSchema,

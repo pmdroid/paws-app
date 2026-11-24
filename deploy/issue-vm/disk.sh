@@ -17,7 +17,7 @@ die() {
 usage() {
   printf '%s\n' "Usage: disk.sh init POOL_GB BASE_IMAGE" \
     "       disk.sh attach" \
-    "       disk.sh run pool|list|create-ID-GB|delete-ID" \
+    "       disk.sh run pool|list|create-ID-GB-MEMORY_GB|delete-ID" \
     "Keeps one thin disk per issue VM in the LVM thin pool on $image."
 }
 
@@ -60,16 +60,26 @@ operate() {
       awk '{ printf "%d %d\n", $1, $1 * $2 / 100 }'
     ;;
   list)
-    lvs --noheadings --units b --nosuffix --separator ' ' -o lv_name,lv_size "$vg" |
-      awk -v p="$id_pattern" '$1 ~ p { print $1, $2 }'
+    lvs --noheadings --units b --nosuffix --separator ' ' -o lv_name,lv_size,lv_tags "$vg" |
+      awk -v p="$id_pattern" '$1 ~ p {
+        memory = 0
+        if (match($3, /memory_gb_[0-9]+/)) memory = substr($3, RSTART + 10, RLENGTH - 10)
+        print $1, $2, memory * 1073741824
+      }'
     ;;
   create-*)
-    local rest=${op#create-}
-    local id=${rest%-*} gb=${rest##*-}
-    [[ $id =~ $id_pattern && $gb =~ ^[1-9][0-9]{1,2}$ ]] || die "Bad create: $op"
+    local id gb memory size
+    IFS=- read -r _ id gb memory <<<"$op"
+    [[ $id =~ $id_pattern && $gb =~ ^[1-9][0-9]{1,2}$ && $memory =~ ^[1-9][0-9]{0,2}$ ]] ||
+      die "Bad create: $op"
     ((gb >= 10 && gb <= 500)) || die "Disk size must be 10 to 500 GB: $gb"
-    lvs "$vg/$id" >/dev/null 2>&1 || lvcreate -q -s -K -n "$id" "$vg/base" >/dev/null
-    if (($(lv_bytes "$id") < gb * gib)); then lvextend -q -L "${gb}g" "$vg/$id" >/dev/null; fi
+    ((memory <= 128)) || die "Memory must be 1 to 128 GB: $memory"
+    if ! lvs "$vg/$id" >/dev/null 2>&1; then
+      lvcreate -q -s -K -n "$id" --addtag "memory_gb_$memory" "$vg/base" >/dev/null
+    fi
+    size=$(lv_bytes "$id")
+    [[ $size =~ ^[0-9]+$ ]] || die "Could not read the size of $id"
+    if ((size < gb * gib)); then lvextend -q -L "${gb}g" "$vg/$id" >/dev/null; fi
     lvchange -q -ay -K "$vg/$id"
     printf '%s\n' "/dev/$vg/$id"
     ;;
@@ -84,11 +94,11 @@ operate() {
 
 run() {
   local op=${1:-}
-  [[ $op =~ ^(pool|list|create-[0-9A-Z]{26}-[0-9]+|delete-[0-9A-Z]{26})$ ]] || die "Unknown operation: $op"
+  [[ $op =~ ^(pool|list|create-[0-9A-Z]{26}-[0-9]+-[0-9]+|delete-[0-9A-Z]{26})$ ]] || die "Unknown operation: $op"
   install -d -m 0750 -g paws-runner "$out"
-  local result
-  result=$(operate "$op")
-  printf '%s\n' "$result" >"$out/$op.tmp"
+  exec 9>"$out/.lock"
+  flock 9
+  operate "$op" >"$out/$op.tmp"
   chgrp paws-runner "$out/$op.tmp"
   chmod 0640 "$out/$op.tmp"
   mv -f "$out/$op.tmp" "$out/$op.out"

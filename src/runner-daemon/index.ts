@@ -10,6 +10,8 @@ export { RunnerRequestError, RunnerTransportError, transportFailure } from "./tr
 export { isIdentityRejected } from "./transport";
 export {
   createFakeIssueVmDiskHelper,
+  createIssueVmDiskReconciler,
+  issueVmDiskHelperInstalled,
   issueVmDisks,
   systemdIssueVmDiskHelper,
   type IssueVmClone,
