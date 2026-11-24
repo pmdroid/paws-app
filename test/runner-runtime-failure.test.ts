@@ -16,6 +16,7 @@ async function fixture(
     log?: string;
     phase?: string;
     exit?: string;
+    unit?: string;
     gitError?: string;
   } = {},
 ) {
@@ -103,6 +104,7 @@ async function fixture(
       async stop() {},
       alive: () => options.alive ?? true,
       exitStatus: async () => options.exit,
+      unitResult: async () => options.unit,
       log: () => options.log ?? "worker output line\nTypeError: boom",
     },
     daemon: {
@@ -284,6 +286,21 @@ test("persisted phase and unit exit status survive verbose worker output", async
     await f.runtime.tick();
     await until(() => f.results.length > 0);
     expect(f.results[0]!.errorMessage).toContain("worker exited with signal 9 during phase agent");
+    expect(f.results[0]!.failureReason).toBeUndefined();
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a worker unit the OOM killer ended reports out_of_memory with the runner's memory", async () => {
+  const f = await fixture({ alive: false, phase: "agent", exit: "signal 9", unit: "oom-kill" });
+  try {
+    await f.runtime.tick();
+    await until(() => f.results.length > 0);
+    expect(f.results[0]!.failureReason).toBe("out_of_memory");
+    expect(f.results[0]!.errorMessage).toMatch(
+      /the runner ran out of memory during phase agent \(\d+\.\d GB on this runner\)/,
+    );
   } finally {
     await f.cleanup();
   }
