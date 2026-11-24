@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import platform
+import pwd
 import shlex
 import shutil
 import stat
@@ -1580,6 +1581,58 @@ class StateDirectories(unittest.TestCase):
         })
         self.assertEqual(owners["agent/.paws-accounts/binding/account.json"], (60980, 60979))
         self.assertEqual(owners["results/01K00000000000000000000000"], (60980, 60981))
+
+
+class RootDirectories(unittest.TestCase):
+    RULE = "The Paws runner installs only under directories that root owns and only root can change."
+
+    def setUp(self):
+        self.installer = load("install")
+        self.temporary = tempfile.TemporaryDirectory(prefix="paws-root-directories-")
+        self.root = pathlib.Path(self.temporary.name).resolve()
+        self.owned = set()
+        real = pathlib.Path.lstat
+        def lstat(path):
+            if not path.is_relative_to(self.root):
+                return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0)
+            info = real(path)
+            return SimpleNamespace(st_mode=info.st_mode, st_uid=info.st_uid if path in self.owned else 0)
+        self.patch = mock.patch.object(pathlib.Path, "lstat", lstat)
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        self.temporary.cleanup()
+
+    def refusal(self, path):
+        with self.assertRaises(ValueError) as caught:
+            self.installer.root_directory(path / "child")
+        self.assertFalse((path / "child").exists())
+        return str(caught.exception)
+
+    def test_a_file_is_not_a_directory(self):
+        (self.root / "file").write_text("")
+        self.assertEqual(self.refusal(self.root / "file"), f"{self.root}/file is not a directory. {self.RULE}")
+
+    def test_a_parent_owned_by_another_user_names_its_owner(self):
+        parent = self.root / "owned"
+        parent.mkdir(mode=0o755)
+        if os.geteuid() == 0:
+            try:
+                os.chown(parent, 65534, 65534)
+            except PermissionError:
+                self.skipTest("the sandbox cannot chown to another user")
+        self.owned.add(parent)
+        uid = parent.stat().st_uid
+        self.assertEqual(self.refusal(parent), f"{parent} is owned by {pwd.getpwuid(uid).pw_name}, not root. {self.RULE}")
+        with mock.patch.object(self.installer.pwd, "getpwuid", mock.Mock(side_effect=KeyError(uid))):
+            self.assertEqual(self.refusal(parent), f"{parent} is owned by {uid}, not root. {self.RULE}")
+
+    def test_a_group_writable_parent_names_its_mode(self):
+        parent = self.root / "shared"
+        parent.mkdir()
+        parent.chmod(0o775)
+        self.assertEqual(self.refusal(parent), f"{parent} is writable by its group or by others (mode 775). {self.RULE}")
 
 
 class FakeSystemctl:

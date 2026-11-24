@@ -434,6 +434,21 @@ describePglite((connect) => {
     expect(await db.run((q) => runTeardownOwnerSteps(q, "live"))).toBeNull();
   });
 
+  test("a revoked runner's ended run counts as torn down; a paused or offline one's does not", async () => {
+    const db = await connected(connect);
+    await seedRunner(db, "box", { status: "revoked", revokedAt: 5 });
+    await seedRunner(db, "paused", { status: "paused" });
+    await seedRunner(db, "offline", { lastSeenAt: 0, liveReportedAt: 0 });
+    await seedWork(db, "revoked-run", "box", { endedAt: 1 });
+    await seedWork(db, "paused-run", "paused", { endedAt: 1 });
+    await seedWork(db, "offline-run", "offline", { endedAt: 1 });
+    expect(await db.run((q) => runTeardownOwnerSteps(q, "revoked-run"))).toBeNull();
+    expect(await db.run((q) => runnerCancelPendingSteps(q, "box"))).toBe(false);
+    expect((await occupancy(db)).occupied).toBe(0);
+    expect(await db.run((q) => runTeardownOwnerSteps(q, "paused-run"))).toBe("paused");
+    expect(await db.run((q) => runTeardownOwnerSteps(q, "offline-run"))).toBe("offline");
+  });
+
   test("a foreground helper may preempt unfinished grouping", async () => {
     const db = await connected(connect);
     await seedCapacity(db, "box", { capacity: 2 });

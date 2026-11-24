@@ -25,7 +25,13 @@ export function* itemOpenRunnerWorkRunsSteps(q: Q, itemId: string) {
       .select({ runId: runnerWork.runId })
       .from(runnerWork)
       .innerJoin(run, eq(run.id, runnerWork.runId))
-      .where(and(eq(run.itemId, itemId), isNull(runnerWork.endedAt))),
+      .where(
+        and(
+          eq(run.itemId, itemId),
+          isNull(runnerWork.endedAt),
+          sql`NOT EXISTS (SELECT 1 FROM runner r WHERE r.id=${runnerWork.runnerId} AND r.revoked_at IS NOT NULL)`,
+        ),
+      ),
   );
 }
 
@@ -77,6 +83,8 @@ export function* itemRunnerCancelWorkSteps(q: Q, itemId: string) {
           AND NOT EXISTS (SELECT 1 FROM runner_command a WHERE a.runner_id=c.runner_id AND a.run_id=c.run_id
             AND a.generation=c.generation AND a.kind='cancel' AND a.ordinal>c.ordinal AND a.acknowledged_at IS NOT NULL))
           THEN 1 ELSE 0 END`.mapWith(Number),
+        revoked: sql<boolean>`EXISTS (SELECT 1 FROM runner r WHERE r.id=${runnerWork.runnerId}
+          AND r.revoked_at IS NOT NULL)`.mapWith(Boolean),
       })
       .from(runnerWork)
       .innerJoin(run, eq(run.id, runnerWork.runId))
@@ -95,6 +103,7 @@ export async function itemRunnerCancelWork(
     generation: number;
     leaseUntil: number;
     requested: number;
+    revoked: boolean;
   }[]
 > {
   return store.run((q) => itemRunnerCancelWorkSteps(q, itemId));

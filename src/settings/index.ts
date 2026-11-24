@@ -1,4 +1,4 @@
-export { handleAgentSettingsRequest } from "./handler";
+export { handleAgentSettingsRequest, json, localRequest, readJson, sameToken } from "./handler";
 export { BRIEF_SETTINGS_PATH, handleBriefSettingsRequest } from "./brief";
 export type { BriefSettingsOptions } from "./brief";
 export {

@@ -3,6 +3,7 @@ export type ProvisioningOperation =
   | "deleteVm"
   | "execVm"
   | "getVm"
+  | "listVms"
   | "listPools"
   | "adoptVm";
 
@@ -110,6 +111,8 @@ export type VmProvider = {
 };
 
 export type ExeDev = VmProvider & {
+  /** `ls`: every VM the token's team can see. */
+  listVms(): Promise<ExeDevVm[]>;
   /** `pool list`. */
   listPools(): Promise<ExeDevPool[]>;
   /** `pool adopt --vm=<vm> --pool=<pool>`: admins only, and the move can take minutes. */

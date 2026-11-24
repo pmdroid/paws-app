@@ -82,6 +82,7 @@ const MODULES = [
   "member-vm",
   "issue-vm",
   "vm-hosts",
+  "vm-provider-checks",
   "review-score",
   "finding-issues",
   "live-preview",
@@ -158,6 +159,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   server: [
     "credentials",
+    "issue-vm",
     "doctor",
     "journal",
     "runner-placement",
@@ -431,8 +433,9 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-models": ["journal", "db", "runner-work", "runner-protocol"],
   provisioning: ["journal", "config"],
   "member-vm": ["journal", "config", "db", "provisioning", "workspace"],
-  "issue-vm": ["config", "db"],
+  "issue-vm": ["config", "db", "journal", "settings", "workspace"],
   "vm-hosts": ["db", "journal", "workspace"],
+  "vm-provider-checks": ["config", "db", "journal", "provisioning"],
   "review-score": ["db"],
 };
 

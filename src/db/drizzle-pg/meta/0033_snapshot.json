@@ -1,5 +1,5 @@
 {
-  "id": "9097d4e7-8d26-4851-88ee-b9291fe6d071",
+  "id": "b5bbcb90-3236-4eeb-a81b-5a132a5555d4",
   "prevId": "e9d3bfd6-4ae1-4c82-b975-53192732f04c",
   "version": "7",
   "dialect": "postgresql",
@@ -21421,109 +21421,60 @@
       },
       "isRLSEnabled": false
     },
-    "public.vm_host": {
-      "name": "vm_host",
+    "public.vm_provider_check": {
+      "name": "vm_provider_check",
       "schema": "",
       "columns": {
-        "runner_id": {
-          "name": "runner_id",
+        "name": {
+          "name": "name",
           "type": "text",
           "primaryKey": true,
           "notNull": true
         },
-        "vm_vcpus": {
-          "name": "vm_vcpus",
-          "type": "integer",
+        "state": {
+          "name": "state",
+          "type": "text",
           "primaryKey": false,
-          "notNull": true,
-          "default": 2
+          "notNull": true
         },
-        "vm_memory_gb": {
-          "name": "vm_memory_gb",
-          "type": "integer",
+        "message": {
+          "name": "message",
+          "type": "text",
           "primaryKey": false,
-          "notNull": true,
-          "default": 4
+          "notNull": true
         },
-        "vm_disk_gb": {
-          "name": "vm_disk_gb",
-          "type": "integer",
+        "facts": {
+          "name": "facts",
+          "type": "jsonb",
           "primaryKey": false,
-          "notNull": true,
-          "default": 30
+          "notNull": true
         },
-        "reserve_vcpus": {
-          "name": "reserve_vcpus",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 4
-        },
-        "reserve_memory_gb": {
-          "name": "reserve_memory_gb",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 8
-        },
-        "slot_cap": {
-          "name": "slot_cap",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
+        "checked_at": {
+          "name": "checked_at",
           "type": "bigint",
           "primaryKey": false,
           "notNull": true
         },
-        "updated_by": {
-          "name": "updated_by",
-          "type": "text",
+        "last_working_at": {
+          "name": "last_working_at",
+          "type": "bigint",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         }
       },
       "indexes": {},
-      "foreignKeys": {
-        "vm_host_runner_id_runner_id_fk": {
-          "name": "vm_host_runner_id_runner_id_fk",
-          "tableFrom": "vm_host",
-          "tableTo": "runner",
-          "columnsFrom": ["runner_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "vm_host_vm_vcpus": {
-          "name": "vm_host_vm_vcpus",
-          "value": "vm_vcpus BETWEEN 1 AND 32"
+        "vm_provider_check_name": {
+          "name": "vm_provider_check_name",
+          "value": "name IN ('exe-dev','boat','instabox','tailscale')"
         },
-        "vm_host_vm_memory_gb": {
-          "name": "vm_host_vm_memory_gb",
-          "value": "vm_memory_gb BETWEEN 1 AND 128"
-        },
-        "vm_host_vm_disk_gb": {
-          "name": "vm_host_vm_disk_gb",
-          "value": "vm_disk_gb BETWEEN 10 AND 500"
-        },
-        "vm_host_reserve_vcpus": {
-          "name": "vm_host_reserve_vcpus",
-          "value": "reserve_vcpus BETWEEN 0 AND 64"
-        },
-        "vm_host_reserve_memory_gb": {
-          "name": "vm_host_reserve_memory_gb",
-          "value": "reserve_memory_gb BETWEEN 0 AND 256"
-        },
-        "vm_host_slot_cap": {
-          "name": "vm_host_slot_cap",
-          "value": "slot_cap IS NULL OR slot_cap BETWEEN 1 AND 64"
+        "vm_provider_check_state": {
+          "name": "vm_provider_check_state",
+          "value": "state IN ('working','limited','rejected','unreachable')"
         }
       },
       "isRLSEnabled": false

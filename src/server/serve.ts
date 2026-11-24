@@ -128,6 +128,7 @@ import {
   type WorkspacePrincipal,
 } from "../workspace";
 import { createNotebookHttp, type NotebookChannelAccess } from "../notebook";
+import { handleIssueVmGrantRequest, isIssueVmGrantPath } from "../issue-vm";
 import type { WorkspaceSession } from "../db";
 import { isDashboardPage, isDashboardPath } from "../dashboard-links";
 import { handleVmHostRequest, isVmHostPath } from "../vm-hosts";
@@ -879,6 +880,14 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
           subject,
           now: Date.now(),
         }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
+  if (isIssueVmGrantPath(path) && secrets.store && principal) {
+    return (await handleIssueVmGrantRequest(request, {
+      db: secrets.store,
+      principal,
+      csrfToken,
       ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     }))!;
   }

@@ -94,6 +94,7 @@ describePglite((connect) => {
         generation: 2,
         leaseUntil: 9,
         requested: 1,
+        revoked: false,
       },
       {
         runId: "run-old",
@@ -102,6 +103,7 @@ describePglite((connect) => {
         generation: 1,
         leaseUntil: 7,
         requested: 1,
+        revoked: false,
       },
     ]);
     const lookup = { runId: "run-old", runnerId: "box", generation: 1, now: 150 };

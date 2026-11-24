@@ -83,7 +83,8 @@ export const TEARDOWN_UNRESOLVED = `(w.ended_at IS NOT NULL AND w.teardown_confi
   AND NOT EXISTS(SELECT 1 FROM runner_result exited WHERE exited.run_id=w.run_id
     AND exited.generation=w.generation AND exited.command_id=w.command_id)
   AND NOT EXISTS(SELECT 1 FROM runner owner WHERE owner.id=w.runner_id AND (
-    (w.confirmed_at IS NULL AND owner.terminations_since IS NOT NULL
+    owner.revoked_at IS NOT NULL
+    OR (w.confirmed_at IS NULL AND owner.terminations_since IS NOT NULL
       AND owner.live_reported_at>=owner.terminations_since AND EXISTS(
         SELECT 1 FROM runner_command undelivered WHERE undelivered.id=w.command_id
         AND undelivered.acknowledged_at IS NULL AND owner.live_reported_at>undelivered.expires_at))

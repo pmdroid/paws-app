@@ -22,3 +22,4 @@ export * from "./linear-project-team";
 export * from "./storage";
 export * from "./issue-vms";
 export * from "./vm-hosts";
+export * from "./vm-provider-checks";
