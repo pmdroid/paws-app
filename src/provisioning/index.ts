@@ -31,6 +31,8 @@ export type {
   MiseRelease,
   StartInstallResult,
   TailscalePlatform,
+  TailnetJoinFailure,
+  TailnetJoinOutcome,
   TailscaleRelease,
 } from "./bootstrap";
 export { BOAT_ENDPOINT, createBoat } from "./boat";

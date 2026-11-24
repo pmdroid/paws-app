@@ -11,6 +11,7 @@ import {
   listJobs,
   putWorkspaceUser,
   syncWorkspaceMember,
+  vmProviderCheckSteps,
   type Db,
 } from "../src/db";
 import {
@@ -31,6 +32,7 @@ import {
   type ExeDev,
   type FakeBootstrap,
   type FakeExeDev,
+  type JoinTailnetResult,
   ProvisioningError,
   type VmState,
 } from "../src/provisioning";
@@ -59,7 +61,9 @@ afterEach(async () => {
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
-async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
+async function fixture(
+  input: { exeDev?: ExeDev; installPolls?: number; tailnet?: JoinTailnetResult } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), "paws-member-vm-"));
   roots.push(root);
   const clock = new FakeClock(Date.UTC(2026, 9, 25));
@@ -119,6 +123,7 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
   const exeDev = createFakeExeDev();
   const bootstrap = createFakeBootstrap({
     installPolls: input.installPolls ?? 2,
+    ...(input.tailnet === undefined ? {} : { tailnet: input.tailnet }),
     async enroll(vm, token) {
       hosts += 1;
       const key = await createRunnerKey(join(root, `host-${hosts}`));
@@ -525,6 +530,46 @@ describe("member VM", () => {
     const row = await drive(f, loop, (value) => value.step === "health" || !!value.failure);
     expect(row.failure).toBeNull();
     expect(f.bootstrap.calls.filter((call) => call.step === "startInstall")).toHaveLength(1);
+  });
+
+  test("a tailnet join records the Tailscale key as working", async () => {
+    const f = await fixture({ tailnet: "joined" });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    await drive(f, f.jobs(), (value) => value.step === "health" || !!value.failure);
+    const check = await f.db.run((q) => vmProviderCheckSteps(q, "tailscale"));
+    expect(check?.state).toBe("working");
+    expect(check?.facts).toEqual([
+      { name: "join", text: expect.stringContaining("ada-lovelace-paws joined at"), level: "ok" },
+    ]);
+    expect(check?.lastWorkingAt).toBe(check!.checkedAt);
+  });
+
+  test("a join that waits for approval is limited and an expired key is rejected", async () => {
+    const f = await fixture();
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const loop = f.jobs();
+    const check = () => f.db.run((q) => vmProviderCheckSteps(q, "tailscale"));
+    f.bootstrap.fail("joinTailnet", "tailnet: the VM is waiting for approval", 1, "unapproved");
+    await drive(f, loop, settled);
+    const limited = await check();
+    expect(limited?.state).toBe("limited");
+    expect(limited?.facts).toEqual([
+      {
+        name: "join",
+        text: expect.stringMatching(/^ada-lovelace-paws waited .* UTC$/),
+        level: "warn",
+      },
+    ]);
+    expect(JSON.stringify(limited)).not.toContain("tskey");
+    f.bootstrap.fail("joinTailnet", "tailnet: the key is expired or revoked", 1, "rejected");
+    await retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    await drive(f, loop, settled);
+    expect((await check())?.state).toBe("rejected");
+    expect((await check())?.lastWorkingAt).toBe(limited!.checkedAt);
+    f.bootstrap.fail("joinTailnet", "tailnet: tailscale up failed (exit 1)", 1, "failed");
+    await retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    await drive(f, loop, settled);
+    expect((await check())?.state).toBe("unreachable");
   });
 
   test("a failed enroll restages a fresh token on retry", async () => {

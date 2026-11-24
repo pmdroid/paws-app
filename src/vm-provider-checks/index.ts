@@ -11,3 +11,5 @@ export type {
   VmProviderKeyCheck,
 } from "./checks";
 export { exeDevKeyCheck } from "./exe-dev";
+export { recordTailnetJoin } from "./tailscale";
+export type { TailnetJoin } from "./tailscale";

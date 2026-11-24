@@ -38,11 +38,17 @@ export type BootstrapStep =
 
 export class BootstrapError extends Error {
   readonly step: BootstrapStep;
+  join?: TailnetJoinFailure;
 
-  constructor(step: BootstrapStep, message: string, options?: { cause?: unknown }) {
+  constructor(
+    step: BootstrapStep,
+    message: string,
+    options?: { cause?: unknown; join?: TailnetJoinFailure | undefined },
+  ) {
     super(message, options);
     this.name = "BootstrapError";
     this.step = step;
+    if (options?.join !== undefined) this.join = options.join;
   }
 }
 
@@ -115,6 +121,10 @@ export type EnrolledRunner = { runnerId: string; workspaceId: string };
 
 /** `skipped`: no auth key. `joined`: this call joined. `member`: the VM was already on the tailnet. */
 export type JoinTailnetResult = "skipped" | "joined" | "member";
+
+export type TailnetJoinFailure = "rejected" | "unapproved" | "failed";
+
+export type TailnetJoinOutcome = "joined" | TailnetJoinFailure;
 
 export type ExeDevBootstrap = {
   /** Stage the installer, mise, config and token, then run the install as a transient unit. */
@@ -303,6 +313,15 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
 
   /** Send the auth key encrypted to a fresh VM key and run `tailscale up`; the VM drops the file. */
   async function join(vm: string, authKey: string): Promise<void> {
+    try {
+      await runJoin(vm, authKey);
+    } catch (error) {
+      if (isBootstrapError(error)) error.join ??= "failed";
+      throw error;
+    }
+  }
+
+  async function runJoin(vm: string, authKey: string): Promise<void> {
     const key = await exec("tailnet", vm, TAILNET_KEY_COMMAND);
     if (key.exitCode !== 0)
       throw failure("tailnet", vm, "tailnet: could not create the auth key key", key);
@@ -316,8 +335,9 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
       authKey,
     );
     if (joined.exitCode === 0) return;
-    const explained = explainJoinFailure(joined.stderr);
-    if (explained) throw new BootstrapError("tailnet", `${vm}: ${explained}`);
+    const refused = classifyJoinFailure(joined.stderr);
+    if (refused)
+      throw new BootstrapError("tailnet", `${vm}: ${JOIN_FAILURE[refused]}`, { join: refused });
     throw failure("tailnet", vm, "tailnet: tailscale up failed", joined, authKey);
   }
 
@@ -563,11 +583,16 @@ function checkVm(step: BootstrapStep, vm: unknown): asserts vm is string {
   if (!isExeDevVmName(vm)) throw new BootstrapError(step, "The VM name is not an exe.dev name.");
 }
 
-function explainJoinFailure(output: string): string | null {
-  if (/invalid key|does not exist|expired/i.test(output))
-    return "tailnet: the Tailscale auth key saved on Settings › Runner VMs is expired or revoked. Create a new one (reusable, pre-approved, tagged tag:paws-runner) and save it there, then retry.";
-  if (/not yet approved/i.test(output))
-    return "tailnet: the VM is waiting for approval in the Tailscale admin console. Approve it there, or save a pre-approved key on Settings › Runner VMs, then retry.";
+const JOIN_FAILURE = {
+  rejected:
+    "tailnet: the Tailscale auth key saved on Settings › Runner VMs is expired or revoked. Create a new one (reusable, pre-approved, tagged tag:paws-runner) and save it there, then retry.",
+  unapproved:
+    "tailnet: the VM is waiting for approval in the Tailscale admin console. Approve it there, or save a pre-approved key on Settings › Runner VMs, then retry.",
+} as const;
+
+function classifyJoinFailure(output: string): keyof typeof JOIN_FAILURE | null {
+  if (/invalid key|does not exist|expired/i.test(output)) return "rejected";
+  if (/not yet approved/i.test(output)) return "unapproved";
   return null;
 }
 
