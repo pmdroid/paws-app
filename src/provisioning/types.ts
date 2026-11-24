@@ -98,9 +98,9 @@ export type VmState = "running" | "starting" | "stopped" | "stopping" | "error" 
 
 export type VmCreateRequest = { key: string };
 
-export type CreatedVm = ExeDevCreatedVm & { id: string };
+export type CreatedVm = { name: string; id: string };
 
-export type ProviderVm = ExeDevVm & { state: VmState };
+export type ProviderVm = { name: string; status: string; state: VmState };
 
 export type VmProvider = {
   id: VmProviderId;
@@ -110,7 +110,13 @@ export type VmProvider = {
   getVm(name: string): Promise<ProviderVm>;
 };
 
-export type ExeDev = VmProvider & {
+export type ExeDev = Omit<VmProvider, "createVm" | "getVm"> & {
+  createVm(
+    name: string,
+    size?: ExeDevVmSize,
+    request?: VmCreateRequest,
+  ): Promise<ExeDevCreatedVm & CreatedVm>;
+  getVm(name: string): Promise<ExeDevVm & ProviderVm>;
   /** `ls`: every VM the token's team can see. */
   listVms(): Promise<ExeDevVm[]>;
   /** `pool list`. */

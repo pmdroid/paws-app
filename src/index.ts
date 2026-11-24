@@ -30,6 +30,7 @@ import {
   VM_PROVIDER_CHECK_JOB,
 } from "./vm-provider-checks";
 import {
+  createBoat,
   createExeDev,
   exeDevTokenReader,
   tailscaleAuthKeyReader,
@@ -209,6 +210,7 @@ import {
   enqueueRunnerSetupChecks,
   type Steps,
   githubBlobCache,
+  memberVmProviderId,
 } from "./db";
 import { DATABASE_HELD, doctorChecks, formatDoctor, realProbe, withSavedStore } from "./doctor";
 import { installHostMain } from "./install-host";
@@ -1260,12 +1262,17 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     });
   const tailscaleAuthKey = tailscaleAuthKeyReader(paths.home);
   const memberVmExeDev = createExeDev({ readToken: exeDevToken });
+  const memberVmBoat = createBoat({
+    readToken: () => readVmProviderToken(paths.home, "boat"),
+    lookup: (name) => memberVmProviderId(store, name),
+  });
   const MEMBER_VM_STOP_WAIT_MS = 15_000;
   const memberVmSize = () => memberVmSizeOnly(memberVmSettings());
   const memberVmProvisioning = createMemberVmProvisioning({
     readToken: exeDevToken,
     tailscaleAuthKey,
     size: memberVmSize,
+    providers: [memberVmBoat],
     ...(options?.memberVm
       ? { exeDev: options.memberVm.exeDev, bootstrap: options.memberVm.bootstrap }
       : {}),
@@ -1856,7 +1863,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         ...(options?.memberVm?.pollMs === undefined ? {} : { pollMs: options.memberVm.pollMs }),
       });
       registerMemberVmDeleteJob(created.jobs, {
-        providers: [options?.memberVm?.exeDev ?? memberVmExeDev],
+        providers: [options?.memberVm?.exeDev ?? memberVmExeDev, memberVmBoat],
         stopTask: async (itemId) => {
           if (orchestrator === null) throw new Error("Paws is still starting. Retry the delete.");
           await submitCommand(store, orchestrator.bus, {

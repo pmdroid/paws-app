@@ -6,6 +6,7 @@ import {
   ProvisioningError,
   type ExeDev,
   type CreatedVm,
+  type ExeDevCreatedVm,
   type ExeDevExecResult,
   type ExeDevPool,
   type ExeDevVm,
@@ -149,7 +150,7 @@ export function createFakeExeDev(): FakeExeDev {
       rules.push({ ...failure, operation, code, times: failure.times ?? 1 });
     },
 
-    async createVm(name, size): Promise<CreatedVm> {
+    async createVm(name, size): Promise<ExeDevCreatedVm & CreatedVm> {
       const call: Extract<FakeExeDevCall, { operation: "createVm" }> = {
         operation: "createVm",
         vm: String(name),

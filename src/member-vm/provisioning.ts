@@ -8,6 +8,7 @@ import {
   type ExeDevBootstrap,
   type ExeDevTokenReader,
   type ExeDevVmSize,
+  type VmProvider,
   type VmProviderId,
 } from "../provisioning";
 import { providerFor, type MemberVmProvisioning, type MintEnrollment } from "./job";
@@ -31,6 +32,7 @@ export type MemberVmProvisioningSource = {
   /** Reads the VM size from Settings for each Create VM step. */
   size?: () => ExeDevVmSize;
   exeDev?: ExeDev;
+  providers?: readonly VmProvider[];
   /** Replaces the bootstrap built from the release and installer. Tests pass the fake. */
   bootstrap?: ExeDevBootstrap;
 };
@@ -40,7 +42,7 @@ export function createMemberVmProvisioning(
 ): (provider: VmProviderId) => Promise<MemberVmProvisioning> {
   const exeDev = source.exeDev ?? createExeDev({ readToken: source.readToken });
   return async (id) => {
-    const provider = providerFor([exeDev], id);
+    const provider = providerFor([exeDev, ...(source.providers ?? [])], id);
     if (source.publicUrl === null)
       throw new Error("Create VM needs PAWS_PUBLIC_URL so the VM can reach this Paws.");
     const authKey = source.tailscaleAuthKey ?? (() => null);

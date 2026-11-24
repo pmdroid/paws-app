@@ -33,6 +33,8 @@ export type {
   TailscalePlatform,
   TailscaleRelease,
 } from "./bootstrap";
+export { BOAT_ENDPOINT, createBoat } from "./boat";
+export type { BoatOptions } from "./boat";
 export {
   createExeDev,
   DEFAULT_MAX_RESPONSE_BYTES,

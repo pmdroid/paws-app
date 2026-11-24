@@ -157,7 +157,8 @@ async function runStep(
           const created = await provider.createVm(vm, size, { key: row.id });
           providerVmId = created.id;
         } catch (error) {
-          const ours = isProvisioningError(error) && error.code === "conflict" && asked !== null;
+          const conflict = isProvisioningError(error) && error.code === "conflict";
+          const ours = conflict && asked !== null && provider.id === "exe-dev";
           if (ours) journalCaught(error, "member-vm.createVm", null, "resuming our create request");
           // exe.dev names are global, so another account may hold this one. Nothing was created
           // under it for us, so the row takes the next name and asks again.
@@ -170,7 +171,7 @@ async function runStep(
           if (!ours) {
             if (rejected(error))
               await store.run((q) => restoreMemberVmCreateRequestSteps(q, row.id, asked));
-            if (isProvisioningError(error) && error.code === "conflict")
+            if (conflict && provider.id === "exe-dev")
               throw new Error(
                 `exe.dev already has a VM named ${vm} that Paws did not create (conflict).`,
                 { cause: error },
