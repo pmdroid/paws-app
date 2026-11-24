@@ -1,13 +1,12 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { probeRunnerWorker } from "./local/runner-worker";
+import { scratchDirectory } from "./local/scratch";
 import { executeRunnerCommand } from "../src/runner-worker";
 
 test("worker restores protected inputs and excludes them from real candidate checkpoints", async () => {
-  const root = mkdtempSync(join(tmpdir(), "paws-private-input-worker-"));
+  const root = scratchDirectory("paws-private-input-worker-");
   const observations: string[] = [];
   try {
     await probeRunnerWorker(

@@ -1,13 +1,13 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { probeRunnerWorker } from "./local/runner-worker";
+import { scratchDirectory } from "./local/scratch";
 
 test("worker publications stay hidden until ownership is ready", async () => {
-  const root = mkdtempSync(join(tmpdir(), "paws-worker-publication-"));
+  const root = scratchDirectory("paws-worker-publication-");
   const source = fileURLToPath(new URL("../src/runner-worker/index.ts", import.meta.url));
   const dependencies = ["acp", "runner-execution", "runner-answers", "install"].map((name) => ({
     name,
