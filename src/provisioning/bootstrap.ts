@@ -365,15 +365,17 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
         if (installed.exitCode !== 0)
           throw failure("tailnet", vm, "tailnet: could not install Tailscale", installed);
       }
-      const resolver = await detached(
-        "tailnet",
-        "resolved-setup",
-        vm,
-        RESOLVED_SETUP_COMMAND,
-        RESOLVED_SETUP_TIMEOUT_MS,
-      );
-      if (resolver.exitCode !== 0)
-        throw failure("tailnet", vm, "tailnet: could not set up systemd-resolved", resolver);
+      if (options.exeDev.id === "exe-dev") {
+        const resolver = await detached(
+          "tailnet",
+          "resolved-setup",
+          vm,
+          RESOLVED_SETUP_COMMAND,
+          RESOLVED_SETUP_TIMEOUT_MS,
+        );
+        if (resolver.exitCode !== 0)
+          throw failure("tailnet", vm, "tailnet: could not set up systemd-resolved", resolver);
+      }
       let result: JoinTailnetResult = "member";
       if (state.backend !== "Running") {
         // A matching version skips the install, which is what starts tailscaled. On a retry, after a

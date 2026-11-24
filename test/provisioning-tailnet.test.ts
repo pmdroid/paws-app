@@ -192,6 +192,19 @@ test("a fresh VM installs the pinned Tailscale, sets up systemd-resolved, joins,
   expect(vm.backend).toBe("Running");
 });
 
+test("a boat VM keeps its own systemd-resolved: the join skips the exe.dev resolver setup", async () => {
+  const { exe, vm } = simulate();
+  const boat = options(exe);
+  const bootstrap = createExeDevBootstrap({ ...boat, exeDev: { ...boat.exeDev, id: "boat" } });
+  expect(await bootstrap.joinTailnet(VM)).toBe("joined");
+  const sent = commands(exe);
+  expect(sent).toHaveLength(7);
+  expect(sent.some((command) => command.includes("169.254.169.254"))).toBe(false);
+  expect(sent.some((command) => command.includes("paws-upstream.conf"))).toBe(false);
+  expect(sent[6]).toContain("getent hosts probe.localhost");
+  expect(vm.backend).toBe("Running");
+});
+
 test("a VM that cannot resolve probe.localhost fails the tailnet step with the check's output", async () => {
   const { exe } = simulate({ resolveExit: 3 });
   const error = await bootstrapError(createExeDevBootstrap(options(exe)).joinTailnet(VM));
