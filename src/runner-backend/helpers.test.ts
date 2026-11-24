@@ -1298,6 +1298,60 @@ test("a helper no runner can take names each runner's reason", async () => {
   );
 });
 
+const EACCES = "EACCES: permission denied, lstat '/var/lib/paws-agent/.local/share'";
+
+async function reportHealth(
+  f: Awaited<ReturnType<typeof answerTask>>,
+  runnerId: string,
+  failure?: string,
+) {
+  await recordRunnerHostStatus(
+    f.db,
+    runnerId,
+    { runnerVersion: CURRENT_RUNNER_RELEASE, ...(failure ? { healthFailure: failure } : {}) },
+    Date.now(),
+  );
+}
+
+async function helperOn(f: Awaited<ReturnType<typeof answerTask>>) {
+  const pending = f.backend.forSession("session", "classify")(f.input);
+  const { runnerId } = await f.dispatched();
+  await f.reply();
+  expect((await pending).stopReason).toBe("end_turn");
+  return runnerId;
+}
+
+test("no helper goes to a runner between a failed and a passing health report", async () => {
+  const f = await answerTask();
+  await reportHealth(f, "runner", EACCES);
+  expect(await helperOn(f)).toBe("goldbox");
+  expect(await helperOn(f)).toBe("goldbox");
+  await reportHealth(f, "runner");
+  await f.fill("goldbox");
+  expect(await helperOn(f)).toBe("runner");
+});
+
+test("a helper with every runner unhealthy names the failed health check", async () => {
+  const f = await answerTask();
+  await reportHealth(f, "runner", EACCES);
+  await reportHealth(f, "goldbox", EACCES);
+  const error = await f.backend
+    .forSession(
+      "session",
+      "classify",
+    )(f.input)
+    .catch((caught: unknown) => caught);
+  expect((error as Error).message).toContain(`agentbox: unhealthy: ${EACCES}`);
+  expect((error as Error).message).toContain(`goldbox: unhealthy: ${EACCES}`);
+  expect((await sqlRows(f.db, "SELECT 1 FROM runner_helper"))[0] ?? null).toBeNull();
+  const overview = await listRunnerOverview(
+    f.db,
+    (await sqlRows<{ id: string }>(f.db, "SELECT workspace_id AS id FROM runner LIMIT 1"))[0]!.id,
+    Date.now(),
+  );
+  expect(overview.map((runner) => runner.unhealthy)).toEqual([EACCES, EACCES]);
+});
+
 test("a dispatch the runner refuses is named in the failure", async () => {
   const f = await fixture((db) => ({
     async candidates() {

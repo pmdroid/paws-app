@@ -133,6 +133,7 @@ export async function openRunnerHealthRuntime(options: {
   now?: () => number;
   monotonic?: () => number;
   onError?: (error: Error) => void;
+  onHealth?: (failure: string | undefined) => void;
   networkGit?: typeof runGitHubGit;
 }) {
   if (!isAbsolute(options.root) || options.daemon.status().phase !== "paired")
@@ -642,6 +643,7 @@ export async function openRunnerHealthRuntime(options: {
         if (command.type === "helper") await pulse(entry);
         check(entry);
         setPhase(id, "running");
+        options.onHealth?.(undefined);
         if (command.type === "helper" && command.tools && options.daemon.helperRequest) {
           entry.tools = { offset: 0, queue: [], answered: new Set(), failed: new Set() };
           entry.tools.timer = setInterval(() => forwarding(entry), 250);
@@ -653,6 +655,10 @@ export async function openRunnerHealthRuntime(options: {
           .catch(journalRejection("runner-health-runtime.step.acknowledgeCommand", report, null));
       } catch (caughtError5) {
         journalCaught(caughtError5, "runner-health-runtime.step.check", null);
+        options.onHealth?.(
+          (caughtError5 instanceof Error && caughtError5.message.trim()) ||
+            "Runner health operation failed",
+        );
         await rm(join(options.root, "repositories", id), { recursive: true, force: true });
         await interrupt(entry);
         report();

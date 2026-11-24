@@ -37,9 +37,14 @@ export function* eligibleRunnersSteps(q: Q, input: EligibleRunnersInput): Steps<
     input.includeRevoked === true,
   );
   const runners: EligibleRunner[] = [];
-  for (const { status, revokedAt, lastSeenAt, ...runner } of rows) {
+  for (const { status, revokedAt, lastSeenAt, healthFailure, ...runner } of rows) {
     const reason = yield* reasonSteps();
-    runners.push({ ...runner, eligible: reason === "own" || reason === "issue-vm", reason });
+    runners.push({
+      ...runner,
+      eligible: reason === "own" || reason === "issue-vm",
+      reason,
+      ...(reason === "unhealthy" && healthFailure ? { healthFailure } : {}),
+    });
     function* reasonSteps(): Steps<EligibleRunnerReason> {
       if (revokedAt !== null || status === "revoked") return "revoked";
       const own = input.ownerUserId !== null && runner.ownerId === input.ownerUserId;
@@ -50,6 +55,7 @@ export function* eligibleRunnersSteps(q: Q, input: EligibleRunnersInput): Steps<
         return "owner-not-in-team";
       if ((lastSeenAt ?? 0) <= at - RUNNER_ONLINE_MS) return "offline";
       if (status !== "active") return "paused";
+      if (healthFailure) return "unhealthy";
       if (input.purpose !== "prepare") {
         if (
           !runnerReleaseAtLeast(yield* runnerHostVersionSteps(q, runner.id), MINIMUM_RUNNER_VERSION)
@@ -78,11 +84,18 @@ export function* eligibleRunnersSteps(q: Q, input: EligibleRunnersInput): Steps<
   return runners;
 }
 
-/** A rejection reason as placement reports it: an outdated runner names the release it needs. */
-export function eligibleReasonText(reason: EligibleRunnerReason): string {
-  return reason === "outdated"
-    ? `Upgrade this runner to ${MINIMUM_RUNNER_VERSION.join(".")}`
-    : reason;
+/**
+ * A rejection reason as placement reports it: an outdated runner names the release it needs, and
+ * an unhealthy one the message of its failed health check.
+ */
+export function eligibleReasonText(
+  runner: Pick<EligibleRunner, "reason" | "healthFailure">,
+): string {
+  if (runner.reason === "outdated")
+    return `Upgrade this runner to ${MINIMUM_RUNNER_VERSION.join(".")}`;
+  return runner.reason === "unhealthy" && runner.healthFailure
+    ? `unhealthy: ${runner.healthFailure}`
+    : runner.reason;
 }
 
 function* runnerNameOrIdSteps(q: Q, runnerId: string) {
@@ -92,7 +105,7 @@ function* runnerNameOrIdSteps(q: Q, runnerId: string) {
 /**
  * Why `ownerUserId` has no runner Paws may use for `agent`, from `eligibleRunners` with purpose
  * `work`. Null when a runner is eligible, busy or not, or one the owner may use is only offline,
- * paused or outdated, so placement waits and names it.
+ * paused, outdated or unhealthy, so placement waits and names it.
  */
 export function* runnerSetupNeedSteps(
   q: Q,
@@ -117,7 +130,8 @@ export function* runnerSetupNeedSteps(
     runner.ownerId === owner.ownerUserId || runner.isolation === "issue_vm";
   if (
     runners.some(
-      (runner) => usable(runner) && ["offline", "paused", "outdated"].includes(runner.reason),
+      (runner) =>
+        usable(runner) && ["offline", "paused", "outdated", "unhealthy"].includes(runner.reason),
     )
   )
     return null;

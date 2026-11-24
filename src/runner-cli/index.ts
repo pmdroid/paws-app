@@ -345,12 +345,17 @@ export async function runRunnerCli(
       throw new RunnerCliFailure("identity", "Runner service identity is invalid.");
     const config = loadConfig(args[1]!, ids.runnerUid);
     const daemonIds = accounts(config.agentUser);
+    const sampleHost = createRunnerHostSampler({ workRoot: "/var/lib/paws-runner" });
+    let healthFailure: string | undefined;
     const daemon = openRunnerDaemon({
       root: "/var/lib/paws-runner",
       ...config,
       concurrency: runnerConcurrency(config.concurrency, hostResources, error),
       log: error,
-      sampleHost: createRunnerHostSampler({ workRoot: "/var/lib/paws-runner" }),
+      sampleHost: () => ({
+        ...sampleHost(),
+        ...(healthFailure ? { healthFailure: healthFailure.slice(0, 500) } : {}),
+      }),
       accountBindings: () =>
         runnerAccountBindings("/var/lib/paws-agent", {
           runnerUid: ids.runnerUid,
@@ -363,8 +368,14 @@ export async function runRunnerCli(
       }),
     });
     try {
-      await runPairedDaemon(daemon, daemonIds, abort.signal, (failure) =>
-        error(`Runner operation failed: ${describeRunnerFailure(failure)}`),
+      await runPairedDaemon(
+        daemon,
+        daemonIds,
+        abort.signal,
+        (failure) => error(`Runner operation failed: ${describeRunnerFailure(failure)}`),
+        (failure) => {
+          healthFailure = failure;
+        },
       );
       abort.signal.throwIfAborted();
       return 0;

@@ -420,7 +420,7 @@ export function createRunnerPlacement(options: {
         includeRevoked: true,
       })) {
         const reason = !runner.eligible
-          ? eligibleReasonText(runner.reason)
+          ? eligibleReasonText(runner)
           : pinnedOnline && runner.id !== pinnedRunnerId
             ? PINNED_ELSEWHERE
             : null;

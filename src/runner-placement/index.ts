@@ -22,6 +22,7 @@ export type EligibleRunnerReason =
   | "outdated"
   | "offline"
   | "paused"
+  | "unhealthy"
   | "revoked"
   | "agent-not-signed-in"
   | "auth-expired"
@@ -51,6 +52,7 @@ export type EligibleRunner = {
   resolvedModel: string | null;
   eligible: boolean;
   reason: EligibleRunnerReason;
+  healthFailure?: string;
 };
 export type RepositoryRefusal = {
   runnerId: string;

@@ -166,7 +166,10 @@ export function createRemoteSessionAgentRunner(options: {
                   onRejected: (runnerId, reason, until) => {
                     // Other people's runners are not this task's to name.
                     if (NOT_THIS_TASKS.has(reason)) return;
-                    note(runnerId, reason.replaceAll("-", " "));
+                    note(
+                      runnerId,
+                      reason.replace(/^[a-z-]+/, (code) => code.replaceAll("-", " ")),
+                    );
                     if (AT_CAPACITY.test(reason)) {
                       slotBusy = true;
                       full.push(runnerId);

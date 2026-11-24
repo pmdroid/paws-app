@@ -30,6 +30,7 @@ export async function runPairedDaemon(
   },
   signal: AbortSignal,
   reportFailure: (error: Error) => void,
+  onHealth?: (failure: string | undefined) => void,
 ): Promise<void> {
   const report = (error: Error) => {
     if (!isIdentityRejected(error)) reportFailure(error);
@@ -101,6 +102,7 @@ export async function runPairedDaemon(
     health = await openRunnerHealthRuntime({
       ...shared,
       root: join(root, "health"),
+      ...(onHealth ? { onHealth } : {}),
       conversations: () => daemon.conversationCapacity(),
     });
     signal.throwIfAborted();

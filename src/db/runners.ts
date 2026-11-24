@@ -101,6 +101,7 @@ export type RunnerHostSample = {
   /** Absent when the runner does not report them. */
   strayProcesses?: RunnerStrayProcess[];
   agentUser?: RunnerAgentUser;
+  healthFailure?: string;
 };
 
 /** A process of the runner user outside the runner's process tree, as last reported. */
@@ -132,6 +133,7 @@ type RunnerOverview = RunnerRecord & {
   os: { id: string | null; version: string | null } | null;
   version: string | null;
   agentUser: RunnerAgentUser | null;
+  unhealthy: string | null;
   idle: boolean;
   /** Its last 3 helper commands went unacknowledged past the acknowledgement window. */
   helpersUndelivered: boolean;
@@ -257,6 +259,7 @@ export function* recordRunnerHostStatusSteps(
     miseVersion: sample.miseVersion ?? null,
     strayProcesses: sample.strayProcesses ? JSON.stringify(sample.strayProcesses) : null,
     agentUser: sample.agentUser ?? null,
+    healthFailure: sample.healthFailure ?? null,
   };
   const {
     runnerId: _runnerId,
@@ -425,6 +428,7 @@ export function* listRunnerOverviewSteps(
         runnerVersion: host.runnerVersion,
         strayProcesses: host.strayProcesses,
         agentUser: sql<RunnerAgentUser | null>`${host.agentUser}`,
+        healthFailure: host.healthFailure,
         reportedAt: host.reportedAt,
         lastSeenAt: runner.lastSeenAt,
         busy: flag(
@@ -499,6 +503,7 @@ export function* listRunnerOverviewSteps(
           : { id: row.osId, version: row.osVersion },
       version: row.runnerVersion,
       agentUser: row.agentUser,
+      unhealthy: row.healthFailure,
       idle: row.busy === 0,
       helpersUndelivered: yield* undeliveredHelperStreakSteps(q, row.id, now, 3),
       slots: { used: row.used, total: row.total },

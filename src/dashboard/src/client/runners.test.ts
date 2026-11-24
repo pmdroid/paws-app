@@ -663,6 +663,19 @@ describe("runner details", () => {
     expect(html).not.toContain("Idle");
   });
 
+  test("an unhealthy runner names its failed health check", () => {
+    const html = runnerDetailMarkup(
+      {
+        ...runner,
+        unhealthy: "EACCES: permission denied, lstat '/var/lib/paws-agent/.local/share'",
+      },
+      view,
+    );
+    expect(statusLine(html)).toBe(
+      `<span class="tag bad">Unhealthy</span><span>Health check failed: ${esc("EACCES: permission denied, lstat '/var/lib/paws-agent/.local/share'")}. No new work goes here until one passes.</span>`,
+    );
+  });
+
   test("a runner that never reported is offline", () => {
     const html = runnerDetailMarkup({ ...runner, metrics: null, os: null, version: null }, view);
     expect(statusLine(html)).toBe('<span class="tag bad">Offline</span>');
