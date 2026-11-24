@@ -19,6 +19,7 @@ import {
   unansweredRunnerQuestionsSteps,
   setRunnerWorkConsumedSequenceSteps,
   askedQuestionRowSteps,
+  answeredRunQuestionSteps,
   questionRowByIdSteps,
   anyActiveRunnerSteps,
   endLostRunnerWorkSteps,
@@ -148,6 +149,8 @@ import {
   checkpointStart,
   isReadOnlyTaskMode,
   isResponseTaskMode,
+  OUT_OF_MEMORY_MOVE,
+  OUT_OF_MEMORY_REASON,
   PawsShutdown,
   RunnerCapacityWait,
   RunnerSetupRequired,
@@ -2977,7 +2980,14 @@ function waitsOnQuestion(store: Db, runId: string): Promise<boolean> {
  */
 async function handedOverFrom(store: Db, itemId: string): Promise<HandoverMove | null> {
   const row = await store.run((q) => lastRunResultSteps(q, itemId));
-  if (!row || (JSON.parse(row.payload) as { handedOver?: boolean }).handedOver !== true)
+  if (!row) return null;
+  const result = JSON.parse(row.payload) as { handedOver?: boolean; failureReason?: string };
+  if (
+    result.handedOver !== true &&
+    (result.failureReason !== OUT_OF_MEMORY_REASON ||
+      (await store.run((q) => answeredRunQuestionSteps(q, row.runId, OUT_OF_MEMORY_REASON))) !==
+        OUT_OF_MEMORY_MOVE)
+  )
     return null;
   const command = JSON.parse(
     Buffer.from((JSON.parse(row.envelope) as { payload: string }).payload, "base64url").toString(

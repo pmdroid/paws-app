@@ -3,6 +3,7 @@ import { SLOW_CI_REASON } from "./merge-jobs";
 import { askSteps, restartSteps } from "./operations";
 import {
   JOB_KIND,
+  OUT_OF_MEMORY_REASON,
   TIME_LIMIT_CONTINUE,
   TIME_LIMIT_MERGE,
   TIME_LIMIT_VERIFYING_REASON,
@@ -382,7 +383,7 @@ export function questionEffects(
     "plan-approval": planApproval,
     "visual-review": visualReview,
     "runner-wait": function* (q, question) {
-      if (question.reason === AGENT_HUNG_REASON) {
+      if (question.reason === AGENT_HUNG_REASON || question.reason === OUT_OF_MEMORY_REASON) {
         yield* agentHung(q, question);
         return;
       }

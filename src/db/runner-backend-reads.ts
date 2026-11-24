@@ -67,6 +67,45 @@ export function* onlineMemberRunnersSteps(q: Q, seenAfter: number) {
   );
 }
 
+export function* largerOnlineRunnerSteps(
+  q: Q,
+  runnerId: string,
+  seenAfter: number,
+): Steps<boolean> {
+  const { runner, runnerHostStatus: host, workspaceMember: member } = q.t;
+  const memory = yield* q.one(
+    q.orm
+      .select({ bytes: host.memoryTotalBytes, workspaceId: runner.workspaceId })
+      .from(runner)
+      .leftJoin(host, eq(host.runnerId, runner.id))
+      .where(eq(runner.id, runnerId)),
+  );
+  if (!memory || memory.bytes === null) return false;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: runner.id })
+      .from(runner)
+      .innerJoin(host, eq(host.runnerId, runner.id))
+      .innerJoin(
+        member,
+        and(eq(member.workspaceId, runner.workspaceId), eq(member.userId, runner.ownerUserId)),
+      )
+      .where(
+        and(
+          eq(runner.workspaceId, memory.workspaceId),
+          ne(runner.id, runnerId),
+          eq(runner.status, "active"),
+          isNull(runner.revokedAt),
+          workspaceMemberUsableWhere(member),
+          gt(runner.lastSeenAt, seenAfter),
+          gt(host.memoryTotalBytes, memory.bytes),
+        ),
+      )
+      .limit(1),
+  );
+  return row !== undefined;
+}
+
 export function* runnerOnlineSteps(q: Q, runnerId: string, seenAfter: number): Steps<boolean> {
   const { runner } = q.t;
   const row = yield* q.one(
@@ -205,6 +244,7 @@ export function* lastRunResultSteps(q: Q, itemId: string) {
     q.orm
       .select({
         runnerId: command.runnerId,
+        runId: result.runId,
         envelope: jsonText(q, command.envelope),
         payload: jsonText(q, result.payload),
       })
