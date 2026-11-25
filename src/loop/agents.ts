@@ -200,6 +200,12 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
     async review(request): Promise<ReviewResult> {
       const launchProfiles = await deps.profiles?.();
       const prompt = [
+        ...(launchProfiles?.reviewer?.agent === "opencode"
+          ? [
+              "/review",
+              `Review the changes from base ${request.base} to head ${request.head}: run \`git diff ${request.base}...${request.head}\`.`,
+            ]
+          : []),
         reviewInstructions({ brief: deps.brief, earlier: request.earlier }),
         request.prompt ?? "Review the change.",
         `Task ${request.taskId}, item ${request.itemId}.`,
