@@ -286,6 +286,7 @@ function replace(node: DOMNode): ReactElement | undefined {
             size: has("btn") ? (has("sm") ? "xs" : "sm") : "default",
           }),
           has("seg") && "text-muted-foreground aria-pressed:bg-accent aria-pressed:text-foreground",
+          has("destructive") && "border-current/35 text-state-failed",
         ),
       },
       children(),

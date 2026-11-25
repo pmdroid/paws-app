@@ -76,9 +76,10 @@ test("an admin sees linked members on the Slack card and revokes one", async () 
             capabilities: null,
           },
     async (root, requests) => {
-      expect(root.querySelector('[data-slack-link="U2"]')?.textContent).toContain(
-        "Ada as U2 in C1 (Paws access revoked)",
+      const cells = [...root.querySelectorAll('[data-slack-link="U2"] td')].map(
+        (cell) => cell.textContent,
       );
+      expect(cells.slice(0, 3)).toEqual(["Adau2Paws access revoked", "U2", "C1"]);
       root.querySelector<HTMLButtonElement>('[data-slack-revoke="U2"]')!.click();
       await Bun.sleep(20);
       expect(requests).toContain("DELETE /api/workspaces/slack/links?user=U2");
