@@ -9,6 +9,7 @@
 | `seal.sh`      | Runs inside the guest as root: removes identity, credentials, state and logs, then powers off |
 | `base-disk.sh` | Runs on the host: `build` makes the disk, `check` boots a copy of one and proves it works     |
 | `disk.sh`      | Runs on the host as root: the thin pool and each issue VM's own disk in it                    |
+| `vm.sh`        | Runs in each VM unit on the host: the seed, disk owner and network before Cloud Hypervisor    |
 
 The boat and InstaBox snapshots run the same `provision.sh` and `seal.sh` with the same `image.env`.
 
@@ -61,6 +62,34 @@ The runner daemon reaches the disks only by starting `paws-issue-vm-disk@<operat
 `create` refuses a disk smaller than `base`, and removes a new volume it could not grow or activate; run again on an existing volume, it finishes growing and activating it.
 
 The runner makes a new disk only when every existing disk with its own memory snapshot (as much disk as that VM's memory), and the new disk with its snapshot, fit in 80% of the pool, and the data already written stays under that too. It deletes a volume only when its name is an issue VM on that host in `deleting`. Cloud Hypervisor takes the disk as `--disk path=/dev/paws-issue-vms/<id>,image_type=raw`.
+
+## VMs
+
+Each issue VM runs as one Cloud Hypervisor process in its own unit, `paws-issue-vm@<id>-<slot>-<vcpus>-<memory gb>.service`, under the service user `paws-issue-vm` with only the `kvm` group and `CAP_NET_ADMIN` for its TAP. Set up a VM host once, as root, after the disks, with the Cloud Hypervisor binary and firmware the build fetched:
+
+```sh
+install -m 0755 deploy/issue-vm/vm.sh /usr/local/sbin/paws-issue-vm
+install -m 0644 deploy/issue-vm/paws-issue-vm.sysusers /etc/sysusers.d/paws-issue-vm.conf
+systemd-sysusers
+install -d -m 0755 /usr/local/lib/paws-issue-vm
+install -d -m 0711 /var/lib/paws-issue-vm-state
+install -m 0755 /var/lib/paws-issue-vm-build/cache/cloud-hypervisor-static-aarch64-v54.1 /usr/local/lib/paws-issue-vm/cloud-hypervisor
+install -m 0644 /var/lib/paws-issue-vm-build/cache/ch-97eeb7b09-CLOUDHV_EFI.fd /usr/local/lib/paws-issue-vm/firmware.fd
+install -m 0644 'deploy/issue-vm/paws-issue-vm@.service' /etc/systemd/system/
+install -m 0644 deploy/issue-vm/paws-issue-vm.polkit /etc/polkit-1/rules.d/60-paws-issue-vm.rules
+systemctl daemon-reload
+```
+
+On amd64 the files are `cloud-hypervisor-static-v54.1` and `ch-97eeb7b09-CLOUDHV.fd`. The host also needs `mkfs.vfat` and `mcopy`.
+
+Before Cloud Hypervisor starts, the unit, as root, refuses a second unit for the same VM or slot, writes the VM's NoCloud seed (instance id = VM id, guest `10.199.<slot>.2`) to `/var/lib/paws-issue-vm-state/<id>/seed.img`, gives `paws-issue-vm` the VM's disk, and starts `paws-issue-vm-network@<slot>.service`. Cloud Hypervisor then runs with the disk, the seed, the TAP `pawsvm<slot>`, the size in the unit name, the serial log `serial.log` and the API socket `api.sock` in that folder. When it stops, the disk goes back to root and the slot's network rules stop. The polkit rule lets the `paws-runner` user start and stop these units and nothing else.
+
+The VM units are not part of `paws-runner.service`, so they keep running when the runner daemon stops or crashes. The daemon gives each new VM the lowest free slot and starts none past the host's slots; starting a VM that already runs reuses its unit. At start it compares the running units with the host's issue VMs in Paws: it keeps a VM that is creating, awake or asleep, stops one that is deleting, unknown or a second unit for the same VM or slot, and reports awake VMs that no longer run. To look at them:
+
+```sh
+systemctl list-units 'paws-issue-vm@*'
+journalctl -u 'paws-issue-vm@*'
+```
 
 ## First boot
 

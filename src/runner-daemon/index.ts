@@ -19,6 +19,20 @@ export {
   type IssueVmDiskSize,
   type IssueVmPool,
 } from "./issue-vm-disks";
+export {
+  createFakeIssueVmUnits,
+  issueVmMachines,
+  issueVmUnit,
+  systemdIssueVmUnits,
+  type IssueVmKnown,
+  type IssueVmMachine,
+  type IssueVmMachines,
+  type IssueVmMachineSize,
+  type IssueVmReconcile,
+  type IssueVmStart,
+  type IssueVmStopReason,
+  type IssueVmUnits,
+} from "./issue-vm-machines";
 export { createRunnerHostSampler, type RunnerHostSamplerOptions } from "./host";
 export type {
   RunnerHeartbeat,
