@@ -55,7 +55,8 @@ export const WORKSPACE_PAGES = [
   {
     id: "runner-vms",
     name: "Runner VMs",
-    description: "The keys Create VM uses to make runner VMs and join them to your tailnet.",
+    description:
+      "Where Create VM can make runner VMs, whether each key still works, and the key that joins them to your tailnet.",
   },
   {
     id: "brief",

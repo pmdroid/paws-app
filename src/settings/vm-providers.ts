@@ -7,6 +7,7 @@ import {
 import {
   vmProviderCheckSteps,
   VM_PROVIDER_KEY_NAMES,
+  workspaceMemberVmsSteps,
   type Db,
   type VmProviderCheckRow,
   type VmProviderKeyName,
@@ -28,6 +29,7 @@ export type VmProvidersSettingsOptions = {
   csrfToken: string;
   trustedOrigin?: string;
   role?: string;
+  workspaceId?: string;
   audit: (action: string, subject: string) => Promise<void>;
   now?: () => number;
 };
@@ -111,6 +113,10 @@ async function status(options: VmProvidersSettingsOptions): Promise<Response> {
     journalCaught(error, "vm-providers.status", null);
     return json({ error: "Member VM settings could not be read" }, 503);
   }
+  const vms =
+    options.workspaceId === undefined
+      ? null
+      : await options.store.run((q) => workspaceMemberVmsSteps(q, options.workspaceId!));
   const entries = await Promise.all(
     VM_PROVIDER_KEY_NAMES.map(async (name) => {
       const row = await options.store.run((q) => vmProviderCheckSteps(q, name));
@@ -119,6 +125,17 @@ async function status(options: VmProvidersSettingsOptions): Promise<Response> {
         {
           set: KEYS[KEY_FOR[name]].status(options.home) === "readable",
           ...(isOffable(name) ? { off: off.includes(name) } : {}),
+          ...(isOffable(name) && vms !== null
+            ? {
+                vms: vms
+                  .filter((vm) => vm.provider === name)
+                  .map((vm) => ({
+                    vmName: vm.vmName,
+                    runnerId: vm.runnerId ?? vm.deleteRunnerId,
+                    step: vm.deleteStep === null ? vm.step : "deleting",
+                  })),
+              }
+            : {}),
           check: row === null ? null : publicCheck(row),
         },
       ] as const;

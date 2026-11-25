@@ -2,7 +2,12 @@ import { afterEach, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfigFile, useSettingsStore } from "../src/config";
-import { CONFIG_SETTINGS_KEY, readSettingSteps, updateSettingSteps } from "../src/db";
+import {
+  CONFIG_SETTINGS_KEY,
+  insertMemberVm,
+  readSettingSteps,
+  updateSettingSteps,
+} from "../src/db";
 import { createFakeExeDev } from "../src/provisioning";
 import {
   handleRunnerVmKeysSettingsRequest,
@@ -11,6 +16,7 @@ import {
 } from "../src/settings";
 import { createVmProviderChecks, exeDevKeyCheck } from "../src/vm-provider-checks";
 import { tempHome } from "./helpers";
+import { withoutForeignKeys } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const base = "http://127.0.0.1:8787/api/settings";
@@ -54,16 +60,17 @@ async function instance() {
       audits.push(subject);
     },
   });
-  const providers = async (request: Request, role = "admin") =>
+  const providers = async (request: Request, role = "admin", workspaceId?: string) =>
     (await handleVmProvidersSettingsRequest(request, {
       ...common(role),
       configPath,
       store: db,
+      ...(workspaceId === undefined ? {} : { workspaceId }),
       now: () => clock,
     }))!;
   const keys = async (request: Request, role = "admin") =>
     (await handleRunnerVmKeysSettingsRequest(request, common(role)))!;
-  return { configPath, exe, audits, providers, keys, tick: (ms: number) => (clock += ms) };
+  return { db, configPath, exe, audits, providers, keys, tick: (ms: number) => (clock += ms) };
 }
 
 const send = (method: string, path: string, body: unknown, withCsrf = true) =>
@@ -165,4 +172,29 @@ test("saving a key returns its check result beside the set flags", async () => {
     check: { name: "exe-dev", state: "working", message: "exe.dev accepted the key." },
   });
   expect(exe.calls).toHaveLength(1);
+});
+
+test("GET with a workspace lists each provider's runner VMs, whatever Create VM's key", async () => {
+  const { db, providers } = await instance();
+  await withoutForeignKeys(db);
+  for (const [id, workspaceId, provider] of [
+    ["vm-1", "w1", "boat"],
+    ["vm-2", "w1", "exe-dev"],
+    ["vm-3", "w2", "boat"],
+  ] as const)
+    await insertMemberVm(db, {
+      id,
+      workspaceId,
+      userId: "u1",
+      vmName: id,
+      pool: null,
+      provider,
+      now: 1,
+    });
+  const response = await providers(new Request(`${base}/vm-providers`), "admin", "w1");
+  const body = (await response.json()) as Record<string, { vms?: unknown }>;
+  expect(body.boat!.vms).toEqual([{ vmName: "vm-1", runnerId: null, step: "create" }]);
+  expect(body["exe-dev"]!.vms).toEqual([{ vmName: "vm-2", runnerId: null, step: "create" }]);
+  expect(body.instabox!.vms).toEqual([]);
+  expect(body.tailscale!.vms).toBeUndefined();
 });

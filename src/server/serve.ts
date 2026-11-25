@@ -888,7 +888,9 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       store,
       checks: secrets.vmProviderChecks,
       csrfToken,
-      ...(principal === undefined ? {} : { role: principal.role }),
+      ...(principal === undefined
+        ? {}
+        : { role: principal.role, workspaceId: principal.workspaceId }),
       audit: (action, subject) =>
         auditWorkspaceAccess(store, {
           workspaceId: principal?.workspaceId ?? null,
