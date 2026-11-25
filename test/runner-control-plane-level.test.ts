@@ -14,6 +14,7 @@ import {
   withRejectedFields,
   type RunnerCommand,
   type RunnerHelperResult,
+  type RunnerHostStatus,
 } from "../src/runner-protocol";
 import { serverIdentity } from "./local/runner-daemon";
 
@@ -42,7 +43,9 @@ async function withControlPlane(
     accepted: unknown[];
     logged: string[];
     level: string | undefined;
+    heartbeats: Record<string, unknown>[];
   }) => Promise<void>,
+  sampleHost?: () => RunnerHostStatus,
 ) {
   const root = mkdtempSync(join(tmpdir(), "paws-control-plane-level-"));
   const authority = await initializeRunnerAuthority(join(root, "issuer"));
@@ -53,6 +56,7 @@ async function withControlPlane(
   const active = new Set<string>();
   const accepted: unknown[] = [];
   const logged: string[] = [];
+  const heartbeats: Record<string, unknown>[] = [];
   const at = Date.now();
   const command: RunnerCommand = {
     ...identity,
@@ -90,8 +94,12 @@ async function withControlPlane(
     takeLogDetail: takeRejectedFields,
     async fetch(request) {
       const path = new URL(request.url).pathname;
-      if (path === "/v1/heartbeat")
+      if (path === "/v1/heartbeat") {
+        const body = (await request.json()) as Record<string, unknown>;
+        heartbeats.push(body);
+        if ("healthFailure" in body) return Response.json({ error: "denied" }, { status: 403 });
         return Response.json({ leases: [], fenced: [], protocolLevel: plane.level });
+      }
       if (path === "/v1/helper-commands") {
         const signed = signRunnerCommand({
           keyId: "coordinator",
@@ -115,8 +123,9 @@ async function withControlPlane(
     controlPlaneUrl: `https://localhost:${address.port}`,
     runnerApiUrl: `https://localhost:${listener.port}`,
     serverCa: server.cert,
+    ...(sampleHost ? { sampleHost } : {}),
   });
-  const plane = { daemon, accepted, logged, level };
+  const plane = { daemon, accepted, logged, level, heartbeats };
   try {
     await daemon.enroll("level-proof", "t".repeat(43));
     await daemon.pollHelperCommands();
@@ -136,4 +145,18 @@ test("the listener's 403 line names the schema paths that failed", async () => {
     const line = logged.find((entry) => entry.includes("/result answered 403"));
     for (const field of ["interrupted", "replies", "startWork"]) expect(line).toContain(field);
   });
+}, 30_000);
+
+test("a heartbeat a Paws without health reporting refuses is sent again without it", async () => {
+  const failure = "EACCES: permission denied, lstat '/var/lib/paws-agent/.local/share'";
+  await withControlPlane(
+    CONTROL_PLANE_PROTOCOL_LEVEL,
+    async ({ daemon, heartbeats }) => {
+      heartbeats.length = 0;
+      await daemon.heartbeat();
+      expect(heartbeats.map((body) => body.healthFailure)).toEqual([failure, undefined]);
+      expect(heartbeats[1]).toMatchObject({ runnerVersion: "1.4.0" });
+    },
+    () => ({ runnerVersion: "1.4.0", healthFailure: failure }),
+  );
 }, 30_000);

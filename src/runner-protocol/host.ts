@@ -59,6 +59,7 @@ export const RunnerHostStatusSchema = z.strictObject({
   miseVersion: miseVersion.optional(),
   strayProcesses: z.array(RunnerStrayProcessSchema).max(20).optional(),
   agentUser: z.enum(RUNNER_AGENT_USERS).optional(),
+  healthFailure: z.string().min(1).max(500).nullable().optional(),
 });
 
 export type RunnerHostStatus = z.infer<typeof RunnerHostStatusSchema>;
