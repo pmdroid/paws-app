@@ -56,3 +56,4 @@ export {
   VM_PROVIDERS_SETTINGS_PATH,
   handleVmProvidersSettingsRequest,
 } from "./vm-providers";
+export { METRICS_PATH, handleMetricsRequest } from "./metrics";

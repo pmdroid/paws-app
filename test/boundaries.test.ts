@@ -92,6 +92,7 @@ const MODULES = [
   "notebook",
   "storage-usage",
   "storage-cleanup",
+  "metrics",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -182,6 +183,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   settings: [
     "acp",
+    "metrics",
     "closeout-spec",
     "journal",
     "config",
@@ -206,6 +208,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "storage-usage",
     "webhook-body",
   ],
+  metrics: ["db"],
   "project-context": ["db", "linear"],
   notebook: ["db", "improvements", "project-context"],
   retros: [

@@ -92,6 +92,8 @@ import {
   STORAGE_SETTINGS_PATH,
   handleStorageCleanupRequest,
   handleStorageUsageRequest,
+  handleMetricsRequest,
+  METRICS_PATH,
   STORAGE_CLEANUP_PATH,
   STORAGE_USAGE_PATH,
   STORAGE_USAGE_REFRESH_PATH,
@@ -820,6 +822,12 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     }))!;
   }
+  if (path === METRICS_PATH && secrets.store)
+    return (await handleMetricsRequest(request, {
+      store: secrets.store,
+      ...(principal === undefined ? {} : { role: principal.role }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
   if ((path === STORAGE_USAGE_PATH || path === STORAGE_USAGE_REFRESH_PATH) && secrets.storageUsage)
     return (await handleStorageUsageRequest(request, {
       usage: secrets.storageUsage,

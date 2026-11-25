@@ -253,6 +253,13 @@
       "when": 1795584010321,
       "tag": "0035_runner_host_health_failure",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1795619125788,
+      "tag": "0036_metric_minute",
+      "breakpoints": true
     }
   ]
 }
