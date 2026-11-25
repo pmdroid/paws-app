@@ -5,6 +5,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   accountSlotsInUse,
+  activeAccountRunnerWorkSteps,
   beginRetroCollection,
   closeRetro,
   createRetro,
@@ -434,6 +435,22 @@ describe("placement", () => {
     expect(await listRetroDispatches(db, "r1")).toMatchObject([
       { runnerId: "BOUND", command: { account: bound, profile: { agent: "codex" } } },
     ]);
+  });
+
+  test("an open retro dispatch lets its runner refresh the account's sign-in until released", async () => {
+    const { db, clock, open } = await world();
+    const { accountId } = (await addRunner(db, { id: "R1" }))!;
+    const runner = fakeRunner("R1", clock);
+    await runner.seen(db);
+    const dispatcher = open(db);
+    const active = () => db.run((q) => activeAccountRunnerWorkSteps(q, "R1", accountId, clock.now));
+    expect(await active()).toBe(false);
+    await dispatcher.tick();
+    const [command] = await runner.poll(dispatcher);
+    await runner.start(dispatcher, command!);
+    expect(await active()).toBe(true);
+    await runner.submit(dispatcher, command!, runner.result(command!, null, "auth_required"));
+    expect(await active()).toBe(false);
   });
 
   test("an auth_required result names the runner and the agent account", async () => {
