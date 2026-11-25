@@ -46,6 +46,12 @@ export type JobLoopLiveness = {
 
 type Sleeper = (ms: number, signal?: AbortSignal) => Promise<void>;
 
+export type QueueObserver = (
+  name: string,
+  labels: Readonly<Record<string, string>>,
+  ms: number,
+) => void;
+
 export type JobContext = {
   signal: AbortSignal;
   isCurrent(): Promise<boolean>;
@@ -133,6 +139,7 @@ export class JobLoop {
       backoffBaseMs?: number;
       concurrency?: number;
       mergeParallel?: () => number;
+      observe?: QueueObserver;
     } = {},
   ) {
     this.store = options.store ?? db;
@@ -302,6 +309,7 @@ export class JobLoop {
     }
     this.claimFailed = false;
     if (job === null) return null;
+    this.options.observe?.("job.wait", { queue: job.queue }, now - job.runAt);
     const claimed = job;
     const started = (done: Promise<void>) => {
       if (notesClaim) this.lastClaimAt = this.clock.now();
@@ -351,6 +359,8 @@ export class JobLoop {
     renewal.unref?.();
     const renew = () => context.extendLease();
     this.renewals.set(job.id, renew);
+    const startedAt = this.clock.now();
+    let outcome = "cancelled";
     try {
       await trackHostOperation(
         `job:${job.queue}`,
@@ -362,6 +372,7 @@ export class JobLoop {
         await this.settleAwake(job, "ending");
         const now = this.clock.now();
         await this.store.run((q) => completeJobSteps(q, job, now));
+        outcome = "done";
       }
     } catch (error) {
       journalCaught(error, "loop.tick.handler", journalItemId(job.payload));
@@ -369,8 +380,14 @@ export class JobLoop {
         await this.settleAwake(job, "ending");
         const options = { now: this.clock.now(), baseMs: this.options.backoffBaseMs };
         await this.store.run((q) => failJobSteps(q, job, error, options));
+        outcome = "failed";
       }
     } finally {
+      this.options.observe?.(
+        "job.run",
+        { queue: job.queue, outcome },
+        this.clock.now() - startedAt,
+      );
       clearInterval(renewal);
       if (this.renewals.get(job.id) === renew) this.renewals.delete(job.id);
     }

@@ -218,7 +218,15 @@ import {
   githubBlobCache,
   memberVmProviderId,
 } from "./db";
-import { METRICS_FLUSH_EVERY_MS, METRICS_FLUSH_JOB, flushMetrics } from "./metrics";
+import {
+  METRICS_FLUSH_EVERY_MS,
+  METRICS_FLUSH_JOB,
+  QUEUE_DEPTH_EVERY_MS,
+  QUEUE_DEPTH_JOB,
+  flushMetrics,
+  recordDuration,
+  recordQueueDepths,
+} from "./metrics";
 import { DATABASE_HELD, doctorChecks, formatDoctor, realProbe, withSavedStore } from "./doctor";
 import { installHostMain } from "./install-host";
 import { runInstallCli } from "./installer";
@@ -1845,6 +1853,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     instanceId: instance.id,
     role: runtime.role,
     signal: abort.signal,
+    observe: recordDuration,
     mergeParallel() {
       if (Date.now() - mergeParallel.at < 30_000) return mergeParallel.value;
       let value = mergeParallel.value;
@@ -2490,6 +2499,13 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         queue: METRICS_FLUSH_JOB,
         jobKey: METRICS_FLUSH_JOB,
         recurringEveryMs: METRICS_FLUSH_EVERY_MS,
+        now: Date.now(),
+      });
+      created.jobs.register(QUEUE_DEPTH_JOB, () => recordQueueDepths(store));
+      await enqueueJobOnce(store, {
+        queue: QUEUE_DEPTH_JOB,
+        jobKey: QUEUE_DEPTH_JOB,
+        recurringEveryMs: QUEUE_DEPTH_EVERY_MS,
         now: Date.now(),
       });
       created.jobs.register("closeout.stall", () => attached.recoverStalledCloseout());

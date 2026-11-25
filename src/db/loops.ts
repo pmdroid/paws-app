@@ -3,7 +3,7 @@ import { systemClock, type Clock } from "../core";
 import type { Db } from "./db";
 import { OutboxDispatcher } from "./dispatcher";
 import { roleRunsJobs, type InstanceRole } from "./instances";
-import { jobIdleClaimMs, JobLoop } from "./loop";
+import { jobIdleClaimMs, JobLoop, type QueueObserver } from "./loop";
 import { LINEAR_PROGRESS_INTERVAL_MS } from "./outbox";
 
 const JOB_LEASE_MS = 120_000;
@@ -20,6 +20,7 @@ export async function startLoops(input: {
   clock?: Clock;
   concurrency?: number;
   mergeParallel?: () => number;
+  observe?: QueueObserver;
   prepare?: (loops: { jobs: JobLoop; outbox: OutboxDispatcher }) => void | Promise<void>;
 }): Promise<{
   stop: () => Promise<void>;
@@ -36,12 +37,14 @@ export async function startLoops(input: {
     leaseMs: JOB_LEASE_MS,
     pollMs: jobIdleClaimMs(input.store ?? input.db),
     ...(input.mergeParallel ? { mergeParallel: input.mergeParallel } : {}),
+    ...(input.observe ? { observe: input.observe } : {}),
   });
   const outbox = new OutboxDispatcher(input.db, clock, {
     ...(input.store ? { store: input.store } : {}),
     workerId: `outbox:${input.instanceId}`,
     claims: runsJobs,
     progressIntervalMs: LINEAR_PROGRESS_INTERVAL_MS,
+    ...(input.observe ? { observe: input.observe } : {}),
   });
   await input.prepare?.({ jobs, outbox });
   const task = runsJobs
