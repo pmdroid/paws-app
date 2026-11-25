@@ -58,9 +58,9 @@ The runner daemon reaches the disks only by starting `paws-issue-vm-disk@<operat
 | `create-<id>-<gb>-<memory gb>` | Snapshots `base` as `<id>` (`lvcreate -s -K`) tagged with the VM's memory, grows it to the VM disk size and activates it |
 | `delete-<id>`                  | Removes the volume `<id>`; the id must be an issue VM id, so `base` and the pool can't be removed                        |
 
-When `paws-issue-vm-disk@.service` is installed, the runner reports the pool and its volumes to Paws every 30 seconds. Paws answers with the disks to make, one for each issue VM on that host in `creating`, and the volumes to remove, only those named by an issue VM on that host in `deleting`; a volume no row names is never removed. Once a deleting VM's volume is gone, Paws marks the VM `deleted`.
+`create` refuses a disk smaller than `base`, and removes a new volume it could not grow or activate; run again on an existing volume, it finishes growing and activating it.
 
-The runner makes a new disk only when every existing disk with its own memory snapshot (as much disk as that VM's memory), and the new disk with its snapshot, fit in 80% of the pool, and the data already written stays under that too. Otherwise it refuses the disk and Paws marks that VM `failed`. The VM host page counts the reported pool in its slots: 80% of the pool divided by the VM disk plus its memory, with the reason `disk` when that is the smallest limit. Cloud Hypervisor takes the disk as `--disk path=/dev/paws-issue-vms/<id>,image_type=raw`.
+The runner makes a new disk only when every existing disk with its own memory snapshot (as much disk as that VM's memory), and the new disk with its snapshot, fit in 80% of the pool, and the data already written stays under that too. It deletes a volume only when its name is an issue VM on that host in `deleting`. Cloud Hypervisor takes the disk as `--disk path=/dev/paws-issue-vms/<id>,image_type=raw`.
 
 ## First boot
 

@@ -114,7 +114,6 @@ test("an admin sets up a VM host, reads its slots and removes it", async () => {
     settings: { ...DEFAULTS, vmVcpus: 4, vmMemoryGb: 8 },
     cpuCount: 20,
     memoryTotalBytes: 121 * GIB,
-    poolBytes: null,
     slots: { slots: 4, reason: "cpu" },
   });
   const capped = (await (await call(db, "PUT", "admin", { slotCap: 3 })).json()) as VmHostView;

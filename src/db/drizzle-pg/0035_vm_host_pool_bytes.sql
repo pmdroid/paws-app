@@ -1,1 +1,0 @@
-ALTER TABLE "vm_host" ADD COLUMN "pool_bytes" bigint;

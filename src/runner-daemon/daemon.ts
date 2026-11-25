@@ -41,8 +41,6 @@ import {
   RunnerHelperResultSchema,
   RunnerStorageCleanupResultSchema,
   RunnerStorageReportSchema,
-  RunnerIssueVmDiskPlanSchema,
-  RunnerIssueVmDiskReportSchema,
   RunnerRepositoryCommandResultSchema,
   RunnerRetroCommandSchema,
   RunnerRetroInputRequestSchema,
@@ -58,7 +56,6 @@ import {
   type RunnerHelperResult,
   type RunnerStorageCleanupResult,
   type RunnerStorageReport,
-  type RunnerIssueVmDiskReport,
   type RunnerAgentUser,
   type RunnerHostStatus,
   type RunnerRepositoryCommand,
@@ -1025,17 +1022,6 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       return z
         .strictObject({ duplicate: z.boolean() })
         .parse(await authenticated("/v1/storage-report", "POST", body));
-    },
-    async postIssueVmDisks(report: RunnerIssueVmDiskReport) {
-      const body = RunnerIssueVmDiskReportSchema.parse(report);
-      try {
-        return RunnerIssueVmDiskPlanSchema.parse(
-          await authenticated("/v1/issue-vm-disks", "POST", body),
-        );
-      } catch (error) {
-        if (error instanceof RunnerRequestError && error.status === 404) return null;
-        throw error;
-      }
     },
     async postStorageCleanup(result: RunnerStorageCleanupResult) {
       const body = RunnerStorageCleanupResultSchema.parse(result);

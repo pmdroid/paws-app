@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gt, inArray, isNull, max, notInArray, or } from "drizzle-orm";
+import { and, count, desc, eq, gt, isNull, max, notInArray, or } from "drizzle-orm";
 import { type Q } from "./db";
 import { ulid } from "./ulid";
 
@@ -79,22 +79,16 @@ export function* updateLiveIssueVmStateSteps(
   return rows.length;
 }
 
-export function* hostIssueVmDiskRowsSteps(q: Q, hostRunnerId: string) {
+export function* deletingHostIssueVmIdsSteps(q: Q, hostRunnerId: string) {
   const { issueVm: v } = q.t;
   const rows = yield* q.all(
     q.orm
-      .select({ id: v.id, state: v.state })
+      .select({ id: v.id })
       .from(v)
-      .where(
-        and(
-          eq(v.hostRunnerId, hostRunnerId),
-          eq(v.provider, "host"),
-          inArray(v.state, ["creating", "deleting"]),
-        ),
-      )
+      .where(and(eq(v.hostRunnerId, hostRunnerId), eq(v.state, "deleting")))
       .orderBy(v.id),
   );
-  return rows as { id: string; state: "creating" | "deleting" }[];
+  return rows.map((row) => row.id);
 }
 
 export function* issueVmsInUseSteps(q: Q, input: { workspaceId: string; memberUserId?: string }) {

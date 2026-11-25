@@ -52,19 +52,27 @@ lv_bytes() {
   lvs --noheadings --units b --nosuffix -o lv_size "$vg/$1" | tr -d ' '
 }
 
+finish() {
+  local size
+  size=$(lv_bytes "$1") || return 1
+  [[ $size =~ ^[0-9]+$ ]] || return 1
+  if ((size < $2 * gib)); then lvextend -q -L "${2}g" "$vg/$1" >/dev/null || return 1; fi
+  lvchange -q -ay -K "$vg/$1" || return 1
+}
+
 operate() {
   local op=$1
   case "$op" in
   pool)
     lvs --noheadings --units b --nosuffix --separator ' ' -o lv_size,data_percent "$vg/pool" |
-      awk '{ printf "%d %d\n", $1, $1 * $2 / 100 }'
+      awk '{ printf "%.0f %.0f\n", $1, $1 * $2 / 100 }'
     ;;
   list)
     lvs --noheadings --units b --nosuffix --separator ' ' -o lv_name,lv_size,lv_tags "$vg" |
       awk -v p="$id_pattern" '$1 ~ p {
         memory = 0
         if (match($3, /memory_gb_[0-9]+/)) memory = substr($3, RSTART + 10, RLENGTH - 10)
-        print $1, $2, memory * 1073741824
+        printf "%s %s %.0f\n", $1, $2, memory * 1073741824
       }'
     ;;
   create-*)
@@ -74,13 +82,18 @@ operate() {
       die "Bad create: $op"
     ((gb >= 10 && gb <= 500)) || die "Disk size must be 10 to 500 GB: $gb"
     ((memory <= 128)) || die "Memory must be 1 to 128 GB: $memory"
+    local fresh=0
     if ! lvs "$vg/$id" >/dev/null 2>&1; then
+      size=$(lv_bytes base)
+      [[ $size =~ ^[0-9]+$ ]] || die "Could not read the size of base"
+      ((size <= gb * gib)) || die "The base disk is larger than $gb GB"
       lvcreate -q -s -K -n "$id" --addtag "memory_gb_$memory" "$vg/base" >/dev/null
+      fresh=1
     fi
-    size=$(lv_bytes "$id")
-    [[ $size =~ ^[0-9]+$ ]] || die "Could not read the size of $id"
-    if ((size < gb * gib)); then lvextend -q -L "${gb}g" "$vg/$id" >/dev/null; fi
-    lvchange -q -ay -K "$vg/$id"
+    if ! finish "$id" "$gb"; then
+      if ((fresh)); then lvremove -q -y "$vg/$id" >/dev/null; fi
+      die "Could not grow and activate $id"
+    fi
     printf '%s\n' "/dev/$vg/$id"
     ;;
   delete-*)

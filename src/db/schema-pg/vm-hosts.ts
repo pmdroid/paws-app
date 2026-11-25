@@ -14,7 +14,6 @@ export const vmHost = pgTable(
     reserveVcpus: integer("reserve_vcpus").default(4).notNull(),
     reserveMemoryGb: integer("reserve_memory_gb").default(8).notNull(),
     slotCap: integer("slot_cap"),
-    poolBytes: bigint("pool_bytes", { mode: "number" }),
     updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
     updatedBy: text("updated_by").notNull(),
   },
