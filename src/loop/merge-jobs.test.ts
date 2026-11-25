@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { FakeClock, JOB_KIND } from "../core";
 import {
@@ -41,50 +41,44 @@ import { questionEffects } from "./question-effects";
 import { worktreeBranch } from "./sources";
 import { tempStore } from "../../test/pglite";
 
+const opened: (() => Promise<void>)[] = [];
+
+afterEach(async () => {
+  for (const close of opened.splice(0)) await close();
+});
+
 async function queue() {
-  const { db, close } = await tempStore();
-  const clock = new FakeClock(1_000);
-  return { db, close, clock };
+  const store = await tempStore();
+  let closed: Promise<void> | undefined;
+  const close = () => (closed ??= store.close());
+  opened.push(close);
+  return { db: store.db, close, clock: new FakeClock(1_000) };
 }
 
 test("a merge waiting on a GitHub review checks every 15 minutes without expiring, and a review wakes it", async () => {
-  const { db, close, clock } = await queue();
-  try {
-    await insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    const id = await enqueueJob(db, {
-      queue: JOB_KIND.merge,
-      payload: { itemId: "eng-1", head: "h", ciWaitDeadline: clock.now() - 1 },
-      now: clock.now(),
+  const { db, clock } = await queue();
+  await insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+  const id = await enqueueJob(db, {
+    queue: JOB_KIND.merge,
+    payload: { itemId: "eng-1", head: "h", ciWaitDeadline: clock.now() - 1 },
+    now: clock.now(),
+  });
+  const loop = new JobLoop(db, clock);
+  loop.register(JOB_KIND.merge, async (job) => {
+    await parkMerge(db, job, clock.now(), {
+      reason: "review",
+      head: "h",
+      githubQueue: { queued: false, reviewSince: clock.now() - 2 * 24 * 60 * 60_000 },
     });
-    const loop = new JobLoop(db, clock);
-    loop.register(JOB_KIND.merge, async (job) => {
-      expect(
-        await parkMerge(db, job, clock.now(), {
-          reason: "review",
-          message: "Waiting for code owner review from acme/front-end.",
-          head: "h",
-          githubQueue: { queued: false, reviewSince: clock.now() - 2 * 24 * 60 * 60_000 },
-        }),
-      ).toBe("parked");
-    });
-    expect((await loop.tick())?.id).toBe(id);
-    const parked = (await getJob(db, id))!;
-    expect(parked.runAt).toBe(clock.now() + 15 * 60_000);
-    expect(parked.payload).not.toHaveProperty("ciWaitDeadline");
-    const delivery = {
-      deliveryId: "review-approved",
-      event: "pull_request_review",
-      payload: JSON.stringify({
-        action: "submitted",
-        review: { state: "approved" },
-        pull_request: { head: { sha: "h", ref: "elsewhere" } },
-      }),
-    };
-    expect(await acceptGitHubDelivery(db, delivery, clock.now())).toBe(true);
-    expect((await getJob(db, id))!.runAt).toBe(clock.now());
-  } finally {
-    await close();
-  }
+  });
+  expect((await loop.tick())?.id).toBe(id);
+  const parked = (await getJob(db, id))!;
+  expect(parked).toMatchObject({ status: "pending", runAt: clock.now() + 15 * 60_000 });
+  expect(parked.payload).not.toHaveProperty("ciWaitDeadline");
+  const payload = JSON.stringify({ action: "submitted", pull_request: { head: { sha: "h" } } });
+  const delivery = { deliveryId: "review-approved", event: "pull_request_review", payload };
+  expect(await acceptGitHubDelivery(db, delivery, clock.now())).toBe(true);
+  expect((await getJob(db, id))!.runAt).toBe(clock.now());
 });
 
 test("unknown merge outcomes back off without expiring or spending job attempts", async () => {
