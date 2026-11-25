@@ -898,12 +898,29 @@ describe("advanceMerge when GitHub's merge queue needs a review", () => {
     expect(h.bodies("status")).toEqual([
       `${waiting} Paws adds https://github.com/acme/app/pull/1 to the acme/app GitHub merge queue once it is approved.`,
     ]);
+    const since = h.clock.now();
+    h.clock.advance(30 * 60_000);
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "review" });
+    h.clock.advance(30 * 60_000);
     queue.refusal = null;
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", githubQueue: { queued: true } });
+    h.clock.advance(5 * 60_000);
     queue.merge(1, "queue-merge-sha");
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
-    expect(queue.enqueued).toHaveLength(2);
+    expect(queue.enqueued).toHaveLength(3);
     expect(h.github.merged).toEqual([]);
+    const marks = await h.db.run((q) =>
+      q.all(
+        q.orm
+          .select({ kind: q.t.mergeWaitMark.kind, at: q.t.mergeWaitMark.at })
+          .from(q.t.mergeWaitMark),
+      ),
+    );
+    expect(marks.toSorted((a, b) => a.at - b.at || a.kind.localeCompare(b.kind))).toEqual([
+      { kind: "review_started", at: since },
+      { kind: "enqueued", at: since + 60 * 60_000 },
+      { kind: "review_ended", at: since + 60 * 60_000 },
+    ]);
   });
 
   test("after 24 hours without a review Paws asks once, and the item stays in the merge queue", async () => {

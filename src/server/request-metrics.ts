@@ -18,7 +18,7 @@ const ROUTES = `
 /api/settings/repository-descriptions /api/settings/issue-vm/members
 /api/settings/issue-vm/grants /api/settings/issue-vm/grants/:id /api/settings/runner-vm-keys
 /api/settings/vm-providers /api/settings/vm-providers/check /api/settings/storage/check
-/api/metrics /api/settings/storage-usage /api/settings/storage-usage/refresh
+/api/metrics /api/metrics/stages /api/settings/storage-usage /api/settings/storage-usage/refresh
 /api/settings/storage-cleanup /api/settings/storage-cleanup/preview
 /api/settings/storage-cleanup/run /api/settings/storage-cleanup/history /api/retros/settings
 /api/retros/schedule /api/retros/runs /api/retros/preview /api/retros/history
