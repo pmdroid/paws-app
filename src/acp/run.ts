@@ -661,6 +661,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     }
   } finally {
     runAbort.abort();
+    if (result.stopReason === "error" && !state.cancelling)
+      await waitForExit(child, Math.min(graceMs, 1_000));
     const exitCode = child.exitCode;
     const exitSignal = child.signalCode;
     result.agentExited = await stopChild(child, graceMs);

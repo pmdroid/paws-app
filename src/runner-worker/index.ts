@@ -1217,8 +1217,9 @@ export async function executeRunnerCommand(
       .trim()
       .slice(0, 500)
       .replace(/[^.!?]$/, "$&.");
+    const kept = said.replace(/[.!?]$/, "") === cause.replace(/[.!?]$/, "") ? "" : said;
     return `Run failed during ${name}: ${[
-      ended === undefined || cause !== "Error." ? cause : said,
+      ended === undefined ? cause : cause === "Error." ? said : `${cause} ${kept}`.trim(),
       ended,
     ]
       .filter(Boolean)

@@ -475,3 +475,11 @@ test("an agent error keeps provider credentials out of the failure reason", asyn
   expect(reason).not.toContain(key);
   expect(reason).not.toContain("abc.def");
 });
+
+test("a recognised provider failure keeps the agent's own message beside its cause", async () => {
+  expect(
+    await failedTurn({ errorMessage: "API Error: 500 database unavailable", durationMs: 4_000 }),
+  ).toBe(
+    "Run failed during agent: api_error: temporary provider failure. API Error: 500 database unavailable. The turn ran 4 seconds.",
+  );
+});
