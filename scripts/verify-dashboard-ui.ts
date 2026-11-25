@@ -687,7 +687,7 @@ try {
       .getByRole("navigation", { name: "Main navigation" })
       .getByRole("list", { name: "Workspace pages" })
       .getByRole("link");
-    await expect(submenu).toHaveCount(14);
+    await expect(submenu).toHaveCount(13);
     await expect(submenu.and(admin.locator('[aria-current="page"]'))).toHaveText("Agents");
     await admin.screenshot({
       path: join(out, `workspace-submenu-${width}.png`),
@@ -969,7 +969,7 @@ try {
     await expect(page).toHaveURL(`${f.origin}/dashboard/settings/account`);
     for (const [name, path, heading] of [
       ["settings-brief", "/dashboard/workspace/brief", "Agent instructions"],
-      ["settings-workspace", "/dashboard/workspace/workspace", "Workspace access"],
+      ["settings-workspace", "/dashboard/workspace/workspace", "Integrations"],
     ] as const)
       await visit(admin, width, name, path, heading);
     await admin.route("**/api/settings/skills", (route) =>
