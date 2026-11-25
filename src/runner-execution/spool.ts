@@ -496,7 +496,7 @@ function helperRepositoryJob(spool: RunnerSpool, executionId: string, repository
     (job.command.type === "run"
       ? !job.command.addRepositories
       : job.command.type !== "helper" ||
-        job.command.purpose !== "slack_reply" ||
+        (job.command.purpose !== "slack_reply" && job.command.purpose !== "probe_write") ||
         !job.command.repositories) ||
     (repository !== undefined && !RunnerRepositoryNameSchema.safeParse(repository).success)
   )
