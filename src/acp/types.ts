@@ -219,6 +219,10 @@ export interface RunAgentResult {
   tokens?: number;
   pid?: number;
   agentExited: boolean;
+  exitCode?: number;
+  exitSignal?: string;
+  durationMs?: number;
+  timeLimitMs?: number;
 }
 
 export interface ExecuteItemOptions extends Omit<RunAgentOptions, "worktreePath" | "role"> {

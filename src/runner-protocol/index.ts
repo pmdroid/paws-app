@@ -132,6 +132,7 @@ export {
 export {
   RunnerActivitySchema,
   RunnerPermissionSchema,
+  redactAgentText,
   redactGitHubTokens,
   redactedJson,
 } from "./activity";
