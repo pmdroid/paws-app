@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { git } from "../../src/acp";
 import { executeRunnerCommand } from "../../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "../runner-account-home";
 import type { RunnerJob } from "../../src/runner-execution";
 import { join } from "node:path";
 import { type LaunchInput, type Proof } from "./harness";
@@ -66,6 +67,7 @@ export default {
     const bin = join(root, "bin");
     const home = join(root, "home");
     for (const path of [source, bin, home]) mkdirSync(path);
+    signInRunnerAccount(home, "claude");
     await git(["init", "-b", "main", source]);
     writeFileSync(join(source, "Cargo.toml"), '[package]\nname = "acme"\nversion = "0.1.0"\n');
     await git(["-C", source, "add", "."]);
@@ -98,6 +100,7 @@ export default {
         issuedAt: Date.now(),
         expiresAt: Date.now() + 60_000,
         profile: { agent: "claude", model: "fixture-model" },
+        account: RUNNER_ACCOUNT,
         prompt: "Implement acme",
         repository: {
           owner: "acme",

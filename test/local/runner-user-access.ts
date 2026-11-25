@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { executeRunnerCommand } from "../../src/runner-worker";
 import { RunnerJobSchema } from "../../src/runner-execution";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "../runner-account-home";
 
 export async function probeRunnerUserAccess(root: string) {
   assert(process.getuid!() > 0);
@@ -14,6 +15,7 @@ export async function probeRunnerUserAccess(root: string) {
   for (const directory of [source, home, cache, workRoot]) mkdirSync(directory, { mode: 0o700 });
   mkdirSync(join(home, ".codex"), { mode: 0o700 });
   writeFileSync(join(home, ".codex", "existing-login"), "synthetic-preserved-login");
+  const accountHome = signInRunnerAccount(home, "claude");
   writeFileSync(join(source, "tracked"), "source-original");
   chmodSync(join(source, "tracked"), 0o440);
   chmodSync(source, 0o550);
@@ -93,6 +95,7 @@ export async function probeRunnerUserAccess(root: string) {
         issuedAt: now,
         expiresAt: now + 60_000,
         profile: { agent: "claude", model: "fixture-model" },
+        account: RUNNER_ACCOUNT,
         prompt: "Create the requested artifact.",
         repository: {
           owner: "fixture",
@@ -146,7 +149,7 @@ export async function probeRunnerUserAccess(root: string) {
     "synthetic-preserved-login",
   );
   for (const provider of [".codex", ".claude"])
-    assert.equal(statSync(join(home, provider)).mode & 0o777, 0o700);
+    assert.equal(statSync(join(accountHome, provider)).mode & 0o777, 0o700);
   const result = {
     passed: true,
     nonRootUid: process.getuid!(),
