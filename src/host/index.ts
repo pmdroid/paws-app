@@ -47,3 +47,4 @@ export function startHost(input: {
 }
 
 export { createLagWatchdog } from "./lag";
+export { createProcessMetrics, type HostMetrics, type ProcessSample } from "./process-metrics";

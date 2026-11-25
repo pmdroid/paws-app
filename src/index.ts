@@ -217,6 +217,7 @@ import {
   type Steps,
   githubBlobCache,
   memberVmProviderId,
+  observeDb,
 } from "./db";
 import {
   METRICS_FLUSH_EVERY_MS,
@@ -226,6 +227,7 @@ import {
   flushMetrics,
   recordDuration,
   recordQueueDepths,
+  setGauge,
 } from "./metrics";
 import { DATABASE_HELD, doctorChecks, formatDoctor, realProbe, withSavedStore } from "./doctor";
 import { installHostMain } from "./install-host";
@@ -257,7 +259,7 @@ import {
   type GitHubBinding,
   type GitHubTokenProvider,
 } from "./github";
-import { startHost, createLagWatchdog } from "./host";
+import { startHost, createLagWatchdog, createProcessMetrics } from "./host";
 import { recoverRunnerWorkStall } from "./runner-work";
 import {
   checkRedelegation,
@@ -592,7 +594,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const env = { ...runtime.env, host: publicDashboard ? runtime.env.host : LOOPBACK };
   let repositoryAccess = options?.runnerRepositoryAccess;
   const placeOnRunner = runnerConfig !== null;
-  const store = database.store;
+  const store = observeDb(database.store, (ms) => recordDuration("db.transaction", {}, ms));
   const transcriptStorage = earlyTranscripts ?? loadTranscripts();
   const transcriptObjects = transcriptStorage?.objects;
   await importLinearTokenFile(store, paths.secretsDir, runtime.linearTokenFile);
@@ -2636,12 +2638,16 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   });
   jobLoop = loops.jobs;
 
-  const lagTimer = setInterval(
-    createLagWatchdog({
-      recover: (lag, startedAt) => recoverRunnerWorkStall(store, startedAt, lag),
-    }),
-    1000,
-  );
+  const hostMetrics = { recordDuration, setGauge };
+  const lagWatchdog = createLagWatchdog({
+    recover: (lag, startedAt) => recoverRunnerWorkStall(store, startedAt, lag),
+    metrics: hostMetrics,
+  });
+  const processMetrics = createProcessMetrics({ metrics: hostMetrics, signal: abort.signal });
+  const lagTimer = setInterval(() => {
+    lagWatchdog();
+    processMetrics();
+  }, 1000);
   lagTimer.unref();
   abort.signal.addEventListener("abort", () => clearInterval(lagTimer), { once: true });
   const host = startHost({
