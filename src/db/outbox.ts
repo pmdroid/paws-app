@@ -12,6 +12,7 @@ import {
   lt,
   lte,
   ne,
+  notExists,
   notInArray,
   notLike,
   or,
@@ -24,6 +25,7 @@ import {
   DEFAULT_LEASE_MS,
   JOB_KIND,
   retryBackoffMs,
+  TERMINAL_WORK_ITEM_STATES,
 } from "../core";
 import { type Db, type Q, type Steps } from "./db";
 import { jsonField } from "./json-text";
@@ -1402,6 +1404,60 @@ export function* pruneSentOutboxSteps(q: Q, cutoff: number, limit: number): Step
                 ),
               ),
           ),
+        ),
+      ),
+    )
+    .limit(limit);
+  const deleted = yield* q.all(
+    q.orm.delete(outbox).where(inArray(outbox.id, prunable)).returning({ id: outbox.id }),
+  );
+  return deleted.length;
+}
+
+export function* pruneStaleOutboxSteps(q: Q, cutoff: number, limit: number): Steps<number> {
+  const { outbox, linearSession, workItem } = q.t;
+  const other = alias(outbox, "other");
+  const sameSession = and(
+    eq(other.target, outbox.target),
+    eq(other.orderingKey, outbox.orderingKey),
+  );
+  const prunable = q.orm
+    .select({ id: outbox.id })
+    .from(outbox)
+    .where(
+      and(
+        lt(outbox.createdAt, cutoff),
+        or(
+          inArray(outbox.status, ["dead", "dropped"]),
+          and(
+            inArray(outbox.deliveryKind, ["terminal", "stop"]),
+            ne(outbox.status, "pending"),
+            notExists(
+              q.orm
+                .select({ one: sql`1` })
+                .from(other)
+                .where(and(sameSession, gt(other.id, outbox.id))),
+            ),
+          ),
+        ),
+        notExists(
+          q.orm
+            .select({ one: sql`1` })
+            .from(other)
+            .where(and(sameSession, eq(other.status, "pending"))),
+        ),
+        notExists(
+          q.orm
+            .select({ one: sql`1` })
+            .from(linearSession)
+            .innerJoin(workItem, eq(workItem.id, linearSession.activeItemId))
+            .where(
+              and(
+                eq(outbox.target, "linear"),
+                eq(linearSession.sessionId, outbox.orderingKey),
+                notInArray(workItem.state, [...TERMINAL_WORK_ITEM_STATES]),
+              ),
+            ),
         ),
       ),
     )

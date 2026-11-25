@@ -15,6 +15,16 @@ const NOTHING = {
   agent_model_probe: 0,
 };
 
+const WORK_ITEM = {
+  delegationId: "delegation",
+  linearIssueId: "issue",
+  linearIdentifier: "PAS-1",
+  title: "Item",
+  branchName: "branch",
+  position: 0,
+  createdAt: 0,
+};
+
 function keys<T>(db: Db, read: (q: Q) => PromiseLike<T[]>, key: (row: T) => string | number) {
   return db.run((q) => q.all(read(q))).then((rows) => rows.map(key).sort());
 }
@@ -153,6 +163,79 @@ describePglite((open) => {
         "plan-new",
         "other-session-plan",
         "newest-activity",
+      ].sort(),
+    );
+    await close();
+  });
+
+  test("the prune deletes week-old dead rows and finished sessions' last terminal rows, never an active session's", async () => {
+    const { db, close } = await open();
+    await withoutForeignKeys(db);
+    let id = 0;
+    const row = (
+      key: string,
+      session: string,
+      status: string,
+      createdDaysAgo: number,
+      kind = "ordered",
+    ) =>
+      seed(db, (q) =>
+        q.orm.insert(q.t.outbox).values({
+          id: ++id,
+          target: "linear",
+          op: kind === "ordered" ? "activity" : kind,
+          orderingKey: session,
+          idempotencyKey: key,
+          payload: json(db, {}),
+          status,
+          createdAt: ago(createdDaysAgo),
+          sentAt: status === "sent" ? ago(createdDaysAgo) : null,
+          deliveryKind: kind,
+        }),
+      );
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.workItem).values([
+          { ...WORK_ITEM, id: "running", state: "running" },
+          { ...WORK_ITEM, id: "merged", state: "merged" },
+        ]),
+      (q) =>
+        q.orm.insert(q.t.linearSession).values([
+          { sessionId: "active", activeItemId: "running", createdAt: 0 },
+          { sessionId: "done", activeItemId: "merged", createdAt: 0 },
+        ]),
+    );
+    await row("old-dead", "done", "dead", 10);
+    await row("recent-dead", "done", "dead", 2);
+    await row("old-dropped", "done", "dropped", 10);
+    await row("done-stop", "done", "sent", 10, "stop");
+    await row("done-terminal", "done", "sent", 9, "terminal");
+    await row("active-dead", "active", "dead", 10);
+    await row("active-terminal", "active", "sent", 10, "terminal");
+    await row("pending-dead", "pending", "dead", 10);
+    await row("pending-terminal", "pending", "sent", 10, "terminal");
+    await row("pending-row", "pending", "pending", 10);
+    await row("restarted-terminal", "restarted", "sent", 10, "terminal");
+    await row("restarted-activity", "restarted", "sent", 2);
+
+    expect(await pruneLoopQueues({ store: db, now: NOW })).toEqual({ ...NOTHING, outbox: 4 });
+    expect(
+      await keys(
+        db,
+        (q) => q.orm.select({ key: q.t.outbox.idempotencyKey }).from(q.t.outbox),
+        (left) => left.key,
+      ),
+    ).toEqual(
+      [
+        "recent-dead",
+        "active-dead",
+        "active-terminal",
+        "pending-dead",
+        "pending-terminal",
+        "pending-row",
+        "restarted-terminal",
+        "restarted-activity",
       ].sort(),
     );
     await close();

@@ -13,6 +13,7 @@ import {
   pruneRunnerHealthResultsSteps,
   pruneRunnerQuestionAnswersSteps,
   pruneSentOutboxSteps,
+  pruneStaleOutboxSteps,
   pruneSupersededRunnerResultsSteps,
   removeCloseoutOutputs,
   type Db,
@@ -43,7 +44,10 @@ type PruneSteps = (q: Q, cutoff: number, limit: number) => Steps<number>;
 
 const LOOP_QUEUE_PRUNES: Record<LoopQueue, PruneSteps> = {
   job: pruneFinishedJobsSteps,
-  outbox: pruneSentOutboxSteps,
+  outbox: function* (q, cutoff, limit) {
+    const sent = yield* pruneSentOutboxSteps(q, cutoff, limit);
+    return sent + (yield* pruneStaleOutboxSteps(q, cutoff, limit));
+  },
   inbox_event: pruneHandledInboxEventsSteps,
   linear_access_event: pruneLinearAccessEventsSteps,
   agent_model_probe: pruneFinishedAgentModelProbesSteps,
