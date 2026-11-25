@@ -180,6 +180,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "dashboard-links",
     "notebook",
     "vm-hosts",
+    "metrics",
   ],
   settings: [
     "acp",
