@@ -212,3 +212,28 @@ export function* activeIssueVmGrantLimitSteps(
   );
   return row?.limit ?? null;
 }
+
+export function* bindIssueVmRunnerSteps(q: Q, input: { id: string; runnerId: string }) {
+  const { issueVm: v } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .update(v)
+      .set({ runnerId: input.runnerId })
+      .where(and(eq(v.id, input.id), isNull(v.runnerId), notInArray(v.state, ENDED_STATES)))
+      .returning({ id: v.id }),
+  );
+  return rows.length === 1;
+}
+
+export function* runnerIssueVmItemSteps(q: Q, runnerId: string) {
+  const { runner: r, issueVm: v } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ issueVmId: r.issueVmId, itemId: v.itemId })
+      .from(r)
+      .leftJoin(v, and(eq(v.id, r.issueVmId), eq(v.runnerId, r.id)))
+      .where(eq(r.id, runnerId)),
+  );
+  if (!row?.issueVmId) return null;
+  return { issueVmId: row.issueVmId, itemId: row.itemId };
+}

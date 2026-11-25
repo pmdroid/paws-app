@@ -21,6 +21,7 @@ import { jsonField, jsonFromText, jsonText, jsonValue } from "./json-text";
 import { auditWorkspaceAccessSteps, workspaceMemberUsableWhere } from "./workspace";
 import { endRevokedRunnerAuthoritySteps, runnerLeaseCutoff } from "./runner-lease";
 import { emitJobReady } from "./jobs";
+import { bindIssueVmRunnerSteps } from "./issue-vms";
 import { enqueueRunnerSetupChecksSteps } from "./runner-setup-hold";
 import { bindSignedInAccountsToRunnerSteps, boundAgentAccountWhere } from "./agent-accounts";
 import {
@@ -597,6 +598,7 @@ type RunnerEnrollmentRequest = {
   expiresAt: number;
   now: number;
   adminRepositories?: readonly string[];
+  issueVmId?: string;
 };
 
 export async function createRunnerEnrollment(
@@ -636,6 +638,7 @@ export function* createRunnerEnrollmentSteps(q: Q, input: RunnerEnrollmentReques
       expiresAt: input.expiresAt,
       adminRepositories:
         input.adminRepositories === undefined ? null : jsonValue(q, input.adminRepositories),
+      issueVmId: input.issueVmId ?? null,
     }),
   );
 }
@@ -647,6 +650,7 @@ type RunnerEnrollment = {
   name: string;
   expiresAt: number;
   adminRepositories: string | null;
+  issueVmId: string | null;
 };
 
 /**
@@ -675,6 +679,7 @@ export function* findRunnerEnrollmentSteps(
         name: enrollment.name,
         expiresAt: enrollment.expiresAt,
         adminRepositories: jsonText(q, enrollment.adminRepositories),
+        issueVmId: enrollment.issueVmId,
       })
       .from(enrollment)
       .innerJoin(
@@ -721,10 +726,18 @@ export function* enrollRunnerSteps(q: Q, input: RunnerEnrollInput): Steps<Runner
       workspaceId: enrollment.workspaceId,
       ownerUserId: enrollment.userId,
       name: input.name,
-      status: "paused",
+      status: enrollment.issueVmId === null ? "paused" : "active",
       createdAt: input.now,
+      ...(enrollment.issueVmId === null
+        ? {}
+        : { isolation: "issue_vm", issueVmId: enrollment.issueVmId }),
     }),
   );
+  if (
+    enrollment.issueVmId !== null &&
+    !(yield* bindIssueVmRunnerSteps(q, { id: enrollment.issueVmId, runnerId: input.runnerId }))
+  )
+    throw new Error("Runner enrollment is invalid or expired.");
   if (enrollment.adminRepositories !== null)
     yield* q.exec(
       q.orm.insert(runnerRepositories).values({

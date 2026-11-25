@@ -12,6 +12,7 @@ import {
   getRunSteps,
   getRunnerSteps,
   getWorkItemSteps,
+  issueVmByIdSteps,
   listRunnerOverviewSteps,
   renewRunnerCertificateSteps,
   requestAllRunnerAgentUpdatesSteps,
@@ -38,6 +39,8 @@ import { realpathSync } from "node:fs";
 import { agentCatalogPackagesSteps } from "../agent-catalog";
 import { validateRunnerRequest, type RunnerAuthority, type RunnerPeer } from "../runner-identity";
 import { releaseVersionFromPath } from "../runner-protocol";
+
+const ISSUE_VM_ENROLLMENT_MS = 10 * 60_000;
 
 export function createRunnerControl(options: {
   store: Db;
@@ -102,6 +105,36 @@ export function createRunnerControl(options: {
         });
       });
       return { token, expiresAt, name };
+    },
+    async createIssueVmEnrollment(issueVmId: string) {
+      const at = now();
+      const id = workspaceId(at);
+      const token = workspaceSecret();
+      const expiresAt = at + ISSUE_VM_ENROLLMENT_MS;
+      await store.transaction(function* (q) {
+        const vm = yield* issueVmByIdSteps(q, issueVmId);
+        if (!vm || vm.runnerId !== null || !["creating", "awake", "asleep"].includes(vm.state))
+          throw new Error("This issue VM can no longer enroll a runner.");
+        yield* enrollingMemberSteps(q, vm.workspaceId, vm.memberUserId);
+        yield* createRunnerEnrollmentSteps(q, {
+          id,
+          tokenHash: workspaceTokenHash(token),
+          workspaceId: vm.workspaceId,
+          userId: vm.memberUserId,
+          name: `issue-vm-${vm.id.toLowerCase()}`,
+          expiresAt,
+          now: at,
+          issueVmId: vm.id,
+        });
+        yield* auditWorkspaceAccessSteps(q, {
+          workspaceId: vm.workspaceId,
+          userId: vm.memberUserId,
+          action: "runner.enrollment_created",
+          subject: id,
+          now: at,
+        });
+      });
+      return { token, expiresAt };
     },
     /**
      * The host's one round trip: a valid unused token, a name and a CSR give a certificate for a

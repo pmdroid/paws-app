@@ -3,6 +3,7 @@ import {
   CONFIG_SETTINGS_KEY,
   insertIssueVmGrantSteps,
   issueVmByIdSteps,
+  putVmProviderCheckSteps,
   updateSettingSteps,
   type Db,
   type IssueVmState,
@@ -126,5 +127,29 @@ describePglite((connect) => {
       state: "deleted",
     });
     expect(await move(db, "missing", "awake")).toEqual({ ok: false, reason: "missing" });
+  });
+
+  test("a Tailscale key whose machines wait for approval refuses a new issue VM", async () => {
+    const db = await connected(connect);
+    const check = (state: "limited" | "working") =>
+      db.run((q) =>
+        putVmProviderCheckSteps(q, {
+          name: "tailscale",
+          state,
+          message: "",
+          facts: [],
+          checkedAt: NOW,
+          lastWorkingAt: NOW,
+        }),
+      );
+    await check("limited");
+    expect(await admit(db)).toEqual({
+      ok: false,
+      reason: "tailnet_approval",
+      message:
+        "The Tailscale key's new machines wait for approval, so an issue VM can't enroll without a person. Save a reusable, pre-approved key on Settings › Runner VMs.",
+    });
+    await check("working");
+    expect(await admit(db)).toEqual({ ok: true });
   });
 });

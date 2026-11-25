@@ -16,6 +16,7 @@ import {
   getLinearSessionAccessSteps,
   getLinearSessionSteps,
   getRunSteps,
+  runnerIssueVmItemSteps,
   getTaskModeGenerationSteps,
   getTaskModeSteps,
   getWorkItemRepositorySteps,
@@ -424,6 +425,9 @@ export function createRunnerWork(options: {
       throw new RunnerTeardownPending([command.runnerId]);
     if (!(yield* runnerHasCapacitySteps(q, command.runnerId, at, command.runId)))
       throw new Error("Runner is occupied by active work.");
+    const bound = yield* runnerIssueVmItemSteps(q, command.runnerId);
+    if (bound && bound.itemId !== (yield* getRunSteps(q, command.runId))?.itemId)
+      throw new Error("Runner is not accepting this assignment.");
     if (command.type === "task")
       bindTask(
         command,

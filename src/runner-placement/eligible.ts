@@ -37,11 +37,13 @@ export function* eligibleRunnersSteps(q: Q, input: EligibleRunnersInput): Steps<
     input.includeRevoked === true,
   );
   const runners: EligibleRunner[] = [];
-  for (const { status, revokedAt, lastSeenAt, ...runner } of rows) {
+  for (const { status, revokedAt, lastSeenAt, issueVmId, issueVmItemId, ...runner } of rows) {
     const reason = yield* reasonSteps();
     runners.push({ ...runner, eligible: reason === "own" || reason === "issue-vm", reason });
     function* reasonSteps(): Steps<EligibleRunnerReason> {
       if (revokedAt !== null || status === "revoked") return "revoked";
+      if (issueVmId !== null && (input.itemId === undefined || issueVmItemId !== input.itemId))
+        return "not-yours";
       const own = input.ownerUserId !== null && runner.ownerId === input.ownerUserId;
       if (!own && runner.isolation !== "issue_vm") return "not-yours";
       const member = yield* workspaceMemberSteps(q, input.workspaceId, runner.ownerId);
@@ -133,7 +135,7 @@ export function* itemOwnerScopeSteps(q: Q, itemId: string) {
     scope.ownerUserId ??
     (delegator ? yield* workspaceUserIdForLinearUserSteps(q, delegator) : null);
   if (!ownerUserId) return null;
-  return { workspaceId: scope.workspaceId, teamId: scope.teamId, ownerUserId };
+  return { workspaceId: scope.workspaceId, teamId: scope.teamId, ownerUserId, itemId };
 }
 
 type ItemRunnerInput = { itemId: string; agent: string; now?: number };
