@@ -289,7 +289,9 @@ test("an agent error that carries the token is stored redacted in the worker's r
   );
   expect(result.run.errorMessage).toBeDefined();
   expect(stored).not.toContain(TOKEN);
-  expect(result.run.errorMessage).toBe("Run failed during agent: Error.");
+  expect(result.run.errorMessage).toStartWith(
+    "Run failed during agent: model refused [redacted]. The turn ran ",
+  );
 });
 
 test("a session snapshot leaves the token out, even where it straddles a read chunk", async () => {

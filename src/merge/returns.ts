@@ -18,7 +18,7 @@ import {
   type Steps,
   type WorkItemRecord,
 } from "../db";
-import type { askSteps } from "../questions";
+import type { askSteps, Asked, QuestionAsker } from "../questions";
 import { rebaseBudget, type RebaseBudget, type RebaseConflict } from "./budget";
 import type { FailedCiCheck } from "./ci-fix";
 
@@ -168,14 +168,23 @@ function* returnToAgentSteps(q: Q, input: MergeReturn): Steps<{ armed: boolean }
   return { armed: restarted.armed };
 }
 
+type AskRest = Parameters<typeof askSteps> extends [unknown, unknown, ...infer Rest] ? Rest : never;
+
+export type MergeAsk = (
+  q: Q,
+  asker: QuestionAsker & { workspace?: boolean },
+  ...rest: AskRest
+) => Steps<Asked>;
+
 type MergeHelp = {
   itemId: string;
   body: string;
   now: number;
   session: (item: WorkItemRecord) => string | null;
-  ask: typeof askSteps;
+  ask: MergeAsk;
   reason?: string;
   options?: readonly string[];
+  keepState?: boolean;
 };
 
 export function askMergeHelp(store: Db, input: MergeHelp): Promise<boolean> {
@@ -189,7 +198,13 @@ export function* askMergeHelpSteps(q: Q, input: MergeHelp): Steps<boolean> {
   if (sessionId === null) return false;
   yield* input.ask(
     q,
-    { itemId: current.id, runId: current.currentRunId, sessionId, version: current.version },
+    {
+      itemId: current.id,
+      runId: current.currentRunId,
+      sessionId,
+      version: current.version,
+      ...(input.keepState ? { workspace: true } : {}),
+    },
     "ci-help",
     input.body,
     {

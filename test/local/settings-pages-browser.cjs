@@ -345,14 +345,7 @@ const errors = [];
         const theme = appearance.toLowerCase();
         if (!(await page.evaluate((t) => document.documentElement.classList.contains(t), theme)))
           await page.getByRole("button", { name: `Switch to ${theme} theme` }).click();
-        for (const name of [
-          "Agents",
-          "Integrations",
-          "Members",
-          "Workspace access",
-          "Your account",
-          "Audit history",
-        ]) {
+        for (const name of ["Agents", "Integrations", "Members", "Your account", "Audit history"]) {
           await settings(page, name);
           assert.equal(
             await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
@@ -406,8 +399,6 @@ const errors = [];
       .getByText("Connected", { exact: true })
       .waitFor();
     assert.equal(await member.page.getByRole("link", { name: "Manage on GitHub" }).count(), 0);
-    await settings(member.page, "Workspace access");
-    assert.equal(await member.page.getByRole("button", { name: "Save repositories" }).count(), 0);
     await settings(member.page, "Members");
     await member.page.getByText("Ask an admin to change members or roles.").waitFor();
     assert.equal(await member.page.getByRole("table", { name: "Workspace members" }).count(), 0);

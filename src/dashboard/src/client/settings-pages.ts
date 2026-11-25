@@ -73,11 +73,6 @@ export const WORKSPACE_PAGES = [
     description: "Change roles, and revoke or restore a member's access.",
   },
   {
-    id: "workspace",
-    name: "Workspace access",
-    description: "Manage members and repository access.",
-  },
-  {
     id: "audit",
     name: "Audit history",
     description: "Review changes to workspace access and settings.",
@@ -123,6 +118,8 @@ export function settingsRedirect(path: string): string | null {
     .split("/")
     .filter((part) => part.length > 0);
   if ((head === "settings" || head === "workspace") && page === "notebook") return "/notebooks";
+  if ((head === "settings" || head === "workspace") && page === "workspace")
+    return settingsAdmin ? "/workspace/integrations" : "/settings/account";
   if (head === "settings" && isWorkspacePage(page))
     return settingsAdmin ? `/workspace/${page}` : "/settings/account";
   return head === "workspace" && !settingsAdmin ? "/settings/account" : null;

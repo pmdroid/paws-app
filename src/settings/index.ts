@@ -50,4 +50,9 @@ export type { MemberVmSettingsOptions } from "./member-vm";
 export { ISSUE_VM_SETTINGS_PATH, handleIssueVmSettingsRequest } from "./issue-vm";
 export type { IssueVmSettingsOptions } from "./issue-vm";
 export { RUNNER_VM_KEYS_SETTINGS_PATH, handleRunnerVmKeysSettingsRequest } from "./runner-vm-keys";
-export type { RunnerVmKeysSettingsOptions } from "./runner-vm-keys";
+export type { RunnerVmKeysSettingsOptions, VmProviderCheckService } from "./runner-vm-keys";
+export {
+  VM_PROVIDERS_CHECK_PATH,
+  VM_PROVIDERS_SETTINGS_PATH,
+  handleVmProvidersSettingsRequest,
+} from "./vm-providers";

@@ -14,6 +14,7 @@ export {
   parseConfigToml,
   setConfigKeys,
   writeFindingsGroupingTime,
+  writeMemberVmProviderOff,
   IMPLEMENTERS,
 } from "./file";
 export type {

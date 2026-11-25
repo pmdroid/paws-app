@@ -8,6 +8,7 @@ import {
   type LivePreviewSystem,
 } from "../live-preview";
 import {
+  redactAgentText,
   redactGitHubTokens,
   redactedJson,
   runnerCommandAccount,
@@ -748,6 +749,37 @@ function appendJournal(directory: string): number {
   );
 }
 
+function turnEnded(run: RunAgentResult, conversationLimit: boolean): string {
+  return [
+    run.exitSignal
+      ? `The agent process was killed by ${run.exitSignal}.`
+      : run.exitCode !== undefined
+        ? `The agent process exited with code ${run.exitCode}.`
+        : undefined,
+    conversationLimit
+      ? "Paws stopped it at the conversation's time limit."
+      : run.timeLimitMs !== undefined
+        ? `Paws stopped it at its time limit of ${spoken(run.timeLimitMs)}.`
+        : undefined,
+    run.durationMs !== undefined ? `The turn ran ${spoken(run.durationMs)}.` : undefined,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function spoken(ms: number): string {
+  const seconds = Math.round(ms / 1000);
+  const parts = [
+    [Math.floor(seconds / 3600), "hour"],
+    [Math.floor(seconds / 60) % 60, "minute"],
+    [seconds < 60 ? seconds : 0, "second"],
+  ] as const;
+  const said = parts
+    .filter(([count]) => count > 0)
+    .map(([count, unit]) => `${count} ${unit}${count === 1 ? "" : "s"}`);
+  return said.length > 0 ? said.join(" ") : "0 seconds";
+}
+
 /** Removes an earlier command's checkout of the same run, so the new one is never merged into it. */
 function addedRepositoriesRoot(workRoot: string, executionId: string): string {
   return join(workRoot, ".paws", "runs", executionId);
@@ -1169,17 +1201,30 @@ export async function executeRunnerCommand(
     fsyncSync(eventJournal);
     journalSize += length;
   }
-  const workerFailure = (name: string, error: unknown) =>
-    `Run failed during ${name}: ${describeRunnerFailure(
-      new Error(
-        redactGitHubTokens(
-          error instanceof Error ? error.message : String(error),
-          githubRead?.tokens(),
-        ),
-      ),
-      githubRead?.tokens() ?? [],
-      true,
-    )}`;
+  const workerFailure = (
+    name: string,
+    error: unknown,
+    ended?: string,
+    secrets: readonly string[] = [],
+  ) => {
+    const message = redactGitHubTokens(
+      error instanceof Error ? error.message : String(error),
+      githubRead?.tokens(),
+    );
+    const cause = describeRunnerFailure(new Error(message), githubRead?.tokens() ?? [], true);
+    const said = redactAgentText(message, [...(githubRead?.tokens() ?? []), ...secrets])
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 500)
+      .replace(/[^.!?]$/, "$&.");
+    const kept = said.replace(/[.!?]$/, "") === cause.replace(/[.!?]$/, "") ? "" : said;
+    return `Run failed during ${name}: ${[
+      ended === undefined ? cause : cause === "Error." ? said : `${cause} ${kept}`.trim(),
+      ended,
+    ]
+      .filter(Boolean)
+      .join(" ")}`;
+  };
   let skillsRoot: string | undefined;
   let preview: Promise<LivePreview | null> | undefined;
   const previewStart = new AbortController();
@@ -2486,15 +2531,22 @@ export async function executeRunnerCommand(
     if (command.type === "review" && Buffer.byteLength(reviewText) > 524_288)
       throw new Error("Runner response exceeds size limit");
     if (
-      run.stopReason === "error" &&
-      run.errorMessage &&
+      ((run.stopReason === "error" && run.errorMessage) || run.timedOut) &&
       !installFailure &&
       !(command.type === "review" && command.reviewCommand)
-    )
+    ) {
       run.errorMessage = workerFailure(
-        installFailure ? "mise" : "agent",
-        new Error(run.errorMessage),
+        "agent",
+        new Error(run.errorMessage ?? ""),
+        turnEnded(run, lifetime.signal.aborted && !options.signal?.aborted),
+        ["claude", "codex", "grok", "opencode"].flatMap((name) =>
+          Object.values(accountAgentEnv(name, agentEnv.HOME ?? home)),
+        ),
       );
+      writeJournal(
+        `execution ${job.executionId} agent turn failed: ${run.errorMessage.replace(/\s+/g, " ")}`,
+      );
+    }
     enterPhase("verify");
     const result: RunnerWorkerResult = { executionId: job.executionId, commandId: command.id, run };
     if (command.type === "helper") result.text = reviewText;
