@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { fullStatusFixture, issueList, mergeQueueOf } from "../../test/fixtures";
 import { setSettingsAdmin } from "./settings-pages";
 import { settleReactWork } from "./settle-react";
 
@@ -33,14 +34,59 @@ function installWindow(): Window {
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 
+function fakeFetch(): string[] {
+  const full = fullStatusFixture();
+  const bodies: Record<string, unknown> = {
+    "/api/issues": issueList(full),
+    "/api/merge-queue": mergeQueueOf(full),
+  };
+  const requests: string[] = [];
+  Reflect.set(globalThis, "fetch", async (path: string) => {
+    requests.push(path);
+    return { ok: true, json: async () => JSON.parse(JSON.stringify(bodies[path])) };
+  });
+  return requests;
+}
+
+async function mountPalette(window: Window) {
+  const container = window.document.createElement("div");
+  const content = window.document.createElement("main");
+  content.id = "content";
+  content.tabIndex = -1;
+  window.document.body.append(container, content);
+  const root = createRoot(container as unknown as HTMLElement);
+  const paths: string[] = [];
+  const { CommandPalette } = await import("./command-palette");
+  await act(async () => root.render(<CommandPalette onNavigate={(path) => paths.push(path)} />));
+  const press = async (target: unknown, key: string, ctrlKey = false) => {
+    const event = new window.KeyboardEvent("keydown", {
+      key,
+      ctrlKey,
+      bubbles: true,
+      cancelable: true,
+    });
+    await act(async () => {
+      (target as EventTarget).dispatchEvent(event as unknown as Event);
+      await settle();
+    });
+    return event;
+  };
+  return { container, content, root, paths, press };
+}
+
 test("a page name matches its item and a typed issue id comes first", async () => {
   installWindow();
   const { paletteItems } = await import("./command-palette");
-  expect(paletteItems("merge").map((item) => [item.title, item.path])).toEqual([
-    ["Merge queue", "/merge-queue"],
+  expect(paletteItems("merge queue").map((item) => [item.group, item.title, item.path])).toEqual([
+    ["Pages", "Merge queue", "/merge-queue"],
   ]);
   const [first] = paletteItems("pas-7");
-  expect(first).toEqual({ title: "Open issue PAS-7", path: "/issues/PAS-7", issue: "PAS-7" });
+  expect(first).toEqual({
+    group: "Issues",
+    title: "Open issue",
+    path: "/issues/PAS-7",
+    issue: "PAS-7",
+  });
   expect(paletteItems("").some((item) => item.issue)).toBe(false);
 });
 
@@ -68,31 +114,13 @@ test("settings pages open in Settings and workspace pages in Workspace, for admi
 
 test("Ctrl K opens the palette, Down then Enter opens the second item and Escape closes", async () => {
   const window = installWindow();
-  const { CommandPalette, paletteItems } = await import("./command-palette");
-  const container = window.document.createElement("div");
-  const content = window.document.createElement("main");
-  content.id = "content";
-  content.tabIndex = -1;
-  window.document.body.append(container, content);
-  const root = createRoot(container as unknown as HTMLElement);
-  const paths: string[] = [];
-  await act(async () => root.render(<CommandPalette onNavigate={(path) => paths.push(path)} />));
+  const requests = fakeFetch();
+  const { paletteItems } = await import("./command-palette");
+  const { container, content, root, paths, press } = await mountPalette(window);
+  expect(requests).toEqual([]);
   const trigger = container.querySelector("button")!;
   expect(trigger.textContent).toContain("Ctrl K");
 
-  const press = async (target: unknown, key: string, ctrlKey = false) => {
-    const event = new window.KeyboardEvent("keydown", {
-      key,
-      ctrlKey,
-      bubbles: true,
-      cancelable: true,
-    });
-    await act(async () => {
-      (target as EventTarget).dispatchEvent(event as unknown as Event);
-      await settle();
-    });
-    return event;
-  };
   const dialog = () => window.document.querySelector('[role="dialog"]');
   const combobox = () =>
     window.document.querySelector('input[role="combobox"]') as unknown as HTMLInputElement;
@@ -101,7 +129,10 @@ test("Ctrl K opens the palette, Down then Enter opens the second item and Escape
   const title = dialog()?.getAttribute("aria-labelledby");
   expect(title ? window.document.getElementById(title)?.textContent : null).toBe("Jump to");
   const input = combobox();
-  expect(input.getAttribute("placeholder")).toBe("Jump to a page or type an issue id…");
+  expect(input.getAttribute("placeholder")).toBe(
+    "Search pages, settings, issues and pull requests…",
+  );
+  expect(requests).toEqual(["/api/issues", "/api/merge-queue"]);
   const options = window.document.querySelectorAll('[role="option"]');
   expect(input.getAttribute("aria-activedescendant")).toBe(options[0]!.id);
 
@@ -134,5 +165,61 @@ test("Ctrl K opens the palette, Down then Enter opens the second item and Escape
   expect(dialog()).toBeNull();
   expect(paths).toHaveLength(1);
   expect(window.document.activeElement).toBe(trigger);
+  await act(async () => root.unmount());
+});
+
+test("a query shows grouped settings, issue and PR rows, and arrows then Enter open the chosen one", async () => {
+  const window = installWindow();
+  const requests = fakeFetch();
+  const { root, paths, press } = await mountPalette(window);
+  await press(window, "k", true);
+  const combobox = () => window.document.querySelector('input[role="combobox"]')!;
+  const input = combobox();
+  const type = async (value: string) => {
+    const field = combobox();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), "value")!.set!;
+      setter.call(field, value);
+      field.dispatchEvent(new window.KeyboardEvent("keyup", { bubbles: true }) as never);
+      await settle();
+    });
+  };
+  const rows = () =>
+    [...window.document.querySelectorAll('[role="listbox"] > li')].map((row) =>
+      row.getAttribute("role") === "option" ? row.textContent : `[${row.textContent}]`,
+    );
+
+  await type("audit");
+  expect(rows()).toEqual([
+    "[Settings]",
+    "Workspace · Audit history",
+    "[Issues]",
+    "ENG-104Admin export UIQueued",
+    "ENG-103Signed URL deliveryAwaiting input",
+    "ENG-101Export job workerIn merge queue",
+    "ENG-100Retention policy enforcement jobAwaiting input",
+    "ENG-99Audit event schema v2Merged",
+    "[PRs]",
+    "#474 Audit event schema v2acme/platform",
+  ]);
+  await type("acme/platform");
+  expect(rows()).toEqual([
+    "[PRs]",
+    "#479 Export job workeracme/platform",
+    "#474 Audit event schema v2acme/platform",
+  ]);
+  await type("#479");
+  expect(rows()).toEqual(["[PRs]", "#479 Export job workeracme/platform"]);
+
+  await type("audit");
+  for (const key of ["ArrowDown", "ArrowDown", "ArrowUp", "ArrowUp", "ArrowUp"])
+    await press(input, key);
+  await press(input, "Enter");
+  expect(paths).toEqual(["/issues/ENG-99"]);
+
+  await press(window, "k", true);
+  await type("zzz no match");
+  expect(rows()).toEqual(["[No settings, issues or pull requests match.]"]);
+  expect(requests).toEqual(["/api/issues", "/api/merge-queue", "/api/issues", "/api/merge-queue"]);
   await act(async () => root.unmount());
 });
