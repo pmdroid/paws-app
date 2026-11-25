@@ -31,8 +31,16 @@ export type Db = Runs & {
 
 export type PgDb = Db;
 
-function queries(handle: unknown): Q {
-  return {
+const committedHooks = new WeakMap<Q, (() => void)[]>();
+
+export function afterCommit(q: Q, hook: () => void): void {
+  const hooks = committedHooks.get(q);
+  if (hooks === undefined) queueMicrotask(hook);
+  else hooks.push(hook);
+}
+
+function queries(handle: unknown, hooks: (() => void)[]): Q {
+  const q: Q = {
     orm: handle as PgOrm,
     t: pgSchema,
     *all<R>(query: PromiseLike<R[]>) {
@@ -48,12 +56,14 @@ function queries(handle: unknown): Q {
       return (yield { kind: "transaction", body: body as Body<unknown> }) as T;
     },
   };
+  committedHooks.set(q, hooks);
+  return q;
 }
 
-async function drivePg<T>(pg: PgOrm, body: Body<T>): Promise<T> {
-  const steps = body(queries(pg));
+async function drivePg<T>(pg: PgOrm, body: Body<T>, hooks: (() => void)[]): Promise<T> {
+  const steps = body(queries(pg, hooks));
   const perform = async (step: Step): Promise<unknown> => {
-    if (step.kind === "transaction") return pg.transaction((tx) => drivePg(tx, step.body));
+    if (step.kind === "transaction") return pg.transaction((tx) => drivePg(tx, step.body, hooks));
     const rows = await (step.query as PromiseLike<unknown>);
     if (step.kind === "exec") return undefined;
     return step.kind === "all" ? rows : (rows as unknown[])[0];
@@ -72,11 +82,18 @@ async function drivePg<T>(pg: PgOrm, body: Body<T>): Promise<T> {
   return next.value;
 }
 
+async function committed<T>(work: (hooks: (() => void)[]) => Promise<T>): Promise<T> {
+  const hooks: (() => void)[] = [];
+  const value = await work(hooks);
+  for (const hook of hooks) hook();
+  return value;
+}
+
 export function postgresDb(pg: PgOrm): PgDb {
   return {
     orm: pg,
-    run: (body) => drivePg(pg, body),
-    transaction: (body) => pg.transaction((tx) => drivePg(tx, body)),
+    run: (body) => committed((hooks) => drivePg(pg, body, hooks)),
+    transaction: (body) => committed((hooks) => pg.transaction((tx) => drivePg(tx, body, hooks))),
   };
 }
 

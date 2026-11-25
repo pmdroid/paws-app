@@ -1,5 +1,5 @@
 import { journalCaught, journalItemId } from "../journal";
-import { DEFAULT_POLL_MS, sleep, type Clock } from "../core";
+import { sleep, type Clock } from "../core";
 import { type Db } from "./db";
 import { type QueueObserver } from "./loop";
 import {
@@ -7,10 +7,13 @@ import {
   coalesceOutbox,
   completeOutboxSteps,
   isOutboxCurrentSteps,
+  onOutboxReady,
   retryOutbox,
   releaseOutboxLeaseSteps,
   type OutboxRow,
 } from "./outbox";
+
+export const OUTBOX_IDLE_CLAIM_MS = 5_000;
 
 export type OutboxDeliveryContext = { signal: AbortSignal; isCurrent(): Promise<boolean> };
 export type OutboxHandler = (
@@ -33,6 +36,8 @@ export class OutboxDispatcher {
   /** Ticks still claiming. `idle()` waits for them so it covers what they claim. */
   private readonly claiming = new Set<Promise<unknown>>();
   private readonly active = new Map<number, { row: OutboxRow; controller: AbortController }>();
+  private readonly wakes = new Set<number>();
+  private waker: (() => void) | null = null;
   /** The async `Db` for converted code: `sqliteDb(db)` unless startup passes one. */
   readonly store: Db;
 
@@ -54,7 +59,7 @@ export class OutboxDispatcher {
   }
 
   get pollMs(): number {
-    return this.options.pollMs ?? DEFAULT_POLL_MS;
+    return this.options.pollMs ?? OUTBOX_IDLE_CLAIM_MS;
   }
 
   setHandler(handler: OutboxHandler): void {
@@ -110,7 +115,10 @@ export class OutboxDispatcher {
     signal: AbortSignal,
     sleeper: (ms: number, signal?: AbortSignal) => Promise<void> = sleep,
   ): Promise<void> {
+    const stopWake = onOutboxReady((at) => this.wake(at));
     while (!signal.aborted) {
+      const now = this.clock.now();
+      for (const at of this.wakes) if (at <= now) this.wakes.delete(at);
       try {
         await this.tick();
       } catch (error) {
@@ -118,9 +126,31 @@ export class OutboxDispatcher {
         journalCaught(error, "dispatcher.run.tick", null);
       }
       if (signal.aborted) break;
-      await sleeper(this.pollMs, signal);
+      await this.pause(signal, sleeper);
     }
+    stopWake();
     await this.idle();
+  }
+
+  private wake(at: number): void {
+    this.wakes.add(at);
+    this.waker?.();
+  }
+
+  private async pause(
+    signal: AbortSignal,
+    sleeper: (ms: number, signal?: AbortSignal) => Promise<void>,
+  ): Promise<void> {
+    const until = this.clock.now() + this.pollMs;
+    while (!signal.aborted) {
+      const waitMs = Math.min(...this.wakes, until) - this.clock.now();
+      if (waitMs <= 0) return;
+      const woken = new AbortController();
+      this.waker = () => woken.abort();
+      await sleeper(waitMs, AbortSignal.any([signal, woken.signal]));
+      this.waker = null;
+      if (!woken.signal.aborted) return;
+    }
   }
 
   private track(row: OutboxRow, task: Promise<void>): void {
@@ -161,6 +191,7 @@ export class OutboxDispatcher {
       const released = message;
       await this.store.run((q) => releaseOutboxLeaseSteps(q, released));
       this.active.delete(message.id);
+      this.wake(0);
     }
   }
 }

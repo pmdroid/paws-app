@@ -27,7 +27,7 @@ import {
   retryBackoffMs,
   TERMINAL_WORK_ITEM_STATES,
 } from "../core";
-import { type Db, type Q, type Steps } from "./db";
+import { afterCommit, type Db, type Q, type Steps } from "./db";
 import { jsonField } from "./json-text";
 import { emitJobReady, enqueueJobOnceSteps, errorText } from "./jobs";
 import { journal } from "./journal";
@@ -107,6 +107,21 @@ type OutboxClaimOptions = {
   now?: number;
   limit?: number;
 };
+
+const outboxReadyListeners = new Set<(at: number) => void>();
+
+export function onOutboxReady(listener: (at: number) => void): () => void {
+  outboxReadyListeners.add(listener);
+  return () => {
+    outboxReadyListeners.delete(listener);
+  };
+}
+
+function outboxReadyAt(q: Q, ...times: number[]): void {
+  afterCommit(q, () => {
+    for (const listener of outboxReadyListeners) for (const at of times) listener(at);
+  });
+}
 
 /**
  * Insert in the same transaction as the transition that caused the effect.
@@ -512,6 +527,7 @@ export function* retryOutboxSteps(
       )
       .returning({ status: outbox.status }),
   );
+  if (updated?.status === "pending") outboxReadyAt(q, now + delay);
   const reasked =
     updated?.status === "dead" ? yield* settleDeadOutboxSteps(q, row, message, now) : false;
   yield* q.exec(
@@ -958,6 +974,7 @@ function* insertOutboxSteps(q: Q, row: NewOutbox, ignore = false) {
       ? insert.onConflictDoNothing().returning({ id: outbox.id })
       : insert.returning({ id: outbox.id }),
   );
+  if (inserted && !blocked) outboxReadyAt(q, 0, row.notBefore ?? 0);
   if (inserted && !blocked && row.orderingKey && !row.op.startsWith("linear.session."))
     yield* q.exec(
       q.orm
