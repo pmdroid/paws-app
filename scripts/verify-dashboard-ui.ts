@@ -327,12 +327,27 @@ try {
       await route.fulfill({ json: runnerVmKeys });
     });
     await visit(admin, width, "runner-vms", "/dashboard/workspace/runner-vms", "Runner VMs");
-    await expect(admin.locator("[data-key-state]")).toHaveText(["Set", "Not set"]);
+    await expect(admin.locator("[data-key-state]")).toHaveText([
+      "Set",
+      "Not set",
+      "Not set",
+      "Not set",
+    ]);
     await admin.locator("#runner-vm-tailscale").fill("tskey-synthetic");
     await admin.locator('[data-runner-vm-key="tailscale"] button[type="submit"]').click();
-    await expect(admin.locator("[data-key-state]")).toHaveText(["Set", "Set"]);
+    await expect(admin.locator("[data-key-state]")).toHaveText([
+      "Set",
+      "Not set",
+      "Not set",
+      "Set",
+    ]);
     await admin.locator('[data-clear="exeDev"]').click();
-    await expect(admin.locator("[data-key-state]")).toHaveText(["Not set", "Set"]);
+    await expect(admin.locator("[data-key-state]")).toHaveText([
+      "Not set",
+      "Not set",
+      "Not set",
+      "Set",
+    ]);
     await admin.screenshot({ path: join(out, `runner-vms-changed-${width}.png`), fullPage: true });
 
     let merging = {
