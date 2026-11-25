@@ -26,10 +26,12 @@ import type { PgTable } from "drizzle-orm/pg-core";
 import { createFakeTracker, type AcceptedLinearEvent, type FakeTracker } from "../../src/linear";
 import {
   createFakeGitHub,
+  createFakeMergeQueue,
   createGitHubGitReader,
   fakeMergeReadiness,
   fakeRequiredChecks,
   type FakeGitHub,
+  type FakeMergeQueue,
   type GitHubClient,
 } from "../../src/github";
 import {
@@ -121,8 +123,10 @@ function fixtureGitHub(input: {
   noCi?: boolean;
   refusedToken?: { token: string; status: number };
   mergeServerErrors?: number;
+  mergeQueue?: boolean;
 }): {
   client: GitHubClient;
+  queue: FakeMergeQueue | null;
   /** `dirty`: GitHub reports the pull request conflicting with main and runs no checks on it. */
   ci: { pending: boolean; failed: boolean; dirty: boolean; unreadable: boolean };
   calls: GitHubCall[];
@@ -193,8 +197,16 @@ function fixtureGitHub(input: {
     git("-C", input.origin, "rev-parse", "--verify", "--quiet", `${prefix}${branch}`).catch(
       () => null,
     );
+  const queue = input.mergeQueue
+    ? createFakeMergeQueue({
+        headOf: (number) =>
+          git("-C", input.origin, "rev-parse", `refs/heads/${pulls.opened[number - 1]!.head}`),
+      })
+    : null;
   async function respond(request: GitHubRequest) {
     const { method, path } = request;
+    const queued = await queue?.respond(request);
+    if (queued) return queued;
     if (method === "GET" && path.endsWith("/git/ref/heads/main"))
       return {
         status: 200,
@@ -391,7 +403,17 @@ function fixtureGitHub(input: {
       }
     },
   };
-  return { client, ci, calls, comments, closed, merged, opened: pulls.opened, branchUpdates };
+  return {
+    client,
+    queue,
+    ci,
+    calls,
+    comments,
+    closed,
+    merged,
+    opened: pulls.opened,
+    branchUpdates,
+  };
 }
 
 export const ACME = {
@@ -452,6 +474,7 @@ export type Proof = {
   noCi?: boolean;
   /** How many squash merges GitHub answers with HTTP 500 before it merges. */
   mergeServerErrors?: number;
+  mergeQueue?: boolean;
   /** `.agents/closeout.yaml` for this scenario, instead of the default. */
   policy?: string;
   /** Appended to the scenario's saved settings. */
@@ -542,6 +565,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     ciPending: proof.ciPending,
     noCi: proof.noCi,
     mergeServerErrors: proof.mergeServerErrors,
+    mergeQueue: proof.mergeQueue,
     ...(proof.member?.refused
       ? { refusedToken: { token: proof.member.token, status: proof.member.refused } }
       : {}),

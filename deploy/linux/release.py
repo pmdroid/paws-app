@@ -94,6 +94,9 @@ ASSETS = {
     "paws-runner.sysusers",
     "paws-runner.tmpfiles",
     "paws-runner.polkit",
+    "paws-issue-vm-network@.service",
+    "paws-issue-vm-network.service",
+    "issue-vm-network.py",
 }
 REQUIRED = {
     "bin/bun",

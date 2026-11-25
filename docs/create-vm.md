@@ -22,7 +22,30 @@ boat and InstaBox offer fixed sizes, and Paws refuses a size the provider can't 
 | `boat`     | 2/4, 4/8, 8/16 or 16/32, or neither        | not allowed | not allowed     |
 | `instabox` | 2/4, 4/8, 8/16, 16/32 or 32/64, or neither | 1 to 1024   | not allowed     |
 
-The same check runs again before Create VM calls the provider, so a size saved for another provider fails the VM's `create` step with the same message, for example `boat has no 6 vCPU / 12 GB size. Use 2/4, 4/8, 8/16 or 16/32.`
+To stop Create VM from using a provider without removing its key, list it in `off_providers`, for example `off_providers = ["boat"]`. Create VM also refuses a provider whose key the background check last found rejected. In both cases it creates nothing and names the reason, for example `boat is turned off on Settings › Runner VMs.` It doesn't fall back to another provider. VMs already on that provider can still be read, woken and deleted.
+
+The size check runs again before Create VM calls the provider, so a size saved for another provider fails the VM's `create` step with the same message, for example `boat has no 6 vCPU / 12 GB size. Use 2/4, 4/8, 8/16 or 16/32.`
+
+## boat
+
+[boat](https://boat.dev) rents Ubuntu VMs in Germany, Finland and France, billed per second. Create an API key (it starts with `boat_`) with boat's `full-sandbox` scopes: create, read, update, stop, resume, delete and exec. Save it on Settings › Runner VMs as the boat key and set `provider = "boat"` in `[member_vm]`.
+
+| `cpu` / `memory_gb` | boat type |
+| ------------------- | --------- |
+| 2/4                 | `small`   |
+| 4/8 or neither      | `default` |
+| 8/16                | `large`   |
+| 16/32               | `xlarge`  |
+
+Paws creates each boat VM with auto-stop turned off, since a runner that stops after an hour is no use. boat's trial plan refuses that, and Create VM fails with "boat's plan does not allow turning auto-stop off; a runner VM needs that." Turn off zero data retention on the boat account too: with it on, boat deletes a stopped VM, and Paws then reports the VM as missing.
+
+## InstaBox
+
+Create an [InstaBox](https://instabox.sh) API key (it starts with `ibk_`) with the scopes `machines:read`, `machines:write` and `machines:delete`, and save it on Settings › Runner VMs as the InstaBox key.
+
+Create VM makes an InstaBox machine from the `agent-browser` template (Debian with systemd and Docker) named after the VM, and installs the runner on it as on exe.dev. `cpu` and `memory_gb` become the machine's vCPUs and memory, and `disk_gb` its data disk; leave them out for InstaBox's default size. InstaBox accepts only the sizes your plan's `allowedSpecs` lists, and refuses any other with `spec_not_allowed`, which the VM's `create` step shows.
+
+The machine's idle pause is turned off and it has no run limit, so a runner VM stays running, and billed, until it is deleted. Deleting the VM on its runner page deletes the machine.
 
 exe.dev VM names are global, so another account may already hold `<name>-paws`. When exe.dev answers that a name is not available, Create VM tries `<name>-paws-2`, `<name>-paws-3` and so on.
 
@@ -59,7 +82,7 @@ The VM must reach Paws on both ports: 8787 for enrollment and 8788 for the runne
 
 3. Run `bun run paws doctor`. The `tailscale-authkey` check passes when the key is present and readable.
 
-With the key saved, Create VM adds a `tailnet` step after the install and before enrollment. The VM installs a pinned Tailscale static release whose SHA-256 Paws checks before unpacking. No install script runs. Before the join it installs and enables `systemd-resolved` with exe.dev's resolver (`169.254.169.254`) as its upstream in `/etc/systemd/resolved.conf.d/paws-upstream.conf`, and links `/etc/resolv.conf` to its stub. tailscaled then configures MagicDNS through resolved, and `*.localhost` names resolve to loopback as on Ubuntu CI. The VM then joins with `tailscale up --hostname=<vm name>` and waits until it resolves the Paws host and `/health` answers. Last, it checks that it resolves github.com, the Paws host and `probe.localhost` (to a loopback address); a failure ends the step with "the VM cannot resolve *.localhost names" and the check's output. A VM that is already on the tailnet repeats the resolved setup, which changes nothing once in place, and both checks.
+With the key saved, Create VM adds a `tailnet` step after the install and before enrollment. The VM installs a pinned Tailscale static release whose SHA-256 Paws checks before unpacking. No install script runs. On an exe.dev VM, before the join it installs and enables `systemd-resolved` with exe.dev's resolver (`169.254.169.254`) as its upstream in `/etc/systemd/resolved.conf.d/paws-upstream.conf`, and links `/etc/resolv.conf` to its stub. A boat VM keeps its own systemd-resolved, which already works with Tailscale. tailscaled then configures MagicDNS through resolved, and `*.localhost` names resolve to loopback as on Ubuntu CI. The VM then joins with `tailscale up --hostname=<vm name>` and waits until it resolves the Paws host and `/health` answers. Last, it checks that it resolves github.com, the Paws host and `probe.localhost` (to a loopback address); a failure ends the step with "the VM cannot resolve *.localhost names" and the check's output. A VM that is already on the tailnet repeats the resolved setup, which changes nothing once in place, and both checks.
 
 The auth key never appears on a command line. The VM makes a fresh RSA key in its root-only stage directory, Paws sends the auth key encrypted to it, and the VM decrypts it into a root-only mode 0600 file. That file is deleted right after `tailscale up`, whether the join succeeded or failed. The key is not logged and not put in the agent environment.
 

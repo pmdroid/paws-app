@@ -16,6 +16,7 @@ import {
   type MemberVmStepFields,
 } from "../db";
 import {
+  isBootstrapError,
   isProvisioningError,
   type ExeDevBootstrap,
   type ExeDevVmSize,
@@ -23,6 +24,7 @@ import {
   type VmProvider,
   type VmProviderId,
 } from "../provisioning";
+import { recordTailnetJoin } from "../vm-provider-checks";
 import { workspaceTokenHash } from "../workspace";
 import { freeVmNameSteps, MEMBER_VM_QUEUE, type MemberRef, type MemberVm } from "./store";
 
@@ -157,7 +159,8 @@ async function runStep(
           const created = await provider.createVm(vm, size, { key: row.id });
           providerVmId = created.id;
         } catch (error) {
-          const ours = isProvisioningError(error) && error.code === "conflict" && asked !== null;
+          const conflict = isProvisioningError(error) && error.code === "conflict";
+          const ours = conflict && asked !== null && provider.id === "exe-dev";
           if (ours) journalCaught(error, "member-vm.createVm", null, "resuming our create request");
           // exe.dev names are global, so another account may hold this one. Nothing was created
           // under it for us, so the row takes the next name and asks again.
@@ -170,7 +173,7 @@ async function runStep(
           if (!ours) {
             if (rejected(error))
               await store.run((q) => restoreMemberVmCreateRequestSteps(q, row.id, asked));
-            if (isProvisioningError(error) && error.code === "conflict")
+            if (conflict && provider.id === "exe-dev")
               throw new Error(
                 `exe.dev already has a VM named ${vm} that Paws did not create (conflict).`,
                 { cause: error },
@@ -223,7 +226,7 @@ async function runStep(
     case "enroll": {
       // The runner enrolls with this Paws, so a Paws reachable only on Tailscale needs the VM on
       // its tailnet first. Without an auth key this is a no-op; on a joined VM only a reach check.
-      await bootstrap.joinTailnet(vm);
+      await joinTailnet(store, bootstrap, vm, now);
       let tokenExpiresAt = row.tokenExpiresAt;
       for (let attempt = 0; ; attempt++) {
         if (tokenExpiresAt === null || tokenExpiresAt - TOKEN_MARGIN_MS <= now()) {
@@ -343,4 +346,21 @@ export function redact(text: string, secrets: readonly (string | null | undefine
     if (secret && secret.length >= 8) value = value.replaceAll(secret, "[redacted]");
   value = value.replace(/[A-Za-z0-9_-]{32,}/g, (run) => (/[A-Z_]/.test(run) ? "[redacted]" : run));
   return value.length > MAX_FAILURE ? `${value.slice(0, MAX_FAILURE - 1)}…` : value;
+}
+
+async function joinTailnet(
+  store: Db,
+  bootstrap: ExeDevBootstrap,
+  vm: string,
+  now: () => number,
+): Promise<void> {
+  let joined: Awaited<ReturnType<ExeDevBootstrap["joinTailnet"]>>;
+  try {
+    joined = await bootstrap.joinTailnet(vm);
+  } catch (error) {
+    if (isBootstrapError(error) && error.join !== undefined)
+      await recordTailnetJoin(store, { vm, outcome: error.join, at: now() });
+    throw error;
+  }
+  if (joined === "joined") await recordTailnetJoin(store, { vm, outcome: "joined", at: now() });
 }

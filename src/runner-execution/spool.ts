@@ -51,7 +51,7 @@ function openAbsoluteDirectory(path: string): number {
   }
 }
 
-function openRoot(spool: RunnerSpool): number {
+export function openRoot(spool: RunnerSpool): number {
   if (
     process.platform !== "linux" ||
     !isAbsolute(spool.root) ||

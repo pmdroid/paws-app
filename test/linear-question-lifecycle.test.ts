@@ -22,6 +22,7 @@ import {
   type TrackerAdapter,
 } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
+import { MERGE_REVIEW_REASON } from "../src/merge";
 import {
   answerQuestionSteps,
   askSteps,
@@ -425,6 +426,39 @@ test("a runner wait asked before a restart is answered by the next process witho
       answeredBy: "human-1",
     });
     expect((await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(0);
+  } finally {
+    await close();
+  }
+});
+
+test("a reply to the review wait question restarts the item that waits in the merge queue", async () => {
+  const { db, close } = await tempStore();
+  try {
+    const item = await insertQueuedItem(db, { id: "ENG-3", sessionKey: "ses_1", title: "Rows" });
+    const { run } = await beginImplementRun(db, item.id, NOW - 10);
+    await applyWorkItemEvent(db, item.id, "closeout_accepted");
+    const asked = await db.transaction((q) =>
+      askSteps(
+        q,
+        { itemId: item.id, runId: run.id, sessionId: "ses_1" },
+        "ci-help",
+        "https://github.com/acme/app/pull/1 has waited 24 hours for a review.",
+        { reason: MERGE_REVIEW_REASON, now: NOW },
+      ),
+    );
+    const clock = new FakeClock(NOW + 1_000);
+    const orchestrator = attachOrchestrator({
+      store: db,
+      jobs: new JobLoop(db, clock),
+      outbox: new OutboxDispatcher(db, clock),
+      pawsRoot: "/tmp/paws-question-lifecycle",
+      tracker: null,
+      clock,
+    });
+    await orchestrator.onLinearEvent(prompt(NOW + 1, "review-guidance"));
+    expect((await getQuestion(db, asked.question.id))?.status).toBe("answered");
+    expect((await getWorkItem(db, item.id))?.state).toBe("queued");
+    expect((await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
   } finally {
     await close();
   }

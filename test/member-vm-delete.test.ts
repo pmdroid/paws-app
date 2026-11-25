@@ -27,11 +27,17 @@ import {
   registerMemberVmDeleteJob,
   registerMemberVmJob,
   startMemberVm,
+  usableVmProvider,
   type MemberVm,
   type MemberVmResponse,
   type MemberVmView,
 } from "../src/member-vm";
-import { createFakeBootstrap, createFakeExeDev, type ExeDev } from "../src/provisioning";
+import {
+  createFakeBootstrap,
+  createFakeExeDev,
+  type ExeDev,
+  type VmProviderId,
+} from "../src/provisioning";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import {
@@ -183,9 +189,12 @@ async function fixture() {
     now: () => clock.now(),
     pollMs: MEMBER_VM_DELETE_POLL_MS,
   });
+  let off: VmProviderId[] = [];
   const http = createMemberVmHttp({
     store: db,
     available: () => true,
+    usable: (id) =>
+      usableVmProvider(id, { store: db, keySaved: () => true, offProviders: () => off }),
     now: () => clock.now(),
   });
   const call = async (who: WorkspacePrincipal, path: string, body?: unknown) => {
@@ -276,6 +285,7 @@ async function fixture() {
     ready,
     settle,
     task,
+    setOff: (value: VmProviderId[]) => (off = value),
   };
 }
 
@@ -388,6 +398,17 @@ describe("Delete VM", () => {
       status: 200,
       body: { available: true, vm: null, vms: [] },
     });
+  });
+
+  test("a VM on a provider that is turned off is still read and deleted", async () => {
+    const f = await fixture();
+    const vm = await f.ready();
+    f.setOff(["exe-dev"]);
+    expect(viewOf((await f.call(f.member, "/api/runners/vm")).body).id).toBe(vm.id);
+    expect((await f.remove(f.member, vm.id)).status).toBe(200);
+    await f.settle();
+    expect(await getMemberVm(f.db, vm.id)).toBeNull();
+    expect(f.exeDev.vms.has(vm.vmName)).toBe(false);
   });
 
   test("a running task blocks the delete and is named, until the delete is forced", async () => {

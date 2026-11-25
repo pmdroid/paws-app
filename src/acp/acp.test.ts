@@ -2600,3 +2600,52 @@ function agentEnv(): NodeJS.ProcessEnv {
 async function readResult(path: string): Promise<FakeResult> {
   return JSON.parse(await readFile(path, "utf8")) as FakeResult;
 }
+
+test("a killed agent reports its signal and how long the turn ran", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [{ type: "spawn", command: "sh", args: ["-c", "kill -9 $PPID"] }, { type: "hang" }],
+  });
+  const result = await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-killed",
+    prompt: "die",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    timeoutMs: 10_000,
+    checkpoint: false,
+  });
+  expect(result.stopReason).toBe("error");
+  expect(result.exitSignal).toBe("SIGKILL");
+  expect(result.exitCode).toBeUndefined();
+  expect(result.durationMs).toBeGreaterThan(0);
+  expect(result.timeLimitMs).toBeUndefined();
+}, 20_000);
+
+test("a timed-out turn reports the time limit it reached", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, { steps: [{ type: "hang" }] });
+  const result = await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-limit",
+    prompt: "wait",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    timeoutMs: 300,
+    cancelGraceMs: 1_000,
+    checkpoint: false,
+  });
+  expect(result.timedOut).toBe(true);
+  expect(result.timeLimitMs).toBe(300);
+  expect(result.durationMs).toBeGreaterThanOrEqual(300);
+}, 20_000);

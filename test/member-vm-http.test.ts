@@ -8,6 +8,7 @@ import {
   consumeWorkspaceBootstrap,
   JobLoop,
   listRunnerOverview,
+  putVmProviderCheckSteps,
   putWorkspaceUser,
   syncWorkspaceMember,
 } from "../src/db";
@@ -16,6 +17,7 @@ import {
   findMemberVm,
   MEMBER_VM_POLL_MS,
   registerMemberVmJob,
+  usableVmProvider,
   type MemberVm,
   type MemberVmResponse,
   type MemberVmView,
@@ -118,10 +120,13 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
   });
   let available = true;
   let provider: VmProviderId = "exe-dev";
+  let off: VmProviderId[] = [];
   const http = createMemberVmHttp({
     store: db,
     available: () => available,
     provider: () => provider,
+    usable: (id) =>
+      usableVmProvider(id, { store: db, keySaved: () => true, offProviders: () => off }),
     exeDev,
     ...(options.size === undefined ? {} : { size: () => options.size! }),
     now: () => clock.now(),
@@ -165,6 +170,7 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
     drive,
     setAvailable: (value: boolean) => (available = value),
     setProvider: (value: VmProviderId) => (provider = value),
+    setOff: (value: VmProviderId[]) => (off = value),
   };
 }
 
@@ -232,6 +238,48 @@ describe("member VM routes", () => {
     f.setProvider("instabox");
     expect((await f.call(f.member, "GET")).status).toBe(200);
     expect((await findMemberVm(f.db, f.member))!.provider).toBe("boat");
+  });
+
+  test("Create VM refuses a provider that is turned off and creates nothing", async () => {
+    const f = await fixture();
+    f.setProvider("boat");
+    f.setOff(["boat"]);
+    expect(await f.call(f.member, "POST")).toEqual({
+      status: 409,
+      body: { error: "boat is turned off on Settings › Runner VMs." },
+    });
+    expect(await findMemberVm(f.db, f.member)).toBeNull();
+    expect(f.exeDev.calls).toEqual([]);
+  });
+
+  test("Create VM refuses a rejected key, and goes ahead when unreachable or unchecked", async () => {
+    const f = await fixture();
+    const check = (state: "rejected" | "unreachable") =>
+      f.db.run((q) =>
+        putVmProviderCheckSteps(q, {
+          name: "exe-dev",
+          state,
+          message: "",
+          facts: [],
+          checkedAt: Date.UTC(2026, 10, 24, 4, 12),
+          lastWorkingAt: null,
+        }),
+      );
+    await check("rejected");
+    expect(await f.call(f.member, "POST")).toEqual({
+      status: 409,
+      body: {
+        error: "exe.dev rejected its key at 04:12 UTC; replace it on Settings › Runner VMs.",
+      },
+    });
+    expect(await findMemberVm(f.db, f.member)).toBeNull();
+    await check("unreachable");
+    expect((await f.call(f.member, "POST")).status).toBe(200);
+    expect((await findMemberVm(f.db, f.member))!.provider).toBe("exe-dev");
+    f.setProvider("boat");
+    const other = await f.person("Grace Hopper");
+    expect((await f.call(other, "POST")).status).toBe(200);
+    expect((await findMemberVm(f.db, other))!.provider).toBe("boat");
   });
 
   test("a configured pool becomes --pool on new, and no pool is a bare new", async () => {

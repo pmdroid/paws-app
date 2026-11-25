@@ -77,12 +77,14 @@ class Journal:
         self.end(name)
 
 
-def adopt_tree(path, uid, gid, mode, directory_mode=None, skip=frozenset()):
-    """Give path's tree to uid:gid; paths in skip, and everything below them, are left alone."""
+def adopt_tree(path, uid, gid, mode, directory_mode=None, skip=frozenset(), shallow=frozenset()):
+    """Give path's tree to uid:gid; paths in skip, and everything below them, are left alone. Paths in shallow are adopted without what is below them."""
     info = path.lstat()
     os.lchown(path, uid, gid)
     if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
         os.chmod(path, mode)
+        if path in shallow:
+            return
         for child in path.iterdir():
             if child in skip:
                 continue
@@ -90,7 +92,7 @@ def adopt_tree(path, uid, gid, mode, directory_mode=None, skip=frozenset()):
             child_mode = stat.S_IMODE(child_info.st_mode)
             if directory_mode and stat.S_ISDIR(child_info.st_mode):
                 child_mode = directory_mode(child_mode)
-            adopt_tree(child, uid, gid, child_mode, directory_mode, skip)
+            adopt_tree(child, uid, gid, child_mode, directory_mode, skip, shallow)
 
 
 def group_shared(mode):
@@ -186,6 +188,7 @@ STATE_DIRECTORIES = (
 POLKIT_RULE = pathlib.Path("/etc/polkit-1/rules.d/50-paws-runner.rules")
 RUNNER_CONFIG = pathlib.Path("/etc/paws-runner/config.json")
 SHARED_DIRECTORIES = {"/var/lib/paws-agent": group_shared, "/var/lib/paws-agent-tasks": group_shared, "/var/lib/paws-agent-results": group_inherited}
+UNWALKED = frozenset(pathlib.Path("/var/lib/paws-agent", name) for name in ("work", ".cache"))
 # Each agent's state in an agent home (OpenCode's is under .config, .local and .cache). It belongs to the
 # user agents run as: Codex and OpenCode chmod their own state, which only its owner may. `work/`,
 # `.paws-skills` and an account home's own files (account.json, .paws-active) stay paws-runner's.
@@ -902,7 +905,7 @@ def switch_release(unpacked, destination, pointers):
     agent_state = agent_state_to_hand_over(pathlib.Path("/var/lib/paws-agent"))
     for path, uid, gid, mode in state_directories():
         if path in SHARED_DIRECTORIES:
-            adopt_tree(pathlib.Path(path), uid, gid, mode, SHARED_DIRECTORIES[path], agent_state)
+            adopt_tree(pathlib.Path(path), uid, gid, mode, SHARED_DIRECTORIES[path], agent_state, UNWALKED)
     shutil.rmtree("/var/lib/paws-runner-members", ignore_errors=True)
     validate_identity_separation()
     runner = pwd.getpwnam("paws-runner")

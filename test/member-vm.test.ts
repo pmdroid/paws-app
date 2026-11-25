@@ -11,6 +11,7 @@ import {
   listJobs,
   putWorkspaceUser,
   syncWorkspaceMember,
+  vmProviderCheckSteps,
   type Db,
 } from "../src/db";
 import {
@@ -31,6 +32,7 @@ import {
   type ExeDev,
   type FakeBootstrap,
   type FakeExeDev,
+  type JoinTailnetResult,
   ProvisioningError,
   type VmState,
 } from "../src/provisioning";
@@ -59,7 +61,9 @@ afterEach(async () => {
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
-async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
+async function fixture(
+  input: { exeDev?: ExeDev; installPolls?: number; tailnet?: JoinTailnetResult } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), "paws-member-vm-"));
   roots.push(root);
   const clock = new FakeClock(Date.UTC(2026, 9, 25));
@@ -119,6 +123,7 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
   const exeDev = createFakeExeDev();
   const bootstrap = createFakeBootstrap({
     installPolls: input.installPolls ?? 2,
+    ...(input.tailnet === undefined ? {} : { tailnet: input.tailnet }),
     async enroll(vm, token) {
       hosts += 1;
       const key = await createRunnerKey(join(root, `host-${hosts}`));
@@ -306,6 +311,30 @@ describe("member VM", () => {
     expect(view.provider).toBe("boat");
   });
 
+  test("a row on boat creates, installs and turns ready through the provider named boat", async () => {
+    const f = await fixture();
+    await startMemberVm(f.db, { ...f.member, provider: "boat", now: f.clock.now() });
+    const loop = new JobLoop(f.db, f.clock, { leaseMs: LEASE_MS });
+    registerMemberVmJob(loop, {
+      provision: (id) => ({
+        provider: id === "boat" ? { ...f.exeDev, id: "boat" } : f.exeDev,
+        bootstrap: f.bootstrap,
+        size: { cpu: 4, memoryGb: 8 },
+        mintEnrollment: (ref, request) =>
+          f.control.createEnrollment({ ...f.member, userId: ref.userId }, request),
+      }),
+      now: () => f.clock.now(),
+    });
+    const health = await drive(f, loop, (row) => row.step === "health" || row.failure !== null);
+    expect(health.failure).toBeNull();
+    expect(health.provider).toBe("boat");
+    expect(f.bootstrap.calls.map((call) => call.step)).toContain("startInstall");
+    await heartbeat(f.db, health.runnerId!, f.clock.now());
+    const ready = await drive(f, loop, settled);
+    expect(ready.step).toBe("ready");
+    expect(ready.failure).toBeNull();
+  });
+
   test("the create step refuses a size the row's provider can't give, before calling it", async () => {
     const f = await fixture();
     await startMemberVm(f.db, { ...f.member, provider: "boat", now: f.clock.now() });
@@ -323,6 +352,44 @@ describe("member VM", () => {
     expect(row.provider).toBe("boat");
     expect(row.failure).toBe("boat has no 6 vCPU / 12 GB size. Use 2/4, 4/8, 8/16 or 16/32.");
     expect(f.exeDev.calls).toHaveLength(0);
+  });
+
+  test("a row on instabox creates, installs and turns ready through the instabox provider", async () => {
+    const f = await fixture();
+    const started = await startMemberVm(f.db, {
+      ...f.member,
+      provider: "instabox",
+      now: f.clock.now(),
+    });
+    const keys: (string | undefined)[] = [];
+    const loop = new JobLoop(f.db, f.clock, { leaseMs: LEASE_MS });
+    registerMemberVmJob(loop, {
+      provision: () => ({
+        provider: {
+          ...f.exeDev,
+          id: "instabox",
+          async createVm(name, size, request) {
+            keys.push(request?.key);
+            return { ...(await f.exeDev.createVm(name, size)), id: "m_01k0000000000000000000000a" };
+          },
+        },
+        bootstrap: f.bootstrap,
+        size: { cpu: 4, memoryGb: 8 },
+        mintEnrollment: (ref, request) =>
+          f.control.createEnrollment({ ...f.member, userId: ref.userId }, request),
+      }),
+      now: () => f.clock.now(),
+    });
+    const health = await drive(f, loop, (row) => row.step === "health" || row.failure !== null);
+    expect(health.failure).toBeNull();
+    expect(health.provider).toBe("instabox");
+    expect(health.providerVmId).toBe("m_01k0000000000000000000000a");
+    expect(keys).toEqual([started.id]);
+    expect(f.bootstrap.calls.map((call) => call.step)).toContain("startInstall");
+    await heartbeat(f.db, health.runnerId!, f.clock.now());
+    const ready = await drive(f, loop, settled);
+    expect(ready.step).toBe("ready");
+    expect(ready.failure).toBeNull();
   });
 
   test("a conflict on a name Paws never asked for is a failure", async () => {
@@ -501,6 +568,46 @@ describe("member VM", () => {
     const row = await drive(f, loop, (value) => value.step === "health" || !!value.failure);
     expect(row.failure).toBeNull();
     expect(f.bootstrap.calls.filter((call) => call.step === "startInstall")).toHaveLength(1);
+  });
+
+  test("a tailnet join records the Tailscale key as working", async () => {
+    const f = await fixture({ tailnet: "joined" });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    await drive(f, f.jobs(), (value) => value.step === "health" || !!value.failure);
+    const check = await f.db.run((q) => vmProviderCheckSteps(q, "tailscale"));
+    expect(check?.state).toBe("working");
+    expect(check?.facts).toEqual([
+      { name: "join", text: expect.stringContaining("ada-lovelace-paws joined at"), level: "ok" },
+    ]);
+    expect(check?.lastWorkingAt).toBe(check!.checkedAt);
+  });
+
+  test("a join that waits for approval is limited and an expired key is rejected", async () => {
+    const f = await fixture();
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const loop = f.jobs();
+    const check = () => f.db.run((q) => vmProviderCheckSteps(q, "tailscale"));
+    f.bootstrap.fail("joinTailnet", "tailnet: the VM is waiting for approval", 1, "unapproved");
+    await drive(f, loop, settled);
+    const limited = await check();
+    expect(limited?.state).toBe("limited");
+    expect(limited?.facts).toEqual([
+      {
+        name: "join",
+        text: expect.stringMatching(/^ada-lovelace-paws waited .* UTC$/),
+        level: "warn",
+      },
+    ]);
+    expect(JSON.stringify(limited)).not.toContain("tskey");
+    f.bootstrap.fail("joinTailnet", "tailnet: the key is expired or revoked", 1, "rejected");
+    await retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    await drive(f, loop, settled);
+    expect((await check())?.state).toBe("rejected");
+    expect((await check())?.lastWorkingAt).toBe(limited!.checkedAt);
+    f.bootstrap.fail("joinTailnet", "tailnet: tailscale up failed (exit 1)", 1, "failed");
+    await retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    await drive(f, loop, settled);
+    expect((await check())?.state).toBe("unreachable");
   });
 
   test("a failed enroll restages a fresh token on retry", async () => {

@@ -4,6 +4,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { readExeDevToken, readTailscaleAuthKey, readVmProviderToken } from "../src/config";
 import { storedSecrets, useDatabaseSecrets } from "../src/credentials";
+import { putVmProviderCheckSteps, vmProviderCheckSteps, type Db } from "../src/db";
 import { handleRunnerVmKeysSettingsRequest } from "../src/settings";
 import { tempHome } from "./helpers";
 import { describePglite } from "./pglite-fixtures";
@@ -15,7 +16,7 @@ afterEach(() => {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
 
-function instance() {
+function instance(store?: Db) {
   const home = tempHome();
   homes.push(home);
   const audits: string[] = [];
@@ -24,6 +25,7 @@ function instance() {
       home,
       csrfToken: "csrf",
       role,
+      ...(store === undefined ? {} : { store }),
       audit: async (action, subject) => {
         audits.push(`${action}: ${subject}`);
       },
@@ -105,6 +107,30 @@ describePglite((connect) => {
       await handle.close();
       if (before === undefined) delete process.env.PAWS_SECRET_KEY;
       else process.env.PAWS_SECRET_KEY = before;
+    }
+  });
+
+  test("saving or clearing the Tailscale key forgets its last join", async () => {
+    const handle = await connect();
+    try {
+      const { call } = instance(handle.db);
+      const joined = {
+        name: "tailscale" as const,
+        state: "rejected" as const,
+        message: "Tailscale refused the key: it is expired or revoked.",
+        facts: [],
+        checkedAt: 1_000,
+        lastWorkingAt: null,
+      };
+      const row = () => handle.db.run((q) => vmProviderCheckSteps(q, "tailscale"));
+      await handle.db.run((q) => putVmProviderCheckSteps(q, joined));
+      await call(put({ tailscale: "tskey-auth-new" }));
+      expect(await row()).toBeNull();
+      await handle.db.run((q) => putVmProviderCheckSteps(q, joined));
+      await call(clear("tailscale"));
+      expect(await row()).toBeNull();
+    } finally {
+      await handle.close();
     }
   });
 });

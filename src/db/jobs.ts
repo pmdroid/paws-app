@@ -384,6 +384,14 @@ export async function jobStatusByKey(store: Db, jobKey: string): Promise<string 
   return store.run((q) => jobStatusByKeySteps(q, jobKey));
 }
 
+export function* jobRunAtByKeySteps(q: Q, jobKey: string) {
+  const { job } = q.t;
+  const row = yield* q.one(
+    q.orm.select({ runAt: job.runAt }).from(job).where(eq(job.jobKey, jobKey)),
+  );
+  return row?.runAt ?? null;
+}
+
 export function* listJobsSteps(q: Q) {
   const rows = yield* q.all(q.orm.select().from(q.t.job).orderBy(q.t.job.id));
   return rows.map((row) => mapJob(q, row));

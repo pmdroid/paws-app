@@ -36,6 +36,8 @@ export {
   registerMemberVmDeleteJob,
 } from "./delete";
 export type { MemberVmDeleteJobOptions } from "./delete";
+export { usableVmProvider } from "./usable";
+export type { VmProviderUsability, VmProviderUsabilitySource } from "./usable";
 export { createMemberVmProvisioning } from "./provisioning";
 export type { MemberVmProvisioningSource, MemberVmRunnerControl } from "./provisioning";
 export { createMemberVmHttp, MEMBER_VM_PROGRESS_STEPS, memberVmView } from "./http";

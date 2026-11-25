@@ -97,6 +97,23 @@ sudo journalctl _SYSTEMD_USER_UNIT=paws-agent-docker.service   # when it does no
 
 With `"agentUser": "runner"`, use `sudo -u paws-runner`, `/run/paws-docker/docker.sock` and `paws-docker.service` instead.
 
+### Network rules for issue VMs
+
+On a VM host, each issue VM gets a slot from 1 to 254, the TAP `pawsvm<slot>` and the subnet `10.199.<slot>.0/24`: the host is `.1`, the guest `.2`. Guests use public DNS (1.1.1.1, 9.9.9.9); the host offers none. `paws-issue-vm-network@<slot>.service` starts and stops with the VM and runs `issue-vm-network.py` as root. It keeps one nftables table, `inet paws_issue_vms`, while any VM runs, and deletes it after the last one stops. The table:
+
+- drops every new connection from a VM to the host, and all IPv6 to or from a VM;
+- drops traffic from a VM to private, loopback, link-local (169.254.169.254), tailnet (100.64.0.0/10), multicast and reserved IPv4 ranges, and to the host's own addresses and their subnets;
+- forwards a VM's traffic only out of the devices of the IPv4 default routes, masqueraded, and lets only replies back in;
+- drops traffic a VM sends from an address other than its own.
+
+When a `DOCKER-USER` chain exists, as on a host with rootful Docker, which sets the `FORWARD` policy to `DROP`, the helper adds two accept rules there for `pawsvm+` traffic to and from the uplink. It also turns on IPv4 forwarding. While any VM runs, `paws-issue-vm-network.service` rewrites the rules when a host address or default route changes. To check them:
+
+```sh
+sudo nft list table inet paws_issue_vms
+sudo iptables -S DOCKER-USER
+sudo journalctl -u paws-issue-vm-network.service
+```
+
 ## Configure the runner
 
 On the VM, replace the example hostname, then create the protected configuration:

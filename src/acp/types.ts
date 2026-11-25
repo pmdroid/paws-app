@@ -211,6 +211,7 @@ export interface RunAgentResult {
   handedOver?: boolean;
   /** The handover stopped the agent, then failed this step; the session stays on its runner. */
   handoverFailure?: "commit" | "snapshot" | "publication";
+  failureReason?: "out_of_memory";
   transcriptPath?: string;
   authRequired: boolean;
   errorMessage?: string;
@@ -218,6 +219,10 @@ export interface RunAgentResult {
   tokens?: number;
   pid?: number;
   agentExited: boolean;
+  exitCode?: number;
+  exitSignal?: string;
+  durationMs?: number;
+  timeLimitMs?: number;
 }
 
 export interface ExecuteItemOptions extends Omit<RunAgentOptions, "worktreePath" | "role"> {

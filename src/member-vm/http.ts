@@ -32,6 +32,7 @@ import {
   type MemberVmBlockingTask,
   type MemberVmDeleteStep,
 } from "./store";
+import type { VmProviderUsability } from "./usable";
 
 /** The steps the Runners page shows. `ready` is the end of the last one, not a step of its own. */
 export const MEMBER_VM_PROGRESS_STEPS = ["create", "install", "enroll", "health"] as const;
@@ -213,6 +214,7 @@ export function createMemberVmHttp(options: {
   /** The VM size from Settings. */
   size?: () => ExeDevVmSize;
   provider?: () => VmProviderId;
+  usable?: (provider: VmProviderId) => Promise<VmProviderUsability>;
   /** For `pool list` and `pool adopt`. Without it the pool routes answer 404. */
   exeDev?: Pick<ExeDev, "listPools" | "adoptVm">;
   now?: () => number;
@@ -276,6 +278,8 @@ export function createMemberVmHttp(options: {
         if (body === null)
           return json({ error: "Send an optional exe.dev pool name as JSON." }, 400);
         const provider = options.provider?.() ?? "exe-dev";
+        const usable = (await options.usable?.(provider)) ?? { usable: true };
+        if (!usable.usable) return json({ error: usable.reason }, 409);
         await startMemberVm(store, { ...member, ...body, provider, now: at });
       } else if (pools !== undefined && path === "/api/runners/vm/pool") {
         const body = await poolBody(request);

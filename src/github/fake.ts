@@ -271,6 +271,8 @@ export type FakeMergeQueue = {
   enqueued: { pullRequestId: string; head: string }[];
   /** Each merge queue GraphQL read and write (`exists`, `entry`, `enqueue`, `dequeue`), in order. */
   calls: string[];
+  /** GitHub's message refusing every `enqueuePullRequest`, or null to accept. */
+  refusal: string | null;
   /** Answer a merge queue GraphQL request, or null for any other request. */
   respond(request: {
     method: string;
@@ -294,6 +296,7 @@ export type FakeMergeQueue = {
 export function createFakeMergeQueue(
   options: {
     branches?: string[];
+    baseBranch?: string;
     headOf?: (number: number) => string | Promise<string>;
     /** Pull requests ahead of an enqueued one. */
     ahead?: number;
@@ -319,10 +322,11 @@ export function createFakeMergeQueue(
     return found;
   };
   const byId = (id: string) => [...pulls.entries()].find(([, value]) => value.id === id);
-  return {
+  const fake: FakeMergeQueue = {
     branches,
     enqueued,
     calls,
+    refusal: null,
     async respond(request) {
       if (request.method !== "POST" || request.path !== "/graphql") return null;
       const body = request.body as { query?: string; variables?: Record<string, unknown> };
@@ -355,7 +359,7 @@ export function createFakeMergeQueue(
                   id: value.id,
                   state: value.state,
                   headRefOid: value.head ?? "0".repeat(40),
-                  baseRefName: "main",
+                  baseRefName: options.baseBranch ?? "main",
                   mergeCommit: value.mergeSha ? { oid: value.mergeSha } : null,
                   mergeQueueEntry: value.entry,
                   timelineItems: {
@@ -397,6 +401,8 @@ export function createFakeMergeQueue(
         const found = byId(id);
         if (!found) return { status: 200, body: { errors: [{ message: "Could not resolve" }] } };
         const [, value] = found;
+        if (fake.refusal !== null)
+          return { status: 200, body: { errors: [{ message: fake.refusal }] } };
         if (value.head !== null && value.head !== head)
           return { status: 200, body: { errors: [{ message: "Head ref is out of date" }] } };
         value.entry = { position: (options.ahead ?? 0) + 1, state: "QUEUED" };
@@ -427,6 +433,7 @@ export function createFakeMergeQueue(
       return pulls.get(number)?.entry != null;
     },
   };
+  return fake;
 }
 
 export type FakeCheckRun = {

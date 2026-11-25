@@ -222,4 +222,10 @@ export {
 } from "./brief-template";
 export { renderWorkBrief } from "./render-brief";
 
+export {
+  OUT_OF_MEMORY_MOVE,
+  OUT_OF_MEMORY_REASON,
+  OUT_OF_MEMORY_RETRY,
+  OUT_OF_MEMORY_STOP,
+} from "./out-of-memory";
 export { quotaSignal, usageLimitCause, usageLimitNotice, type QuotaSignal } from "./quota";

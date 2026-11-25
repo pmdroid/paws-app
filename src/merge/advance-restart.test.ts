@@ -71,8 +71,8 @@ describe("a Paws restart and the merge queue", () => {
       let fetches = 0;
       const error = new Error("preparation failed");
       h.state.beforeMergeToken = () => {
-        // The queue review, lane facts and lane review acquire the first three tokens.
-        if (++tokens === 4 && failure === "token") throw error;
+        // The merge queue check, queue review, lane facts and lane review acquire the first four tokens.
+        if (++tokens === 5 && failure === "token") throw error;
       };
       h.state.beforeGit = (args) => {
         if (

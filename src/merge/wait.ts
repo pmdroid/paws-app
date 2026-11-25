@@ -9,11 +9,15 @@ export const MERGE_CI_ASK_AFTER_MS = 6 * 60 * 60_000;
 export const MERGE_QUEUE_POLL_MS = 30_000;
 export const GITHUB_QUEUE_WAIT_MS = 24 * 60 * 60 * 1000;
 export const GITHUB_QUEUE_POLL_MS = 30_000;
+export const GITHUB_REVIEW_POLL_MS = 15 * 60_000;
+export const GITHUB_REVIEW_ASK_AFTER_MS = 24 * 60 * 60_000;
 export type GitHubQueueWatch = {
   queued: boolean;
   position?: number | null;
   state?: string;
   line?: string;
+  reviewSince?: number;
+  reviewAsked?: boolean;
 };
 
 export type CiWaitVerification = {
@@ -63,6 +67,17 @@ export async function parkMerge(
     return park(store, job, now + delayMs, payload, now);
   }
   delete payload.mergeOutcomeRetries;
+  if (wait.reason === "review" && wait.githubQueue?.reviewSince !== undefined) {
+    delete payload.ciWaitDeadline;
+    delete payload.ciWaitStartedAt;
+    return park(
+      store,
+      job,
+      now + GITHUB_REVIEW_POLL_MS,
+      { ...payload, githubQueue: wait.githubQueue },
+      now,
+    );
+  }
   if (wait.queued) {
     delete payload.ciWaitDeadline;
     if (wait.githubQueue !== undefined) payload.githubQueue = wait.githubQueue;
@@ -153,6 +168,8 @@ export function githubQueueWatch(payload: unknown): GitHubQueueWatch | undefined
       : {}),
     ...(typeof record.state === "string" ? { state: record.state } : {}),
     ...(typeof record.line === "string" ? { line: record.line } : {}),
+    ...(typeof record.reviewSince === "number" ? { reviewSince: record.reviewSince } : {}),
+    ...(record.reviewAsked === true ? { reviewAsked: true } : {}),
   };
 }
 

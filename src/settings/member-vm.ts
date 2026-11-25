@@ -46,6 +46,10 @@ export async function handleMemberVmSettingsRequest(
     journalCaught(error, "member-vm.handleMemberVmSettingsRequest.parse", null);
     return json({ error: error instanceof Error ? error.message : "Invalid member VM size" }, 400);
   }
+  if (size.offProviders === undefined) {
+    const saved = savedOffProviders(options.configPath);
+    if (saved !== undefined) size.offProviders = saved;
+  }
   await writeMemberVmSize(options.configPath, size);
   const described = Object.entries(size)
     .map(([key, value]) => `${key} ${value}`)
@@ -55,4 +59,13 @@ export async function handleMemberVmSettingsRequest(
     `Set member VM size: ${described || "exe.dev default"}`,
   );
   return listing();
+}
+
+function savedOffProviders(configPath: string): MemberVmSize["offProviders"] {
+  try {
+    return loadConfigFile(configPath).memberVm?.offProviders;
+  } catch (error) {
+    journalCaught(error, "member-vm.savedOffProviders", null);
+    return undefined;
+  }
 }

@@ -301,6 +301,12 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   api("GET PUT DELETE", "/api/settings/runner-vm-keys", "preserved", "src/settings", {
     sample: "/api/settings/runner-vm-keys",
   }),
+  api("GET PUT", "/api/settings/vm-providers", "preserved", "src/settings", {
+    sample: "/api/settings/vm-providers",
+  }),
+  api("POST", "/api/settings/vm-providers/check", "preserved", "src/settings", {
+    sample: "/api/settings/vm-providers/check",
+  }),
   api("POST", "/api/settings/storage/check", "preserved", "src/settings", {
     sample: "/api/settings/storage/check",
   }),
@@ -378,6 +384,12 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     "src/improvements",
   ),
   api("GET", "/api/runners", "delegated", "src/runner-control", { sample: "/api/runners" }),
+  ...["GET", "PUT", "DELETE"].map((method) =>
+    api(method, "/api/runners/:id/vm-host", "canonical", "src/vm-hosts", {
+      sample: "/api/runners/01JRRNNER0000000000000000A/vm-host",
+      member: 403,
+    }),
+  ),
   ...[
     ["POST", "/api/runners/enrollments"],
     ["GET", "/api/runners/usage"],

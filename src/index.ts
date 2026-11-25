@@ -20,17 +20,22 @@ import { createOnboardingReadiness } from "./onboarding-readiness";
 import {
   createMemberVmHttp,
   createMemberVmProvisioning,
+  usableVmProvider,
   registerMemberVmDeleteJob,
   registerMemberVmJob,
 } from "./member-vm";
 import {
+  boatKeyCheck,
   createVmProviderChecks,
   exeDevKeyCheck,
+  instaBoxKeyCheck,
   VM_PROVIDER_CHECK_EVERY_MS,
   VM_PROVIDER_CHECK_JOB,
 } from "./vm-provider-checks";
 import {
+  createBoat,
   createExeDev,
+  createInstaBox,
   exeDevTokenReader,
   tailscaleAuthKeyReader,
   latestRunnerRelease,
@@ -178,6 +183,7 @@ import {
   commandInstance,
   delegatedLinearUserIdSteps,
   enqueueJobOnce,
+  jobRunAtByKeySteps,
   getLinearSessionAccessSteps,
   getLinearSessionInstallationSteps,
   getLinearSessionSteps,
@@ -209,6 +215,7 @@ import {
   enqueueRunnerSetupChecks,
   type Steps,
   githubBlobCache,
+  memberVmProviderId,
 } from "./db";
 import { DATABASE_HELD, doctorChecks, formatDoctor, realProbe, withSavedStore } from "./doctor";
 import { installHostMain } from "./install-host";
@@ -1260,12 +1267,30 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     });
   const tailscaleAuthKey = tailscaleAuthKeyReader(paths.home);
   const memberVmExeDev = createExeDev({ readToken: exeDevToken });
+  const memberVmBoat = createBoat({
+    readToken: () => readVmProviderToken(paths.home, "boat"),
+    lookup: (name) => memberVmProviderId(store, name),
+  });
+  const memberVmInstaBox = createInstaBox({
+    readToken: () => readVmProviderToken(paths.home, "instabox"),
+    lookup: (name) => memberVmProviderId(store, name),
+  });
+  const vmProviderChecks = createVmProviderChecks({
+    db: store,
+    home: paths.home,
+    checks: {
+      "exe-dev": exeDevKeyCheck(options?.memberVm?.exeDev ?? memberVmExeDev),
+      boat: boatKeyCheck(memberVmBoat),
+      instabox: instaBoxKeyCheck(memberVmInstaBox),
+    },
+  });
   const MEMBER_VM_STOP_WAIT_MS = 15_000;
   const memberVmSize = () => memberVmSizeOnly(memberVmSettings());
   const memberVmProvisioning = createMemberVmProvisioning({
     readToken: exeDevToken,
     tailscaleAuthKey,
     size: memberVmSize,
+    providers: [memberVmBoat, memberVmInstaBox],
     ...(options?.memberVm
       ? { exeDev: options.memberVm.exeDev, bootstrap: options.memberVm.bootstrap }
       : {}),
@@ -1369,6 +1394,13 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     available: createVmAvailable,
     size: memberVmSize,
     provider: memberVmProviderSetting,
+    usable: (provider) =>
+      usableVmProvider(provider, {
+        store,
+        keySaved: (id) =>
+          options?.memberVm !== undefined || readVmProviderToken(paths.home, id) !== null,
+        offProviders: () => memberVmSettings()?.offProviders,
+      }),
     exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
   });
   const githubCommits = (repository: { owner: string; repo: string }): GitHubCommits => {
@@ -1513,6 +1545,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   try {
     server = startServer({
       storageUsage,
+      vmProviderChecks: {
+        run: (name, signal) => vmProviderChecks.runVmProviderCheck(name, signal),
+        nextCheckAt: () => store.run((q) => jobRunAtByKeySteps(q, VM_PROVIDER_CHECK_JOB)),
+      },
       storageCleanup,
       server: options?.server,
       linearUsage: linear === null ? undefined : () => linear.usage(),
@@ -1830,11 +1866,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         recurringEveryMs: RUN_TAKEOVER_MS,
         now: Date.now(),
       });
-      const vmProviderChecks = createVmProviderChecks({
-        db: store,
-        home: paths.home,
-        checks: { "exe-dev": exeDevKeyCheck(options?.memberVm?.exeDev ?? memberVmExeDev) },
-      });
       created.jobs.register(VM_PROVIDER_CHECK_JOB, (_job, context) =>
         vmProviderChecks.runVmProviderChecks(context.signal),
       );
@@ -1856,7 +1887,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         ...(options?.memberVm?.pollMs === undefined ? {} : { pollMs: options.memberVm.pollMs }),
       });
       registerMemberVmDeleteJob(created.jobs, {
-        providers: [options?.memberVm?.exeDev ?? memberVmExeDev],
+        providers: [options?.memberVm?.exeDev ?? memberVmExeDev, memberVmBoat, memberVmInstaBox],
         stopTask: async (itemId) => {
           if (orchestrator === null) throw new Error("Paws is still starting. Retry the delete.");
           await submitCommand(store, orchestrator.bus, {

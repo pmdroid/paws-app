@@ -26,6 +26,7 @@ export const RunnerResultSchema = z.strictObject({
   sessionId: z.string().max(512).optional(),
   account: RunnerAccountSchema.optional(),
   errorMessage: z.string().max(16384).optional(),
+  failureReason: z.enum(["out_of_memory"]).optional(),
   identity: z
     .strictObject({
       session: z.string().max(512),

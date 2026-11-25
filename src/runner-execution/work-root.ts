@@ -33,7 +33,7 @@ function list(path: string): string[] {
   }
 }
 
-function* measureSteps(path: string): Generator<void, { bytes: number; newest: number }> {
+export function* measureSteps(path: string): Generator<void, { bytes: number; newest: number }> {
   let bytes = 0;
   let newest = 0;
   const pending = [path];
@@ -49,7 +49,10 @@ function* measureSteps(path: string): Generator<void, { bytes: number; newest: n
   return { bytes, newest };
 }
 
-async function paced<T>(steps: Generator<void, T>, stop: () => boolean): Promise<T | undefined> {
+export async function paced<T>(
+  steps: Generator<void, T>,
+  stop: () => boolean,
+): Promise<T | undefined> {
   for (let count = 1; ; count++) {
     const next = steps.next();
     if (next.done) return next.value;
@@ -123,7 +126,7 @@ export function createRunnerWorkCleaner(options: {
   const queue = new Set<string>();
   const failed = new Set<string>();
   const collecting = new Set<string>();
-  const stuck = new Map<string, number>();
+  const stuck = new Map<string, string>();
   let draining: Promise<void> | undefined;
   let sweeping: Promise<void> | undefined;
   let removed = 0;
@@ -195,8 +198,10 @@ export function createRunnerWorkCleaner(options: {
       for (const name of runs === undefined ? [] : list(`/proc/self/fd/${runs}`)) {
         if (attempted >= RUN_STATE_SWEEP_LIMIT) break;
         if (!EXECUTION_FOLDER.test(name) && !RUN_FOLDER.test(name)) continue;
-        const changed = stat(`/proc/self/fd/${runs}/${name}`)?.ctimeMs;
-        if (changed === undefined || stuck.get(name) === changed) continue;
+        const info = stat(`/proc/self/fd/${runs}/${name}`);
+        if (!info) continue;
+        const changed = `${info.ctimeMs}:${info.mode}:${info.uid}:${info.gid}`;
+        if (stuck.get(name) === changed) continue;
         stuck.delete(name);
         await yieldToLoop();
         if (options.signal?.aborted) return;

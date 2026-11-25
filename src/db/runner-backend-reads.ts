@@ -67,6 +67,44 @@ export function* onlineMemberRunnersSteps(q: Q, seenAfter: number) {
   );
 }
 
+export function* largerRunnerIdsSteps(q: Q, runnerId: string): Steps<string[] | null> {
+  const { runner, runnerHostStatus: host } = q.t;
+  const memory = yield* q.one(
+    q.orm
+      .select({ bytes: host.memoryTotalBytes, workspaceId: runner.workspaceId })
+      .from(runner)
+      .leftJoin(host, eq(host.runnerId, runner.id))
+      .where(eq(runner.id, runnerId)),
+  );
+  if (!memory || memory.bytes === null) return null;
+  const rows = yield* q.all(
+    q.orm
+      .select({ id: runner.id })
+      .from(runner)
+      .innerJoin(host, eq(host.runnerId, runner.id))
+      .where(
+        and(
+          eq(runner.workspaceId, memory.workspaceId),
+          ne(runner.id, runnerId),
+          gt(host.memoryTotalBytes, memory.bytes),
+        ),
+      ),
+  );
+  return rows.map((row) => row.id);
+}
+
+export function* workspaceRunnerIdsSteps(q: Q, runnerId: string): Steps<string[]> {
+  const { runner } = q.t;
+  const owner = yield* q.one(
+    q.orm.select({ workspaceId: runner.workspaceId }).from(runner).where(eq(runner.id, runnerId)),
+  );
+  if (!owner) return [];
+  const rows = yield* q.all(
+    q.orm.select({ id: runner.id }).from(runner).where(eq(runner.workspaceId, owner.workspaceId)),
+  );
+  return rows.map((row) => row.id);
+}
+
 export function* runnerOnlineSteps(q: Q, runnerId: string, seenAfter: number): Steps<boolean> {
   const { runner } = q.t;
   const row = yield* q.one(
@@ -205,6 +243,7 @@ export function* lastRunResultSteps(q: Q, itemId: string) {
     q.orm
       .select({
         runnerId: command.runnerId,
+        runId: result.runId,
         envelope: jsonText(q, command.envelope),
         payload: jsonText(q, result.payload),
       })
