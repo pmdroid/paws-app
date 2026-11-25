@@ -682,12 +682,13 @@ export function mergeQueueOf(full: FullStatus): MergeQueueResponse {
     project: full.project,
     entries: full.mergeQueue,
     history: full.mergeHistory ?? [],
-    issues: full.items.map(({ id, title, owner, project, pr }) => ({
+    issues: full.items.map(({ id, title, owner, project, pr, branch }) => ({
       id,
       title,
       owner,
       project,
       pr,
+      branch,
     })),
     pushOutages: full.pushOutages ?? [],
   };

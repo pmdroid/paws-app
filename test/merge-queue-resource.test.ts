@@ -104,6 +104,8 @@ test("the merge queue needs a Paws session, shows only the member's sessions and
     expect(mine.status).toBe(200);
     expect(mine.headers.get("cache-control")).toBe("no-store");
     const etag = mine.headers.get("etag")!;
+    const body = (await mine.clone().json()) as { issues: Array<{ id: string; branch: string }> };
+    expect(body.issues.map(({ id, branch }) => [id, branch])).toEqual([["PAS-1", "paws/PAS-1"]]);
     expect(await queued(mine)).toEqual(["PAS-1"]);
     expect((await fetch(url, signedIn({ "If-None-Match": etag }))).status).toBe(304);
     expect((await fetch(url, { headers: { "If-None-Match": etag } })).status).toBe(401);

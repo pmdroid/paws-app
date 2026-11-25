@@ -102,6 +102,7 @@ import {
   listMergeQueuesSteps,
   listOpenQuestionsSteps,
   listOutboxSteps,
+  listPullRequestTitlesSteps,
   listPushOutagesSteps,
   listQueuePositions,
   listRunsSteps,
@@ -121,7 +122,7 @@ import {
   type CloseoutOutputPointer,
 } from "../../../db";
 import { followUpsFor } from "./follow-ups";
-import { pullFactsFor, withPullFacts } from "./pull-facts";
+import { pullFactsFor, pullState, withPullFacts } from "./pull-facts";
 import { hostDiskFullReason, isTerminalWorkItemState, riskCarryOverReason } from "../../../core";
 import { redactCloseoutText } from "../server/artifact";
 import { doingOf } from "./doing";
@@ -453,14 +454,32 @@ async function readMergeQueue(store: Db, options: LiveStatusOptions): Promise<Me
           (row.orderingKey !== null && options.sessionIds.includes(row.orderingKey)),
       )
     : [];
-  const issues = records.map((record): MergeQueueIssue => ({
-    id: publicId(record),
-    title: textOr(record.title, publicId(record)),
-    owner: ownerName(facts.get(record.id)),
-    ownerId: facts.get(record.id)?.ownerId ?? null,
-    project: itemProject(facts.get(record.id)),
-    pr: pullRequest(record, rows, options.project?.repo),
-  }));
+  const ids = records.map((record) => record.id);
+  const pulls = ids.length
+    ? await store.run(function* (q) {
+        return {
+          titles: yield* listPullRequestTitlesSteps(q, ids),
+          merges: yield* listConfirmedRemoteMergesSteps(q, ids),
+        };
+      })
+    : { titles: new Map<string, string>(), merges: new Map() };
+  const issues = records.map((record): MergeQueueIssue => {
+    const pr = pullRequest(record, rows, options.project?.repo);
+    const title = pulls.titles.get(record.id)?.trim();
+    return {
+      id: publicId(record),
+      title: textOr(record.title, publicId(record)),
+      owner: ownerName(facts.get(record.id)),
+      ownerId: facts.get(record.id)?.ownerId ?? null,
+      project: itemProject(facts.get(record.id)),
+      pr: pr && {
+        ...pr,
+        ...(title ? { title } : {}),
+        state: pullState(record, pulls.merges.has(record.id)),
+      },
+      branch: record.branchName.trim() ? record.branchName : null,
+    };
+  });
   const merge = records.length
     ? await mergeQueueFor(store, {
         records: visible,

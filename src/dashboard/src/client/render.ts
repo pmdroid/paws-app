@@ -76,7 +76,7 @@ export interface RenderModel {
   phase: "loading" | "ready" | "error";
   overview?: OverviewResponse | null;
   mergeQueue?: MergeQueueResponse | null;
-  mergeLanes?: { filter: LaneFilter; userId: string | null };
+  mergeLanes?: { filter: LaneFilter; userId: string | null; query?: string };
   issues?: IssueListResponse | null;
   issue?: IssueDetailResponse | null;
   questions?: QuestionListResponse | null;

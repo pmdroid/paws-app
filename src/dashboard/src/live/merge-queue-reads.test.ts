@@ -126,8 +126,8 @@ async function reads(count: number) {
 }
 
 const BEFORE_BATCHING = [
-  "1559fbdaea9191d91ada7037ecbe9e512152eb79bb91f88cd0429a63723b5854",
-  "84b405d240682be45b41bdc717578bdf6ff642f0c80bdad34de2a1a54fa413b5",
+  "1fa7acd6107b43cfa4fbf5aaa9a087021b9342b817036f1ea6baeda4a83b03ce",
+  "0abd21d5c03faeb8ac14b1a6f7ffa5dd5752a0ec0302185ed6cbc53cd9b1c291",
 ];
 
 describe("the merge queue", () => {
