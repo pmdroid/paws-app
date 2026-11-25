@@ -210,6 +210,12 @@ test("a query shows grouped settings, issue and PR rows, and arrows then Enter o
   ]);
   await type("#479");
   expect(rows()).toEqual(["[PRs]", "#479 Export job workeracme/platform"]);
+  await type("needs attention");
+  expect(rows()).toEqual([
+    "[Issues]",
+    "ENG-103Signed URL deliveryAwaiting input",
+    "ENG-100Retention policy enforcement jobAwaiting input",
+  ]);
 
   await type("audit");
   for (const key of ["ArrowDown", "ArrowDown", "ArrowUp", "ArrowUp", "ArrowUp"])

@@ -504,7 +504,7 @@ export function issueFilterSearch(search: string, filter: Required<IssueListFilt
   return text ? `?${text}` : "";
 }
 
-function issueSearchText(item: IssueListItem): string {
+export function issueSearchText(item: IssueListItem): string {
   return [
     item.id,
     item.title,
