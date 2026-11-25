@@ -319,36 +319,101 @@ try {
     await expect(admin.getByRole("alert")).toContainText("CPUs must be a positive integer.");
     await expect(admin.locator("#vm-size-cpu")).toHaveValue("-1");
     await admin.screenshot({ path: join(out, `member-vm-${width}.png`), fullPage: true });
-    let runnerVmKeys = { exeDev: true, tailscale: false };
-    await admin.route("**/api/settings/runner-vm-keys*", async (route) => {
-      const method = route.request().method();
-      if (method === "PUT") runnerVmKeys = { ...runnerVmKeys, tailscale: true };
-      if (method === "DELETE") runnerVmKeys = { ...runnerVmKeys, exeDev: false };
-      await route.fulfill({ json: runnerVmKeys });
+    const fact = (name: string, text: string, level = "ok") => ({ name, text, level });
+    const checked = (state: string, message: string, facts: unknown[]) => ({
+      ...{ state, message, facts, checkedAt: Date.now() - 600_000, lastWorkingAt: null },
     });
+    let providers: Record<string, unknown> = {
+      "exe-dev": {
+        set: true,
+        off: false,
+        vms: [{ vmName: "paws-vm-1", runnerId: null, step: "ready" }],
+        check: checked("working", "exe.dev accepted the token.", [
+          fact("key", "exe.dev accepted the token"),
+          fact("vms", "2 VMs, 0 not running"),
+        ]),
+      },
+      boat: {
+        set: true,
+        off: false,
+        vms: [],
+        check: checked("rejected", "boat answered 401: the key was revoked.", [
+          fact("key", "boat answered 401", "error"),
+        ]),
+      },
+      instabox: { set: false, off: false, vms: [], check: null },
+      tailscale: {
+        set: true,
+        check: checked("working", "runner-1 joined.", [fact("join", "runner-1 joined at 09:12")]),
+      },
+      nextCheckAt: Date.now() + 3_600_000,
+    };
+    const instabox = checked(
+      "limited",
+      "InstaBox accepted the key, but its plan allows only one size.",
+      [
+        fact("key", "InstaBox accepted the key"),
+        fact("sizes", "Only 2 vCPU / 4096 MiB", "warn"),
+        fact("vms", "0 machines, 0 not running"),
+      ],
+    );
+    await admin.route("**/api/settings/vm-providers**", async (route) => {
+      const body = route.request().postDataJSON();
+      if (route.request().url().endsWith("/check"))
+        providers = {
+          ...providers,
+          [body.key]: {
+            ...(providers[body.key] as object),
+            check: checked("working", "boat accepted the key.", [
+              fact("key", "boat accepted the key"),
+            ]),
+          },
+        };
+      else if (route.request().method() === "PUT")
+        providers = {
+          ...providers,
+          [body.provider]: { ...(providers[body.provider] as object), off: body.off },
+        };
+      await route.fulfill({ json: providers });
+    });
+    await admin.route("**/api/settings/runner-vm-keys*", async (route) => {
+      providers = { ...providers, instabox: { set: true, off: false, vms: [], check: instabox } };
+      await route.fulfill({ json: { check: instabox } });
+    });
+    await admin.setViewportSize({ width: width === 1440 ? 1280 : width, height: 900 });
     await visit(admin, width, "runner-vms", "/dashboard/workspace/runner-vms", "Runner VMs");
-    await expect(admin.locator("[data-key-state]")).toHaveText([
-      "Set",
-      "Not set",
-      "Not set",
-      "Not set",
+    await expect(admin.locator("[data-provider-state]")).toHaveText([
+      "✓Working",
+      "✕Key rejected",
+      "–Not connected",
+      "✓Working",
     ]);
-    await admin.locator("#runner-vm-tailscale").fill("tskey-synthetic");
-    await admin.locator('[data-runner-vm-key="tailscale"] button[type="submit"]').click();
-    await expect(admin.locator("[data-key-state]")).toHaveText([
-      "Set",
-      "Not set",
-      "Not set",
-      "Set",
-    ]);
-    await admin.locator('[data-clear="exeDev"]').click();
-    await expect(admin.locator("[data-key-state]")).toHaveText([
-      "Not set",
-      "Not set",
-      "Not set",
-      "Set",
-    ]);
-    await admin.screenshot({ path: join(out, `runner-vms-changed-${width}.png`), fullPage: true });
+    await expect(admin.locator('[data-vm-provider="boat"] [role="alert"]')).toHaveText(
+      "boat answered 401: the key was revoked.",
+    );
+    await admin.screenshot({ path: join(out, `runner-vms-light-${width}.png`), fullPage: true });
+    await admin.emulateMedia({ colorScheme: "dark" });
+    await admin.reload();
+    await expect(admin.locator("[data-provider-state]")).toHaveCount(4);
+    await admin.screenshot({ path: join(out, `runner-vms-dark-${width}.png`), fullPage: true });
+    await admin.emulateMedia({ colorScheme: "light" });
+    await admin.locator('[data-check="boat"]').click();
+    await expect(admin.locator('[data-vm-provider="boat"] [data-provider-state]')).toHaveText(
+      "✓Working",
+    );
+    await admin.locator('[data-provider-on="exe-dev"]').click();
+    await expect(admin.locator('[data-vm-provider="exe-dev"] [data-provider-state]')).toHaveText(
+      "○Off",
+    );
+    await admin.locator('[data-connect-open="instabox"]').click();
+    await admin.locator("#runner-vm-instabox").fill("ibx-synthetic");
+    await admin.locator('[data-runner-vm-key="instabox"] button[type="submit"]').click();
+    await expect(admin.locator("[data-connect-result]")).toContainText("only one size");
+    await admin.screenshot({ path: join(out, `runner-vms-connect-${width}.png`), fullPage: true });
+    const scroll = await admin.evaluate(() => document.documentElement.scrollWidth);
+    if (scroll > admin.viewportSize()!.width)
+      throw new Error(`Runner VMs scrolls sideways (${scroll}px)`);
+    await admin.setViewportSize({ width, height: 900 });
 
     let merging = {
       default: { order: "queue", mainMoved: "overlap" },
