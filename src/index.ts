@@ -53,13 +53,7 @@ import {
   slackReplyAllowedSteps,
   slackSigningSecret,
 } from "./slack";
-import {
-  collectProbes,
-  keepCandidates,
-  parseProbesArgs,
-  readStoredFindings,
-  type ProbesCommand,
-} from "./probe-collector";
+import { parseProbesArgs, PROBES_COLLECT_PAUSED } from "./probe-collector";
 import {
   envelopeSubkey,
   importCredentialFile,
@@ -69,14 +63,7 @@ import {
   useDatabaseSecrets,
   readAgentCredentialSteps,
 } from "./credentials";
-import {
-  ArtifactRejectedError,
-  commitCheckpointSync,
-  git,
-  mirrorFiles,
-  runAgent,
-  worktreePath,
-} from "./acp";
+import { ArtifactRejectedError, commitCheckpointSync, git, mirrorFiles, worktreePath } from "./acp";
 import { useGitReader } from "./closeout";
 import { useEvidenceRecordObjects } from "./closeout-spec";
 import {
@@ -227,7 +214,7 @@ import {
   recordDuration,
   recordQueueDepths,
 } from "./metrics";
-import { DATABASE_HELD, doctorChecks, formatDoctor, realProbe, withSavedStore } from "./doctor";
+import { doctorChecks, formatDoctor, realProbe } from "./doctor";
 import { installHostMain } from "./install-host";
 import { runInstallCli } from "./installer";
 import {
@@ -294,7 +281,6 @@ import {
   type PullCommentFilter,
   attachOrchestrator,
   createLinearArtifactReader,
-  createRepositoryGit,
   itemPathId,
   repositoryAtPath,
   repositoryAnswer,
@@ -3259,71 +3245,16 @@ async function withCommandStore<T>(command: string, work: (store: Db) => Promise
   }
 }
 
-/** `paws probes collect`: the agent runs here, with the signed-in agent of whoever runs it. */
-async function probesMain(argv: string[]): Promise<number> {
-  let command: ProbesCommand;
+/** `paws probes collect`: refuses before any agent turn until it runs through Paws on a runner. */
+function probesMain(argv: string[]): number {
   try {
-    command = parseProbesArgs(argv);
+    parseProbesArgs(argv);
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     return 1;
   }
-  const controller = new AbortController();
-  process.once("SIGINT", () => controller.abort());
-  const print = (text: string) => console.log(text);
-  try {
-    ensureLayout(pawsPaths(loadEnv(process.env).home));
-    await withSavedStore(process.env, async ({ store, held }) => {
-      if (held) print(`note: ${DATABASE_HELD}`);
-      const runtime = loadRuntime(process.env);
-      const paths = pawsPaths(runtime.env.home);
-      const repository = {
-        owner: command.owner,
-        repo: command.repo,
-        remoteUrl: githubHttpsUrl(command.owner, command.repo),
-      };
-      const appActivation = store
-        ? createWorkspaceGitHubActivation(store, runtime.env.home, process.env)
-        : null;
-      const provider = authProvider(
-        runtime,
-        repository,
-        "read",
-        appActivation ? (name) => appActivation.resolve(name) : undefined,
-      );
-      if (!provider) throw new Error("The GitHub App is not configured. Run `paws doctor`.");
-      await collectProbes({
-        repository,
-        pawsRoot: paths.home,
-        since: command.since,
-        dryRun: command.dryRun,
-        out: command.out,
-        github: { client: createFetchGitHubClient(), tokenProvider: gitHostToken(provider) },
-        turn: runAgent,
-        networkGit: createRepositoryGit({
-          remoteUrl: repository.remoteUrl,
-          token: () => provider.token(),
-          signal: controller.signal,
-          assert: async () => undefined,
-          onCleanupFailure: () => undefined,
-        }),
-        findings: () =>
-          readStoredFindings({
-            home: paths.home,
-            store,
-            owner: command.owner,
-            repo: command.repo,
-          }),
-        keep: keepCandidates(command.keep, print),
-        print,
-        signal: controller.signal,
-      });
-    });
-    return 0;
-  } catch (error) {
-    journalCaught(error, "paws probes collect failed.", null);
-    return 1;
-  }
+  console.error(PROBES_COLLECT_PAUSED);
+  return 1;
 }
 
 if (import.meta.main || compiled()) {
@@ -3333,7 +3264,7 @@ if (import.meta.main || compiled()) {
     console.log(installedPawsVersion() ?? "unknown");
     process.exit(0);
   }
-  if (command === "probes") process.exit(await probesMain(argv.slice(1)));
+  if (command === "probes") process.exit(probesMain(argv.slice(1)));
   if (command === "runner") process.exit(await runRunnerCli(argv.slice(1)));
   if (command === "runner-storage")
     process.exit(

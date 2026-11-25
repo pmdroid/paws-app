@@ -1,10 +1,7 @@
 import type { RunAgentOptions, RunAgentResult } from "../acp";
 import type { Finding, RuleOnFail, Severity } from "../closeout-spec";
 
-/**
- * One agent turn. The CLI passes `runAgent` from `src/acp`, which runs the signed-in agent of
- * whoever runs it on this machine. A paired-runner backend can replace it with the same shape.
- */
+/** One agent turn. Paws places it on a paired runner under a workspace agent account. */
 export type AgentTurn = (options: RunAgentOptions) => Promise<RunAgentResult>;
 
 export type SourceKind = "review_thread" | "pull_comment" | "closeout_finding" | "doc";

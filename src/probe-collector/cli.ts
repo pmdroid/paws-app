@@ -12,9 +12,16 @@ import type { Candidate, StoredFinding } from "./types";
 export const PROBES_USAGE = `usage: paws probes collect <owner/repo> [--since <days>d|<YYYY-MM-DD>] [--out <file>] [--keep <id,id>] [--dry-run]
 
 Drafts Closeout probe rules from the pull request comments of the last ${DEFAULT_SINCE_DAYS} days,
-stored Closeout review findings, and the repository's agent docs. The agent runs on this machine
-with your own sign-in. It writes one file, ${DEFAULT_OUT} (or --out): the proposed rules with
-their probe scripts, for you to review and add to .agents/closeout.yaml. It does not commit, push, or open a pull request.`;
+stored Closeout review findings, and the repository's agent docs. The agent turns run on a
+paired runner under a workspace agent account from Settings › Agent accounts. It writes one file,
+${DEFAULT_OUT} (or --out): the proposed rules with their probe scripts, for you to review and add
+to .agents/closeout.yaml. It does not commit, push, or open a pull request.`;
+
+export const PROBES_COLLECT_PAUSED = `paws probes collect is paused: it no longer starts agent turns with this host's own login.
+Probe collection will run through Paws, on a paired runner under a workspace agent account, once
+these land: a runner release with the probe_distill and probe_write helpers, the host route that
+places them with an account chosen under Settings › Agent accounts (PAS-2432 part 2), and this
+command as a client of that route (PAS-2432 part 3). Nothing was collected or written.`;
 
 export type ProbesCommand = {
   owner: string;

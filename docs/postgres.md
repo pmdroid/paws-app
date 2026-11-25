@@ -18,7 +18,7 @@ The URL holds the password, so it is a secret: keep the environment file that se
 
 Paws applies database updates automatically at startup. PGlite allows one process per directory, so Paws holds `~/.paws/pglite` while it runs, recorded in `~/.paws/pglite.lock` with its process id, and refuses to start when another live process holds it. `paws review-score` and `paws login slack` need `PAWS_DATABASE_URL`.
 
-`paws doctor` and `paws probes collect` read the workspace, its GitHub App and the values saved on the Settings page from the same database: the Postgres at the URL, else `~/.paws/pglite`. While Paws is running and holds PGlite, they read the settings as empty, use the defaults, and print one line saying the saved Settings-page values were not read.
+`paws doctor` reads the workspace, its GitHub App and the values saved on the Settings page from the same database: the Postgres at the URL, else `~/.paws/pglite`. While Paws is running and holds PGlite, it reads the settings as empty, uses the defaults, and prints one line saying the saved Settings-page values were not read.
 
 ## Secrets
 

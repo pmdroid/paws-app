@@ -3,6 +3,7 @@ export type { CollectOptions, CollectResult } from "./collect";
 export {
   keepCandidates,
   parseProbesArgs,
+  PROBES_COLLECT_PAUSED,
   PROBES_USAGE,
   readStoredFindings,
   type ProbesCommand,
