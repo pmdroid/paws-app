@@ -229,7 +229,8 @@ test("over_max direct runs the change's direct tests when the selection is over 
     mode: "selected",
     targets: ["lib/math.test.ts", "test/always.test.ts"],
     reasons: [
-      "4 test files are selected, more than max_selected 1; running the change's direct tests and leaving 2 to CI",
+      "4 test files are selected, more than max_selected 1",
+      "running the change's direct tests and leaving the rest to CI",
       "lib/math.test.ts is a direct test of the change",
       "test/always.test.ts is in select.always",
     ],
@@ -257,6 +258,43 @@ test("over_max direct runs the change's direct tests when the selection is over 
   });
   const under = await planned(colocated, { max_selected: 10, over_max: "direct" });
   expect(targets(under)).toEqual(["lib/math.test.ts", "test/barrel.test.ts", "test/lazy.test.ts"]);
+});
+
+test("over_max direct also runs the direct tests when the selection can't be proved", async () => {
+  const lazy = {
+    "lib/math.ts": "export const add = 2;\n",
+    "lib/math.test.ts": 'import { add } from "./math";\nadd;\n',
+    "test/lazy.test.ts": "await import(`../lib/${process.env.X}`);\n",
+  };
+  const unprovable = await planned(lazy, { over_max: "direct", always: ["test/always.test.ts"] });
+  expect(unprovable.selection).toEqual({
+    mode: "selected",
+    targets: ["lib/math.test.ts", "test/always.test.ts", "test/lazy.test.ts"],
+    reasons: [
+      "at base: test/lazy.test.ts has a non-literal dynamic import or require",
+      "at head: test/lazy.test.ts has a non-literal dynamic import or require",
+      "running the change's direct tests and leaving the rest to CI",
+      "lib/math.test.ts is a direct test of the change",
+      "test/lazy.test.ts is a direct test of the change",
+      "test/always.test.ts is in select.always",
+    ],
+  });
+  const docs = await planned(
+    {
+      "README.md": "x\n",
+      "lib/math.ts": "export const add = 2;\n",
+      "lib/math.test.ts": "export {};\n",
+    },
+    { over_max: "direct" },
+  );
+  expect(targets(docs)).toEqual(["lib/math.test.ts"]);
+  const shared = await planned(
+    { "package.json": "{}", "lib/math.test.ts": "export {};\n" },
+    { over_max: "direct" },
+  );
+  expect(shared.selection).toEqual({ mode: "full", reasons: ["package.json changed"] });
+  const nothing = await planned({ "README.md": "x\n" }, { over_max: "direct" });
+  expect(nothing.selection.mode).toBe("full");
 });
 
 test("the bun runner runs the full suite when it can't prove the selection", async () => {
@@ -301,7 +339,8 @@ test("the bun runner runs the full suite when it can't prove the selection", asy
       { max_selected: 1, over_max: "direct" },
     ),
   ).toEqual([
-    "2 test files are selected, more than max_selected 1, and the change has no direct test",
+    "2 test files are selected, more than max_selected 1",
+    "the change has no direct test, and select.always is empty",
   ]);
   const missing = await planned(math, { always: ["test/gone.test.ts"] });
   expect([missing.invocations, missing.problem]).toEqual([
