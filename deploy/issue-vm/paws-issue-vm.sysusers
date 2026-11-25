@@ -1,0 +1,2 @@
+u paws-issue-vm - "Paws issue VM monitors" /var/lib/paws-issue-vm-state /usr/sbin/nologin
+m paws-issue-vm kvm

@@ -91,6 +91,18 @@ export function* deletingHostIssueVmIdsSteps(q: Q, hostRunnerId: string) {
   return rows.map((row) => row.id);
 }
 
+export function* liveHostIssueVmsSteps(q: Q, hostRunnerId: string) {
+  const { issueVm: v } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ id: v.id, state: v.state })
+      .from(v)
+      .where(and(eq(v.hostRunnerId, hostRunnerId), notInArray(v.state, ENDED_STATES)))
+      .orderBy(v.id),
+  );
+  return rows.map((row) => ({ id: row.id, state: row.state as IssueVmState }));
+}
+
 export function* issueVmsInUseSteps(q: Q, input: { workspaceId: string; memberUserId?: string }) {
   const { issueVm: v } = q.t;
   const row = yield* q.one(

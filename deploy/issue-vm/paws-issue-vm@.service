@@ -1,0 +1,25 @@
+[Unit]
+Description=Paws issue VM %i
+After=paws-issue-vm-pool.service
+Requires=paws-issue-vm-pool.service
+CollectMode=inactive-or-failed
+
+[Service]
+Type=exec
+User=paws-issue-vm
+Group=paws-issue-vm
+SupplementaryGroups=kvm
+ExecStartPre=+/usr/local/sbin/paws-issue-vm prepare %i
+ExecStart=/usr/local/sbin/paws-issue-vm run %i
+ExecStopPost=+/usr/local/sbin/paws-issue-vm clean %i
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+KillMode=mixed
+TimeoutStartSec=120s
+TimeoutStopSec=30s
+UMask=0077
+ProtectSystem=strict
+ReadWritePaths=/var/lib/paws-issue-vm-state
+ProtectHome=yes
+PrivateTmp=yes
