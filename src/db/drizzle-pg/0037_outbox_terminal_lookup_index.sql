@@ -1,0 +1,1 @@
+CREATE INDEX "outbox_terminal_lookup" ON "outbox" USING btree ("target","ordering_key","delivery_generation","priority") WHERE delivery_kind IN ('terminal', 'stop') AND status IN ('pending', 'sent');
