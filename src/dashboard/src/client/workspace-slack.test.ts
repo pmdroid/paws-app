@@ -34,14 +34,19 @@ test("the Slack card shows identity, capabilities and the callback result, and r
     settingsPageShown("integrations");
     await Bun.sleep(20);
     const text = (selector: string) => root.querySelector(selector)?.textContent;
-    expect(text("[data-slack-status]")).toBe("Connected to Acme (T111111), app A1, bot B1.");
-    expect(text('[data-capability="directMessages"]')).toBe(
-      "App messages: Reconnect Slack to grant im:history.",
+    expect(text("[data-slack-pill]")).toBe("Needs attention");
+    expect(text("[data-slack-missing]")).toContain(
+      "Paws needs 1 more Slack permission: im:history. Reconnect to grant them.",
     );
-    expect(text('[data-capability="code"]')).toContain("not available");
+    expect(text("[data-slack-details]")).toContain("T111111");
+    expect(root.querySelector<HTMLDetailsElement>("[data-slack-details]")?.open).toBe(false);
+    const state = (name: string) => text(`[data-capability="${name}"] [data-capability-state]`);
+    expect(state("threads")).toBe("Ready");
+    expect(state("directMessages")).toBe("Reconnect Slack to grant im:history.");
+    expect(state("code")).toBe("Not available on this connection yet");
     expect(text("[data-slack-notice]")).toContain("unchanged");
     expect(window.location.search).toBe("");
-    root.querySelector<HTMLButtonElement>('[data-slack="reconnect"]')!.click();
+    root.querySelector<HTMLButtonElement>('[data-slack-missing] [data-slack="reconnect"]')!.click();
     await Bun.sleep(20);
     expect(requests).toContain("POST /api/workspaces/slack/connect");
   } finally {
@@ -161,6 +166,34 @@ test("a Slack app from the server environment hides the credentials form", async
       );
       expect(root.querySelector("[data-slack-app]")).toBeNull();
       expect(root.querySelector('[data-slack="connect"]')).not.toBeNull();
+    },
+  );
+});
+
+test("a fully granted Slack card shows no missing-scopes alert and revokes a linked member", async () => {
+  const requests: string[] = [];
+  await withSlackCard(
+    (method, url) => {
+      requests.push(`${method} ${url}`);
+      if (url.startsWith("/api/workspaces/slack/links"))
+        return {
+          links: [
+            { slackUserId: "U0ADA", channelId: "C0ONE", userId: "u1", name: "Ada", active: true },
+          ],
+        };
+      return {
+        configured: true,
+        connection: { teamId: "T111111", teamName: "Acme", appId: "A1", botUserId: "B1" },
+        capabilities: { missing: [], threads: { ready: true }, code: { ready: false } },
+      };
+    },
+    async (root) => {
+      expect(root.querySelector("[data-slack-missing]")).toBeNull();
+      expect(root.querySelector("[data-slack-pill]")?.textContent).toBe("Connected");
+      expect(root.querySelector('[data-slack-link="U0ADA"]')?.textContent).toContain("Ada");
+      root.querySelector<HTMLButtonElement>('[data-slack-revoke="U0ADA"]')!.click();
+      await Bun.sleep(20);
+      expect(requests).toContain("DELETE /api/workspaces/slack/links?user=U0ADA");
     },
   );
 });

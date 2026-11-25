@@ -1252,10 +1252,10 @@ try {
       "Slack could not refresh its token. Reconnect Slack.",
     );
     await expect(slack.locator('[data-slack="reconnect"]')).toBeVisible();
-    await expect(slack.locator('[data-slack-link="U0BOB"]')).toContainText(
-      "Bob as U0BOB in C0ONE (Paws access revoked)",
-    );
+    await expect(slack.locator("[data-slack-pill]")).toHaveText("Needs attention");
+    await expect(slack.locator('[data-slack-link="U0BOB"]')).toContainText("Paws access revoked");
     await expect(slack.locator('[data-slack-revoke="U0ADA"]')).toBeVisible();
+    await slack.screenshot({ path: join(out, `integrations-slack-card-${width}.png`) });
     await admin.unroute("**/api/workspaces/slack/links*");
     await page.route("**/api/workspaces/slack/link", (route) =>
       route.fulfill({
