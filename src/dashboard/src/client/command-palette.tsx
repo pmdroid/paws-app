@@ -12,6 +12,7 @@ import {
 import { journalCaught } from "../journal";
 import { itemLabel } from "./format";
 import { NAVIGATION, PAGES } from "./navigation";
+import { issueSearchText } from "./render";
 import { routePath, type Route } from "./route";
 import {
   USER_SETTINGS_PAGES,
@@ -61,15 +62,7 @@ const matches = (needle: string, fields: Array<string | number | null | undefine
 
 function issueItems(needle: string, issues: IssueListItem[]): PaletteItem[] {
   return issues
-    .filter((issue) =>
-      matches(needle, [
-        issue.id,
-        issue.title,
-        issue.state,
-        itemLabel(issue.state),
-        issue.project?.name,
-      ]),
-    )
+    .filter((issue) => issueSearchText(issue).includes(needle))
     .slice(0, GROUP_LIMIT)
     .map((issue) => ({
       group: "Issues",
