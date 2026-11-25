@@ -246,6 +246,13 @@
       "when": 1795530974371,
       "tag": "0034_vm_host",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1795584010321,
+      "tag": "0035_runner_host_health_failure",
+      "breakpoints": true
     }
   ]
 }
