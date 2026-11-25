@@ -257,22 +257,21 @@ try {
       if (name.startsWith("evidence")) expect([name, loads]).toEqual([name, 1]);
       else expect([name, loads > 1]).toEqual([name, true]);
     }
-    if (width === 1440) {
-      const seen = await visit(page, width, "palette", "/", "Overview");
-      const opened = requests.length;
-      expect(resources(seen).filter((resource) => PAGE_RESOURCE.test(resource))).toEqual([
-        "/api/overview",
-      ]);
-      await page.keyboard.press("Control+k");
-      await page.getByRole("combobox", { name: "Jump to" }).fill("fixture pas-1");
-      await expect(page.getByRole("option", { name: /PAS-1\s*Fixture PAS-1/ })).toBeVisible();
-      await page.screenshot({ path: join(out, "palette-search-1440.png") });
-      const searched = resources(requests.slice(opened)).filter((resource) =>
-        /^\/api\/(issues|merge-queue)$/.test(resource),
-      );
-      expect(searched.sort()).toEqual(["/api/issues", "/api/merge-queue"]);
-      await page.keyboard.press("Escape");
-    }
+    const palette = await visit(page, width, "palette", "/", "Overview");
+    const opened = requests.length;
+    expect(resources(palette).filter((resource) => PAGE_RESOURCE.test(resource))).toEqual([
+      "/api/overview",
+    ]);
+    await page.keyboard.press("Control+k");
+    await page.getByRole("combobox", { name: "Jump to" }).fill("fixture");
+    await expect(page.getByRole("option", { name: /PAS-1\s*Fixture PAS-1/ })).toBeVisible();
+    await expect(page.getByRole("option", { name: /^#\d+ Fixture PAS-\d/ }).first()).toBeVisible();
+    await page.screenshot({ path: join(out, `palette-search-${width}.png`) });
+    const searched = resources(requests.slice(opened)).filter((resource) =>
+      /^\/api\/(issues|merge-queue)$/.test(resource),
+    );
+    expect(searched.sort()).toEqual(["/api/issues", "/api/merge-queue"]);
+    await page.keyboard.press("Escape");
     await visit(page, width, "results-queued", "/dashboard/issues/PAS-5", "Issues");
     await expect(page.locator("#results-heading")).toHaveCount(0);
     await visit(page, width, "results-open", "/dashboard/issues/PAS-1", "Issues");
