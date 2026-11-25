@@ -327,12 +327,27 @@ try {
       await route.fulfill({ json: runnerVmKeys });
     });
     await visit(admin, width, "runner-vms", "/dashboard/workspace/runner-vms", "Runner VMs");
-    await expect(admin.locator("[data-key-state]")).toHaveText(["Set", "Not set"]);
+    await expect(admin.locator("[data-key-state]")).toHaveText([
+      "Set",
+      "Not set",
+      "Not set",
+      "Not set",
+    ]);
     await admin.locator("#runner-vm-tailscale").fill("tskey-synthetic");
     await admin.locator('[data-runner-vm-key="tailscale"] button[type="submit"]').click();
-    await expect(admin.locator("[data-key-state]")).toHaveText(["Set", "Set"]);
+    await expect(admin.locator("[data-key-state]")).toHaveText([
+      "Set",
+      "Not set",
+      "Not set",
+      "Set",
+    ]);
     await admin.locator('[data-clear="exeDev"]').click();
-    await expect(admin.locator("[data-key-state]")).toHaveText(["Not set", "Set"]);
+    await expect(admin.locator("[data-key-state]")).toHaveText([
+      "Not set",
+      "Not set",
+      "Not set",
+      "Set",
+    ]);
     await admin.screenshot({ path: join(out, `runner-vms-changed-${width}.png`), fullPage: true });
 
     let merging = {
@@ -687,7 +702,7 @@ try {
       .getByRole("navigation", { name: "Main navigation" })
       .getByRole("list", { name: "Workspace pages" })
       .getByRole("link");
-    await expect(submenu).toHaveCount(14);
+    await expect(submenu).toHaveCount(13);
     await expect(submenu.and(admin.locator('[aria-current="page"]'))).toHaveText("Agents");
     await admin.screenshot({
       path: join(out, `workspace-submenu-${width}.png`),
@@ -969,7 +984,7 @@ try {
     await expect(page).toHaveURL(`${f.origin}/dashboard/settings/account`);
     for (const [name, path, heading] of [
       ["settings-brief", "/dashboard/workspace/brief", "Agent instructions"],
-      ["settings-workspace", "/dashboard/workspace/workspace", "Workspace access"],
+      ["settings-workspace", "/dashboard/workspace/workspace", "Integrations"],
     ] as const)
       await visit(admin, width, name, path, heading);
     await admin.route("**/api/settings/skills", (route) =>

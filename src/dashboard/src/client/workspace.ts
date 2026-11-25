@@ -7,7 +7,6 @@ import { initializeWorkspaceSlack } from "./workspace-slack";
 import { initializeWorkspaceSlackLink } from "./workspace-slack-link";
 import { initializeWorkspaceAttribution } from "./workspace-attribution";
 import { initializeWorkspaceMembers } from "./workspace-members";
-import { routeHref } from "./route";
 import { DASHBOARD_PATH } from "../../../dashboard-links";
 import { clearSettingsLoads, settingsPageShown } from "./settings-loads";
 import { renderSetupScreen, TWO_ROLE_REQUIREMENT } from "./setup-screen";
@@ -83,7 +82,7 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
       root.dataset.loaded = "true";
       renderMarkup(
         root,
-        '<p data-settings-page="integrations">Configure workspace sign-in to manage service connections.</p><p data-settings-page="members">Configure workspace sign-in to manage members.</p><p data-settings-page="workspace">Configure workspace sign-in to manage repositories.</p>' +
+        '<p data-settings-page="integrations">Configure workspace sign-in to manage service connections.</p><p data-settings-page="members">Configure workspace sign-in to manage members.</p>' +
           '<p data-settings-page="audit">Configure workspace sign-in to view workspace changes.</p>',
       );
     }
@@ -183,7 +182,7 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
   root.className = "flex min-w-0 flex-col gap-8";
   renderMarkup(
     root,
-    `<section data-settings-page="account" class="settings-section"><div><h2>Linear account</h2><p class="sub">You are signed in to ${escapeHtml(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "your workspace")}.</p></div><div class="settings-account"><strong>${escapeHtml(session.user?.name ?? "Linear account")}</strong>${session.user?.email ? `<span>${escapeHtml(session.user.email)}</span>` : ""}<span class="muted">Workspace role: ${escapeHtml(session.role)}</span><button class="btn" id="workspace-signout">Sign out</button></div></section><p id="workspace-feedback" class="empty:hidden" data-settings-page="workspace" role="status"></p>${linearConnectionMarkup(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "Workspace")}${session.role === "admin" ? '<section data-settings-page="workspace" class="settings-section"><div><h2>Members</h2><p class="sub">Change roles, and revoke or restore access.</p></div><div><a class="btn" href="' + routeHref({ view: "workspace", page: "members" }) + '">Manage members</a></div></section><section data-settings-page="workspace" class="settings-section"><div><h2>Repositories</h2><p class="sub">Give each Linear team access to its repositories.</p></div><div><p>Connect GitHub and match repositories to Linear teams in Integrations.</p><a class="btn" href="' + routeHref({ view: "workspace", page: "integrations" }) + '">Manage GitHub repositories</a></div></section>' : ""}`,
+    `<section data-settings-page="account" class="settings-section"><div><h2>Linear account</h2><p class="sub">You are signed in to ${escapeHtml(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "your workspace")}.</p></div><div class="settings-account"><strong>${escapeHtml(session.user?.name ?? "Linear account")}</strong>${session.user?.email ? `<span>${escapeHtml(session.user.email)}</span>` : ""}<span class="muted">Workspace role: ${escapeHtml(session.role)}</span><button class="btn" id="workspace-signout">Sign out</button></div></section><p id="workspace-feedback" class="empty:hidden" data-settings-page="account" role="status"></p>${linearConnectionMarkup(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "Workspace")}`,
   );
   async function report(action: () => Promise<void>) {
     const feedback = root!.querySelector("#workspace-feedback");

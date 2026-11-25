@@ -93,7 +93,7 @@ function initializeConfiguredWorkspaceGitHub(
           : data.status === "needs_repositories"
             ? canEditRepositories
               ? "Add the repositories Paws can work on for your Linear teams."
-              : "Ask a workspace admin to add repositories in Workspace access."
+              : "Ask a workspace admin to add repositories in Integrations."
             : !data.canManage
               ? "Ask a workspace admin to install and connect the GitHub App."
               : data.requiresSignIn
@@ -103,7 +103,7 @@ function initializeConfiguredWorkspaceGitHub(
                   : "Install the App on your workspace repositories, then return here to finish connecting.";
     let primary =
       data.status === "needs_repositories" && canEditRepositories
-        ? `<a class="btn primary" href="${routeHref({ view: "workspace", page: "workspace" })}">Add repositories</a>`
+        ? `<a class="btn primary" href="${routeHref({ view: "workspace", page: "integrations" })}">Add repositories</a>`
         : "";
     if (
       data.canManage &&

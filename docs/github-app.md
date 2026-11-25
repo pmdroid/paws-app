@@ -44,7 +44,7 @@ Installing the App on an organization is done on GitHub by an organization owner
 
 Once the workspace maps a repository, a Paws admin changes repositories without signing in to GitHub. The picker then lists the App installation's repositories, except archived and disabled ones, from a list Paws keeps in memory: it reads it on the first request after a start, again every 10 minutes, and right away when an `installation` or `installation_repositories` webhook arrives. A save checks that each repository is in that list, that the App is installed and not suspended on it, and that GitHub issues the App a token for it, such as `The GitHub App is not installed on acme/widgets, or the installation is suspended.` for one that isn't.
 
-Paws keeps App credentials and temporary authorization tokens on the server. Workspace access links back to this picker.
+Paws keeps App credentials and temporary authorization tokens on the server. Integrations links back to this picker.
 
 ## Check the setup
 

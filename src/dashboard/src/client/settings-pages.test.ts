@@ -39,7 +39,11 @@ test("an old settings link to a workspace page opens Workspace for admins and Yo
   expect(settingsRedirect("/settings/merging")).toBe("/workspace/merging");
   expect(settingsRedirect("/settings/account")).toBeNull();
   expect(settingsRedirect("/workspace/merging")).toBeNull();
+  expect(settingsRedirect("/workspace/workspace")).toBe("/workspace/integrations");
+  expect(settingsRedirect("/settings/workspace")).toBe("/workspace/integrations");
+  expect(SETTINGS_PAGES.map((page) => page.name)).not.toContain("Workspace access");
   setSettingsAdmin(false);
+  expect(settingsRedirect("/workspace/workspace")).toBe("/settings/account");
   expect(settingsRedirect("/settings/merging")).toBe("/settings/account");
   expect(settingsRedirect("/workspace/merging")).toBe("/settings/account");
   expect(settingsRedirect("/workspace")).toBe("/settings/account");
