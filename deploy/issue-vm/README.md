@@ -84,11 +84,12 @@ On amd64 the files are `cloud-hypervisor-static-v54.1` and `ch-97eeb7b09-CLOUDHV
 
 Before Cloud Hypervisor starts, the unit, as root, refuses a second unit for the same VM or slot, writes the VM's NoCloud seed (instance id = VM id, guest `10.199.<slot>.2`) to `/var/lib/paws-issue-vm-state/<id>/seed.img`, gives `paws-issue-vm` the VM's disk, and starts `paws-issue-vm-network@<slot>.service`. Cloud Hypervisor then runs with the disk, the seed, the TAP `pawsvm<slot>`, the size in the unit name, the serial log `serial.log` and the API socket `api.sock` in that folder. When it stops, the disk goes back to root and the slot's network rules stop, unless another running unit still holds that VM or slot: a rejected second unit leaves the running VM alone. The polkit rule lets the `paws-runner` user start and stop these units and nothing else.
 
-The VM units are not part of `paws-runner.service`, so they keep running when the runner daemon stops or crashes. The daemon gives each new VM the lowest free slot and starts none past the host's slots; starting a VM that already runs reuses its unit. When `/etc/systemd/system/paws-issue-vm@.service` exists, the daemon, at start, reads the host's slots, VM size and issue VMs from Paws and compares them with the running units. It keeps a VM that is creating, awake or asleep, and stops one that is deleting, unknown, or a second unit for the same VM or slot; on a runner that is not set up as a VM host in Paws, every VM is unknown. It sends Paws the result, which Paws writes to its journal as `issue_vm_stopped` and `issue_vm_missing` lines (awake VMs that no longer run) and one `issue_vms_reconciled` line. If Paws can't be reached, it tries again a minute later. To look at them:
+The VM units are not part of `paws-runner.service`, so they keep running when the runner daemon stops or crashes. When `/etc/systemd/system/paws-issue-vm@.service` exists, the daemon reads the host's slots, VM size and issue VMs from Paws at start and every 30 seconds after, and compares them with the running units. It keeps a VM that is creating, awake or asleep. It stops one that is deleting, unknown or a second unit for the same VM or slot; on a runner that is not a VM host in Paws, every VM is unknown. It starts each awake VM that doesn't run in the lowest free slot, and starts none past the host's slots. Each start, stop and wait for a slot is an `issue_vm_started`, `issue_vm_stopped` or `issue_vm_waiting` line in the runner's journal. To look at them:
 
 ```sh
 systemctl list-units 'paws-issue-vm@*'
 journalctl -u 'paws-issue-vm@*'
+journalctl -u paws-runner.service | grep issue_vm_
 ```
 
 ## First boot

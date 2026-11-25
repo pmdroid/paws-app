@@ -21,19 +21,13 @@ export {
 } from "./issue-vm-disks";
 export {
   createFakeIssueVmUnits,
-  issueVmMachines,
   issueVmUnit,
-  reconcileIssueVmHost,
+  reconcileIssueVms,
   systemdIssueVmUnits,
-  type IssueVmHostClient,
-  type IssueVmHostReport,
   type IssueVmHostView,
-  type IssueVmKnown,
   type IssueVmMachine,
-  type IssueVmMachines,
   type IssueVmMachineSize,
   type IssueVmReconcile,
-  type IssueVmStart,
   type IssueVmStopReason,
   type IssueVmUnits,
 } from "./issue-vm-machines";

@@ -3,25 +3,22 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  liveHostIssueVmsSteps,
   recordRunnerHostStatusSteps,
   saveVmHostSteps,
   type Db,
   type IssueVmState,
 } from "../src/db";
+import { recordIssueVmSteps, setIssueVmStateSteps } from "../src/issue-vm";
 import { setJournalSink } from "../src/journal";
 import { issueVmReconciler } from "../src/runner-cli/daemon";
-import { handleVmHostRunnerRequest, type VmHostRunnerView } from "../src/vm-hosts";
-import { recordIssueVmSteps, setIssueVmStateSteps } from "../src/issue-vm";
 import {
   createFakeIssueVmUnits,
-  issueVmMachines,
   issueVmUnit,
-  reconcileIssueVmHost,
+  reconcileIssueVms,
   systemdIssueVmUnits,
-  type IssueVmHostClient,
-  type IssueVmHostReport,
+  type IssueVmHostView,
 } from "../src/runner-daemon";
+import { handleVmHostRunnerRequest, type VmHostRunnerView } from "../src/vm-hosts";
 import { withoutForeignKeys } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
@@ -39,84 +36,125 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
-test("each VM gets the lowest free slot, starting it again does not double it, and stop frees it", async () => {
-  const fake = createFakeIssueVmUnits();
-  const machines = issueVmMachines(fake.units, () => 2);
-  expect(await machines.start(A, SIZE)).toMatchObject({
-    ok: true,
-    started: true,
-    machine: { id: A, slot: 1, unit: `paws-issue-vm@${A}-1-2-4.service` },
-  });
-  expect(await machines.start(B, { vcpus: 4, memoryGb: 8 })).toMatchObject({
-    ok: true,
-    machine: { slot: 2, unit: `paws-issue-vm@${B}-2-4-8.service` },
-  });
-  expect(await machines.start(A, SIZE)).toMatchObject({ ok: true, started: false });
-  expect(await machines.start(C, SIZE)).toEqual({
-    ok: false,
-    reason: "no_slot",
-    slots: 2,
-    running: 2,
-  });
-  expect((await machines.stop(A)).map((found) => found.id)).toEqual([A]);
-  expect(await machines.start(C, SIZE)).toMatchObject({ ok: true, machine: { slot: 1 } });
-  expect(fake.calls.filter((call) => call.startsWith("start"))).toHaveLength(3);
-  expect((await machines.running()).map((found) => found.id)).toEqual([C, B]);
-  await expect(machines.start("base", SIZE)).rejects.toThrow("Not an issue VM id");
+const view = (slots: number, vms: [string, IssueVmState][]): IssueVmHostView => ({
+  vmHost: true,
+  slots,
+  size: SIZE,
+  vms: vms.map(([id, state]) => ({ id, state })),
 });
 
-test("concurrent starts never pass the slot limit", async () => {
+test("awake VMs start in the lowest free slots up to the limit, once, and wait for a freed slot", async () => {
   const fake = createFakeIssueVmUnits();
-  const machines = issueVmMachines(fake.units, () => 2);
-  const results = await Promise.all([A, B, C, A].map((id) => machines.start(id, SIZE)));
-  expect(results.map((result) => result.ok)).toEqual([true, true, false, true]);
+  const first = await reconcileIssueVms(
+    fake.units,
+    view(2, [
+      [A, "awake"],
+      [B, "awake"],
+      [C, "awake"],
+    ]),
+  );
+  expect(first.started.map((found) => [found.id, found.slot, found.unit])).toEqual([
+    [A, 1, `paws-issue-vm@${A}-1-2-4.service`],
+    [B, 2, `paws-issue-vm@${B}-2-2-4.service`],
+  ]);
+  expect(first.waiting).toEqual([C]);
+  const again = await reconcileIssueVms(
+    fake.units,
+    view(2, [
+      [A, "awake"],
+      [B, "awake"],
+      [C, "awake"],
+    ]),
+  );
+  expect(again.started).toEqual([]);
+  expect(again.kept.map((found) => found.id)).toEqual([A, B]);
+
+  const next = await reconcileIssueVms(
+    fake.units,
+    view(2, [
+      [A, "deleting"],
+      [B, "awake"],
+      [C, "awake"],
+    ]),
+  );
+  expect(next.stopped.map(({ machine, reason }) => [machine.id, reason])).toEqual([
+    [A, "deleting"],
+  ]);
+  expect(next.started.map((found) => [found.id, found.slot])).toEqual([[C, 1]]);
+  expect(fake.calls.filter((call) => call.startsWith("start"))).toHaveLength(3);
   expect(fake.active.size).toBe(2);
 });
 
-test("a lowered slot limit refuses new VMs but keeps the running ones", async () => {
+test("after a daemon crash a fresh pass keeps known VMs, stops unknown and duplicate units and restarts a lost one", async () => {
   const fake = createFakeIssueVmUnits();
-  let slots = 3;
-  const machines = issueVmMachines(fake.units, () => slots);
-  for (const id of [A, B, C]) await machines.start(id, SIZE);
-  slots = 1;
-  expect(await machines.start(D, SIZE)).toMatchObject({ ok: false, running: 3 });
-  expect(fake.active.size).toBe(3);
-});
-
-test("after a daemon crash the restarted daemon adopts known VMs and stops the unknown", async () => {
-  const fake = createFakeIssueVmUnits();
-  const before = issueVmMachines(fake.units, () => 3);
-  for (const id of [A, B, C]) await before.start(id, SIZE);
+  await reconcileIssueVms(
+    fake.units,
+    view(3, [
+      [A, "awake"],
+      [B, "asleep"],
+    ]),
+  );
+  fake.active.add(issueVmUnit(B, 2, SIZE));
   fake.active.add(issueVmUnit(A, 4, SIZE));
-  fake.active.add(issueVmUnit(E, 2, SIZE));
+  fake.active.add(issueVmUnit(E, 3, SIZE));
   fake.active.add("paws-issue-vm@not-a-vm.service");
 
-  const after = issueVmMachines(fake.units, () => 3);
-  const result = await after.reconcile([
-    { id: A, state: "awake" },
-    { id: B, state: "asleep" },
-    { id: C, state: "deleting" },
-    { id: D, state: "awake" },
-  ]);
-  expect(result.adopted.map((found) => [found.id, found.slot])).toEqual([
+  const lines: string[] = [];
+  cleanups.push(setJournalSink((line) => lines.push(line)));
+  const result = await reconcileIssueVms(
+    fake.units,
+    view(3, [
+      [A, "awake"],
+      [B, "asleep"],
+      [D, "awake"],
+      [C, "awake"],
+    ]),
+  );
+  expect(result.kept.map((found) => [found.id, found.slot])).toEqual([
     [A, 1],
     [B, 2],
   ]);
   expect(result.stopped.map(({ machine, reason }) => [machine.id, machine.slot, reason])).toEqual([
-    [E, 2, "unknown"],
-    [C, 3, "deleting"],
+    [E, 3, "unknown"],
     [A, 4, "duplicate"],
   ]);
-  expect(result.missing).toEqual([D]);
-
-  expect(await after.start(A, SIZE)).toMatchObject({ ok: true, started: false });
-  expect(await after.start(D, SIZE)).toMatchObject({ ok: true, machine: { slot: 3 } });
-  expect(await after.start(C, SIZE)).toMatchObject({ ok: false, reason: "no_slot" });
+  expect(result.started.map((found) => [found.id, found.slot])).toEqual([[D, 3]]);
+  expect(result.waiting).toEqual([C]);
+  expect(lines).toContain(`issue_vm_stopped vm=${E} slot=3 reason=unknown`);
+  expect(lines).toContain(`issue_vm_started vm=${D} slot=3`);
+  expect(lines).toContain(`issue_vm_waiting vm=${C} slots=3`);
   expect([...fake.active].sort()).toEqual(
-    [issueVmUnit(A, 1, SIZE), issueVmUnit(B, 2, SIZE), issueVmUnit(D, 3, SIZE)].concat(
+    [
+      issueVmUnit(A, 1, SIZE),
+      issueVmUnit(B, 2, SIZE),
+      issueVmUnit(D, 3, SIZE),
       "paws-issue-vm@not-a-vm.service",
-    ),
+    ].sort(),
   );
+});
+
+test("a runner that is no VM host stops its VM units; the daemon reconciles every 30 s and keeps going after a failure", async () => {
+  const fake = createFakeIssueVmUnits();
+  fake.active.add(issueVmUnit(A, 1, SIZE));
+  let failures = 1;
+  const daemon = {
+    async issueVmHost(): Promise<IssueVmHostView> {
+      await Promise.resolve();
+      if (failures-- > 0) throw new Error("Paws is unreachable");
+      return { vmHost: false };
+    },
+  };
+  let now = 0;
+  const tick = issueVmReconciler(daemon, fake.units, () => now);
+  await tick();
+  expect(fake.active.size).toBe(1);
+  now = 10_000;
+  await tick();
+  expect(fake.active.size).toBe(1);
+  now = 30_000;
+  await tick();
+  expect(fake.active.size).toBe(0);
+  await issueVmReconciler(daemon, null)();
 });
 
 async function store(): Promise<Db> {
@@ -140,30 +178,6 @@ async function vm(db: Db, id: string, state: IssueVmState, hostRunnerId = HOST) 
   );
   if (state !== "creating") await db.run((q) => setIssueVmStateSteps(q, { id, state, now: 2 }));
 }
-
-test("reconcile reads the live issue VM rows on this host; ended rows and other hosts are unknown", async () => {
-  const db = await store();
-  await vm(db, A, "awake");
-  await vm(db, B, "deleted");
-  await vm(db, C, "awake", OTHER);
-  await vm(db, D, "creating");
-  const known = await db.run((q) => liveHostIssueVmsSteps(q, HOST));
-  expect(known).toEqual([
-    { id: A, state: "awake" },
-    { id: D, state: "creating" },
-  ]);
-
-  const fake = createFakeIssueVmUnits();
-  const machines = issueVmMachines(fake.units, () => 4);
-  for (const id of [A, B, C]) await machines.start(id, SIZE);
-  const result = await machines.reconcile(known);
-  expect(result.adopted.map((found) => found.id)).toEqual([A]);
-  expect(result.stopped.map(({ machine, reason }) => [machine.id, reason])).toEqual([
-    [B, "unknown"],
-    [C, "unknown"],
-  ]);
-  expect(result.missing).toEqual([]);
-});
 
 test("the systemd units list live paws-issue-vm units and start and stop them", async () => {
   const started: string[][] = [];
@@ -293,13 +307,10 @@ async function host(db: Db) {
   );
 }
 
-const request = (path: string, method = "GET", body?: unknown) =>
-  new Request(`https://runner.paws.test${path}`, {
-    method,
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
+const request = (path: string, method = "GET") =>
+  new Request(`https://runner.paws.test${path}`, { method });
 
-test("Paws gives a VM host its slots, VM size and live issue VMs, and journals its report", async () => {
+test("Paws gives a VM host its slots, VM size and live issue VMs", async () => {
   const db = await store();
   await host(db);
   const read = async () =>
@@ -327,109 +338,19 @@ test("Paws gives a VM host its slots, VM size and live issue VMs, and journals i
   );
   await vm(db, A, "awake");
   await vm(db, B, "deleted");
+  await vm(db, C, "awake", OTHER);
+  await vm(db, D, "creating");
   expect(await read()).toEqual({
     vmHost: true,
     slots: 3,
     size: { vcpus: 2, memoryGb: 4 },
-    vms: [{ id: A, state: "awake" }],
-  });
-  expect(await handleVmHostRunnerRequest(request("/v1/other"), HOST, db)).toBeNull();
-
-  const lines: string[] = [];
-  const restore = setJournalSink((line) => lines.push(line));
-  cleanups.push(restore);
-  const reported = await handleVmHostRunnerRequest(
-    request("/v1/issue-vms/reconciled", "POST", {
-      adopted: [A],
-      stopped: [{ id: C, slot: 2, reason: "unknown" }],
-      missing: [D],
-    }),
-    HOST,
-    db,
-  );
-  expect(await reported!.json()).toEqual({ ok: true });
-  expect(lines).toContain(`issue_vm_stopped runner=${HOST} vm=${C} slot=2 reason=unknown`);
-  expect(lines).toContain(`issue_vm_missing runner=${HOST} vm=${D}`);
-  const bad = await handleVmHostRunnerRequest(
-    request("/v1/issue-vms/reconciled", "POST", { adopted: ["base"], stopped: [], missing: [] }),
-    HOST,
-    db,
-  );
-  expect(bad!.status).toBe(400);
-});
-
-function client(view: Awaited<ReturnType<IssueVmHostClient["issueVmHost"]>>) {
-  const reports: IssueVmHostReport[] = [];
-  let failures = 0;
-  const daemon: IssueVmHostClient & { fail(n: number): void } = {
-    fail: (n) => (failures = n),
-    async issueVmHost() {
-      await Promise.resolve();
-      if (failures-- > 0) throw new Error("Paws is unreachable");
-      return view;
-    },
-    async postIssueVmsReconciled(report) {
-      await Promise.resolve();
-      reports.push(report);
-    },
-  };
-  return { daemon, reports };
-}
-
-test("at daemon start the runner reconciles its VM units with Paws and reports the result", async () => {
-  const fake = createFakeIssueVmUnits();
-  for (const [id, slot] of [
-    [A, 1],
-    [C, 2],
-  ] as const)
-    fake.active.add(issueVmUnit(id, slot, SIZE));
-  const { daemon, reports } = client({
-    vmHost: true,
-    slots: 2,
-    size: SIZE,
     vms: [
       { id: A, state: "awake" },
-      { id: B, state: "awake" },
+      { id: D, state: "creating" },
     ],
   });
-  const { machines, report } = await reconcileIssueVmHost(daemon, fake.units);
-  expect(report).toEqual({
-    adopted: [A],
-    stopped: [{ id: C, slot: 2, reason: "unknown" }],
-    missing: [B],
-  });
-  expect(reports).toEqual([report]);
-  expect(await machines.start(B, SIZE)).toMatchObject({ ok: true, machine: { slot: 2 } });
-  expect(await machines.start(D, SIZE)).toMatchObject({ ok: false, reason: "no_slot", slots: 2 });
-});
-
-test("a runner that is no VM host stops every VM unit, and a failed reconcile retries a minute later", async () => {
-  const fake = createFakeIssueVmUnits();
-  fake.active.add(issueVmUnit(A, 1, SIZE));
-  const { daemon, reports } = client({ vmHost: false });
-  daemon.fail(1);
-  let now = 0;
-  const failures: Error[] = [];
-  const tick = issueVmReconciler(
-    daemon,
-    fake.units,
-    (error) => failures.push(error),
-    () => now,
-  );
-  await tick();
-  expect(failures.map((error) => error.message)).toEqual(["Paws is unreachable"]);
-  now = 30_000;
-  await tick();
-  expect(reports).toEqual([]);
-  now = 60_000;
-  await tick();
-  expect(reports).toEqual([
-    { adopted: [], stopped: [{ id: A, slot: 1, reason: "unknown" }], missing: [] },
-  ]);
-  now = 200_000;
-  await tick();
-  expect(reports).toHaveLength(1);
-  expect(fake.active.size).toBe(0);
-  await issueVmReconciler(daemon, null, () => undefined)();
-  expect(reports).toHaveLength(1);
+  expect(await handleVmHostRunnerRequest(request("/v1/other"), HOST, db)).toBeNull();
+  expect(
+    (await handleVmHostRunnerRequest(request("/v1/issue-vms", "POST"), HOST, db))!.status,
+  ).toBe(405);
 });

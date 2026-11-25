@@ -4,8 +4,9 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   isIdentityRejected,
-  reconcileIssueVmHost,
+  reconcileIssueVms,
   systemdIssueVmUnits,
+  type IssueVmHostView,
   type IssueVmUnits,
   type RunnerDaemon,
 } from "../runner-daemon";
@@ -26,25 +27,21 @@ import { createRunnerStorageReporter } from "../storage-usage";
 export const RUNNER_WORK_ROOT = "/var/lib/paws-agent/work";
 
 const ISSUE_VM_UNIT = "/etc/systemd/system/paws-issue-vm@.service";
-const ISSUE_VM_RETRY_MS = 60_000;
+const ISSUE_VM_EVERY_MS = 30_000;
 
 export function issueVmReconciler(
-  daemon: Parameters<typeof reconcileIssueVmHost>[0],
+  daemon: { issueVmHost(): Promise<IssueVmHostView> },
   units: IssueVmUnits | null,
-  report: (error: Error) => void,
   now: () => number = Date.now,
 ) {
-  let done = units === null;
-  let retryAt = 0;
+  let at = 0;
   return async () => {
-    if (done || now() < retryAt) return;
-    retryAt = now() + ISSUE_VM_RETRY_MS;
+    if (units === null || now() < at) return;
+    at = now() + ISSUE_VM_EVERY_MS;
     try {
-      await reconcileIssueVmHost(daemon, units!);
-      done = true;
+      await reconcileIssueVms(units, await daemon.issueVmHost());
     } catch (error) {
       journalCaught(error, "runner-cli/daemon.issueVmReconciler", null);
-      report(error instanceof Error ? error : new Error("Issue VM reconcile failed"));
     }
   };
 }
@@ -152,10 +149,9 @@ export async function runPairedDaemon(
       ]);
     cleaner = createRunnerWorkCleaner({ workRoot: RUNNER_WORK_ROOT, signal, holds });
     const spool = createRunnerSpoolCleaner({ spool: shared.spool, signal, holds });
-    const reconcileIssueVms = issueVmReconciler(
+    const reconcileVms = issueVmReconciler(
       daemon,
       existsSync(ISSUE_VM_UNIT) ? systemdIssueVmUnits() : null,
-      report,
     );
     let sweepAt = 0;
     while (!signal.aborted) {
@@ -174,7 +170,7 @@ export async function runPairedDaemon(
             .sweep()
             .catch(journalRejection("runner-cli/daemon.runPairedDaemon.spool", report, null));
         }
-        if (!signal.aborted) await reconcileIssueVms();
+        if (!signal.aborted) await reconcileVms();
         if (!signal.aborted) await runtime.tick();
         if (!signal.aborted) await health.tick();
         if (!signal.aborted) await retro.tick();

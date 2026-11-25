@@ -434,7 +434,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   provisioning: ["journal", "config"],
   "member-vm": ["journal", "config", "db", "provisioning", "vm-provider-checks", "workspace"],
   "issue-vm": ["config", "db", "journal", "provisioning", "settings", "workspace"],
-  "vm-hosts": ["db", "journal", "webhook-body", "workspace"],
+  "vm-hosts": ["db", "journal", "workspace"],
   "vm-provider-checks": ["config", "db", "journal", "provisioning"],
   "review-score": ["db"],
 };
