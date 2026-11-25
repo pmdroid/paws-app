@@ -37,7 +37,7 @@ import {
   utcClock,
 } from "./format";
 import { routeHref, routeResource, type Route } from "./route";
-import { parseEngineUrl } from "./format";
+import { itemLabel, parseEngineUrl } from "./format";
 import {
   emptyCloseoutView,
   renderCloseoutChecks,
@@ -447,6 +447,7 @@ function viewIssues(list: IssueListResponse, id: string | null): string {
       <button type="button" class="btn" data-action="issue-filter" data-issue-filter="done" aria-pressed="false">Done</button>
     </div>
     ${projectFilter(list.issues)}
+    <label class="field issue-search"><span>Search</span><input type="search" id="issue-search" name="issue-search" data-issue-search-field placeholder="Issue id, title, state or project" aria-label="Search issues" autocomplete="off" aria-keyshortcuts="/"></label>
     <div class="overflow-x-auto [&_td]:[overflow-wrap:normal] [&_th]:whitespace-nowrap [&_.lin-id]:whitespace-nowrap [&_.st]:whitespace-nowrap"><table class="run-table issues-table"><thead><tr><th>Item</th><th>Title</th><th>State</th><th class="hide-phone">Project</th><th class="hide-phone">Waiting</th><th>Age</th></tr></thead><tbody>${list.issues.map((item) => issueRow(list.generatedAt, item)).join("")}</tbody></table></div>
     <p class="empty issue-filter-empty" hidden>No issues match this filter.</p>`;
 }
@@ -458,15 +459,62 @@ function issuePending(): string {
 /** The value the project filter uses for issues without a Linear project. */
 export const NO_PROJECT_FILTER = "none";
 
-/** Whether an Issues row shows under a state filter and a project filter (empty for any). */
+export type IssueStateFilter = "all" | "active" | "needs" | "done";
+
+export type IssueListFilter = { state: IssueStateFilter; project: string; query?: string };
+
+const ISSUE_BUCKET_LABELS: Record<Exclude<IssueStateFilter, "all">, string> = {
+  active: "Active",
+  needs: "Needs attention",
+  done: "Done",
+};
+
+/** Whether an Issues row shows under a state filter, a project filter (empty for any) and a text query. */
 export function issueRowMatches(
-  row: { state: string | undefined; project: string | undefined },
-  filter: { state: "all" | "active" | "needs" | "done"; project: string },
+  row: { state: string | undefined; project: string | undefined; text?: string | undefined },
+  filter: IssueListFilter,
 ): boolean {
+  const query = (filter.query ?? "").trim().toLowerCase();
   return (
     (filter.state === "all" || row.state === filter.state) &&
-    (!filter.project || row.project === filter.project)
+    (!filter.project || row.project === filter.project) &&
+    (!query || (row.text ?? "").toLowerCase().includes(query))
   );
+}
+
+/** The Issues list filter a URL query string asks for (`state`, `project`, `q`). */
+export function issueFilterFromSearch(search: string): Required<IssueListFilter> {
+  const params = new URLSearchParams(search);
+  const state = params.get("state");
+  return {
+    state: state === "active" || state === "needs" || state === "done" ? state : "all",
+    project: params.get("project") ?? "",
+    query: params.get("q") ?? "",
+  };
+}
+
+/** A URL query string carrying an Issues list filter, leaving out defaults and keeping other params. */
+export function issueFilterSearch(search: string, filter: Required<IssueListFilter>): string {
+  const params = new URLSearchParams(search);
+  const set = (key: string, value: string) => (value ? params.set(key, value) : params.delete(key));
+  set("state", filter.state === "all" ? "" : filter.state);
+  set("project", filter.project);
+  set("q", filter.query);
+  const text = params.toString();
+  return text ? `?${text}` : "";
+}
+
+function issueSearchText(item: IssueListItem): string {
+  return [
+    item.id,
+    item.title,
+    item.state,
+    itemLabel(item.state),
+    ISSUE_BUCKET_LABELS[issueBucket(item)],
+    item.project?.name ?? "",
+  ]
+    .join(" ")
+    .toLowerCase();
 }
 
 /** A project picker built from the Linear projects of the listed issues. */
@@ -493,7 +541,7 @@ function issueRow(generatedAt: string, item: IssueListItem): string {
   const blocked = blockers.length
     ? `<div class="text-xs text-muted-foreground" data-blockers>${relatedIssues(blockers)}</div>`
     : "";
-  return `<tr class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}" data-issue-project="${esc(item.project?.id ?? NO_PROJECT_FILTER)}"><td><a href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span></a></td><td>${esc(item.title)}${blocked}</td><td>${itemPill(item)}</td><td class="hide-phone">${esc(item.project?.name ?? "—")}</td><td class="hide-phone">${reason ? `<span class="muted" data-wait-reason>${esc(reason)}</span>` : "—"}</td><td>${itemTime(item, Date.parse(generatedAt)) || "—"}</td></tr>`;
+  return `<tr class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}" data-issue-project="${esc(item.project?.id ?? NO_PROJECT_FILTER)}" data-issue-search="${esc(issueSearchText(item))}"><td><a href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span></a></td><td>${esc(item.title)}${blocked}</td><td>${itemPill(item)}</td><td class="hide-phone">${esc(item.project?.name ?? "—")}</td><td class="hide-phone">${reason ? `<span class="muted" data-wait-reason>${esc(reason)}</span>` : "—"}</td><td>${itemTime(item, Date.parse(generatedAt)) || "—"}</td></tr>`;
 }
 
 function issueBucket(item: IssueListItem): "needs" | "done" | "active" {
