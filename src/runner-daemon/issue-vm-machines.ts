@@ -45,7 +45,6 @@ function machine(unit: string): IssueVmMachine | null {
 export async function reconcileIssueVms(
   units: IssueVmUnits,
   host: IssueVmHostView,
-  enroll?: (id: string) => Promise<void>,
 ): Promise<IssueVmReconcile> {
   const known = host.vmHost ? host.vms : [];
   const states = new Map(known.map((row) => [row.id, row.state]));
@@ -91,7 +90,6 @@ export async function reconcileIssueVms(
     while (used.has(slot)) slot += 1;
     const started = { id: row.id, slot, ...host.size, unit: issueVmUnit(row.id, slot, host.size) };
     try {
-      await enroll?.(row.id);
       await units.start(started.unit);
     } catch (error) {
       journalCaught(error, "runner-daemon.reconcileIssueVms.start", null);
