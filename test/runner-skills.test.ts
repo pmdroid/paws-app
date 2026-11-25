@@ -16,6 +16,7 @@ import { useMemorySettings } from "../src/config";
 import { git, snapshotImplementationSkills } from "../src/acp";
 import { publishRunnerJob, readRunnerJobInputs, type RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 test("paired runner consumes snapshotted external skills without committing the bundle or resources", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-remote-skills-"));
@@ -77,6 +78,7 @@ test("paired runner consumes snapshotted external skills without committing the 
         issuedAt: 1,
         expiresAt: Date.now() + 60_000,
         profile: { agent: "claude", model: "fixture-model" },
+        account: RUNNER_ACCOUNT,
         repository: {
           owner: "acme",
           repo: "repo",
@@ -127,6 +129,7 @@ const child = Bun.spawn([process.execPath, ${JSON.stringify(fake)}, ${JSON.strin
 process.exit(await child.exited);
 `,
     );
+    signInRunnerAccount(home, "claude");
     const result = await executeRunnerCommand({
       job,
       repositoryBundle,

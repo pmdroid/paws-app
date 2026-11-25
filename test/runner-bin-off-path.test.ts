@@ -7,6 +7,7 @@ import { askTeamMcpEntry } from "../src/acp/ask-team";
 import { OwnedProcess } from "../src/process";
 import type { RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 /**
  * Tasks no longer have the runner's bin folder on `PATH`, so everything Paws starts from there
@@ -90,8 +91,10 @@ test("a sign-in check and the Codex usage read run the CLI Paws located, not a P
       expiresAt: Date.now() + 60_000,
       type: "login_check",
       agent: "codex",
+      account: RUNNER_ACCOUNT,
     },
   };
+  signInRunnerAccount(home, "codex");
   const logins: Array<{ command: string; path: string | undefined }> = [];
   const usage: Array<string | undefined> = [];
   const fake = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;

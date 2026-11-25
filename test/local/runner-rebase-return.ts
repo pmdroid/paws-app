@@ -17,6 +17,7 @@ import type { RunnerJob } from "../../src/runner-execution";
 import type { RunnerCommand } from "../../src/runner-protocol";
 import { createRunnerRepositories } from "../../src/runner-repositories";
 import { executeRunnerCommand } from "../../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "../runner-account-home";
 
 const policy: GitCommitPolicy = {
   bot: { appId: "99", id: 88, login: "paws-test[bot]" },
@@ -42,6 +43,7 @@ export async function probeRunnerRebaseReturn(
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const home = join(root, "home");
   mkdirSync(home, { mode: 0o700 });
+  signInRunnerAccount(home, "claude");
   const env = {
     PATH: "/usr/bin:/bin",
     HOME: home,
@@ -116,6 +118,7 @@ export async function probeRunnerRebaseReturn(
         generation: 2,
         repository: { owner: "fixture", repo: "repository", remoteUrl, baseSha: headSha, mainSha },
         profile: { agent: "claude", model: "fixture-model" },
+        account: RUNNER_ACCOUNT,
         prompt: REBASE_CONFLICT_INSTRUCTION,
         commitPolicy: policy,
         checkpointBot: policy.bot,

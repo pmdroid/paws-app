@@ -26,6 +26,7 @@ import {
   writeClaudeSessionBundle,
 } from "../src/runner-worker";
 import { withoutJournalTime } from "../src/runner-protocol";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 const linux = process.platform === "linux" && process.getuid!() !== 0;
 const roots: string[] = [];
@@ -41,10 +42,11 @@ async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "paws-session-snapshot-"));
   roots.push(root);
   const source = join(root, "source");
-  const home = join(root, "home");
+  const agentHome = join(root, "home");
   const workRoot = join(root, "work");
   const output = join(root, "output", EXECUTION);
-  for (const path of [source, home, output]) mkdirSync(path, { recursive: true });
+  for (const path of [source, agentHome, output]) mkdirSync(path, { recursive: true });
+  const home = signInRunnerAccount(agentHome, "claude");
   const env = {
     ...process.env,
     GIT_AUTHOR_NAME: "Test",
@@ -72,6 +74,7 @@ async function fixture() {
     issuedAt: 1,
     expiresAt: Date.now() + 60_000,
     profile: { agent: "claude", model: "fixture-model" },
+    account: RUNNER_ACCOUNT,
     repository: {
       owner: "acme",
       repo: "repo",
@@ -97,7 +100,7 @@ async function fixture() {
       repositoryBundle,
       outputDirectory: output,
       workRoot,
-      home,
+      home: agentHome,
       resultsGid: process.getgid!(),
       launch: {
         command: process.execPath,

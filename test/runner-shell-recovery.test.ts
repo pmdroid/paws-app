@@ -7,6 +7,7 @@ import type { FakeResult, FakeStep } from "../src/acp/testing/script";
 import { publishRunnerJob, readRunnerJobInputs, type RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
 import { withoutJournalTime } from "../src/runner-protocol";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 const command = (id: string, rawOutput: unknown): FakeStep[] => [
   {
@@ -31,6 +32,7 @@ async function runWithSessions(sessions: FakeStep[][]) {
   const outputDirectory = join(root, "output");
   for (const path of [source, home, workRoot, outputDirectory])
     mkdirSync(path, { recursive: true });
+  signInRunnerAccount(home, "grok");
   const env = {
     ...process.env,
     GIT_AUTHOR_NAME: "Test",
@@ -59,6 +61,7 @@ async function runWithSessions(sessions: FakeStep[][]) {
       issuedAt: 1,
       expiresAt: Date.now() + 60_000,
       profile: { agent: "grok", model: "fixture-model" },
+      account: RUNNER_ACCOUNT,
       repository: {
         owner: "acme",
         repo: "repo",

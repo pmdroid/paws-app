@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { git } from "../src/acp";
 import { publishRunnerJob, readRunnerJobInputs, type RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -69,6 +70,7 @@ async function runWithFakeAgent(steps: unknown[], signal?: AbortSignal) {
       issuedAt: Date.now(),
       expiresAt: Date.now() + 60_000,
       profile: { agent: "claude", model: "fixture-model" },
+      account: RUNNER_ACCOUNT,
       repository: {
         owner: "acme",
         repo: "repo",
@@ -91,6 +93,7 @@ async function runWithFakeAgent(steps: unknown[], signal?: AbortSignal) {
   writeFileSync(script, JSON.stringify({ model: "fixture-model", steps }));
   const trace = join(root, "trace.json");
   const fake = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
+  signInRunnerAccount(join(root, "home"), "claude");
   const runTemp = join(workRoot, ".paws", "runs", job.executionId, "tmp");
   const finished = executeRunnerCommand({
     job,

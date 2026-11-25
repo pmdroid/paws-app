@@ -205,7 +205,6 @@ test("every advertised adapter isolates a binding's config, sessions and caches 
   const homes = ["01JBINDINGA000000000000000", "01JBINDINGB000000000000000"].map((bindingId) =>
     runnerAccountHome(agentHome, { accountId: "01JACCOUNTA000000000000000", bindingId }),
   );
-  expect(runnerAccountHome(agentHome)).toBe(agentHome);
   const [first, second] = homes.map((home) => accountHomeEnv(home));
   for (const [key, value] of Object.entries(first!)) {
     expect(value.startsWith(`${homes[0]}`)).toBe(true);

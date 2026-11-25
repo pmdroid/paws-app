@@ -16,6 +16,7 @@ import { withoutJournalTime, type RunnerCommand } from "../src/runner-protocol";
 import { setJournalSink } from "../src/journal";
 import { openExecutionJournal } from "../src/runner-journal";
 import { executeRunnerCommand } from "../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 const executionId = "0".repeat(26);
 function command(purpose: "answer" | "artifact"): Extract<RunnerCommand, { type: "task" }> {
@@ -34,6 +35,7 @@ function command(purpose: "answer" | "artifact"): Extract<RunnerCommand, { type:
     issuedAt: Date.now(),
     expiresAt: Date.now() + 60_000,
     profile: { agent: "claude", model: "fixture-model" },
+    account: RUNNER_ACCOUNT,
     prompt: `Return the requested ${purpose} without a code candidate`,
   };
 }
@@ -49,6 +51,7 @@ for (const purpose of ["answer", "artifact"] as const) {
       const home = join(root, "home");
       for (const path of [worktree, outputDirectory, home])
         mkdirSync(path, { recursive: true, mode: 0o700 });
+      signInRunnerAccount(home, input.profile.agent);
       chmodSync(worktree, 0o770);
       const script = join(root, "script.json");
       const recorded = join(root, "agent.json");
@@ -166,6 +169,7 @@ test("task worker refuses a replaced prepared workspace before ACP dispatch", as
     const outputDirectory = join(root, "output");
     const home = join(root, "home");
     for (const path of [workRoot, outputDirectory, home]) mkdirSync(path, { mode: 0o700 });
+    signInRunnerAccount(home, "claude");
     symlinkSync(home, join(workRoot, executionId));
     await expect(
       executeRunnerCommand({
@@ -191,6 +195,7 @@ test("a 21st publish_artifact is a tool error and the run still finishes", async
     const home = join(root, "home");
     for (const path of [worktree, outputDirectory, home])
       mkdirSync(path, { recursive: true, mode: 0o700 });
+    signInRunnerAccount(home, "claude");
     chmodSync(worktree, 0o770);
     for (let index = 1; index <= 21; index++)
       writeFileSync(join(worktree, `screen-${index}.png`), `screen ${index}`);
@@ -274,6 +279,7 @@ test("ask_team context reaches the runner journal's question event", async () =>
     for (const path of [join(workRoot, executionId), outputDirectory, home])
       mkdirSync(path, { recursive: true, mode: 0o700 });
     chmodSync(join(workRoot, executionId), 0o770);
+    signInRunnerAccount(home, "claude");
     const script = join(root, "script.json");
     const recorded = join(root, "agent.json");
     const context = "1. escape-a\n2. escape-b\n16. escape-p";
@@ -349,6 +355,7 @@ test("an aborted adapter turn persists its agent failure reason", async () => {
     for (const path of [join(workRoot, executionId), outputDirectory, home])
       mkdirSync(path, { recursive: true, mode: 0o700 });
     chmodSync(join(workRoot, executionId), 0o770);
+    signInRunnerAccount(home, "claude");
     const result = await executeRunnerCommand({
       job: { executionId, command: command("answer") },
       outputDirectory,
@@ -392,7 +399,8 @@ async function failedTurn(
     for (const path of [join(workRoot, executionId), outputDirectory, home])
       mkdirSync(path, { recursive: true, mode: 0o700 });
     chmodSync(join(workRoot, executionId), 0o770);
-    setup(home);
+    signInRunnerAccount(home, "claude");
+    setup(signInRunnerAccount(home, "claude"));
     const result = await executeRunnerCommand({
       job: { executionId, command: command("answer") },
       outputDirectory,

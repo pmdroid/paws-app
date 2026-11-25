@@ -6,6 +6,7 @@ import { git } from "../src/acp";
 import { setJournalSink, startPhaseClock } from "../src/journal";
 import { publishRunnerJob, readRunnerJobInputs, type RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 test("each start phase writes one line with the time since the phase before it", () => {
   const lines: string[] = [];
@@ -67,6 +68,7 @@ test("a runner run journals each start phase once, through the first tool call",
         issuedAt: Date.now(),
         expiresAt: Date.now() + 60_000,
         profile: { agent: "claude", model: "fixture-model" },
+        account: RUNNER_ACCOUNT,
         repository: {
           owner: "acme",
           repo: "repo",
@@ -98,6 +100,7 @@ test("a runner run journals each start phase once, through the first tool call",
       }),
     );
     const fake = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
+    signInRunnerAccount(join(root, "home"), "claude");
     await executeRunnerCommand({
       job,
       repositoryBundle,

@@ -12,6 +12,7 @@ import {
   publishRunnerJob,
   type RunnerJob,
 } from "../src/runner-execution";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 const roots: string[] = [];
 const pids: number[] = [];
@@ -172,7 +173,7 @@ test("a new agent home has the current skills when its first worker starts, pinn
   const { spool, results } = prepared(root);
   publishRunnerJob(spool, {
     executionId: "01K00000000000000000000001",
-    command: { ...probe.command, id: "cmd-home" },
+    command: { ...probe.command, id: "cmd-home", account: RUNNER_ACCOUNT },
   });
   const bytes = await new Bun.Archive({ "SKILL.md": "impeccable" }, { compress: "gzip" }).bytes();
   const agentHome = join(root, "agent");
@@ -192,6 +193,7 @@ test("a new agent home has the current skills when its first worker starts, pinn
   ]);
   // The home did not exist when the skills arrived, as on a freshly installed runner.
   mkdirSync(agentHome);
+  signInRunnerAccount(agentHome, "codex");
   const holds: string[] = [];
   let seen = "";
   const supervisor = createDirectWorkerSupervisor({
@@ -234,7 +236,7 @@ test("a crashed worker resumes on the skills folder it started with, after an up
   for (const executionId of [first, second])
     publishRunnerJob(spool, {
       executionId,
-      command: { ...probe.command, id: `cmd-${executionId}` },
+      command: { ...probe.command, id: `cmd-${executionId}`, account: RUNNER_ACCOUNT },
     });
   const bundles = new Map<string, Uint8Array>();
   const skill = async (version: string) => {
@@ -250,6 +252,7 @@ test("a crashed worker resumes on the skills folder it started with, after an up
   };
   const agentHome = join(root, "agent");
   mkdirSync(agentHome);
+  const accountHome = signInRunnerAccount(agentHome, "codex");
   const skills = createRunnerSkillInstaller({
     root: join(root, "skills"),
     homes: [agentHome],
@@ -293,7 +296,7 @@ test("a crashed worker resumes on the skills folder it started with, after an up
   expect(launched[2]!.folder).not.toBe(launched[0]!.folder);
   await supervisor.stop(first);
   await supervisor.stop(second);
-  skills.prepareHome(agentHome);
+  skills.prepareHome(accountHome);
   expect(existsSync(launched[0]!.folder)).toBe(false);
 });
 

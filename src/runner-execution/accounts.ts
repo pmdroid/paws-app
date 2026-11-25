@@ -100,18 +100,16 @@ export class RunnerAccountHomeError extends Error {
   override readonly name = "RunnerAccountHomeError";
 }
 
-export function runnerAccountHome(agentHome: string, account?: RunnerAccount): string {
-  if (!account) return agentHome;
+export function runnerAccountHome(agentHome: string, account: RunnerAccount): string {
   return join(agentHome, RUNNER_ACCOUNT_HOMES, RunnerAccountSchema.parse(account).bindingId);
 }
 
 export function openRunnerAccountHome(
   agentHome: string,
-  account: RunnerAccount | undefined,
+  account: RunnerAccount,
   agent: RunnerCodingAgent,
   options: { signIn?: boolean; folders?: boolean; owners?: RunnerAccountOwners } = {},
 ): string {
-  if (!account) return agentHome;
   const owners = options.owners ?? processOwners();
   const { accountId, bindingId } = RunnerAccountSchema.parse(account);
   const unsupported = runnerAccountAgentUnsupported(agent);

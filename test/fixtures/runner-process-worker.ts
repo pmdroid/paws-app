@@ -22,6 +22,7 @@ await executeRunnerCommand({
       issuedAt: Date.now(),
       expiresAt: Date.now() + 60_000,
       profile: { agent: "claude", model: "fixture-model" },
+      account: { accountId: "01J00000000000000000000001", bindingId: "01J00000000000000000000002" },
       prompt: "Start a sandbox",
     },
   },

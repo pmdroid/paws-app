@@ -23,6 +23,7 @@ import {
 } from "../../src/runner-execution";
 import { executeRunnerCommand } from "../../src/runner-worker";
 import { RunnerArtifactSchema, withoutJournalTime } from "../../src/runner-protocol";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "../runner-account-home";
 
 export async function probeRunnerWorker(
   root: string,
@@ -34,6 +35,11 @@ export async function probeRunnerWorker(
   const home = join(root, "home");
   const repository = join(root, "repository");
   mkdirSync(home, { mode: 0o700 });
+  const codexAccount = { ...RUNNER_ACCOUNT, bindingId: "01J00000000000000000000004" };
+  const accountHomes = {
+    claude: signInRunnerAccount(home, "claude"),
+    codex: signInRunnerAccount(home, "codex", codexAccount),
+  };
   mkdirSync(repository, { mode: 0o700 });
   const gitEnv = {
     PATH: "/usr/bin:/bin",
@@ -87,6 +93,7 @@ export async function probeRunnerWorker(
           checkoutExclusions: ["large"],
         },
         profile: { agent: "claude", model: "fixture-model" },
+        account: RUNNER_ACCOUNT,
         prompt: "Implement the assigned task.",
       },
     };
@@ -906,6 +913,7 @@ export async function probeRunnerWorker(
     expiresAt: now + 60_000,
     type: "probe",
     profile: { agent: "claude", model: "fixture-model" },
+    account: RUNNER_ACCOUNT,
   };
   const probeAgent = launch(5, [{ type: "hang" }]);
   const probed = await execute({
@@ -941,6 +949,7 @@ export async function probeRunnerWorker(
       expiresAt: now + 60_000,
       type: "login_check",
       agent,
+      account: agent === "claude" ? RUNNER_ACCOUNT : codexAccount,
     };
     const loginAgent = launch(index, [{ type: "hang" }]);
     const loginOutput = output(index);
@@ -955,7 +964,7 @@ export async function probeRunnerWorker(
       async loginCommand(command, args, env) {
         assert.equal(command, agent);
         assert.deepEqual(args, agent === "claude" ? ["auth", "status"] : ["login", "status"]);
-        assert.equal(env.HOME, home);
+        assert.equal(env.HOME, accountHomes[agent]);
         assert.equal(env.GH_TOKEN, undefined);
         assert.equal(env.AWS_ACCESS_KEY_ID, undefined);
         return {
