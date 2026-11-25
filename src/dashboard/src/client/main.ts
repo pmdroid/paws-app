@@ -52,7 +52,8 @@ import {
 } from "./route";
 import { livePoll, PAGE_POLL_MS } from "./poll";
 import { createPageLoader, errorText } from "./page-loader";
-import { settingsRedirect, shownSettingsPage } from "./settings-pages";
+import { settingsQuery, settingsRedirect, shownSettingsPage } from "./settings-pages";
+import { scrollToSettingsMatch } from "./settings-search";
 
 import { createAgentSettings } from "./agent-settings";
 import { createSkillSettings } from "./skills";
@@ -166,6 +167,7 @@ router.subscribe((state) => {
   routeChanged();
   if (within) return;
   window.scrollTo({ top: 0, behavior: "instant" });
+  if (document.activeElement?.matches("[data-settings-search]")) return;
   document.querySelector<HTMLElement>("#content")?.focus({ preventScroll: true });
 });
 document.addEventListener("change", (event) => {
@@ -344,7 +346,10 @@ async function followAlias(route: Extract<Route, { view: "alias" }>): Promise<vo
 function followIssueRedirect(): boolean {
   const pathname = router.state.location.pathname;
   const path = pathname.slice(routerBase(pathname).length);
-  const retro = retroRedirect(path) ?? settingsRedirect(path);
+  const settingsPath = settingsRedirect(path);
+  const retro =
+    retroRedirect(path) ??
+    (settingsPath === null ? null : `${settingsPath}${router.state.location.search}`);
   if (retro !== null) {
     void router.navigate(retro, { replace: true });
     return true;
@@ -503,6 +508,11 @@ function paint(): void {
   if (timeLimitRoot) timeLimitSettings.mount(timeLimitRoot, currentEngine());
   const briefSettingsRoot = document.querySelector<HTMLElement>("#brief-settings");
   if (briefSettingsRoot) briefSettings.mount(briefSettingsRoot, currentEngine());
+  scrollToSettingsMatch(
+    document.querySelector<HTMLElement>("#content"),
+    `${location.pathname}${location.search}`,
+    shownPage === null ? "" : settingsQuery(location.search),
+  );
   const sessionRoot = document.querySelector<HTMLElement>("#linear-session-start");
   if (sessionRoot)
     sessionStart.mount(

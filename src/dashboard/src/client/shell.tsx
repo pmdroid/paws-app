@@ -28,9 +28,7 @@ import {
   USER_SETTINGS_PAGES,
   WORKSPACE_PAGES,
   settingsAreEditable,
-  settingsPageRoute,
   shownSettingsPage,
-  type SettingsPage,
 } from "./settings-pages";
 import { AppearanceControl, initializeAppearance } from "./appearance";
 import { CommandPalette, shortcutLabel } from "./command-palette";
@@ -46,6 +44,7 @@ import {
   SidebarMenuLink,
 } from "./ui/sidebar";
 import { SidebarFlyoutItem } from "./sidebar-flyout";
+import { SettingsSubmenu } from "./settings-search";
 
 const ICONS = {
   overview: LayoutDashboard,
@@ -169,7 +168,7 @@ export function Navigation({
                 pages={WORKSPACE_PAGES}
                 onNavigate={onNavigate}
                 submenu={
-                  <SidebarSubmenu
+                  <SettingsSubmenu
                     label="Workspace pages"
                     pages={WORKSPACE_PAGES}
                     route={route}
@@ -193,7 +192,7 @@ export function Navigation({
           pages={USER_SETTINGS_PAGES}
           onNavigate={onNavigate}
           submenu={
-            <SidebarSubmenu
+            <SettingsSubmenu
               label="Settings pages"
               pages={USER_SETTINGS_PAGES}
               route={route}
@@ -206,35 +205,6 @@ export function Navigation({
         </SidebarFlyoutItem>
       </SidebarMenu>
     </nav>
-  );
-}
-
-function SidebarSubmenu({
-  label,
-  pages,
-  route,
-  onNavigate,
-}: {
-  label: string;
-  pages: readonly { id: SettingsPage; name: string }[];
-  route: Route;
-  onNavigate?: () => void;
-}) {
-  return (
-    <SidebarMenu aria-label={label} className="mt-1 ml-4 gap-0.5 border-l border-border pl-2">
-      {pages.map((page) => (
-        <li key={page.id}>
-          <SidebarMenuLink
-            to={routePath(settingsPageRoute(page.id))}
-            active={shownSettingsPage(route) === page.id}
-            onClick={onNavigate}
-            className="text-[13px]"
-          >
-            {page.name}
-          </SidebarMenuLink>
-        </li>
-      ))}
-    </SidebarMenu>
   );
 }
 

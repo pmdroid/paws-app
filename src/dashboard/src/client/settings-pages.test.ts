@@ -9,8 +9,11 @@ import {
   USER_SETTINGS_PAGES,
   WORKSPACE_PAGES,
   renderSettingsPage,
+  searchSettings,
   setSettingsAdmin,
+  settingsQuery,
   settingsRedirect,
+  settingsSearchPath,
 } from "./settings-pages";
 import { createSkillSettings, type SkillListing } from "./skills";
 import { settleReactWork } from "./settle-react";
@@ -50,8 +53,43 @@ test("an old settings link to a workspace page opens Workspace for admins and Yo
   expect(settingsRedirect("/settings/agent-accounts")).toBeNull();
 });
 
+test("settings search matches page names, descriptions and control labels without regard to case", () => {
+  setSettingsAdmin(true);
+  expect(searchSettings("MERGE").map((match) => match.id)).toContain("merging");
+  expect(searchSettings("merging")).toEqual([{ id: "merging", name: "Merging", section: null }]);
+  expect(searchSettings("lane")).toEqual([
+    { id: "merging", name: "Merging", section: "Merge lanes" },
+  ]);
+  expect(searchSettings("tailnet").map((match) => match.id)).toEqual(["runner-vms"]);
+  expect(searchSettings("no such control")).toEqual([]);
+  expect(searchSettings("  ").length).toBe(SETTINGS_PAGES.length);
+  setSettingsAdmin(false);
+  expect(searchSettings("lane")).toEqual([]);
+  expect(searchSettings("setup token").map((match) => match.id)).toEqual(["agent-accounts"]);
+});
+
+test("settings search keeps the query in ?q= and opens the page holding a matched control", () => {
+  setSettingsAdmin(true);
+  expect(settingsQuery("?q=lane")).toBe("lane");
+  expect(settingsQuery("")).toBe("");
+  expect(settingsSearchPath({ view: "workspace", page: "agents" }, "lane")).toBe(
+    "/workspace/merging?q=lane",
+  );
+  expect(settingsSearchPath({ view: "settings", page: "account" }, "Merge lanes")).toBe(
+    "/workspace/merging?q=Merge%20lanes",
+  );
+  expect(settingsSearchPath({ view: "workspace", page: "merging" }, "pull")).toBe(
+    "/workspace/merging?q=pull",
+  );
+  expect(settingsSearchPath({ view: "workspace", page: "agents" }, "zzz")).toBe(
+    "/workspace/agents?q=zzz",
+  );
+  expect(settingsSearchPath({ view: "workspace", page: "merging" }, "")).toBe("/workspace/merging");
+  expect(parseRoute("/workspace/merging")).toEqual({ view: "workspace", page: "merging" });
+});
+
 test("Agent instructions holds the brief, then skills, then hooks", () => {
-  expect(SETTINGS_PAGES.find((page) => page.id === "brief")).toEqual({
+  expect(SETTINGS_PAGES.find((page) => page.id === "brief")).toMatchObject({
     id: "brief",
     name: "Agent instructions",
     description: "What coding agents are told: the brief, skills and hooks.",

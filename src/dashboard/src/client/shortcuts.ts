@@ -17,7 +17,7 @@ export function shortcutFor(sequence: string): Route | "help" | null {
   return PAGE_SHORTCUTS.find((shortcut) => shortcut.keys === sequence)?.route ?? null;
 }
 
-function typing(target: EventTarget | null): boolean {
+export function typing(target: EventTarget | null): boolean {
   const element = target as HTMLElement | null;
   if (!element || typeof element.tagName !== "string") return false;
   return element.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName);
