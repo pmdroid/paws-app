@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import type { AcpEvent, RunAgentOptions, RunAgentResult } from "../src/acp";
+import { FINDING_FORMAT, reviewInstructions } from "../src/closeout";
+import type { AgentProfiles } from "../src/config";
 import { createAcpCodexReviewer } from "../src/loop";
 
 const finished: RunAgentResult = {
@@ -96,11 +98,19 @@ test("a refused tool call does not fail a review that finishes", async () => {
   expect(runs).toHaveLength(1);
 });
 
-function answering(replies: string[], tokens?: number) {
+function answering(replies: string[], tokens?: number, agent?: AgentProfiles["reviewer"]["agent"]) {
   const runs: RunAgentOptions[] = [];
   const review = createAcpCodexReviewer({
     pawsRoot: "/tmp/unused",
     launch: () => ({}),
+    ...(agent
+      ? {
+          profiles: async () => ({
+            implementer: { agent: "claude", model: null },
+            reviewer: { agent, model: null },
+          }),
+        }
+      : {}),
     async agentRunner(options: RunAgentOptions) {
       runs.push(options);
       await options.onEvent?.({
@@ -164,4 +174,30 @@ test("a review reports the tokens of every turn it took", async () => {
   expect((await answering(["[]"], 1_200).review.review(request)).tokens).toBe(1_200);
   expect((await answering([prose, "[]"], 1_200).review.review(request)).tokens).toBe(2_400);
   expect((await answering(["[]"]).review.review(request)).tokens).toBeUndefined();
+});
+
+test("an OpenCode review starts with its /review command over the base to head range", async () => {
+  const { review, runs } = answering([JSON.stringify([finding])], undefined, "opencode");
+  expect((await review.review(request)).findings).toEqual([finding]);
+  const lines = runs[0]!.prompt.split("\n");
+  expect(lines[0]).toBe("/review");
+  expect(lines[1]).toBe(
+    `Review the changes from base ${request.base} to head ${request.head}: run \`git diff ${request.base}...${request.head}\`.`,
+  );
+  expect(runs[0]!.prompt).toContain(FINDING_FORMAT);
+  expect(runs[0]!.readOnly).toBe(true);
+});
+
+test("a Grok review keeps the Paws review prompt", async () => {
+  const { review, runs } = answering(["[]"], undefined, "grok");
+  await review.review(request);
+  expect(runs[0]!.prompt).toBe(
+    [
+      reviewInstructions({}),
+      "Review the change.",
+      `Task ${request.taskId}, item ${request.itemId}.`,
+      `Base ${request.base}, head ${request.head}.`,
+      FINDING_FORMAT,
+    ].join("\n"),
+  );
 });
