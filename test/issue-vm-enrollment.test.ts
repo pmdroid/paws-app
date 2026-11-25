@@ -9,9 +9,11 @@ import {
   bindLinearSessionTask,
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
+  createAgentAccount,
   getRunnerSteps,
   insertQueuedItem,
   issueVmByIdSteps,
+  listAgentBindingsSteps,
   putWorkspaceUser,
   recordLinearInstallation,
 } from "../src/db";
@@ -22,7 +24,7 @@ import { eligibleRunnersSteps } from "../src/runner-placement";
 import type { RunnerCommand } from "../src/runner-protocol";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceTokenHash } from "../src/workspace";
-import { seed } from "./pglite-fixtures";
+import { seed, seedCredential } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const cleanups: (() => Promise<void> | void)[] = [];
@@ -132,6 +134,14 @@ async function fixture() {
 
 test("an issue VM enrolls with its bootstrap token once and gets only its own issue's work", async () => {
   const f = await fixture();
+  const account = await createAgentAccount(f.db, {
+    ownerUserId: f.userId,
+    workspaceId: f.workspaceId,
+    agent: "claude",
+    label: "mine",
+    now: f.now(),
+  });
+  await seedCredential(f.db, account.id, "claude", f.now());
   const { token, expiresAt } = await f.control.createIssueVmEnrollment(f.vmId);
   expect(expiresAt).toBe(f.now() + 10 * 60_000);
   const client = await createRunnerKey(join(f.root, "vm"));
@@ -148,6 +158,11 @@ test("an issue VM enrolls with its bootstrap token once and gets only its own is
   );
   expect(row).toEqual({ isolation: "issue_vm", issueVmId: f.vmId });
   expect((await f.db.run((q) => issueVmByIdSteps(q, f.vmId)))?.runnerId).toBe(enrolled.runnerId);
+  expect(
+    (await f.db.run((q) => listAgentBindingsSteps(q, f.workspaceId, account.id))).map(
+      (binding) => binding.runnerId,
+    ),
+  ).toEqual([enrolled.runnerId]);
 
   const again = await createRunnerKey(join(f.root, "again"));
   await expect(f.control.enroll({ token, name: "vm", csr: again.csr })).rejects.toThrow(

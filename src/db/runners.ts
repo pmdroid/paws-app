@@ -748,6 +748,10 @@ export function* enrollRunnerSteps(q: Q, input: RunnerEnrollInput): Steps<Runner
       }),
     );
   yield* insertCertificateSteps(q, input.runnerId, input.certificate);
+  if (enrollment.issueVmId !== null) {
+    yield* bindSignedInAccountsToRunnerSteps(q, input.runnerId, input.now);
+    yield* wakeRunnerSlotWaitsSteps(q, input.runnerId, input.now);
+  }
   yield* enqueueRunnerSetupChecksSteps(q, input.now, { runnerId: input.runnerId });
   const used = yield* q.all(
     q.orm
