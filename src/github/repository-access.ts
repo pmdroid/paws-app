@@ -1,5 +1,7 @@
 import { GitHubHttpError } from "./types";
 import type { FetchLike } from "./client";
+import { defaultRecorder, type MetricsRecorder } from "../metrics";
+import { observeGitHubCall, observeGitHubRemaining } from "./call-metrics";
 
 type RepositoryAccessOptions = {
   owner: string;
@@ -8,6 +10,7 @@ type RepositoryAccessOptions = {
   app: boolean;
   signal: AbortSignal;
   fetch?: FetchLike;
+  metrics?: MetricsRecorder;
 };
 
 export function checkRepositoryWriteAccess(options: RepositoryAccessOptions): Promise<boolean> {
@@ -23,6 +26,8 @@ async function checkRepositoryAccess(
   write: boolean,
 ): Promise<boolean> {
   options.signal.throwIfAborted();
+  const metrics = options.metrics ?? defaultRecorder;
+  const started = performance.now();
   const response = await (options.fetch ?? fetch)(
     `https://api.github.com/repos/${encodeURIComponent(options.owner)}/${encodeURIComponent(options.repo)}`,
     {
@@ -34,6 +39,18 @@ async function checkRepositoryAccess(
       signal: AbortSignal.any([options.signal, AbortSignal.timeout(5_000)]),
       redirect: "error",
     },
+  ).catch((error: unknown) => {
+    if (!options.signal.aborted) observeGitHubCall(metrics, "repos", started, null, false);
+    throw error;
+  });
+  observeGitHubRemaining(metrics, response.headers);
+  observeGitHubCall(
+    metrics,
+    "repos",
+    started,
+    response.status,
+    response.status === 429 ||
+      (response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0"),
   );
   options.signal.throwIfAborted();
   if (response.status === 404) return false;

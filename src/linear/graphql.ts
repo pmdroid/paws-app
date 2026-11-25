@@ -1,4 +1,5 @@
 import { journalCaught } from "../journal";
+import { defaultRecorder, statusClass, type MetricsRecorder } from "../metrics";
 import {
   budgetFromHeaders,
   createLinearLedger,
@@ -28,8 +29,10 @@ export function createLinearClient(options: {
   auth: LinearAuth;
   fetch?: FetchLike;
   ledger?: LinearLedger;
+  metrics?: MetricsRecorder;
 }): LinearClient {
   const fetchImpl = options.fetch ?? fetch;
+  const metrics = options.metrics ?? defaultRecorder;
   const ledger = options.ledger ?? createLinearLedger();
   const client: LinearClient = {
     async query(query, variables, { signal, isCurrent } = {}) {
@@ -45,7 +48,14 @@ export function createLinearClient(options: {
       const run = async (token: string) => {
         await current();
         await options.auth.assertAuthorized?.();
-        return fetchImpl(GRAPHQL_URL, {
+        const started = performance.now();
+        const observe = (status: number | null) =>
+          metrics.recordDuration(
+            "linear.call",
+            { caller, status_class: statusClass(status) },
+            performance.now() - started,
+          );
+        const response = await fetchImpl(GRAPHQL_URL, {
           method: "POST",
           headers: {
             "content-type": "application/json",
@@ -53,7 +63,12 @@ export function createLinearClient(options: {
           },
           body: JSON.stringify({ query, variables: variables ?? {} }),
           ...(signal === undefined ? {} : { signal }),
+        }).catch((error: unknown) => {
+          if (!signal?.aborted) observe(null);
+          throw error;
         });
+        observe(response.status);
+        return response;
       };
       let response: Response;
       try {
@@ -68,6 +83,8 @@ export function createLinearClient(options: {
         throw error;
       }
       const budget = budgetFromHeaders(response.headers);
+      if (budget.requestsRemaining !== null)
+        metrics.setGauge("linear.rate_remaining", {}, budget.requestsRemaining);
       await ledger.observe(caller, budget, item, itemId, query);
       const json: unknown = await abortable(response.json(), signal).catch((error: unknown) => {
         signal?.throwIfAborted();
@@ -77,7 +94,10 @@ export function createLinearClient(options: {
       });
       await current();
       const limited = rateLimitFrom(response, json, budget, ledger.now());
-      if (limited !== null) throw await ledger.limited(caller, limited);
+      if (limited !== null) {
+        metrics.incrementCounter("linear.rate_limited", { caller });
+        throw await ledger.limited(caller, limited);
+      }
       const errors = isRecord(json) ? json["errors"] : undefined;
       let message: string | null = null;
       if (Array.isArray(errors) && errors.length > 0) {
