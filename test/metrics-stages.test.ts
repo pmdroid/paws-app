@@ -176,6 +176,48 @@ describe("stage times", () => {
     expect(report.total.turns).toBe(2);
   });
 
+  test("counts items with no events in the window and never overlaps question waits", async () => {
+    const db = await store();
+    await seedItem(db, "item-a", [
+      ["merge_queue", 0],
+      ["merged", 20 * 60],
+    ]);
+    await seedItem(db, "item-b", []);
+    await seedItem(db, "item-c", [
+      ["awaiting_input", 0],
+      ["running", 60],
+    ]);
+    for (const [id, minutes] of [
+      ["q1", 0],
+      ["q2", 10],
+    ] as const)
+      await db.run((q) =>
+        q.exec(
+          q.orm.insert(q.t.question).values({
+            id,
+            itemId: "item-c",
+            sessionId: id,
+            body: "?",
+            status: "answered",
+            createdAt: START + minutes * MINUTE,
+            answeredAt: START + (minutes + 30) * MINUTE,
+          }),
+        ),
+      );
+    const report = await readStageTimes(db, {
+      ...WINDOW,
+      from: START + 60 * MINUTE,
+      to: START + 120 * MINUTE,
+    });
+    const byId = new Map(report.items.map((item) => [item.itemId, item]));
+    expect(byId.get("item-a")!.stagesMs.mergeQueue).toBe(60 * MINUTE);
+    expect(byId.get("item-b")!.stagesMs.queued).toBe(60 * MINUTE);
+    const early = await readStageTimes(db, { ...WINDOW, from: START, to: START + 120 * MINUTE });
+    const c = early.items.find((item) => item.itemId === "item-c")!;
+    expect(c.waitingForPerson.map((wait) => wait.ms)).toEqual([30 * MINUTE, 10 * MINUTE]);
+    expect(c.waitingForPersonMs).toBeLessThanOrEqual(c.stagesMs.awaitingInput);
+  });
+
   test("reports the median and p95 of each Closeout check with timeouts", async () => {
     const db = await store();
     await seedItem(db, "item-a", []);

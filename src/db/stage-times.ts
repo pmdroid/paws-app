@@ -20,10 +20,7 @@ export function* stageHistorySteps(
 ) {
   const { workItem: w, workItemEvent: e, workItemRepository: r, question, mergeWaitMark } = q.t;
   const touched = yield* q.all(
-    q.orm
-      .selectDistinct({ id: e.itemId })
-      .from(e)
-      .where(and(gte(e.at, window.from), lt(e.at, window.to))),
+    q.orm.selectDistinct({ id: e.itemId }).from(e).where(gte(e.at, window.from)),
   );
   const open = yield* q.all(
     q.orm
@@ -41,6 +38,7 @@ export function* stageHistorySteps(
         identifier: w.linearIdentifier,
         title: w.title,
         createdAt: w.createdAt,
+        state: w.state,
         owner: r.owner,
         repo: r.repo,
       })

@@ -92,6 +92,7 @@ export async function readStageTimes(
       if (key === "awaitingInput") waiting.push(span);
       if (key === "mergeQueue") add(item.mergeWaitMs, mergeWait(span, marks, window));
     };
+    if (events.length === 0) visit(row.state, { start: row.createdAt, end: until });
     events.forEach((event, index) => {
       if (index === 0) visit(event.fromState, { start: row.createdAt, end: event.at });
       visit(event.toState, { start: event.at, end: events[index + 1]?.at ?? until });
@@ -99,15 +100,16 @@ export async function readStageTimes(
       if (event.toState === "running") item.turns += 1;
       if (event.toState === "verifying") item.closeoutRounds += 1;
     });
-    for (const ask of history.questions.filter((question) => question.itemId === row.id)) {
-      const end = ask.answeredAt ?? ask.cancelledAt ?? until;
+    let counted = -Infinity;
+    const asks = history.questions.filter((question) => question.itemId === row.id);
+    for (const ask of asks.toSorted((a, b) => a.createdAt - b.createdAt)) {
+      const start = Math.max(ask.createdAt, counted);
+      const end = Math.max(start, ask.answeredAt ?? ask.cancelledAt ?? until);
+      counted = end;
       const ms = waiting.reduce(
         (sum, span) =>
           sum +
-          overlap(
-            { start: Math.max(span.start, ask.createdAt), end: Math.min(span.end, end) },
-            window,
-          ),
+          overlap({ start: Math.max(span.start, start), end: Math.min(span.end, end) }, window),
         0,
       );
       if (ms > 0) item.waitingForPerson.push({ questionId: ask.id, reason: ask.reason, ms });

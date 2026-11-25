@@ -598,8 +598,10 @@ export async function mergeThroughGitHubQueue(
     signal: published.signal,
   });
   if (await caps.stopped()) return { kind: "obsolete" };
-  const reviewing = result.outcome === "blocked" && reviewRefusal(result.message) !== null;
-  if (watch.reviewSince !== undefined && !reviewing)
+  if (
+    watch.reviewSince !== undefined &&
+    (result.outcome === "queued" || result.outcome === "merged")
+  )
     await markMergeWait(store, item.id, head, "review_ended", caps.now());
   if (result.outcome === "queued" && !watch.queued)
     await markMergeWait(store, item.id, head, "enqueued", caps.now());
