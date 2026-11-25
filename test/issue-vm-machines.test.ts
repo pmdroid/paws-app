@@ -36,64 +36,55 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
-const view = (slots: number, vms: [string, IssueVmState][]): IssueVmHostView => ({
+const view = (slots: number, vms: Record<string, IssueVmState>): IssueVmHostView => ({
   vmHost: true,
   slots,
   size: SIZE,
-  vms: vms.map(([id, state]) => ({ id, state })),
+  vms: Object.entries(vms).map(([id, state]) => ({ id, state })),
 });
 
 test("awake VMs start in the lowest free slots up to the limit, once, and wait for a freed slot", async () => {
   const fake = createFakeIssueVmUnits();
-  const first = await reconcileIssueVms(
-    fake.units,
-    view(2, [
-      [A, "awake"],
-      [B, "awake"],
-      [C, "awake"],
-    ]),
-  );
+  const all = { [A]: "awake", [B]: "awake", [C]: "awake" } as const;
+  const first = await reconcileIssueVms(fake.units, view(2, all));
   expect(first.started.map((found) => [found.id, found.slot, found.unit])).toEqual([
     [A, 1, `paws-issue-vm@${A}-1-2-4.service`],
     [B, 2, `paws-issue-vm@${B}-2-2-4.service`],
   ]);
   expect(first.waiting).toEqual([C]);
-  const again = await reconcileIssueVms(
-    fake.units,
-    view(2, [
-      [A, "awake"],
-      [B, "awake"],
-      [C, "awake"],
-    ]),
-  );
+  const again = await reconcileIssueVms(fake.units, view(2, all));
   expect(again.started).toEqual([]);
   expect(again.kept.map((found) => found.id)).toEqual([A, B]);
 
-  const next = await reconcileIssueVms(
-    fake.units,
-    view(2, [
-      [A, "deleting"],
-      [B, "awake"],
-      [C, "awake"],
-    ]),
-  );
+  const next = await reconcileIssueVms(fake.units, view(2, { ...all, [A]: "deleting" }));
   expect(next.stopped.map(({ machine, reason }) => [machine.id, reason])).toEqual([
     [A, "deleting"],
   ]);
   expect(next.started.map((found) => [found.id, found.slot])).toEqual([[C, 1]]);
   expect(fake.calls.filter((call) => call.startsWith("start"))).toHaveLength(3);
   expect(fake.active.size).toBe(2);
+
+  const lowered = await reconcileIssueVms(fake.units, view(1, { [B]: "awake", [C]: "awake" }));
+  expect(lowered.stopped.map(({ machine, reason }) => [machine.id, reason])).toEqual([
+    [B, "over_limit"],
+  ]);
+  const failing = {
+    ...fake.units,
+    start: async (unit: string) => {
+      if (unit.includes(D)) throw new Error(`No disk for ${D}`);
+      await fake.units.start(unit);
+    },
+  };
+  const healed = await reconcileIssueVms(
+    failing,
+    view(3, { [C]: "awake", [D]: "awake", [E]: "awake" }),
+  );
+  expect(healed.started.map((found) => found.id)).toEqual([E]);
 });
 
 test("after a daemon crash a fresh pass keeps known VMs, stops unknown and duplicate units and restarts a lost one", async () => {
   const fake = createFakeIssueVmUnits();
-  await reconcileIssueVms(
-    fake.units,
-    view(3, [
-      [A, "awake"],
-      [B, "asleep"],
-    ]),
-  );
+  await reconcileIssueVms(fake.units, view(3, { [A]: "awake", [B]: "asleep" }));
   fake.active.add(issueVmUnit(B, 2, SIZE));
   fake.active.add(issueVmUnit(A, 4, SIZE));
   fake.active.add(issueVmUnit(E, 3, SIZE));
@@ -103,12 +94,7 @@ test("after a daemon crash a fresh pass keeps known VMs, stops unknown and dupli
   cleanups.push(setJournalSink((line) => lines.push(line)));
   const result = await reconcileIssueVms(
     fake.units,
-    view(3, [
-      [A, "awake"],
-      [B, "asleep"],
-      [D, "awake"],
-      [C, "awake"],
-    ]),
+    view(3, { [A]: "awake", [B]: "asleep", [D]: "awake", [C]: "awake" }),
   );
   expect(result.kept.map((found) => [found.id, found.slot])).toEqual([
     [A, 1],
@@ -250,17 +236,19 @@ true`,
 test("vm.sh seeds the VM, starts its network rules and runs Cloud Hypervisor with its disk, TAP and size", () => {
   const { run, calls, lib, dev, state } = vmScript();
   expect(run("prepare", `${A}-7-2-4`).exitCode).toBe(0);
-  expect(readFileSync(join(state, A, "seed/network-config"), "utf8")).toContain(
+  expect(readFileSync(join(state, `seed-${A}`, "network-config"), "utf8")).toContain(
     'addresses: [ "10.199.7.2/24" ]',
   );
-  expect(readFileSync(join(state, A, "seed/meta-data"), "utf8")).toContain(`instance-id: ${A}`);
+  expect(readFileSync(join(state, `seed-${A}`, "meta-data"), "utf8")).toContain(
+    `instance-id: ${A}-7`,
+  );
   expect(calls()).toContain(`chown paws-issue-vm ${dev}/${A}`);
   expect(calls()).toContain("systemctl start paws-issue-vm-network@7.service");
   expect(run("run", `${A}-7-2-4`).exitCode).toBe(0);
   expect(calls()).toContain(
     [
       `cloud-hypervisor --kernel ${lib}/firmware.fd`,
-      `--disk path=${dev}/${A},image_type=raw path=${state}/${A}/seed.img,readonly=on,image_type=raw`,
+      `--disk path=${dev}/${A},image_type=raw path=${state}/seed-${A}.img,readonly=on,image_type=raw`,
       "--cpus boot=2 --memory size=4G",
       "--net tap=pawsvm7,ip=10.199.7.1,mask=255.255.255.0,mac=52:54:00:c7:00:07",
       `--serial file=${state}/${A}/serial.log --console off --api-socket path=${state}/${A}/api.sock`,

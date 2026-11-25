@@ -22,6 +22,7 @@ parse() {
   ((slot <= 254 && cpus <= 32 && memory <= 128)) || die "Issue VM out of range: $1"
   instance=$1
   dir=$state/$id
+  seed=$state/seed-$id
   disk=$dev/$id
   tap=pawsvm$slot
   host_ip=10.199.$slot.1
@@ -34,12 +35,12 @@ others() {
 }
 
 write_seed() {
-  mkdir -p "$dir/seed"
-  cat >"$dir/seed/meta-data" <<EOF
-instance-id: $id
+  mkdir -p -m 0700 "$seed"
+  cat >"$seed/meta-data" <<EOF
+instance-id: $id-$slot
 local-hostname: paws-vm-${id,,}
 EOF
-  cat >"$dir/seed/network-config" <<EOF
+  cat >"$seed/network-config" <<EOF
 version: 2
 ethernets:
   id0:
@@ -48,13 +49,13 @@ ethernets:
     routes: [ { to: default, via: "$host_ip" } ]
     nameservers: { addresses: [ "1.1.1.1", "9.9.9.9" ] }
 EOF
-  printf '#cloud-config\n{}\n' >"$dir/seed/user-data"
-  rm -f "$dir/seed.img"
-  truncate -s 8M "$dir/seed.img"
-  mkfs.vfat -n CIDATA "$dir/seed.img" >/dev/null
-  mcopy -o -i "$dir/seed.img" "$dir/seed"/* ::/
-  chown "$user:$user" "$dir/seed.img"
-  chmod 0400 "$dir/seed.img"
+  printf '#cloud-config\n{}\n' >"$seed/user-data"
+  rm -f "$seed.img"
+  truncate -s 8M "$seed.img"
+  mkfs.vfat -n CIDATA "$seed.img" >/dev/null
+  mcopy -o -i "$seed.img" "$seed"/* ::/
+  chown "root:$user" "$seed.img"
+  chmod 0440 "$seed.img"
 }
 
 prepare() {
@@ -74,7 +75,7 @@ prepare() {
 
 run() {
   exec "$lib/cloud-hypervisor" --kernel "$lib/firmware.fd" \
-    --disk "path=$disk,image_type=raw" "path=$dir/seed.img,readonly=on,image_type=raw" \
+    --disk "path=$disk,image_type=raw" "path=$seed.img,readonly=on,image_type=raw" \
     --cpus "boot=$cpus" --memory "size=${memory}G" \
     --net "tap=$tap,ip=$host_ip,mask=255.255.255.0,mac=52:54:00:c7:00:$(printf %02x "$slot")" \
     --serial "file=$dir/serial.log" --console off --api-socket "path=$dir/api.sock"

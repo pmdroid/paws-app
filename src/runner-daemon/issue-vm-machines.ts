@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { journal } from "../journal";
+import { journal, journalCaught } from "../journal";
 
 const UNIT = /^paws-issue-vm@([0-7][0-9A-HJKMNP-TV-Z]{25})-([0-9]+)-([0-9]+)-([0-9]+)\.service$/;
 const ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
@@ -17,7 +17,7 @@ export type IssueVmMachineSize = { vcpus: number; memoryGb: number };
 
 export type IssueVmMachine = IssueVmMachineSize & { id: string; slot: number; unit: string };
 
-export type IssueVmStopReason = "unknown" | "deleting" | "duplicate";
+export type IssueVmStopReason = "unknown" | "deleting" | "duplicate" | "over_limit";
 
 export type IssueVmReconcile = {
   kept: IssueVmMachine[];
@@ -51,6 +51,7 @@ export async function reconcileIssueVms(
   const result: IssueVmReconcile = { kept: [], stopped: [], started: [], waiting: [] };
   const ids = new Set<string>();
   const used = new Set<number>();
+  const limit = host.vmHost ? Math.min(host.slots, MAX_SLOT) : 0;
   const running = (await units.active())
     .map(machine)
     .filter((found): found is IssueVmMachine => found !== null)
@@ -64,7 +65,9 @@ export async function reconcileIssueVms(
           ? "deleting"
           : ids.has(found.id) || used.has(found.slot)
             ? "duplicate"
-            : null;
+            : ids.size >= limit
+              ? "over_limit"
+              : null;
     if (reason === null) {
       ids.add(found.id);
       used.add(found.slot);
@@ -76,7 +79,6 @@ export async function reconcileIssueVms(
     result.stopped.push({ machine: found, reason });
   }
   if (!host.vmHost) return result;
-  const limit = Math.min(host.slots, MAX_SLOT);
   for (const row of known) {
     if (row.state !== "awake" || ids.has(row.id)) continue;
     if (ids.size >= limit) {
@@ -87,7 +89,12 @@ export async function reconcileIssueVms(
     let slot = 1;
     while (used.has(slot)) slot += 1;
     const started = { id: row.id, slot, ...host.size, unit: issueVmUnit(row.id, slot, host.size) };
-    await units.start(started.unit);
+    try {
+      await units.start(started.unit);
+    } catch (error) {
+      journalCaught(error, "runner-daemon.reconcileIssueVms.start", null);
+      continue;
+    }
     journal(`issue_vm_started vm=${row.id} slot=${slot}`);
     ids.add(row.id);
     used.add(slot);
