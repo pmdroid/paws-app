@@ -1,7 +1,7 @@
 import { basename, dirname } from "node:path/posix";
 import { anyPathMatches, pathMatches } from "../evaluate/paths";
 import type { TestSelect } from "../types";
-import { affectedTests, knownType } from "./graph";
+import { affectedTests, knownType, testFilesOf } from "./graph";
 import type { Snapshot, TestAdapter, TestContext, TestPlan } from "./types";
 
 const SHARED =
@@ -45,34 +45,38 @@ async function plan(runner: JavaScriptRunner, context: TestContext): Promise<Tes
   }
   const changed = new Set(changes.flatMap((change) => [change.path, change.oldPath ?? []].flat()));
   const preloads = new Set([base, head].flatMap((snapshot) => runner.preloads?.(snapshot) ?? []));
-  const full: string[] = [];
+  const reasons: string[] = [];
+  let sharesEverything = false;
   for (const path of [...changed].sort()) {
     const name = basename(path);
     if (SHARED.test(name) || runner.config.test(name) || preloads.has(path)) {
-      full.push(`${path} changed`);
+      reasons.push(`${path} changed`);
+      sharesEverything = true;
     } else if (item.select.full_on?.some((pattern) => pathMatches(pattern, path))) {
-      full.push(`${path} matches select.full_on`);
+      reasons.push(`${path} matches select.full_on`);
+      sharesEverything = true;
     } else if (!knownType(path) && anyPathMatches(item.paths ?? ["**"], [path], item.except)) {
-      full.push(`${path} changed, and the ${runner.name} runner doesn't know its file type`);
+      reasons.push(`${path} changed, and the ${runner.name} runner doesn't know its file type`);
     }
   }
   const atBase = affectedTests(base, changed);
   const atHead = affectedTests(head, changed);
-  full.push(...atBase.problems.map((problem) => `at base: ${problem}`));
-  full.push(...atHead.problems.map((problem) => `at head: ${problem}`));
+  reasons.push(...atBase.problems.map((problem) => `at base: ${problem}`));
+  reasons.push(...atHead.problems.map((problem) => `at head: ${problem}`));
   const selected = [...new Set([...atBase.affected, ...atHead.affected])]
     .filter((path) => head.paths.has(path))
     .sort();
   const targets = [...new Set([...selected, ...always])].sort();
   if (selected.length === 0 && always.length === 0) {
-    full.push("no test file reaches a changed path, and select.always is empty");
+    reasons.push("no test file reaches a changed path, and select.always is empty");
   }
   const max = item.select.max_selected;
-  const over = max !== undefined && targets.length > max;
-  const overReason = `${targets.length} test files are selected, more than max_selected ${max}`;
-  if (over && item.select.over_max !== "direct") full.push(overReason);
-  if (full.length > 0) return fullPlan(runner, context, full);
-  if (over) return directPlan(runner, context, { changed, selected, always, overReason });
+  if (max !== undefined && targets.length > max) {
+    reasons.push(`${targets.length} test files are selected, more than max_selected ${max}`);
+  }
+  if (reasons.length > 0 && (sharesEverything || item.select.over_max !== "direct"))
+    return fullPlan(runner, context, reasons);
+  if (reasons.length > 0) return directPlan(runner, context, { changed, head, always, reasons });
   return {
     selection: {
       mode: "selected",
@@ -91,31 +95,36 @@ function directPlan(
   context: TestContext,
   input: {
     changed: ReadonlySet<string>;
-    selected: readonly string[];
+    head: Snapshot;
     always: readonly string[];
-    overReason: string;
+    reasons: readonly string[];
   },
 ): TestPlan {
-  const { changed, selected, always, overReason } = input;
+  const { changed, head, always, reasons } = input;
+  const tests = testFilesOf(head);
+  const testSet = new Set(tests);
   const folders = [...changed]
-    .filter((path) => !selected.includes(path))
+    .filter((path) => !testSet.has(path))
     .map((path) => dirname(path))
     .filter((folder) => folder !== ".");
-  const direct = selected.filter(
+  const direct = tests.filter(
     (path) =>
       !always.includes(path) &&
       (changed.has(path) || folders.some((folder) => path.startsWith(`${folder}/`))),
   );
   if (direct.length === 0 && always.length === 0)
-    return fullPlan(runner, context, [`${overReason}, and the change has no direct test`]);
+    return fullPlan(runner, context, [
+      ...reasons,
+      "the change has no direct test, and select.always is empty",
+    ]);
   const targets = [...direct, ...always].sort();
-  const leftToCi = new Set([...selected, ...always]).size - targets.length;
   return {
     selection: {
       mode: "selected",
       targets,
       reasons: [
-        `${overReason}; running the change's direct tests and leaving ${leftToCi} to CI`,
+        ...reasons,
+        "running the change's direct tests and leaving the rest to CI",
         ...direct.map((path) => `${path} is a direct test of the change`),
         ...always.map((path) => `${path} is in select.always`),
       ],
