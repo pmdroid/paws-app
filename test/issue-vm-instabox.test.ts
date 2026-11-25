@@ -47,6 +47,10 @@ function setup(boxOptions: FakeInstaBoxOptions = {}, startsPerMinute = 10) {
     remember: (name, id) => {
       remembered.set(name, id);
     },
+    enrollment: async (issueVmId) => {
+      await Promise.resolve();
+      return { token: `token-${issueVmId}-${now}` };
+    },
     clock,
   });
   const create = (name: string, size = SIZE) =>
@@ -55,7 +59,7 @@ function setup(boxOptions: FakeInstaBoxOptions = {}, startsPerMinute = 10) {
       key: `key-${name}`,
       snapshot: SNAPSHOT,
       size,
-      mintToken: async () => `token-${now}`,
+      issueVmId: `vm-${name}`,
     });
   return { instaBox, bootstrap, vms, create, remembered, now: () => now };
 }

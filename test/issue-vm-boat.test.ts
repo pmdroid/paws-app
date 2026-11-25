@@ -23,6 +23,7 @@ function setup(boatOptions: FakeBoatOptions = {}, startsPerMinute = 10, maxWaitM
     },
   };
   const ids = new Map<string, string>();
+  const minted: number[] = [];
   const boat = createFakeBoat({
     now: clock.now,
     lookup: (name) => ids.get(name) ?? null,
@@ -42,12 +43,20 @@ function setup(boatOptions: FakeBoatOptions = {}, startsPerMinute = 10, maxWaitM
     remember: (name, id) => {
       ids.set(name, id);
     },
+    enrollment: async (issueVmId) => {
+      await Promise.resolve();
+      return { token: `token-${issueVmId}-${minted.push(now)}` };
+    },
     clock,
   });
-  const minted: number[] = [];
-  const mintToken = async () => `token-${minted.push(now)}`;
   const create = (name: string) =>
-    vms.create({ name, key: `key-${name}`, snapshot: "paws-issue-vm", size: SIZE, mintToken });
+    vms.create({
+      name,
+      key: `key-${name}`,
+      snapshot: "paws-issue-vm",
+      size: SIZE,
+      issueVmId: `vm-${name}`,
+    });
   return { boat, bootstrap, queue, vms, create, minted, now: () => now };
 }
 

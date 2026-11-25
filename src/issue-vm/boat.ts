@@ -37,6 +37,7 @@ export type BoatIssueVmOptions = {
   queue: StartQueue;
   readToken: ExeDevTokenReader;
   remember: (name: string, id: string) => void | Promise<void>;
+  enrollment: (issueVmId: string) => Promise<{ token: string }>;
   clock?: BootstrapClock;
   pollMs?: number;
   readyMs?: number;
@@ -50,7 +51,7 @@ export type BoatIssueVmCreate = {
   key: string;
   snapshot: string;
   size: ExeDevVmSize;
-  mintToken: () => Promise<string>;
+  issueVmId: string;
 };
 
 export type BoatIssueVm = EnrolledRunner & { name: string; id: string };
@@ -162,8 +163,8 @@ export function createBoatIssueVms(options: BoatIssueVmOptions): BoatIssueVms {
         throw error;
       }
       await resume(input.name, options.wakeMs ?? 120_000);
-      await install(input.name, await input.mintToken());
-      await bootstrap.stageToken(input.name, await input.mintToken());
+      await install(input.name, (await options.enrollment(input.issueVmId)).token);
+      await bootstrap.stageToken(input.name, (await options.enrollment(input.issueVmId)).token);
       await bootstrap.joinTailnet(input.name);
       const enrolled = await bootstrap.enroll(input.name);
       await bootstrap.startRunner(input.name);

@@ -1,5 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { eq } from "drizzle-orm";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -129,6 +139,10 @@ test("a runner that is no VM host stops its VM units; the daemon reconciles ever
       if (failures-- > 0) throw new Error("Paws is unreachable");
       return { vmHost: false };
     },
+    async issueVmEnrollment() {
+      await Promise.resolve();
+      return { token: null };
+    },
   };
   let now = 0;
   const tick = issueVmReconciler(daemon, fake.units, () => now);
@@ -141,6 +155,36 @@ test("a runner that is no VM host stops its VM units; the daemon reconciles ever
   await tick();
   expect(fake.active.size).toBe(0);
   await issueVmReconciler(daemon, null)();
+});
+
+test("the host stages an unenrolled VM's bootstrap token before starting it, and waits when Paws can't give one", async () => {
+  const fake = createFakeIssueVmUnits();
+  const dir = mkdtempSync(join(tmpdir(), "paws-issue-vm-enroll-"));
+  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  const enrollDir = join(dir, "enroll");
+  const tokens: Record<string, string | null | Error> = {
+    [A]: "bootstrap-token-0123456789",
+    [B]: null,
+    [C]: new Error("Paws is unreachable"),
+  };
+  const daemon = {
+    async issueVmHost(): Promise<IssueVmHostView> {
+      await Promise.resolve();
+      return view(3, { [A]: "awake", [B]: "awake", [C]: "awake" });
+    },
+    async issueVmEnrollment(id: string) {
+      await Promise.resolve();
+      const token = tokens[id]!;
+      if (token instanceof Error) throw token;
+      return { token };
+    },
+  };
+  await issueVmReconciler(daemon, fake.units, () => 0, enrollDir)();
+  expect(readFileSync(join(enrollDir, A), "utf8")).toBe("bootstrap-token-0123456789");
+  expect(statSync(join(enrollDir, A)).mode & 0o777).toBe(0o600);
+  expect(statSync(enrollDir).mode & 0o777).toBe(0o700);
+  expect(readdirSync(enrollDir)).toEqual([A]);
+  expect([...fake.active].sort()).toEqual([issueVmUnit(A, 1, SIZE), issueVmUnit(B, 2, SIZE)]);
 });
 
 async function store(): Promise<Db> {
@@ -164,6 +208,43 @@ async function vm(db: Db, id: string, state: IssueVmState, hostRunnerId = HOST) 
   );
   if (state !== "creating") await db.run((q) => setIssueVmStateSteps(q, { id, state, now: 2 }));
 }
+
+test("Paws mints a bootstrap token only for its own host's unenrolled, live issue VM", async () => {
+  const db = await store();
+  await vm(db, A, "awake");
+  await vm(db, B, "awake");
+  await vm(db, C, "awake", OTHER);
+  await vm(db, D, "asleep");
+  await db.run((q) =>
+    q.exec(q.orm.update(q.t.issueVm).set({ runnerId: "vm-runner" }).where(eq(q.t.issueVm.id, B))),
+  );
+  const minted: string[] = [];
+  const mint = async (id: string) => {
+    await Promise.resolve();
+    minted.push(id);
+    return { token: `token-${id}` };
+  };
+  const enroll = async (body: unknown, method = "POST", using: typeof mint | null = mint) => {
+    const response = (await handleVmHostRunnerRequest(
+      new Request("https://runner.paws.test/v1/issue-vms/enrollment", {
+        method,
+        ...(method === "POST" ? { body: JSON.stringify(body) } : {}),
+      }),
+      HOST,
+      db,
+      using ?? undefined,
+    ))!;
+    return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+  };
+  expect(await enroll({ id: A })).toEqual({ status: 200, body: { token: `token-${A}` } });
+  expect(await enroll({ id: B })).toEqual({ status: 200, body: { token: null } });
+  expect(await enroll({ id: D })).toEqual({ status: 200, body: { token: null } });
+  expect((await enroll({ id: C })).status).toBe(404);
+  expect((await enroll({ id: "nope" })).status).toBe(400);
+  expect((await enroll({ id: A }, "GET")).status).toBe(405);
+  expect((await enroll({ id: A }, "POST", null)).status).toBe(503);
+  expect(minted).toEqual([A]);
+});
 
 test("the systemd units list live paws-issue-vm units and start and stop them", async () => {
   const started: string[][] = [];
