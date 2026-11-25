@@ -346,7 +346,7 @@ export async function runRunnerCli(
     const config = loadConfig(args[1]!, ids.runnerUid);
     const daemonIds = accounts(config.agentUser);
     const sampleHost = createRunnerHostSampler({ workRoot: "/var/lib/paws-runner" });
-    let healthFailure: string | undefined;
+    let healthFailure: string | null | undefined;
     const daemon = openRunnerDaemon({
       root: "/var/lib/paws-runner",
       ...config,
@@ -354,7 +354,9 @@ export async function runRunnerCli(
       log: error,
       sampleHost: () => ({
         ...sampleHost(),
-        ...(healthFailure ? { healthFailure: healthFailure.slice(0, 500) } : {}),
+        ...(healthFailure === undefined
+          ? {}
+          : { healthFailure: healthFailure?.slice(0, 500) ?? null }),
       }),
       accountBindings: () =>
         runnerAccountBindings("/var/lib/paws-agent", {

@@ -212,14 +212,18 @@ test("the runner list says who a runner starts agents as", async () => {
   );
 });
 
-test("the runner list shows a failed health check until a heartbeat reports none", async () => {
+test("a failed health check stays until a heartbeat reports a passing one", async () => {
   const runner = await fixture();
   const failure = "EACCES: permission denied, lstat '/var/lib/paws-agent/.local/share'";
   expect(
     (await runner.heartbeat({ runnerVersion: "0.1.84", healthFailure: failure }))!.status,
   ).toBe(200);
   expect((await runner.list()).runners[0]!.unhealthy).toBe(failure);
-  expect((await runner.heartbeat({ runnerVersion: "0.1.84" }))!.status).toBe(200);
+  expect((await runner.heartbeat({ runnerVersion: "0.1.85" }))!.status).toBe(200);
+  expect((await runner.list()).runners[0]!.unhealthy).toBe(failure);
+  expect((await runner.heartbeat({ runnerVersion: "0.1.85", healthFailure: null }))!.status).toBe(
+    200,
+  );
   expect((await runner.list()).runners[0]!.unhealthy).toBeNull();
   expect((await runner.heartbeat({ healthFailure: "x".repeat(501) }))!.status).toBe(403);
 });

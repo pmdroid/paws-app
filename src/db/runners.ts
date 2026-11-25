@@ -101,7 +101,7 @@ export type RunnerHostSample = {
   /** Absent when the runner does not report them. */
   strayProcesses?: RunnerStrayProcess[];
   agentUser?: RunnerAgentUser;
-  healthFailure?: string;
+  healthFailure?: string | null;
 };
 
 /** A process of the runner user outside the runner's process tree, as last reported. */
@@ -259,7 +259,7 @@ export function* recordRunnerHostStatusSteps(
     miseVersion: sample.miseVersion ?? null,
     strayProcesses: sample.strayProcesses ? JSON.stringify(sample.strayProcesses) : null,
     agentUser: sample.agentUser ?? null,
-    healthFailure: sample.healthFailure ?? null,
+    healthFailure: sample.healthFailure,
   };
   const {
     runnerId: _runnerId,
@@ -269,6 +269,8 @@ export function* recordRunnerHostStatusSteps(
   const before = yield* q.one(
     q.orm.select(stored).from(runnerHostStatus).where(eq(runnerHostStatus.runnerId, runnerId)),
   );
+  values.healthFailure =
+    sample.healthFailure === undefined ? (before?.healthFailure ?? null) : sample.healthFailure;
   if (before && Bun.deepEquals(before, values)) return;
   yield* q.exec(
     q.orm

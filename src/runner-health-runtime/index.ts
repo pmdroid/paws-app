@@ -133,7 +133,7 @@ export async function openRunnerHealthRuntime(options: {
   now?: () => number;
   monotonic?: () => number;
   onError?: (error: Error) => void;
-  onHealth?: (failure: string | undefined) => void;
+  onHealth?: (failure: string | null) => void;
   networkGit?: typeof runGitHubGit;
 }) {
   if (!isAbsolute(options.root) || options.daemon.status().phase !== "paired")
@@ -643,7 +643,7 @@ export async function openRunnerHealthRuntime(options: {
         if (command.type === "helper") await pulse(entry);
         check(entry);
         setPhase(id, "running");
-        options.onHealth?.(undefined);
+        options.onHealth?.(null);
         if (command.type === "helper" && command.tools && options.daemon.helperRequest) {
           entry.tools = { offset: 0, queue: [], answered: new Set(), failed: new Set() };
           entry.tools.timer = setInterval(() => forwarding(entry), 250);

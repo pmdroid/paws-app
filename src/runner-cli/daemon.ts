@@ -30,7 +30,7 @@ export async function runPairedDaemon(
   },
   signal: AbortSignal,
   reportFailure: (error: Error) => void,
-  onHealth?: (failure: string | undefined) => void,
+  onHealth?: (failure: string | null) => void,
 ): Promise<void> {
   const report = (error: Error) => {
     if (!isIdentityRejected(error)) reportFailure(error);

@@ -1308,7 +1308,7 @@ async function reportHealth(
   await recordRunnerHostStatus(
     f.db,
     runnerId,
-    { runnerVersion: CURRENT_RUNNER_RELEASE, ...(failure ? { healthFailure: failure } : {}) },
+    { runnerVersion: CURRENT_RUNNER_RELEASE, healthFailure: failure ?? null },
     Date.now(),
   );
 }

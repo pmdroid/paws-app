@@ -41,7 +41,7 @@ test("a command that fails to start reports the failed check until one starts", 
   chmodSync(root, 0o700);
   const now = Date.now();
   const commands = [helper(now)];
-  const reports: (string | undefined)[] = [];
+  const reports: (string | null)[] = [];
   let refuse = true;
   const runtime = await openRunnerHealthRuntime({
     root,
@@ -99,7 +99,7 @@ test("a command that fails to start reports the failed check until one starts", 
     refuse = false;
     commands.push(helper(now));
     await runtime.tick();
-    expect(reports.at(-1)).toBeUndefined();
+    expect(reports.at(-1)).toBeNull();
     expect(runtime.status().conversations).toHaveLength(1);
   } finally {
     await runtime.stop();
