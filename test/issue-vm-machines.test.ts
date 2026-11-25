@@ -9,6 +9,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -244,6 +245,14 @@ test("Paws mints a bootstrap token only for its own host's unenrolled, live issu
   expect((await enroll({ id: "nope" })).status).toBe(400);
   expect((await enroll({ id: A }, "GET")).status).toBe(405);
   expect((await enroll({ id: A }, "POST", null)).status).toBe(503);
+  const refuse = async () => {
+    await Promise.resolve();
+    throw new Error("The Tailscale key's new machines wait for approval.");
+  };
+  expect(await enroll({ id: A }, "POST", refuse)).toEqual({
+    status: 409,
+    body: { error: "The Tailscale key's new machines wait for approval." },
+  });
   expect(minted).toEqual([A]);
 });
 
@@ -310,9 +319,12 @@ true`,
   writeFileSync(join(bin, "awk"), '#!/bin/sh\nexec mawk "$@"\n');
   chmodSync(join(bin, "awk"), 0o755);
   stub(lib, "cloud-hypervisor");
-  const run = (operation: string, instance: string) =>
+  const proc = join(root, "proc");
+  const run = (operation: string, instance: string, extra: Record<string, string> = {}) =>
     Bun.spawnSync([join(import.meta.dir, "../deploy/issue-vm/vm.sh"), operation, instance], {
       env: {
+        ...extra,
+        PAWS_ISSUE_VM_PROC: proc,
         PATH: `${bin}:/usr/bin:/bin`,
         PAWS_ISSUE_VM_LIB: lib,
         PAWS_ISSUE_VM_STATE: state,
@@ -322,7 +334,7 @@ true`,
       },
     });
   const calls = () => readFileSync(log, "utf8");
-  return { run, calls, lib, dev, state, copied, enroll, config };
+  return { run, calls, lib, dev, state, copied, enroll, config, proc };
 }
 
 test("vm.sh seeds the VM, starts its network rules and runs Cloud Hypervisor with its disk, TAP and size", () => {
@@ -354,8 +366,8 @@ test("vm.sh seeds the VM, starts its network rules and runs Cloud Hypervisor wit
   expect(run("prepare", `${B}-8-2-4`).exitCode).toBe(2);
 });
 
-test("vm.sh moves a staged bootstrap token into the seed once, and the seed goes when the VM stops", () => {
-  const { run, copied, enroll, config, state } = vmScript();
+test("vm.sh moves a staged bootstrap token into the seed once and deletes the seed once Cloud Hypervisor holds it", () => {
+  const { run, copied, enroll, config, state, proc } = vmScript();
   mkdirSync(enroll);
   writeFileSync(join(enroll, A), "bootstrap-token-0123456789");
   writeFileSync(config, '{"controlPlaneUrl":"https://paws.test"}\n');
@@ -370,10 +382,21 @@ test("vm.sh moves a staged bootstrap token into the seed once, and the seed goes
   expect(userData).toContain(
     `paws-runner runner enroll --config /etc/paws-runner/config.json --name paws-vm-${A.toLowerCase()} --token-file /var/lib/paws-bootstrap/enrollment-token`,
   );
+  expect(userData).toContain("for try in $(seq 40)");
   expect(existsSync(join(enroll, A))).toBe(false);
-  expect(existsSync(join(state, `seed-${A}.img`))).toBe(true);
+  const seed = join(state, `seed-${A}.img`);
+  expect(existsSync(seed)).toBe(true);
+  mkdirSync(join(proc, "4242", "fd"), { recursive: true });
+  symlinkSync(join(state, "other.img"), join(proc, "4242", "fd", "3"));
+  expect(run("unseed", `${A}-7-2-4`, { MAINPID: "4243" }).exitCode).toBe(0);
+  expect(existsSync(seed)).toBe(true);
+  symlinkSync(seed, join(proc, "4242", "fd", "4"));
+  expect(run("unseed", `${A}-7-2-4`, { MAINPID: "4242" }).exitCode).toBe(0);
+  expect(existsSync(seed)).toBe(false);
+  expect(run("prepare", `${A}-7-2-4`).exitCode).toBe(0);
+  expect(existsSync(seed)).toBe(true);
   expect(run("clean", `${A}-7-2-4`).exitCode).toBe(0);
-  expect(existsSync(join(state, `seed-${A}.img`))).toBe(false);
+  expect(existsSync(seed)).toBe(false);
   writeFileSync(join(enroll, A), "not a token\n");
   expect(run("prepare", `${A}-7-2-4`).exitCode).toBe(0);
   expect(readFileSync(join(copied, "user-data"), "utf8")).toBe("#cloud-config\n{}\n");

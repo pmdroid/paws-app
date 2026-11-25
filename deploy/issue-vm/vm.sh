@@ -7,6 +7,7 @@ state=${PAWS_ISSUE_VM_STATE:-/var/lib/paws-issue-vm-state}
 dev=${PAWS_ISSUE_VM_DEV:-/dev/paws-issue-vms}
 enroll=${PAWS_ISSUE_VM_ENROLL:-/var/lib/paws-runner/issue-vm-enroll}
 config=${PAWS_ISSUE_VM_CONFIG:-/etc/paws-runner/config.json}
+proc=${PAWS_ISSUE_VM_PROC:-/proc}
 user=paws-issue-vm
 id_pattern='^[0-7][0-9A-HJKMNP-TV-Z]{25}$'
 live='active|activating|deactivating|reloading|refreshing'
@@ -85,7 +86,7 @@ write_files:
     owner: root:root
     permissions: "0600"
 runcmd:
-  - [sh, -c, "/opt/paws-runner/bin/paws-runner runner enroll --config /etc/paws-runner/config.json --name paws-vm-${id,,} --token-file /var/lib/paws-bootstrap/enrollment-token; code=\$?; rm -f /var/lib/paws-bootstrap/enrollment-token; [ \$code -eq 0 ] && systemctl enable --now paws-runner.service"]
+  - [sh, -c, "code=1; for try in \$(seq 40); do /opt/paws-runner/bin/paws-runner runner enroll --config /etc/paws-runner/config.json --name paws-vm-${id,,} --token-file /var/lib/paws-bootstrap/enrollment-token && code=0 && break; sleep 15; done; rm -f /var/lib/paws-bootstrap/enrollment-token; [ \$code -eq 0 ] && systemctl enable --now paws-runner.service"]
 EOF
 }
 
@@ -121,13 +122,28 @@ clean() {
   if [[ -z $(others "*-$slot-*-*") ]]; then systemctl stop "paws-issue-vm-network@$slot.service"; fi
 }
 
+unseed() {
+  local pid=${MAINPID:-} fd
+  [[ $pid =~ ^[1-9][0-9]*$ ]] || return 0
+  for _ in $(seq 600); do
+    for fd in "$proc/$pid/fd/"*; do
+      if [[ $(readlink "$fd" 2>/dev/null) == "$seed.img" ]]; then
+        rm -f "$seed.img"
+        return 0
+      fi
+    done
+    [[ -d $proc/$pid ]] || return 0
+    sleep 0.1
+  done
+}
+
 case "${1:-}" in
-prepare | run | clean)
+prepare | run | unseed | clean)
   parse "${2:-}"
   "$1"
   ;;
 *)
-  printf '%s\n' "Usage: vm.sh prepare|run|clean ID-SLOT-VCPUS-MEMORY_GB" >&2
+  printf '%s\n' "Usage: vm.sh prepare|run|unseed|clean ID-SLOT-VCPUS-MEMORY_GB" >&2
   exit 2
   ;;
 esac
