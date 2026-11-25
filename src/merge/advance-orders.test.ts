@@ -13,6 +13,7 @@ import {
   listCiRounds,
   listJobs,
   listMergeQueues,
+  listOpenQuestions,
   listRebaseReturns,
   listReviewEscapes,
   pendingPullCiFailures,
@@ -866,6 +867,70 @@ describe("advanceMerge when main has a GitHub merge queue under another order", 
     expect(queue.calls.filter((call) => call === "exists")).toHaveLength(2);
     expect(h.github.merged).toEqual([]);
     expect(await findOpenQuestion(h.db, "ses-ENG-1")).toBeNull();
+  });
+});
+
+describe("advanceMerge when GitHub's merge queue needs a review", () => {
+  const owners =
+    "Pull request Waiting on code owner review from acme/front-end and/or acme/platform.";
+  const waiting = "Waiting for code owner review from acme/front-end and/or acme/platform.";
+
+  async function refused(refusal: string) {
+    let head = async (): Promise<string> => "";
+    const queue = createFakeMergeQueue({ headOf: () => head() });
+    queue.refusal = refusal;
+    const h = await start({ settings: { order: "queue" }, queue });
+    await h.addItem("ENG-1");
+    head = () => h.remoteHead("ENG-1");
+    return { h, queue };
+  }
+
+  test("a missing code owner review waits in the merge queue, then the approved head is queued and merges", async () => {
+    const { h, queue } = await refused(owners);
+    const step = await h.pass("ENG-1");
+    expect(step).toMatchObject({
+      kind: "wait",
+      reason: "review",
+      githubQueue: { queued: false, reviewSince: h.clock.now() },
+    });
+    expect(step.kind === "wait" && step.message).toStartWith(waiting);
+    expect((await getWorkItem(h.db, "ENG-1"))?.state).toBe("merge_queue");
+    expect(h.bodies("status")).toEqual([
+      `${waiting} Paws adds https://github.com/acme/app/pull/1 to the acme/app GitHub merge queue once it is approved.`,
+    ]);
+    queue.refusal = null;
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", githubQueue: { queued: true } });
+    queue.merge(1, "queue-merge-sha");
+    expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
+    expect(queue.enqueued).toHaveLength(2);
+    expect(h.github.merged).toEqual([]);
+  });
+
+  test("after 24 hours without a review Paws asks once, and the item stays in the merge queue", async () => {
+    const { h } = await refused(
+      "Pull request At least 1 approving review is required by reviewers with write access.",
+    );
+    await h.pass("ENG-1");
+    h.clock.advance(24 * 60 * 60_000);
+    expect(await h.pass("ENG-1")).toMatchObject({
+      kind: "wait",
+      reason: "review",
+      githubQueue: { reviewAsked: true },
+    });
+    h.clock.advance(24 * 60 * 60_000);
+    await h.pass("ENG-1");
+    const questions = await listOpenQuestions(h.db);
+    expect(questions).toHaveLength(1);
+    expect(questions[0]?.body).toContain("https://github.com/acme/app/pull/1 has waited 24 hours");
+    expect(questions[0]?.body).toContain("approving review is required by reviewers");
+    expect((await getWorkItem(h.db, "ENG-1"))?.state).toBe("merge_queue");
+  });
+
+  test("any other refusal fails the merge as before", async () => {
+    const { h } = await refused('Pull request Required status check "test" is failing.');
+    const step = await h.pass("ENG-1");
+    expect(step).toMatchObject({ kind: "failed", reason: "merge" });
+    expect(step.kind === "failed" && step.message).toEndWith('check "test" is failing.');
   });
 });
 

@@ -4,6 +4,8 @@ export const RETRY_MERGE = "Retry merge";
 
 export const MERGE_DENIAL_LIMIT = 3;
 
+export const MERGE_REVIEW_REASON = "merge_review";
+
 export function retriesMerge(question: Pick<StoredQuestion, "options" | "answer">): boolean {
   const answer = (question.answer ?? "").trim().toLowerCase();
   return (
