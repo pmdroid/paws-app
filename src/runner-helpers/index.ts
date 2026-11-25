@@ -159,7 +159,10 @@ export function createRunnerHelpers(options: {
     const entry = handlers.get(id);
     const access = options.repositoryAccess;
     const handler = entry?.repositories;
-    if (command.purpose !== "slack_reply" || !entry || !handler || !access)
+    const allowed =
+      command.purpose === "slack_reply" ||
+      (command.purpose === "probe_write" && command.probe?.repository === repository);
+    if (!allowed || !entry || !handler || !access)
       throw new HelperForbiddenError("Runner helper repository is unavailable");
     const repeated = entry.granted.has(repository);
     if (!repeated && entry.granted.size >= HELPER_REPOSITORIES)
