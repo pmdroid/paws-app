@@ -112,6 +112,25 @@ class Rules(unittest.TestCase):
         self.assertNotIn("masquerade", ruleset)
         self.assertNotIn("oifname !=", ruleset)
 
+    def test_the_relay_forwards_only_paws_runner_ports_over_the_tailnet(self):
+        config = pathlib.Path(tempfile.mkdtemp()) / "config.json"
+        config.write_text(json.dumps({"controlPlaneUrl": "https://paws.example.ts.net:8787", "runnerApiUrl": "https://paws.example.ts.net:8788/v1", "agentUser": "paws-agent"}))
+        resolve = lambda host, port, *rest: [(2, 1, 6, "", ("100.90.1.2", port))] if host == "paws.example.ts.net" else []
+        relay = self.network.paws_relay(config, resolve)
+        self.assertEqual(relay, [("100.90.1.2", 8787), ("100.90.1.2", 8788)])
+        config.write_text(json.dumps({"controlPlaneUrl": "https://paws.example.ts.net:22", "runnerApiUrl": 7}))
+        self.assertEqual(self.network.paws_relay(config, resolve), [])
+        self.assertEqual(self.network.paws_relay(config.parent / "missing.json", resolve), [])
+        ruleset, _ = self.network.render([1], LINKS, ROUTES, relay)
+        lines = [line.strip() for line in ruleset.splitlines()]
+        accept = lines.index('iifname "pawsvm*" ip daddr 100.90.1.2 tcp dport 8788 accept')
+        self.assertLess(accept, lines.index('iifname "pawsvm*" ip daddr @denied4 drop'))
+        self.assertLess(lines.index('oifname "pawsvm*" ip saddr 100.90.1.2 tcp sport 8787 ct state established accept'), lines.index('oifname "pawsvm*" iifname != "eth0" drop'))
+        for rule in ('iifname "pawsvm*" ip daddr 10.199.0.0/16 tcp dport 8787 dnat ip to 100.90.1.2', "ip saddr 10.199.0.0/16 ip daddr 100.90.1.2 tcp dport 8788 masquerade", 'iifname "pawsvm*" drop'):
+            self.assertIn(rule, lines)
+        self.assertEqual(sum("dport" in line for line in lines), 6)
+        self.assertNotIn("100.64.0.0/10 accept", ruleset)
+
     def test_every_default_route_device_is_an_uplink(self):
         ruleset, outward = self.network.render([1], LINKS, [*ROUTES, {"dst": "default", "dev": "wlan0", "metric": 600}, {"dst": "default", "dev": "pawsvm2"}])
         self.assertEqual(outward, ["eth0", "wlan0"])
@@ -128,6 +147,7 @@ class Lifecycle(unittest.TestCase):
         self.network.FORWARD_SWITCH = root / "ip_forward"
         self.network.LOCK = root / "network.lock"
         self.network.STATE = self.state
+        self.network.CONFIG = root / "config.json"
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -140,7 +160,7 @@ class Lifecycle(unittest.TestCase):
     def test_rules_come_with_the_first_vm_and_go_with_the_last(self):
         fake = self.host()
         result = self.network.up(2, self.state)
-        self.assertEqual(result, {"vms": [2], "uplinks": ["eth0"], "docker": True})
+        self.assertEqual(result, {"vms": [2], "uplinks": ["eth0"], "docker": True, "relay": []})
         self.assertIn('iifname "pawsvm2" ip saddr != 10.199.2.2 drop', fake.applied[-1])
         self.assertEqual(self.network.FORWARD_SWITCH.read_text(), "1\n")
         self.assertEqual(sorted(map(tuple, fake.docker_rules)), sorted(map(tuple, self.network.docker_rules(["eth0"]))))
@@ -149,7 +169,7 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(len(fake.docker_rules), 2)
         self.assertEqual(self.network.down(2, self.state)["vms"], [5])
         self.assertNotIn("pawsvm2", fake.applied[-1])
-        self.assertEqual(self.network.down(5, self.state), {"vms": [], "uplinks": [], "docker": True})
+        self.assertEqual(self.network.down(5, self.state), {"vms": [], "uplinks": [], "docker": True, "relay": []})
         self.assertIsNone(fake.applied[-1])
         self.assertEqual(fake.docker_rules, [])
         self.assertEqual(self.network.down(5, self.state)["vms"], [])
@@ -164,6 +184,13 @@ class Lifecycle(unittest.TestCase):
         self.assertNotIn("198.51.200.0/24", fake.applied[-1])
         self.assertIn('iifname "pawsvm*" oifname != "eth1" drop', fake.applied[-1])
         self.assertEqual(sorted(map(tuple, fake.docker_rules)), sorted(map(tuple, self.network.docker_rules(["eth1"]))))
+
+    def test_the_relay_follows_the_runner_config(self):
+        fake = self.host()
+        self.network.CONFIG.write_text(json.dumps({"controlPlaneUrl": "https://100.90.1.2:8787", "runnerApiUrl": "https://100.90.1.2:8788"}))
+        self.assertEqual(self.network.up(1, self.state)["relay"], ["100.90.1.2:8787", "100.90.1.2:8788"])
+        self.assertIn("dnat ip to 100.90.1.2", fake.applied[-1])
+        self.assertEqual(len(fake.docker_rules), 6)
 
     def test_a_host_without_docker_needs_no_docker_rules(self):
         fake = self.host(docker=False)

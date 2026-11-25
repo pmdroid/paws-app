@@ -1027,6 +1027,16 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     async issueVmHost(): Promise<IssueVmHostView> {
       return IssueVmHostViewSchema.parse(await authenticated("/v1/issue-vms", "GET"));
     },
+    async issueVmEnrollment(id: string): Promise<{ token: string | null }> {
+      return z
+        .strictObject({
+          token: z
+            .string()
+            .regex(/^[A-Za-z0-9_-]{16,256}$/)
+            .nullable(),
+        })
+        .parse(await authenticated("/v1/issue-vms/enrollment", "POST", { id }));
+    },
     async postStorageCleanup(result: RunnerStorageCleanupResult) {
       const body = RunnerStorageCleanupResultSchema.parse(result);
       return z

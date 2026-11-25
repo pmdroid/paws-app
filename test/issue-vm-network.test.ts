@@ -18,7 +18,7 @@ test("issue VM network rules deny private destinations, follow host changes and 
     child.exited,
   ]);
   expect(stdout + stderr).not.toContain("skipped");
-  expect(stderr).toMatch(/Ran 9 tests[\s\S]*\nOK\n?$/);
+  expect(stderr).toMatch(/Ran 11 tests[\s\S]*\nOK\n?$/);
   expect(code).toBe(0);
 });
 

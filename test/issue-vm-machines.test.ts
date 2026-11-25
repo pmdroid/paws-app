@@ -1,5 +1,17 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { eq } from "drizzle-orm";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -129,6 +141,10 @@ test("a runner that is no VM host stops its VM units; the daemon reconciles ever
       if (failures-- > 0) throw new Error("Paws is unreachable");
       return { vmHost: false };
     },
+    async issueVmEnrollment() {
+      await Promise.resolve();
+      return { token: null };
+    },
   };
   let now = 0;
   const tick = issueVmReconciler(daemon, fake.units, () => now);
@@ -141,6 +157,36 @@ test("a runner that is no VM host stops its VM units; the daemon reconciles ever
   await tick();
   expect(fake.active.size).toBe(0);
   await issueVmReconciler(daemon, null)();
+});
+
+test("the host stages an unenrolled VM's bootstrap token before starting it, and waits when Paws can't give one", async () => {
+  const fake = createFakeIssueVmUnits();
+  const dir = mkdtempSync(join(tmpdir(), "paws-issue-vm-enroll-"));
+  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  const enrollDir = join(dir, "enroll");
+  const tokens: Record<string, string | null | Error> = {
+    [A]: "bootstrap-token-0123456789",
+    [B]: null,
+    [C]: new Error("Paws is unreachable"),
+  };
+  const daemon = {
+    async issueVmHost(): Promise<IssueVmHostView> {
+      await Promise.resolve();
+      return view(3, { [A]: "awake", [B]: "awake", [C]: "awake" });
+    },
+    async issueVmEnrollment(id: string) {
+      await Promise.resolve();
+      const token = tokens[id]!;
+      if (token instanceof Error) throw token;
+      return { token };
+    },
+  };
+  await issueVmReconciler(daemon, fake.units, () => 0, enrollDir)();
+  expect(readFileSync(join(enrollDir, A), "utf8")).toBe("bootstrap-token-0123456789");
+  expect(statSync(join(enrollDir, A)).mode & 0o777).toBe(0o600);
+  expect(statSync(enrollDir).mode & 0o777).toBe(0o700);
+  expect(readdirSync(enrollDir)).toEqual([A]);
+  expect([...fake.active].sort()).toEqual([issueVmUnit(A, 1, SIZE), issueVmUnit(B, 2, SIZE)]);
 });
 
 async function store(): Promise<Db> {
@@ -164,6 +210,50 @@ async function vm(db: Db, id: string, state: IssueVmState, hostRunnerId = HOST) 
   );
   if (state !== "creating") await db.run((q) => setIssueVmStateSteps(q, { id, state, now: 2 }));
 }
+
+test("Paws mints a bootstrap token only for its own host's unenrolled, live issue VM", async () => {
+  const db = await store();
+  await vm(db, A, "awake");
+  await vm(db, B, "awake");
+  await vm(db, C, "awake", OTHER);
+  await vm(db, D, "asleep");
+  await db.run((q) =>
+    q.exec(q.orm.update(q.t.issueVm).set({ runnerId: "vm-runner" }).where(eq(q.t.issueVm.id, B))),
+  );
+  const minted: string[] = [];
+  const mint = async (id: string) => {
+    await Promise.resolve();
+    minted.push(id);
+    return { token: `token-${id}` };
+  };
+  const enroll = async (body: unknown, using?: typeof mint) => {
+    const response = (await handleVmHostRunnerRequest(
+      new Request("https://runner.paws.test/v1/issue-vms/enrollment", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+      HOST,
+      db,
+      using,
+    ))!;
+    return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+  };
+  expect(await enroll({ id: A }, mint)).toEqual({ status: 200, body: { token: `token-${A}` } });
+  expect(await enroll({ id: B }, mint)).toEqual({ status: 200, body: { token: null } });
+  expect(await enroll({ id: D }, mint)).toEqual({ status: 200, body: { token: null } });
+  expect((await enroll({ id: C }, mint)).status).toBe(404);
+  expect((await enroll({ id: "nope" }, mint)).status).toBe(400);
+  expect((await enroll({ id: A })).status).toBe(503);
+  const refuse = async () => {
+    await Promise.resolve();
+    throw new Error("The Tailscale key's new machines wait for approval.");
+  };
+  expect(await enroll({ id: A }, refuse)).toEqual({
+    status: 409,
+    body: { error: "The Tailscale key's new machines wait for approval." },
+  });
+  expect(minted).toEqual([A]);
+});
 
 test("the systemd units list live paws-issue-vm units and start and stop them", async () => {
   const started: string[][] = [];
@@ -203,13 +293,21 @@ function vmScript(active: string[] = []) {
   const dev = join(root, "dev");
   const state = join(root, "state");
   const log = join(root, "log");
-  for (const dir of [bin, lib, dev]) mkdirSync(dir);
+  const copied = join(root, "copied");
+  const enroll = join(root, "enroll");
+  const config = join(root, "config.json");
+  for (const dir of [bin, lib, dev, copied]) mkdirSync(dir);
   writeFileSync(join(dev, A), "");
   const stub = (dir: string, name: string, body = "") => {
     writeFileSync(join(dir, name), `#!/bin/bash\necho "${name} $*" >>${log}\n${body}\n`);
     chmodSync(join(dir, name), 0o755);
   };
-  for (const name of ["chown", "mkfs.vfat", "mcopy"]) stub(bin, name);
+  for (const name of ["chown", "mkfs.vfat"]) stub(bin, name);
+  stub(
+    bin,
+    "mcopy",
+    `for f in "$@"; do [[ -f $f && $f != *.img ]] && cp "$f" ${copied}/; done; true`,
+  );
   stub(
     bin,
     "systemctl",
@@ -220,28 +318,33 @@ true`,
   writeFileSync(join(bin, "awk"), '#!/bin/sh\nexec mawk "$@"\n');
   chmodSync(join(bin, "awk"), 0o755);
   stub(lib, "cloud-hypervisor");
-  const run = (operation: string, instance: string) =>
+  const proc = join(root, "proc");
+  const run = (operation: string, instance: string, extra: Record<string, string> = {}) =>
     Bun.spawnSync([join(import.meta.dir, "../deploy/issue-vm/vm.sh"), operation, instance], {
       env: {
+        ...extra,
+        PAWS_ISSUE_VM_PROC: proc,
         PATH: `${bin}:/usr/bin:/bin`,
         PAWS_ISSUE_VM_LIB: lib,
         PAWS_ISSUE_VM_STATE: state,
         PAWS_ISSUE_VM_DEV: dev,
+        PAWS_ISSUE_VM_ENROLL: enroll,
+        PAWS_ISSUE_VM_CONFIG: config,
       },
     });
   const calls = () => readFileSync(log, "utf8");
-  return { run, calls, lib, dev, state };
+  return { run, calls, lib, dev, state, copied, enroll, config, proc };
 }
 
 test("vm.sh seeds the VM, starts its network rules and runs Cloud Hypervisor with its disk, TAP and size", () => {
-  const { run, calls, lib, dev, state } = vmScript();
+  const { run, calls, lib, dev, state, copied } = vmScript();
   expect(run("prepare", `${A}-7-2-4`).exitCode).toBe(0);
-  expect(readFileSync(join(state, `seed-${A}`, "network-config"), "utf8")).toContain(
+  expect(readFileSync(join(copied, "network-config"), "utf8")).toContain(
     'addresses: [ "10.199.7.2/24" ]',
   );
-  expect(readFileSync(join(state, `seed-${A}`, "meta-data"), "utf8")).toContain(
-    `instance-id: ${A}-7`,
-  );
+  expect(readFileSync(join(copied, "meta-data"), "utf8")).toContain(`instance-id: ${A}-7`);
+  expect(readFileSync(join(copied, "user-data"), "utf8")).toBe("#cloud-config\n{}\n");
+  expect(existsSync(join(state, `seed-${A}`))).toBe(false);
   expect(calls()).toContain(`chown paws-issue-vm ${dev}/${A}`);
   expect(calls()).toContain("systemctl start paws-issue-vm-network@7.service");
   expect(run("run", `${A}-7-2-4`).exitCode).toBe(0);
@@ -260,6 +363,44 @@ test("vm.sh seeds the VM, starts its network rules and runs Cloud Hypervisor wit
   for (const bad of [`${A}-0-2-4`, `${A}-255-2-4`, `${A}-7-33-4`, `${A}-7-2-129`, `${A}-7-2`, "x"])
     expect(run("prepare", bad).exitCode).toBe(2);
   expect(run("prepare", `${B}-8-2-4`).exitCode).toBe(2);
+});
+
+test("vm.sh moves a staged bootstrap token into the seed once and deletes the seed once Cloud Hypervisor holds it", () => {
+  const { run, copied, enroll, config, state, proc } = vmScript();
+  mkdirSync(enroll);
+  writeFileSync(join(enroll, A), "bootstrap-token-0123456789");
+  writeFileSync(config, '{"controlPlaneUrl":"https://paws.test"}\n');
+  expect(run("prepare", `${A}-7-2-4`).exitCode).toBe(0);
+  const userData = readFileSync(join(copied, "user-data"), "utf8");
+  expect(userData).toContain(
+    `content: ${Buffer.from("bootstrap-token-0123456789").toString("base64")}`,
+  );
+  expect(userData).toContain(
+    `content: ${Buffer.from('{"controlPlaneUrl":"https://paws.test"}\n').toString("base64")}`,
+  );
+  expect(userData).toContain(
+    `paws-runner runner enroll --config /etc/paws-runner/config.json --name paws-vm-${A.toLowerCase()} --token-file /var/lib/paws-bootstrap/enrollment-token`,
+  );
+  expect(userData).toContain("for try in $(seq 40)");
+  expect(userData).toContain('    content: "10.199.7.1 paws.test\\n"');
+  expect(existsSync(join(enroll, A))).toBe(false);
+  const seed = join(state, `seed-${A}.img`);
+  expect(existsSync(seed)).toBe(true);
+  mkdirSync(join(proc, "4242", "fd"), { recursive: true });
+  symlinkSync(join(state, "other.img"), join(proc, "4242", "fd", "3"));
+  expect(run("unseed", `${A}-7-2-4`, { MAINPID: "4243" }).exitCode).toBe(0);
+  expect(existsSync(seed)).toBe(true);
+  symlinkSync(seed, join(proc, "4242", "fd", "4"));
+  expect(run("unseed", `${A}-7-2-4`, { MAINPID: "4242" }).exitCode).toBe(0);
+  expect(existsSync(seed)).toBe(false);
+  expect(run("prepare", `${A}-7-2-4`).exitCode).toBe(0);
+  expect(existsSync(seed)).toBe(true);
+  expect(run("clean", `${A}-7-2-4`).exitCode).toBe(0);
+  expect(existsSync(seed)).toBe(false);
+  writeFileSync(join(enroll, A), "not a token\n");
+  expect(run("prepare", `${A}-7-2-4`).exitCode).toBe(0);
+  expect(readFileSync(join(copied, "user-data"), "utf8")).toBe("#cloud-config\n{}\n");
+  expect(existsSync(join(enroll, A))).toBe(false);
 });
 
 test("vm.sh refuses a second unit for the same VM or the same slot", () => {

@@ -5,6 +5,9 @@ export LC_ALL=C
 lib=${PAWS_ISSUE_VM_LIB:-/usr/local/lib/paws-issue-vm}
 state=${PAWS_ISSUE_VM_STATE:-/var/lib/paws-issue-vm-state}
 dev=${PAWS_ISSUE_VM_DEV:-/dev/paws-issue-vms}
+enroll=${PAWS_ISSUE_VM_ENROLL:-/var/lib/paws-runner/issue-vm-enroll}
+config=${PAWS_ISSUE_VM_CONFIG:-/etc/paws-runner/config.json}
+proc=${PAWS_ISSUE_VM_PROC:-/proc}
 user=paws-issue-vm
 id_pattern='^[0-7][0-9A-HJKMNP-TV-Z]{25}$'
 live='active|activating|deactivating|reloading|refreshing'
@@ -49,13 +52,48 @@ ethernets:
     routes: [ { to: default, via: "$host_ip" } ]
     nameservers: { addresses: [ "1.1.1.1", "9.9.9.9" ] }
 EOF
-  printf '#cloud-config\n{}\n' >"$seed/user-data"
+  user_data >"$seed/user-data"
   rm -f "$seed.img"
   truncate -s 8M "$seed.img"
   mkfs.vfat -n CIDATA "$seed.img" >/dev/null
   mcopy -o -i "$seed.img" "$seed"/* ::/
+  rm -rf "$seed"
   chown "root:$user" "$seed.img"
   chmod 0440 "$seed.img"
+}
+
+user_data() {
+  local staged=$enroll/$id token=
+  if [[ -e $staged || -L $staged ]]; then
+    if [[ -f $staged && ! -L $staged ]]; then token=$(head -c 300 "$staged"); fi
+    rm -f "$staged"
+  fi
+  if [[ ! $token =~ ^[A-Za-z0-9_-]{16,256}$ || ! -f $config || -L $config ]]; then
+    printf '#cloud-config\n{}\n'
+    return
+  fi
+  local names
+  names=$(python3 -I -c 'import json, sys, urllib.parse; c = json.load(open(sys.argv[1])); print(" ".join(sorted({urllib.parse.urlsplit(c.get(k) or "").hostname or "" for k in ("controlPlaneUrl", "runnerApiUrl")} - {""})))' "$config")
+  [[ $names =~ ^[A-Za-z0-9.\ -]*$ ]] || names=
+  cat <<EOF
+#cloud-config
+write_files:
+  - path: /etc/paws-runner/config.json
+    encoding: b64
+    content: $(base64 -w0 "$config")
+    owner: root:paws-runner
+    permissions: "0640"
+  - path: /var/lib/paws-bootstrap/enrollment-token
+    encoding: b64
+    content: $(printf '%s' "$token" | base64 -w0)
+    owner: root:root
+    permissions: "0600"
+  - path: /etc/hosts
+    append: true
+    content: "$host_ip $names\n"
+runcmd:
+  - [sh, -c, "code=1; for try in \$(seq 40); do /opt/paws-runner/bin/paws-runner runner enroll --config /etc/paws-runner/config.json --name paws-vm-${id,,} --token-file /var/lib/paws-bootstrap/enrollment-token && code=0 && break; sleep 15; done; rm -f /var/lib/paws-bootstrap/enrollment-token; [ \$code -eq 0 ] && systemctl enable --now paws-runner.service"]
+EOF
 }
 
 prepare() {
@@ -84,18 +122,34 @@ run() {
 clean() {
   if [[ -z $(others "$id-*") ]]; then
     rm -f "$dir/api.sock"
+    rm -rf "$seed" "$seed.img"
     if [[ -e $disk ]]; then chown root "$(readlink -f "$disk")"; fi
   fi
   if [[ -z $(others "*-$slot-*-*") ]]; then systemctl stop "paws-issue-vm-network@$slot.service"; fi
 }
 
+unseed() {
+  local pid=${MAINPID:-} fd
+  [[ $pid =~ ^[1-9][0-9]*$ ]] || return 0
+  for _ in $(seq 600); do
+    for fd in "$proc/$pid/fd/"*; do
+      if [[ $(readlink "$fd" 2>/dev/null) == "$seed.img" ]]; then
+        rm -f "$seed.img"
+        return 0
+      fi
+    done
+    [[ -d $proc/$pid ]] || return 0
+    sleep 0.1
+  done
+}
+
 case "${1:-}" in
-prepare | run | clean)
+prepare | run | unseed | clean)
   parse "${2:-}"
   "$1"
   ;;
 *)
-  printf '%s\n' "Usage: vm.sh prepare|run|clean ID-SLOT-VCPUS-MEMORY_GB" >&2
+  printf '%s\n' "Usage: vm.sh prepare|run|unseed|clean ID-SLOT-VCPUS-MEMORY_GB" >&2
   exit 2
   ;;
 esac

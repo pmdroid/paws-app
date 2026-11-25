@@ -199,7 +199,7 @@ test("an issue VM enrolls with its bootstrap token once and gets only its own is
   await f.work.assign(f.command(enrolled.runnerId, "mine"));
 });
 
-test("a Tailscale key whose machines wait for approval refuses the bootstrap token", async () => {
+test("a Tailscale key that needs approval refuses the token, and a token expires after ten minutes", async () => {
   const f = await fixture();
   await f.db.run((q) =>
     putVmProviderCheckSteps(q, {
@@ -214,10 +214,7 @@ test("a Tailscale key whose machines wait for approval refuses the bootstrap tok
   await expect(f.control.createIssueVmEnrollment(f.vmId)).rejects.toThrow(
     "The Tailscale key's new machines wait for approval, so an issue VM can't enroll without a person.",
   );
-});
-
-test("an issue VM's bootstrap token expires after ten minutes", async () => {
-  const f = await fixture();
+  await f.db.run((q) => q.exec(q.orm.delete(q.t.vmProviderCheck)));
   const { token } = (await f.control.createIssueVmEnrollment(f.vmId))!;
   f.advance(10 * 60_000);
   const client = await createRunnerKey(join(f.root, "late"));
