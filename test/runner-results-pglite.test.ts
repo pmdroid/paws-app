@@ -1,8 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
+import { JOB_KIND } from "../src/core";
 import {
   insertRunnerFollowUpSteps,
   insertRunnerQuestionAnswerSteps,
+  enqueueJob,
+  getJob,
   insertRunnerResultSteps,
   itemRunnerFollowUpTargetSteps,
   runnerEventPageSteps,
@@ -65,6 +68,28 @@ describePglite((connect) => {
     const stored = await db.run((q) => runnerResultForCommandSteps(q, key, "command"));
     expect(JSON.parse(stored!)).toEqual(JSON.parse(payload));
     expect(await db.run((q) => runnerResultForCommandSteps(q, key, "other"))).toBeNull();
+  });
+
+  test("verification parked for a run is due once that run's result is stored", async () => {
+    const db = await connected(connect);
+    const parked = (runId: string) =>
+      enqueueJob(db, {
+        queue: JOB_KIND.reverify,
+        payload: { itemId: runId, verificationWaitRunId: runId },
+        runAt: 5_000,
+        now: 0,
+      });
+    const waiting = await parked("run");
+    const other = await parked("other");
+    const payload = JSON.stringify({ commandId: "command" });
+
+    expect(
+      await db.run((q) =>
+        insertRunnerResultSteps(q, { ...key, commandId: "command", payload, receivedAt: 5 }),
+      ),
+    ).toBe(true);
+    expect((await getJob(db, waiting))?.runAt).toBe(5);
+    expect((await getJob(db, other))?.runAt).toBe(5_000);
   });
 
   test("a run's events, questions and answers page in sequence order", async () => {

@@ -1,6 +1,7 @@
 import { journalCaught } from "../journal";
 import { z } from "zod";
 import {
+  emitJobReady,
   insertRunnerFollowUpSteps,
   insertRunnerQuestionAnswerSteps,
   insertRunnerResultSteps,
@@ -73,7 +74,8 @@ export function createRunnerResults(options: { store: Db; work: RunnerWork; now?
       result: RunnerResult;
     }) {
       const result = RunnerResultSchema.parse(input.result);
-      return store.transaction(function* (q) {
+      let woke = false;
+      const receipt = await store.transaction(function* (q) {
         const { command } = yield* work.authorizeSteps(q, input);
         if (
           (command.type !== "run" && command.type !== "review" && command.type !== "task") ||
@@ -98,7 +100,7 @@ export function createRunnerResults(options: { store: Db; work: RunnerWork; now?
           return { duplicate: true };
         }
         const at = now();
-        yield* insertRunnerResultSteps(q, {
+        woke = yield* insertRunnerResultSteps(q, {
           runId: input.runId,
           generation: input.generation,
           commandId: command.id,
@@ -114,6 +116,8 @@ export function createRunnerResults(options: { store: Db; work: RunnerWork; now?
           });
         return { duplicate: false };
       });
+      if (woke) emitJobReady(store);
+      return receipt;
     },
     async read(runId: string, generation: number, commandId: string): Promise<RunnerResult | null> {
       const payload = await store.run(function* (q) {
