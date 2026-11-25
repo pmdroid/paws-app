@@ -4,7 +4,12 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { request } from "node:https";
 import { join } from "node:path";
-import { consumeWorkspaceBootstrap, putWorkspaceUser, syncWorkspaceMember } from "../../src/db";
+import {
+  consumeWorkspaceBootstrap,
+  putWorkspaceUser,
+  runnerNamedBindings,
+  syncWorkspaceMember,
+} from "../../src/db";
 import { createRunnerControl } from "../../src/runner-control";
 import { createRunnerHealth } from "../../src/runner-health";
 import {
@@ -21,6 +26,7 @@ import {
 import { createRunnerWork } from "../../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 import { pgliteServer } from "../pglite";
+import { signInFixtureRunner } from "../pglite-fixtures";
 import { eq } from "drizzle-orm";
 
 export async function probeRunnerHealth(
@@ -93,6 +99,12 @@ export async function probeRunnerHealth(
   });
   assert.equal(identity.status, "approved");
   if (identity.status !== "approved") throw new Error("Expected approved fixture identity");
+  for (const agent of ["codex", "claude"]) await signInFixtureRunner(db, runnerId, agent);
+  const bound = await runnerNamedBindings(db, runnerId, workspace.id);
+  const accountOf = (agent: string) => {
+    const binding = bound.find((row) => row.agent === agent)!;
+    return { accountId: binding.accountId, bindingId: binding.bindingId };
+  };
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
     store: db,
@@ -172,6 +184,7 @@ export async function probeRunnerHealth(
     now += 1000;
     await work.heartbeat(runnerId);
     assert.equal((await health.list(principal, runnerId)).lastSeenAt, now);
+    for (const agent of ["codex", "claude"]) await signInFixtureRunner(db, runnerId, agent);
     const pending = await health.request(principal, runnerId, requestInput);
     const verified = verifyRunnerCommand((await work.commands(runnerId))[0], {
       trustedKeys: new Map([["health-fixture", signing.publicKey]]),
@@ -179,6 +192,7 @@ export async function probeRunnerHealth(
       workspaceId: workspace.id,
       now,
       allowedRepositories: [],
+      accountBindings: new Set([accountOf("codex").bindingId]),
       claimCommand: () => true,
     });
     assert(verified.ok);
@@ -254,6 +268,7 @@ export async function probeRunnerHealth(
       cancelled: false,
       authRequired: false,
       agentExited: true,
+      account: accountOf("codex"),
       models: [{ id: "scripted-model", name: "Scripted model" }],
     };
     assert.equal((await send(result)).status, 200);
@@ -379,6 +394,7 @@ export async function probeRunnerHealth(
     const loginResult = {
       ...result,
       commandId: login.commandId,
+      account: accountOf("claude"),
       login: { agent: "claude" as const, authenticated: true, method: "subscription" as const },
     };
     await assert.rejects(

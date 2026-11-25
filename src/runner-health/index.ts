@@ -13,11 +13,11 @@ import {
   LOGIN_CHECK_KINDS,
   pendingHealthChecksSteps,
   recordAccountObservationSteps,
-  recordRunnerAgentUsageSteps,
   runnerAgentCheckStatesSteps,
   runnerLaneHelperWaitingSteps,
   runnerLastSeenSteps,
-  settleRunnerAgentSteps,
+  runnerNamedBindingsSteps,
+  runnerAccountUnsupportedSteps,
   seenMemberRunnersSteps,
   touchRunnerSeenSteps,
   workspaceMemberSteps,
@@ -59,6 +59,15 @@ const PASSED_CHECK_INTERVAL_MS = 30 * 60_000;
 const RECENT_USE_MS = 24 * 60 * 60_000;
 const RECENTLY_SEEN_MS = 60_000;
 const runnerAgents = ["claude", "codex", "grok", "opencode"] as const;
+
+class NoSignedInAccountError extends Error {
+  override readonly name = "NoSignedInAccountError";
+  constructor(agent: string, runner: string) {
+    super(
+      `No signed-in ${agent} account on ${runner}. Sign one in under Settings › Agent accounts.`,
+    );
+  }
+}
 
 /**
  * Whether a background check of this agent is due. An agent nothing has answered for yet gets
@@ -148,21 +157,40 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
     }
     return (agent: Agent) => latest.get(agent);
   }
+  function* accountSteps(
+    q: Q,
+    runner: { id: string; workspaceId: string },
+    agent: string,
+    enabled: boolean,
+  ) {
+    for (const row of yield* runnerNamedBindingsSteps(q, runner.id, runner.workspaceId))
+      if (
+        row.agent === agent &&
+        (!enabled || row.enabled === 1) &&
+        !(yield* runnerAccountUnsupportedSteps(q, runner.id, row.bindingId, row.agent))
+      )
+        return { accountId: row.accountId, bindingId: row.bindingId };
+    return null;
+  }
   function* queueCheckSteps(
     q: Q,
     runner: { id: string; workspaceId: string },
     agent: Agent,
     at: number,
   ) {
+    const account = yield* accountSteps(q, runner, agent, false);
+    if (!account) return false;
     yield* work.enqueueSteps(q, {
       id: randomUUID(),
       type: "login_check",
       runnerId: runner.id,
       workspaceId: runner.workspaceId,
       agent,
+      account,
       issuedAt: at,
       expiresAt: at + 120_000,
     });
+    return true;
   }
   const api = {
     async request(principal: WorkspacePrincipal, runnerId: string, input: HealthRequest) {
@@ -174,6 +202,9 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
           throw new Error("Workspace administrator access is required");
         if ((yield* pendingHealthChecksSteps(q, runnerId, at)) >= 4)
           throw new Error("Runner health checks are already pending");
+        const agent = parsed.type === "probe" ? parsed.profile.agent : parsed.agent;
+        const account = yield* accountSteps(q, runner, agent, parsed.type === "probe");
+        if (!account) throw new NoSignedInAccountError(agent, runner.name);
         const commandId = randomUUID();
         const expiresAt = at + 120_000;
         yield* work.enqueueSteps(q, {
@@ -183,6 +214,7 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
           issuedAt: at,
           expiresAt,
           ...parsed,
+          account,
         });
         yield* auditWorkspaceAccessSteps(q, {
           workspaceId: runner.workspaceId,
@@ -217,8 +249,7 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
             for (const agent of runnerAgents) {
               if (pending >= 4) return;
               if (!checkDue(last(agent), states.get(agent), at)) continue;
-              yield* queueCheckSteps(q, runner, agent, at);
-              pending += 1;
+              if (yield* queueCheckSteps(q, runner, agent, at)) pending += 1;
             }
           });
         } catch (error) {
@@ -243,8 +274,7 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
           (yield* pendingHealthChecksSteps(q, runnerId, at)) >= 4
         )
           return false;
-        yield* queueCheckSteps(q, runner, agent, at);
-        return true;
+        return yield* queueCheckSteps(q, runner, agent, at);
       });
     },
     async signedIn(
@@ -302,7 +332,6 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
           return { duplicate: true };
         }
         yield* insertHealthResultSteps(q, result.commandId, runnerId, value, at);
-        const runnerWide = !assigned.account;
         const owner =
           assigned.type === "login_check" ? yield* commandAccountSteps(q, assigned.id) : null;
         function* observe(
@@ -336,13 +365,6 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
           result.login.authenticated
         )
           woke = yield* wakeRunnerSlotWaitsSteps(q, runnerId, at);
-        if (runnerWide && result.agentLimits)
-          yield* recordRunnerAgentUsageSteps(q, {
-            runnerId,
-            agent: assigned.type === "login_check" ? assigned.agent : assigned.profile.agent,
-            limits: result.agentLimits,
-            observedAt: at,
-          });
         if (assigned.type === "login_check" && result.login?.authenticated && result.agentLimits) {
           const spent = result.agentLimits.filter((limit) => limit.usedPercent >= 100);
           const until = spent.length
@@ -350,22 +372,7 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
             : null;
           const resetsAt = spent.every((limit) => limit.resetsAt !== null) ? until : null;
           const low = result.agentLimits.some((limit) => limit.usedPercent >= 80);
-          const cools = spent.length > 0;
-          if (
-            (yield* observe(cools ? "exhausted" : low ? "low" : "ok", "quota", resetsAt)) &&
-            runnerWide
-          )
-            yield* settleRunnerAgentSteps(q, {
-              runnerId,
-              agent: assigned.agent,
-              quota: {
-                state: cools ? "exhausted" : "ok",
-                resetsAt: until,
-                cooldownUntil: cools ? until! : 0,
-              },
-              clearQuota: false,
-              model: null,
-            });
+          yield* observe(spent.length > 0 ? "exhausted" : low ? "low" : "ok", "quota", resetsAt);
         }
         yield* touchRunnerSeenSteps(q, runnerId, at);
         return { duplicate: false };
@@ -411,6 +418,8 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
           await api.request(principal, match[1]!, requestSchema.parse(await body(request))),
         );
       } catch (caughtError1) {
+        if (caughtError1 instanceof NoSignedInAccountError)
+          return json({ error: caughtError1.message }, 409);
         journalCaught(caughtError1, "runner-health.browser.json", null);
         return json({ error: "Runner health request is unavailable." }, 403);
       }

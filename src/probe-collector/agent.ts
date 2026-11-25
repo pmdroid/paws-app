@@ -16,7 +16,9 @@ export async function replyOf(
     },
   });
   if (result.authRequired)
-    throw new Error(result.errorMessage ?? "Sign the agent in on this machine first.");
+    throw new Error(
+      result.errorMessage ?? "Sign the agent account in under Settings › Agent accounts first.",
+    );
   if (result.cancelled || result.timedOut || result.stopReason !== "end_turn")
     throw new Error(result.errorMessage ?? `The agent turn did not finish: ${result.stopReason}`);
   return { result, text };

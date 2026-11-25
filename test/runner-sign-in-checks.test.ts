@@ -2,6 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { and, asc, eq } from "drizzle-orm";
 import {
+  bindingAccountHealth,
+  listAgentBindings,
   putWorkspaceUser,
   recordLinearInstallation,
   recordRunnerCapacity,
@@ -16,7 +18,7 @@ import { createRunnerHelpers } from "../src/runner-helpers";
 import { createRunnerHttp, type RunnerControl } from "../src/runner-control";
 import { workspaceId, type WorkspacePrincipal } from "../src/workspace";
 import { RunnerHealthResultSchema, type RunnerCommand } from "../src/runner-protocol";
-import { seed } from "./pglite-fixtures";
+import { seed, signInFixtureRunner } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const stores: { close(): Promise<void> }[] = [];
@@ -72,6 +74,7 @@ async function fixture() {
   const runner = async (
     status: "active" | "paused" | "draining" | "revoked" = "active",
     lastSeenAt: number | null = at,
+    agents: readonly string[] = ["claude", "codex", "grok", "opencode"],
   ) => {
     const id = workspaceId();
     await seed(
@@ -92,6 +95,7 @@ async function fixture() {
           .insert(q.t.runnerHostStatus)
           .values({ runnerId: id, runnerVersion: "0.1.84", reportedAt: at }),
     );
+    if (status !== "revoked") for (const agent of agents) await signInFixtureRunner(db, id, agent);
     return id;
   };
   const checks = async (runnerId?: string) =>
@@ -114,7 +118,12 @@ async function fixture() {
       )
       .filter((command) => !runnerId || command.runnerId === runnerId);
   const answer = (
-    command: { id: string; runnerId: string; agent: string },
+    command: {
+      id: string;
+      runnerId: string;
+      agent: string;
+      account?: { accountId: string; bindingId: string };
+    },
     authenticated = true,
     limits?: { window: string; usedPercent: number; resetsAt: number | null }[],
   ) =>
@@ -127,6 +136,7 @@ async function fixture() {
       cancelled: false,
       authRequired: false,
       agentExited: true,
+      ...(command.account ? { account: command.account } : {}),
       login: {
         agent: command.agent as "claude",
         authenticated,
@@ -203,6 +213,9 @@ async function fixture() {
       const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString()) as {
         id: string;
         type: string;
+        runnerId: string;
+        agent: string;
+        account?: { accountId: string; bindingId: string };
       };
       return command;
     });
@@ -316,7 +329,7 @@ test("a pending helper goes out before a queued login check, which waits until t
   expect((await f.delivered(runnerId)).map(({ type }) => type)).toEqual(["login_check"]);
   const [first] = await f.delivered(runnerId);
   await f.work.acknowledge(runnerId, first!.id);
-  await f.answer({ id: first!.id, runnerId, agent: "claude" });
+  await f.answer(first!);
 
   const helper = await f.helper(runnerId);
   expect(await f.helpers.commands(runnerId)).toHaveLength(1);
@@ -426,41 +439,29 @@ test("the runner list has no per-runner agent sign-in or usage", async () => {
   expect("agents" in body.runners[0]!).toBe(false);
 });
 
-test("a spent usage window cools the agent down even with a stored per-runner extra-usage flag", async () => {
-  for (const extra of [0, 1]) {
-    const f = await fixture();
-    const runnerId = await f.runner();
-    await f.setPolicy(runnerId, "claude", { extraUsage: extra });
-    await f.health.refresh();
-    const [claude] = await f.checks();
-    const resetsAt = f.now() + 3_600_000;
-    await f.answer(claude!, true, [
-      { window: "5-hour", usedPercent: 100, resetsAt },
-      { window: "Weekly", usedPercent: 46, resetsAt: null },
-    ]);
-    expect(await f.policy(runnerId, "claude")).toMatchObject({
-      quotaState: "exhausted",
-      cooldownUntil: resetsAt,
-    });
-  }
-});
-
-test("the latest usage windows are stored with when they were read", async () => {
+test("a spent usage window marks the checked account exhausted until it resets", async () => {
   const f = await fixture();
-  const runnerId = await f.runner();
+  const runnerId = await f.runner("active", f.now(), ["claude"]);
   await f.health.refresh();
   const [claude] = await f.checks();
-  const limits = [
-    { window: "5-hour", usedPercent: 16, resetsAt: f.now() + 3_600_000 },
-    { window: "Weekly", usedPercent: 3, resetsAt: null },
-  ];
-  await f.answer(claude!, true, limits);
-  expect(await runnerAgentUsage(f.db, runnerId, "claude")).toEqual({
-    limits,
-    observedAt: f.now(),
-  });
+  const resetsAt = f.now() + 3_600_000;
+  await f.answer(claude!, true, [
+    { window: "5-hour", usedPercent: 100, resetsAt },
+    { window: "Weekly", usedPercent: 46, resetsAt: null },
+  ]);
+  expect(
+    (await bindingAccountHealth(f.db, claude!.account!.bindingId)).find(
+      (row) => row.kind === "quota",
+    ),
+  ).toMatchObject({ state: "exhausted", resetsAt });
+  expect(await runnerAgentUsage(f.db, runnerId, "claude")).toBeNull();
+});
+
+test("usage windows accept only well-formed readings", () => {
   const schema = RunnerHealthResultSchema.shape.agentLimits;
-  expect(schema.safeParse(limits).success).toBe(true);
+  expect(schema.safeParse([{ window: "Weekly", usedPercent: 3, resetsAt: null }]).success).toBe(
+    true,
+  );
   expect(schema.safeParse([]).success).toBe(false);
   for (const bad of [
     { window: "5-hour", usedPercent: 101, resetsAt: null },
@@ -492,59 +493,6 @@ test("an older usage reading never replaces a newer one", async () => {
   expect((await runnerAgentUsage(f.db, runnerId, "codex"))!.limits).toEqual(reading(55));
   expect(await runnerAgentUsage(f.db, runnerId, "claude")).toBeNull();
 });
-
-test("a sign-in check's usage reading replaces a stale usage limit", async () => {
-  const f = await fixture();
-  const runnerId = await f.runner();
-  const reset = f.now() + 3 * 86_400_000;
-  await f.setPolicy(runnerId, "claude", {
-    quotaState: "exhausted",
-    resetsAt: reset,
-    cooldownUntil: reset,
-  });
-  const policy = async () => {
-    const row = await f.policy(runnerId, "claude");
-    return (
-      row && {
-        quotaState: row.quotaState,
-        resetsAt: row.resetsAt,
-        cooldownUntil: row.cooldownUntil,
-      }
-    );
-  };
-  const claude = async () =>
-    (await f.checks(runnerId)).findLast((command) => command.agent === "claude")!;
-  await f.health.refresh();
-  await f.answer(await claude(), true, [
-    { window: "5-hour", usedPercent: 0, resetsAt: null },
-    { window: "Weekly", usedPercent: 8, resetsAt: reset + 16 * 3_600_000 },
-  ]);
-  expect(await policy()).toEqual({ quotaState: "ok", resetsAt: null, cooldownUntil: 0 });
-
-  f.advance(30 * 60_000 + 1);
-  await f.seen(runnerId);
-  await f.health.refresh();
-  await f.answer(await claude(), true, [
-    { window: "5-hour", usedPercent: 12, resetsAt: null },
-    { window: "Weekly", usedPercent: 100, resetsAt: reset },
-  ]);
-  expect(await policy()).toEqual({
-    quotaState: "exhausted",
-    resetsAt: reset,
-    cooldownUntil: reset,
-  });
-
-  f.advance(30 * 60_000 + 1);
-  await f.seen(runnerId);
-  await f.health.refresh();
-  await f.answer(await claude());
-  expect(await policy()).toEqual({
-    quotaState: "exhausted",
-    resetsAt: reset,
-    cooldownUntil: reset,
-  });
-});
-
 test("a sign-in check asked for after an auth error waits for the runner's answer", async () => {
   const f = await fixture();
   const runnerId = await f.runner();
@@ -562,4 +510,61 @@ test("a sign-in check asked for after an auth error waits for the runner's answe
     f.advance(10 * 60_000);
   }
   expect(await f.health.signedIn(runnerId, "unknown-agent", signal)).toBe(false);
+});
+
+test("a runner with no bound account gets no check, and an asked-for check names the missing account", async () => {
+  const f = await fixture();
+  const runnerId = await f.runner("active", f.now(), []);
+  await f.health.refresh();
+  expect(await f.checks()).toEqual([]);
+  expect(await f.health.signedIn(runnerId, "codex", new AbortController().signal, 5)).toBe(false);
+  for (const body of [
+    { type: "login_check", agent: "codex" },
+    { type: "probe", profile: { agent: "codex", model: null } },
+  ]) {
+    const response = await f.health.browser(
+      new Request(`https://paws.example.invalid/api/runners/${runnerId}/health`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      f.owner,
+    );
+    expect(response!.status).toBe(409);
+    expect(await response!.json()).toEqual({
+      error:
+        "No signed-in codex account on Runner active. Sign one in under Settings › Agent accounts.",
+    });
+  }
+  expect(await f.db.run((q) => q.all(q.orm.select().from(q.t.runnerCommand)))).toEqual([]);
+});
+
+test("every check and probe carries the agent account bound on the runner", async () => {
+  const f = await fixture();
+  const runnerId = await f.runner("active", f.now(), ["codex"]);
+  const [binding] = await listAgentBindings(f.db, f.owner.workspaceId);
+  const account = { accountId: binding!.accountId, bindingId: binding!.id };
+  await f.health.refresh();
+  expect((await f.checks()).map((check) => [check.agent, check.account])).toEqual([
+    ["codex", account],
+  ]);
+  await f.health.request(f.owner, runnerId, {
+    type: "probe",
+    profile: { agent: "codex", model: null },
+  });
+  const probes = await f.db.run((q) =>
+    q.all(
+      q.orm
+        .select({ envelope: q.t.runnerCommand.envelope })
+        .from(q.t.runnerCommand)
+        .where(eq(q.t.runnerCommand.kind, "probe")),
+    ),
+  );
+  expect(
+    probes.map(
+      ({ envelope }) =>
+        JSON.parse(Buffer.from((envelope as { payload: string }).payload, "base64url").toString())
+          .account,
+    ),
+  ).toEqual([account]);
 });
