@@ -22,7 +22,7 @@ const settle = async () => {
 };
 
 type Check = { state: string; message: string; facts: unknown[]; checkedAt: number };
-type Vm = { vmName: string; runnerId: string | null; step: string };
+type Vm = { vmName: string; runnerId: string | null; step: string; failure?: string | null };
 type Entry = { set: boolean; off?: boolean; vms?: Vm[]; check: Check | null };
 type Status = Record<"exe-dev" | "boat" | "instabox" | "tailscale", Entry> & {
   nextCheckAt: number | null;
@@ -139,10 +139,22 @@ test("each provider state shows its badge with an icon and a word", async () => 
 
   const off = none();
   off.boat = { set: true, off: true, check: check("working") };
+  off.instabox = {
+    set: false,
+    off: false,
+    vms: [
+      { vmName: "ibx-1", runnerId: null, step: "failed", failure: "InstaBox refused the size" },
+    ],
+    check: null,
+  };
   const second = await mount(off);
   expect(second.badge("boat")).toBe("○Off");
   expect(second.badge("instabox")).toBe("–Not connected");
   expect(second.card("instabox").querySelector("[data-connect-open]")?.textContent).toBe("Connect");
+  expect(second.card("instabox").textContent).toContain("ibx-1");
+  expect(second.card("instabox").querySelector("[data-vm-failure]")?.textContent).toBe(
+    "InstaBox refused the size",
+  );
 });
 
 test("Check now posts to the check route and repaints the card", async () => {

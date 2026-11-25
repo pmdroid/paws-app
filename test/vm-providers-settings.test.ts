@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { loadConfigFile, useSettingsStore } from "../src/config";
 import {
   CONFIG_SETTINGS_KEY,
+  failMemberVmStep,
   insertMemberVm,
   readSettingSteps,
   updateSettingSteps,
@@ -191,10 +192,15 @@ test("GET with a workspace lists each provider's runner VMs, whatever Create VM'
       provider,
       now: 1,
     });
+  await failMemberVmStep(db, { id: "vm-2", step: "create", failure: "exe.dev refused", now: 2 });
   const response = await providers(new Request(`${base}/vm-providers`), "admin", "w1");
   const body = (await response.json()) as Record<string, { vms?: unknown }>;
-  expect(body.boat!.vms).toEqual([{ vmName: "vm-1", runnerId: null, step: "create" }]);
-  expect(body["exe-dev"]!.vms).toEqual([{ vmName: "vm-2", runnerId: null, step: "create" }]);
+  expect(body.boat!.vms).toEqual([
+    { vmName: "vm-1", runnerId: null, step: "create", failure: null },
+  ]);
+  expect(body["exe-dev"]!.vms).toEqual([
+    { vmName: "vm-2", runnerId: null, step: "failed", failure: "exe.dev refused" },
+  ]);
   expect(body.instabox!.vms).toEqual([]);
   expect(body.tailscale!.vms).toBeUndefined();
 });

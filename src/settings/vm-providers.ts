@@ -132,7 +132,12 @@ async function status(options: VmProvidersSettingsOptions): Promise<Response> {
                   .map((vm) => ({
                     vmName: vm.vmName,
                     runnerId: vm.runnerId ?? vm.deleteRunnerId,
-                    step: vm.deleteStep === null ? vm.step : "deleting",
+                    ...(vm.deleteStep === null
+                      ? { step: vm.failure === null ? vm.step : "failed", failure: vm.failure }
+                      : {
+                          step: vm.deleteFailure === null ? "deleting" : "delete failed",
+                          failure: vm.deleteFailure,
+                        }),
                   })),
               }
             : {}),

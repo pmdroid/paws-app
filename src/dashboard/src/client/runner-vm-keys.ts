@@ -15,7 +15,7 @@ type Check = {
   checkedAt: number;
   lastWorkingAt: number | null;
 };
-type Vm = { vmName: string; runnerId: string | null; step: string };
+type Vm = { vmName: string; runnerId: string | null; step: string; failure?: string | null };
 type Entry = { set: boolean; off?: boolean; vms?: Vm[]; check: Check | null };
 type Status = Record<Name, Entry> & { nextCheckAt: number | null };
 
@@ -130,7 +130,7 @@ export function createRunnerVmKeys() {
             .filter(Boolean)
             .join(" · ") || "Size not reported";
         const state = vm.step !== "ready" || !runner ? vm.step : runner.status;
-        return `<li class="between"><span class="min-w-0 font-semibold">${esc(runner?.name ?? vm.vmName)}</span><span class="row"><span class="muted">${esc(size)}</span><span class="tag">${esc(state)}</span></span></li>`;
+        return `<li class="between"><span class="min-w-0 font-semibold">${esc(runner?.name ?? vm.vmName)}</span><span class="row"><span class="muted">${esc(size)}</span><span class="tag">${esc(state)}</span></span>${vm.failure ? `<span class="basis-full text-sm text-state-failed" data-vm-failure>${esc(vm.failure)}</span>` : ""}</li>`;
       })
       .join("")}</ul>`;
   };
@@ -163,7 +163,7 @@ export function createRunnerVmKeys() {
     if (connecting === name)
       return `<article class="card col" data-vm-provider="${name}">${head}${connectSteps(name)}</article>`;
     if (!entry.set)
-      return `<article class="card col" data-vm-provider="${name}">${head}<p class="muted">${HELP[name]}</p><div class="row"><button class="btn primary" type="button" data-connect-open="${name}">Connect</button></div></article>`;
+      return `<article class="card col" data-vm-provider="${name}">${head}<p class="muted">${HELP[name]}</p><div class="row"><button class="btn primary" type="button" data-connect-open="${name}">Connect</button></div>${name !== "tailscale" && entry.vms?.length ? `<div class="col"><h4>Runners</h4>${runners(name)}</div>` : ""}</article>`;
     const checked = check
       ? `<p class="muted" data-checked>Checked ${when(check.checkedAt)}</p>`
       : `<p class="muted" data-checked>${name === "tailscale" ? "No runner VM has joined with this key yet." : "Not checked yet."}</p>`;
