@@ -183,6 +183,7 @@ import {
   commandInstance,
   delegatedLinearUserIdSteps,
   enqueueJobOnce,
+  maintainPglite,
   jobRunAtByKeySteps,
   getLinearSessionAccessSteps,
   getLinearSessionInstallationSteps,
@@ -2558,6 +2559,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         recurringEveryMs: RUNNER_EVENT_PRUNE_EVERY_MS,
         now: Date.now(),
       });
+      await maintainPglite(store, created.jobs, journal);
       created.jobs.register(STORAGE_CLEANUP_JOB, () => storageCleanup.tick());
       await enqueueJobOnce(store, {
         queue: STORAGE_CLEANUP_JOB,
