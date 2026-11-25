@@ -91,7 +91,12 @@ function runnerDaemon(control: { dispatcher: Dispatcher }, clock: { now: number 
   const claimed = new Set<string>();
   const attempts = new Map<string, number>();
   const calls: string[] = [];
+  const credentials: string[] = [];
   const daemon: RunnerRetroDaemon = {
+    credentialRecipient: () => "recipient-certificate",
+    carriesCredential: () => true,
+    restoreCredentials: (id) => credentials.push(`restore:${id}`),
+    returnCredentials: (id) => credentials.push(`return:${id}`),
     status: () => ({
       phase: "paired",
       runnerId: "R1",
@@ -147,7 +152,7 @@ function runnerDaemon(control: { dispatcher: Dispatcher }, clock: { now: number 
       })) as { ok: true };
     },
   };
-  return { daemon, calls };
+  return { daemon, calls, credentials };
 }
 
 function runnerHost(
@@ -283,7 +288,7 @@ test.skipIf(!nonRootLinux)(
     });
 
     const host = runnerHost(root, account);
-    const { daemon, calls } = runnerDaemon(control, w.clock);
+    const { daemon, calls, credentials } = runnerDaemon(control, w.clock);
     const open = () =>
       openRunnerRetroRuntime({
         root: join(root, "retro"),
@@ -298,6 +303,10 @@ test.skipIf(!nonRootLinux)(
     expect(calls).toEqual(["ack", "input:digest", "input:prompt"]);
     expect(host.starts).toHaveLength(1);
     expect(runtime.status().active).toMatchObject([{ phase: "running" }]);
+    const job = readRunnerJob(host.spool, host.starts[0]!);
+    expect(job.command).toMatchObject({ account, profile: { agent: "codex" } });
+    expect(job.credentials).toEqual({ certificate: "recipient-certificate" });
+    expect(credentials).toEqual([`restore:${job.command.id}`]);
 
     db = await w.restart();
     control.dispatcher = w.open(db);
@@ -307,6 +316,7 @@ test.skipIf(!nonRootLinux)(
     await seen(db, w.clock.now);
     await runtime.tick();
     expect(calls.filter((name) => name === "result")).toHaveLength(1);
+    expect(credentials).toEqual([`restore:${job.command.id}`, `return:${job.command.id}`]);
     expect(runtime.status().active).toEqual([]);
 
     expect((await getRetro(db, "r1"))?.state).toBe("published");

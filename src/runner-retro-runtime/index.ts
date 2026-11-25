@@ -11,6 +11,7 @@ import { RunnerRequestError, type RunnerDaemon } from "../runner-daemon";
 import {
   createDirectWorkerSupervisor,
   publishRunnerJob,
+  readRunnerCredentials,
   readRunnerResultFile,
   type RunnerBrokerClient,
   type RunnerResults,
@@ -37,7 +38,13 @@ export type RunnerRetroDaemon = Pick<
   | "retroInput"
   | "postRetroResult"
   | "releaseRetroCommand"
->;
+> &
+  Partial<
+    Pick<
+      RunnerDaemon,
+      "credentialRecipient" | "carriesCredential" | "restoreCredentials" | "returnCredentials"
+    >
+  >;
 
 export const RUNNER_RETRO_RUNTIME_TIMING = {
   inputTimeoutMs: 120_000,
@@ -86,6 +93,7 @@ export async function openRunnerRetroRuntime(options: {
       spool: options.spool,
       results: options.results,
       agentUser: options.agentUser,
+      restoreCredentials: (id) => options.daemon.restoreCredentials?.(id),
     });
   const now = options.now ?? Date.now;
   const report = (error: unknown) =>
@@ -113,8 +121,17 @@ export async function openRunnerRetroRuntime(options: {
     return result;
   }
 
+  const carries = (command: RunnerRetroCommand) =>
+    options.daemon.carriesCredential?.(command.id) === true;
+
   async function settleTurn(row: Row, command: RunnerRetroCommand) {
     await broker.stop(row.id);
+    if (carries(command))
+      options.daemon.returnCredentials?.(
+        command.id,
+        row.id,
+        readRunnerCredentials(options.results, row.id),
+      );
     const result = recordedResult(row, command);
     if (result) phase(row.id, "reporting", result);
     else phase(row.id, "releasing");
@@ -194,9 +211,15 @@ export async function openRunnerRetroRuntime(options: {
       const digest = await downloadRetroInput(command, "digest", fetchInput, signal);
       const prompt = await downloadRetroInput(command, "prompt", fetchInput, signal);
       if (closed) throw new Error("Runner retro runtime is closed");
+      options.daemon.restoreCredentials?.(command.id);
+      const recipient = carries(command) ? options.daemon.credentialRecipient?.() : undefined;
       publishRunnerJob(
         options.spool,
-        { executionId: id, command },
+        {
+          executionId: id,
+          command,
+          ...(recipient ? { credentials: { certificate: recipient } } : {}),
+        },
         { retroInputs: { digest, prompt } },
       );
       const receipt = await broker.start(id);

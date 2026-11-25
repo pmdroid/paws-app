@@ -27,6 +27,7 @@ import {
   shareRunnerWorkRoot,
   ExecutionIdSchema,
   openRunnerAccountHome,
+  RunnerAccountHomeError,
   type RunnerAccountOwners,
 } from "../runner-execution";
 import { withoutRunnerBin } from "../runner-mise";
@@ -190,6 +191,7 @@ export interface RetroWorkerOptions {
   owners?: RunnerAccountOwners;
   signal?: AbortSignal;
   launch?: Pick<RunAgentOptions, "command" | "args" | "env">;
+  returnCredentials?: (home: string) => void;
   executionLimitMs?: number;
   now?: () => number;
 }
@@ -320,6 +322,13 @@ export async function executeRetroCommand(options: RetroWorkerOptions): Promise<
     });
   }
 
+  if (!command.account)
+    return finish({
+      outcome: "auth_required",
+      activeMs: 0,
+      errorMessage: `No ${command.profile.agent} agent account is bound for this retro.`,
+    });
+  const account = command.account;
   const root = join(options.workRoot, executionId);
   const workspace = join(root, "workspace");
   shareRunnerWorkRoot(options.workRoot, options.owners);
@@ -327,19 +336,19 @@ export async function executeRetroCommand(options: RetroWorkerOptions): Promise<
   mkdirSync(workspace, { recursive: true, mode: 0o700 });
   try {
     writeFileSync(join(workspace, RETRO_DIGEST_FILE), digest, { flag: "wx", mode: 0o400 });
-    const home = openRunnerAccountHome(options.home, command.account, command.profile.agent, {
-      ...(options.owners ? { owners: options.owners } : {}),
-    });
+    let home: string;
+    try {
+      home = openRunnerAccountHome(options.home, account, command.profile.agent, {
+        ...(options.owners ? { owners: options.owners } : {}),
+      });
+    } catch (error) {
+      if (!(error instanceof RunnerAccountHomeError)) throw error;
+      return finish({ outcome: "auth_required", activeMs: 0, errorMessage: error.message });
+    }
     const env = minimalAgentEnv({
       PATH: "/usr/local/bin:/usr/bin:/bin",
       ...options.launch?.env,
-      ...(command.account
-        ? accountHomeEnv(home)
-        : {
-            HOME: home,
-            CODEX_HOME: join(home, ".codex"),
-            CLAUDE_CONFIG_DIR: join(home, ".claude"),
-          }),
+      ...accountHomeEnv(home),
     });
     env.PATH = withoutRunnerBin(env.PATH);
     const limitMs = Math.min(
@@ -392,6 +401,11 @@ export async function executeRetroCommand(options: RetroWorkerOptions): Promise<
         authRequired: false,
         agentExited: true,
       };
+    }
+    try {
+      options.returnCredentials?.(home);
+    } catch (error) {
+      journalCaught(error, "runner-worker.executeRetroCommand.returnCredentials", null);
     }
     const activeMs = Math.max(0, Math.min(now() - started, limitMs));
     const turn = {

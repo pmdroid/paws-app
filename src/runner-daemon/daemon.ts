@@ -429,7 +429,11 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   const openHeld = (bindingId: string, sealed: string) =>
     credentialFiles(openForRunner(localKey(options.root), sealed, heldContext(bindingId)));
   const credentialFailures = new Map<string, number>();
-  function* receiveCredential(tx: Q, command: RunnerCommand, credential: RunnerAgentCredential) {
+  function* receiveCredential(
+    tx: Q,
+    command: RunnerCommand | RunnerRetroCommand,
+    credential: RunnerAgentCredential,
+  ) {
     const named = runnerCommandAccount(command);
     const files = options.agentCredentials;
     if (!named || !files) return;
@@ -785,39 +789,46 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     const accountBindings = new Set(heldBindings().map((binding) => binding.bindingId));
     const rejected: RunnerRetroCommandRejection[] = [];
     for (const envelope of response.commands) {
-      const result = await store.transaction(function* (tx) {
-        const verified = verifyRunnerRetroCommand(envelope, {
-          trustedKeys,
-          runnerId: identity.runnerId,
-          workspaceId: identity.workspaceId,
-          now: now(),
-          accountBindings,
-          latestAttempt: (retroId) =>
-            q
-              .select({ attempt: retroAttempt.attempt })
-              .from(retroAttempt)
-              .where(eq(retroAttempt.retroId, retroId))
-              .get()?.attempt,
-          claimCommand,
+      const credential = SignedRunnerCommandSchema.safeParse(envelope).data?.credential;
+      const result = await store
+        .transaction(function* (tx) {
+          const verified = verifyRunnerRetroCommand(envelope, {
+            trustedKeys,
+            runnerId: identity.runnerId,
+            workspaceId: identity.workspaceId,
+            now: now(),
+            accountBindings,
+            latestAttempt: (retroId) =>
+              q
+                .select({ attempt: retroAttempt.attempt })
+                .from(retroAttempt)
+                .where(eq(retroAttempt.retroId, retroId))
+                .get()?.attempt,
+            claimCommand,
+          });
+          if (verified.ok && credential) yield* receiveCredential(tx, verified.command, credential);
+          if (verified.ok) {
+            yield* tx.exec(
+              q
+                .insert(pendingRetroCommand)
+                .values({ id: verified.command.id, payload: JSON.stringify(verified.command) }),
+            );
+            yield* tx.exec(
+              q
+                .insert(retroAttempt)
+                .values({ retroId: verified.command.retroId, attempt: verified.command.attempt })
+                .onConflictDoUpdate({
+                  target: retroAttempt.retroId,
+                  set: { attempt: sql`MAX(${retroAttempt.attempt}, excluded.attempt)` },
+                }),
+            );
+          }
+          return verified;
+        })
+        .catch((error: unknown): ReturnType<typeof verifyRunnerRetroCommand> => {
+          if (!(error instanceof CredentialUnavailable)) throw error;
+          return { ok: false, reason: "account_unavailable" };
         });
-        if (verified.ok) {
-          yield* tx.exec(
-            q
-              .insert(pendingRetroCommand)
-              .values({ id: verified.command.id, payload: JSON.stringify(verified.command) }),
-          );
-          yield* tx.exec(
-            q
-              .insert(retroAttempt)
-              .values({ retroId: verified.command.retroId, attempt: verified.command.attempt })
-              .onConflictDoUpdate({
-                target: retroAttempt.retroId,
-                set: { attempt: sql`MAX(${retroAttempt.attempt}, excluded.attempt)` },
-              }),
-          );
-        }
-        return verified;
-      });
       if (!result.ok && result.reason !== "replayed" && result.reason !== "stale_attempt")
         rejected.push(result.reason);
     }
