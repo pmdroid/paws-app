@@ -1,14 +1,22 @@
 import { isTransient } from "../core";
 import { GitHubHttpError, type GitHubClient, type GitHubResponse } from "./types";
 import { journalCaught } from "../journal";
+import { defaultRecorder, type MetricsRecorder } from "../metrics";
+import { githubOperation, observeGitHubCall, observeGitHubRemaining } from "./call-metrics";
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 export function createFetchGitHubClient(
-  fetchImpl: FetchLike = fetch,
+  fetchCall: FetchLike = fetch,
   baseUrl = "https://api.github.com",
+  metrics: MetricsRecorder = defaultRecorder,
 ): GitHubClient {
-  return {
+  const fetchImpl: FetchLike = async (input, init) => {
+    const response = await fetchCall(input, init);
+    observeGitHubRemaining(metrics, response.headers);
+    return response;
+  };
+  const client: GitHubClient = {
     async request({ method, path, token, body, signal, accept }): Promise<GitHubResponse> {
       signal?.throwIfAborted();
       if (accept) return requestText(fetchImpl, `${baseUrl}${path}`, token, signal, accept);
@@ -42,6 +50,22 @@ export function createFetchGitHubClient(
         ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
         ...(requestId ? { requestId } : {}),
       });
+    },
+  };
+  return {
+    async request(input) {
+      const started = performance.now();
+      const caller = githubOperation(input.path);
+      try {
+        const response = await client.request(input);
+        observeGitHubCall(metrics, caller, started, response.status, false);
+        return response;
+      } catch (error) {
+        if (error instanceof GitHubHttpError)
+          observeGitHubCall(metrics, caller, started, error.status, error.status < 500);
+        else if (!input.signal?.aborted) observeGitHubCall(metrics, caller, started, null, false);
+        throw error;
+      }
     },
   };
 }

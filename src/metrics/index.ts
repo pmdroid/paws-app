@@ -4,9 +4,11 @@ export {
   MAX_SERIES,
   STATUS_BOUNDS_MS,
   createMetricsRecorder,
+  defaultRecorder,
   incrementCounter,
   recordDuration,
   setGauge,
+  statusClass,
 } from "./recorder";
 export type { MetricLabels, MetricsRecorder } from "./recorder";
 export {

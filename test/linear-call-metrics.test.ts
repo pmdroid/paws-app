@@ -1,0 +1,65 @@
+import { expect, test } from "bun:test";
+import { createLinearClient, linearCaller } from "../src/linear";
+import { createMetricsRecorder } from "../src/metrics";
+
+const auth = {
+  hasToken: async () => true,
+  ensureFresh: async () => "synthetic-linear-token",
+  forceRefresh: async () => "synthetic-linear-token",
+};
+
+function rows(metrics: ReturnType<typeof createMetricsRecorder>) {
+  return metrics
+    .drain(Number.POSITIVE_INFINITY)
+    .map(({ name, labels, count, gauge }) => ({ name, labels, count, gauge }));
+}
+
+test("a Linear call records its caller, status class and remaining requests", async () => {
+  const metrics = createMetricsRecorder();
+  const client = createLinearClient({
+    auth,
+    metrics,
+    fetch: async () =>
+      Response.json(
+        { data: { viewer: { id: "u" } } },
+        { headers: { "X-RateLimit-Requests-Remaining": "120" } },
+      ),
+  });
+  expect(await linearCaller("poller", () => client.query("query { viewer { id } }"))).toEqual({
+    viewer: { id: "u" },
+  });
+  expect(rows(metrics)).toEqual([
+    {
+      name: "linear.call",
+      labels: { caller: "poller", status_class: "2xx" },
+      count: 1,
+      gauge: null,
+    },
+    { name: "linear.rate_remaining", labels: {}, count: 1, gauge: 120 },
+  ]);
+});
+
+test("a Linear 429 counts as rate limited and a failed fetch as a network call", async () => {
+  const metrics = createMetricsRecorder();
+  const limited = createLinearClient({
+    auth,
+    metrics,
+    fetch: async () => Response.json({ errors: [{ message: "RATELIMITED" }] }, { status: 429 }),
+  });
+  const offline = createLinearClient({
+    auth,
+    metrics,
+    fetch: async () => {
+      throw new TypeError("fetch failed");
+    },
+  });
+  const query = (client: typeof limited) =>
+    linearCaller("poller", () => client.query("query { viewer { id } }"));
+  await expect(query(limited)).rejects.toThrow();
+  await expect(query(offline)).rejects.toThrow("fetch failed");
+  expect(rows(metrics).map((row) => [row.name, row.labels])).toEqual([
+    ["linear.call", { caller: "poller", status_class: "4xx" }],
+    ["linear.rate_limited", { caller: "poller" }],
+    ["linear.call", { caller: "poller", status_class: "network" }],
+  ]);
+});

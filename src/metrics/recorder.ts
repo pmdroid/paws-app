@@ -185,3 +185,7 @@ export function incrementCounter(name: string, labels: MetricLabels, by = 1): vo
 export function setGauge(name: string, labels: MetricLabels, value: number): void {
   defaultRecorder.setGauge(name, labels, value);
 }
+
+export function statusClass(status: number | null): string {
+  return status === null ? "network" : `${Math.floor(status / 100)}xx`;
+}
