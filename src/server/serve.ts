@@ -2,6 +2,8 @@ import { createHealthReport, type HealthOptions } from "./health";
 import { FIX_RECORDS_PATH, handleFixRecordsRequest } from "./fix-records";
 import type { JobLoopLiveness } from "../db";
 import { journalCaught } from "../journal";
+import { recordDuration } from "../metrics";
+import { observeRequest, type RequestMetrics } from "./request-metrics";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
 import { createGitHubStatusCache, type GitHubStatusCache } from "./github-status-cache";
@@ -140,6 +142,7 @@ import { isDashboardPage, isDashboardPath } from "../dashboard-links";
 import { handleVmHostRequest, isVmHostPath } from "../vm-hosts";
 
 export type ServerOptions = {
+  metrics?: RequestMetrics;
   findingGroups?: FindingGroupServices;
   server?: Bun.Server<undefined>;
   onboarding?: (request: Request, client: WorkspaceClient) => Promise<Response | null>;
@@ -309,6 +312,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
         journalCaught(caughtError1, "serve.startServer.resolve", null);
       },
     );
+  const metrics = options.metrics ?? { recordDuration };
   const requests = new Set<Promise<Response>>();
   let stopping = false;
   const serveOptions = {
@@ -376,8 +380,9 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
             ? { visualReviewChanges: options.visualReviewChanges }
             : {}),
         }))();
-      requests.add(operation);
-      return operation.finally(() => requests.delete(operation));
+      const observed = observeRequest(metrics, request, operation);
+      requests.add(observed);
+      return observed.finally(() => requests.delete(observed));
     },
   };
   const server = options.server ?? Bun.serve(serveOptions);
