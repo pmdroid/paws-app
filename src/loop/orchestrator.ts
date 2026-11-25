@@ -66,7 +66,7 @@ import {
 } from "../db";
 import { recoverStalledCloseout } from "./closeout-stall";
 import { getItemPullRequestSteps, recordItemCandidateSteps } from "../db";
-import { parkLeasedJobSteps } from "../db";
+import { nudgeJobRunAtSteps, parkLeasedJobSteps } from "../db";
 import {
   saveCheckpointSteps,
   jobVersionCurrentSteps,
@@ -1023,6 +1023,7 @@ export class Orchestrator {
   private readonly leasedJobs = new Map<string, Job>();
   private readonly jobContexts = new Map<string, JobContext>();
   private readonly mergeTurnNotes = new Map<string, number>();
+  private readonly mergeTurnWaiters = new Map<string, number>();
   /** Why the current job dropped the item's Closeout result while the item stays in `verifying`. */
   private readonly verifyingStops = new Map<string, string>();
   private readonly reviewerFaults = new Map<string, string>();
@@ -2217,7 +2218,11 @@ export class Orchestrator {
     jobs.register(JOB_KIND.merge, async (job, context) => {
       const ownerId = readString(job.payload, "itemId");
       if (ownerId !== null && (await this.mergeTurnTaken(ownerId))) {
-        if (await context.isCurrent()) await waitForMergeTurn(this.store, job, this.now());
+        if (
+          (await context.isCurrent()) &&
+          (await waitForMergeTurn(this.store, job, this.now())) === "parked"
+        )
+          this.mergeTurnWaiters.set(ownerId, job.id);
         return;
       }
       let waiting: MergeWait | undefined;
@@ -8288,7 +8293,10 @@ export class Orchestrator {
           await operation();
         } finally {
           for (const itemId of itemIds)
-            if (this.jobContexts.get(itemId) === held) this.jobContexts.delete(itemId);
+            if (this.jobContexts.get(itemId) === held) {
+              this.jobContexts.delete(itemId);
+              await this.releaseMergeTurn(itemId);
+            }
         }
       },
       mergedHeads: async (item, repository) => {
@@ -9446,7 +9454,26 @@ export class Orchestrator {
       if (this.jobContexts.get(itemId) === context) {
         this.jobContexts.delete(itemId);
         this.leasedJobs.delete(itemId);
+        await this.releaseMergeTurn(itemId);
       }
+    }
+  }
+
+  private async releaseMergeTurn(itemId: string): Promise<void> {
+    const jobId = this.mergeTurnWaiters.get(itemId);
+    if (jobId === undefined) return;
+    this.mergeTurnWaiters.delete(itemId);
+    try {
+      await this.store.run((q) => nudgeJobRunAtSteps(q, jobId, this.now()));
+      emitJobReady(this.store);
+    } catch (error) {
+      journalCaught(
+        error,
+        "orchestrator.releaseMergeTurn",
+        itemId,
+        undefined,
+        this.options.journal,
+      );
     }
   }
 

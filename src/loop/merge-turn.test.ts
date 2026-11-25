@@ -75,7 +75,11 @@ async function hungTurn() {
     await close();
     await rm(root, { recursive: true, force: true });
   });
-  return { db, clock, jobs, lines, resumeId };
+  const finish = async () => {
+    release();
+    await turn.catch(() => undefined);
+  };
+  return { db, clock, jobs, lines, resumeId, finish };
 }
 
 async function mergeJob(db: Db, now: number) {
@@ -147,4 +151,15 @@ test("a context whose job finished in the job table is dropped and the merge goe
   expect(await parkedForTurn(db, merge, clock.now())).toBe(false);
   expect(lines.some((line) => line.includes("dropped the stale context"))).toBe(true);
   expect(lines.some((line) => line.includes("waits for its turn"))).toBe(false);
+});
+
+test("a merge parked behind a running job is due as soon as that job lets go", async () => {
+  const { db, clock, jobs, finish } = await hungTurn();
+  const merge = await mergeJob(db, clock.now());
+  await jobs.tick([JOB_KIND.merge]);
+  expect(await parkedForTurn(db, merge, clock.now())).toBe(true);
+
+  await finish();
+
+  expect((await getJob(db, merge))?.runAt).toBe(clock.now());
 });

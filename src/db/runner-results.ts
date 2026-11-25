@@ -1,6 +1,7 @@
 import { and, eq, gt, inArray, isNull, notExists, or, sql } from "drizzle-orm";
 import { type Q, type Steps, type Db } from "./db";
-import { jsonFromText, jsonText } from "./json-text";
+import { jsonField, jsonFromText, jsonText } from "./json-text";
+import { JOB_KIND } from "../core";
 
 export type StoredRunnerEventRow = {
   runId: string;
@@ -54,10 +55,26 @@ export async function runnerResultMatches(
 
 type NewRunnerResult = RunKey & { commandId: string; payload: string; receivedAt: number };
 
-export function* insertRunnerResultSteps(q: Q, row: NewRunnerResult) {
+export function* insertRunnerResultSteps(q: Q, row: NewRunnerResult): Steps<boolean> {
   yield* q.exec(
     q.orm.insert(q.t.runnerResult).values({ ...row, payload: jsonFromText(q, row.payload) }),
   );
+  return yield* wakeVerificationWaitsSteps(q, row.runId, row.receivedAt);
+}
+
+/** Verification parked while the runner held its run looks again once the run's result arrives. */
+export function* wakeVerificationWaitsSteps(q: Q, runId: string, now: number): Steps<boolean> {
+  const { job } = q.t;
+  const parked = and(
+    eq(job.status, "pending"),
+    eq(job.queue, JOB_KIND.reverify),
+    eq(jsonField(q, job.payload, "verificationWaitRunId"), runId),
+    gt(job.runAt, now),
+  );
+  const rows = yield* q.all(q.orm.select({ id: job.id }).from(job).where(parked));
+  if (rows.length === 0) return false;
+  yield* q.exec(q.orm.update(job).set({ runAt: now }).where(parked));
+  return true;
 }
 
 export async function insertRunnerResult(store: Db, row: NewRunnerResult): Promise<void> {
