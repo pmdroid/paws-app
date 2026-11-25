@@ -218,13 +218,13 @@ export function createDirectWorkerSupervisor(options: {
   mkdirSync(options.stateRoot, { recursive: true, mode: 0o700 });
   const held = new Map<string, string>();
   const shared = new Set<string>();
-  function homeFor(executionId: string, asAgent: boolean): string {
+  function homeFor(executionId: string, asAgent: boolean): string | undefined {
     if (!options.spool || !options.results) return process.env.HOME ?? "/var/lib/paws-agent";
     const job = readRunnerJob(options.spool, executionId);
     const named = runnerCommandAccount(job.command);
     if (job.command.type === "task")
       ensureDirectory(join(taskRoot, executionId), options.spool.agentGid, 0o770);
-    if (!named) return agentHome;
+    if (!named) return undefined;
     return openRunnerAccountHome(agentHome, named.account, named.agent, {
       folders: !asAgent,
       owners: { runnerUid: options.spool.runnerUid, agentGid: options.spool.agentGid },
@@ -235,13 +235,7 @@ export function createDirectWorkerSupervisor(options: {
     try {
       const { command } = readRunnerJob(options.spool, executionId);
       const named = runnerCommandAccount(command);
-      const agent =
-        "profile" in command ? command.profile?.agent : "agent" in command ? command.agent : null;
-      return named
-        ? runnerAccountHome(agentHome, named.account)
-        : agent === "claude"
-          ? agentHome
-          : undefined;
+      return named ? runnerAccountHome(agentHome, named.account) : undefined;
     } catch (caughtError3) {
       journalCaught(caughtError3, "supervisor.recordedHome.readRunnerJob", null);
       return;
@@ -458,7 +452,7 @@ export function createDirectWorkerSupervisor(options: {
       0o600,
     );
     try {
-      if (options.spool && options.results && recordedHome(executionId)) {
+      if (home && options.spool && options.results && recordedHome(executionId)) {
         holdRunnerAccountHome(
           home,
           executionId,
@@ -486,7 +480,7 @@ export function createDirectWorkerSupervisor(options: {
           );
       }
       if (asAgent && options.spool)
-        for (const folder of new Set([agentHome, home])) {
+        for (const folder of new Set(home ? [agentHome, home] : [agentHome])) {
           if (shared.has(folder)) continue;
           const problems = shareRunnerAgentState(folder, {
             runnerUid: options.spool.runnerUid,
@@ -494,8 +488,8 @@ export function createDirectWorkerSupervisor(options: {
           });
           if (problems.length === 0) shared.add(folder);
         }
-      options.skills?.prepareHome(home);
-      const skills = options.skills?.hold(home, executionId);
+      if (home) options.skills?.prepareHome(home);
+      const skills = home ? options.skills?.hold(home, executionId) : undefined;
       if (asAgent) {
         const started = await startUnit(executionId, resume, skills);
         unit = true;
@@ -509,7 +503,7 @@ export function createDirectWorkerSupervisor(options: {
       } else
         child = launch(
           executionId,
-          held.has(executionId) ? agentHome : home,
+          held.has(executionId) || !home ? agentHome : home,
           log,
           resume,
           executionTag(scope, executionId),
@@ -541,9 +535,10 @@ export function createDirectWorkerSupervisor(options: {
       }
       writeSync(fd, `${child.pid} ${born}\n`);
       fsyncSync(fd);
-      if (held.has(executionId) && options.spool)
+      const heldHome = held.get(executionId);
+      if (heldHome && options.spool)
         confirmRunnerAccountHold(
-          home,
+          heldHome,
           executionId,
           { scope, pid: child.pid, born },
           { runnerUid: options.spool.runnerUid, agentGid: options.spool.agentGid },

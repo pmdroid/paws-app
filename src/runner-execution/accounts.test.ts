@@ -59,10 +59,11 @@ function hold(home: string, id: string, root: string, worker: { pid: number; bor
   confirmRunnerAccountHold(home, id, { scope, ...worker });
 }
 
-test("a command without an account keeps the default home", () => {
+test("a command without an account opens no home", () => {
   const root = agentHome();
-  expect(openRunnerAccountHome(root, undefined, "claude")).toBe(root);
-  expect(runnerAccountHome(root)).toBe(root);
+  expect(() =>
+    openRunnerAccountHome(root, undefined as unknown as typeof a, "claude"),
+  ).toThrow();
   expect(runnerAccountBindings(root)).toEqual([]);
 });
 

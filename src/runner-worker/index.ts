@@ -161,6 +161,7 @@ import {
   type GitHubReadFailure,
   type HostToolDefinitions,
   type RunnerArtifact,
+  type RunnerCodingAgent,
   type RunnerCommand,
   type RunnerEvent,
   type RunnerHandoverFailure,
@@ -1043,6 +1044,42 @@ async function partialSnapshotClone(
   ]);
 }
 
+function loginCommand(agent: RunnerCodingAgent): string {
+  return agent === "claude"
+    ? "claude auth login"
+    : agent === "codex"
+      ? "codex login --device-auth"
+      : agent === "opencode"
+        ? "opencode auth login"
+        : "grok login";
+}
+
+function refuseWithoutAccount(
+  options: RunnerWorkerOptions,
+  executionId: string,
+  command: Exclude<RunnerJob["command"], { type: "retro" }>,
+): RunnerWorkerResult {
+  const agent = command.type === "login_check" ? command.agent : command.profile.agent;
+  const result: RunnerWorkerResult = {
+    executionId,
+    commandId: command.id,
+    run: {
+      role: command.type === "review" ? "reviewer" : "implementer",
+      stopReason: "error",
+      errorMessage: `No signed-in ${agent} account on this runner`,
+      cancelled: false,
+      timedOut: false,
+      authRequired: true,
+      agentExited: false,
+    },
+  };
+  if (command.type === "login_check")
+    result.login = { agent, authenticated: false, method: "none", command: loginCommand(agent) };
+  closeSync(options.resume ? appendJournal(options.outputDirectory) : createJournal(options));
+  replaceOutputFile(options, "result.json", JSON.stringify(result));
+  return result;
+}
+
 export async function executeRunnerCommand(
   options: RunnerWorkerOptions,
 ): Promise<RunnerWorkerResult> {
@@ -1082,16 +1119,15 @@ export async function executeRunnerCommand(
   )
     throw new Error("Invalid runner worker configuration");
   const binding = runnerCommandAccount(command);
-  const home = binding
-    ? openRunnerAccountHome(options.home, binding.account, binding.agent, {
-        ...(options.owners ? { owners: options.owners } : {}),
-      })
-    : options.home;
+  if (!binding) return refuseWithoutAccount(options, job.executionId, command);
+  const home = openRunnerAccountHome(options.home, binding.account, binding.agent, {
+    ...(options.owners ? { owners: options.owners } : {}),
+  });
   let credentialsReturned = false;
   let placedOpenCode: string | null = null;
   const returnCredentials = () => {
     const recipient = job.credentials?.certificate;
-    if (credentialsReturned || !recipient || !binding) return;
+    if (credentialsReturned || !recipient) return;
     credentialsReturned = true;
     try {
       if (placedOpenCode !== null) collectOpenCodeCredential(home, placedOpenCode);
@@ -1114,9 +1150,7 @@ export async function executeRunnerCommand(
       );
     }
   };
-  const homeEnv = binding
-    ? accountHomeEnv(home)
-    : { HOME: home, CODEX_HOME: join(home, ".codex"), CLAUDE_CONFIG_DIR: join(home, ".claude") };
+  const homeEnv = accountHomeEnv(home);
   for (const provider of [".codex", ".claude", ".grok"]) {
     const folder = join(home, provider);
     mkdirSync(folder, { recursive: true, mode: 0o700 });
@@ -1555,10 +1589,9 @@ export async function executeRunnerCommand(
     const closeoutBasePath = withAgentBin(agentEnv.PATH);
     // Pinned bin dirs, not shims: nothing on PATH reads the repository's mise config.
     agentEnv.PATH = withAgentBin(prependRuntimePath(installed.binPaths, agentEnv.PATH));
-    if (binding)
-      placedOpenCode = await placeOpenCodeCredential(home, binding.agent, () =>
-        migrateOpenCodeDatabase(resolveOpencodeCommand().command, home, agentEnv),
-      );
+    placedOpenCode = await placeOpenCodeCredential(home, binding.agent, () =>
+      migrateOpenCodeDatabase(resolveOpencodeCommand().command, home, agentEnv),
+    );
     const toolchainQuestion =
       command.type === "run" && !installed.failure
         ? missingToolchainQuestion(worktree, agentEnv.PATH ?? "")
@@ -2601,14 +2634,7 @@ export async function executeRunnerCommand(
             : checked?.authMethod === "claude.ai" || checked?.authMethod === "oauth_token"
               ? "subscription"
               : "other",
-        command:
-          command.agent === "claude"
-            ? "claude auth login"
-            : command.agent === "codex"
-              ? "codex login --device-auth"
-              : command.agent === "opencode"
-                ? "opencode auth login"
-                : "grok login",
+        command: loginCommand(command.agent),
       };
     }
     if (agentLimits.length) result.run = { ...result.run, agentLimits };
