@@ -34,7 +34,13 @@ function setup(
     lookup: (name) => ids.get(name) ?? null,
     ...boatOptions,
   });
-  const bootstrap = createFakeBootstrap();
+  const bound = new Set<string>();
+  const bootstrap = createFakeBootstrap({
+    enroll: (vm) => {
+      bound.add(`vm-${vm}`);
+      return { runnerId: `runner-${vm}`, workspaceId: "workspace" };
+    },
+  });
   const queue = createStartQueue({
     startsPerMinute,
     clock,
@@ -51,6 +57,7 @@ function setup(
     enrollment: async (issueVmId) => {
       await Promise.resolve();
       if (refusal !== undefined) throw new Error(refusal);
+      if (bound.has(issueVmId)) return null;
       return { token: `token-${issueVmId}-${minted.push(now)}` };
     },
     clock,
@@ -121,6 +128,16 @@ describe("boat issue VMs", () => {
     const { boat, create } = setup({}, 10, undefined, "The Tailscale key waits for approval.");
     await expect(create("pas-9-vm")).rejects.toThrow("The Tailscale key waits for approval.");
     expect(boat.lookup("pas-9-vm")).toBeNull();
+  });
+
+  test("a create retried after its runner enrolled starts that runner without a new token", async () => {
+    const { bootstrap, create, minted } = setup();
+    bootstrap.fail("startRunner", "the runner service did not start");
+    await expect(create("pas-7-vm")).rejects.toThrow("the runner service did not start");
+    const count = minted.length;
+    const vm = await create("pas-7-vm");
+    expect(vm.runnerId).toBe("runner-pas-7-vm");
+    expect(minted.length).toBe(count);
   });
 
   test("a create repeated with the same key reuses the sandbox, even one left asleep", async () => {
