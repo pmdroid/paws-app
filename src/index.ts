@@ -362,6 +362,7 @@ import {
   type RetroDispatcher,
 } from "./retros";
 import { createStorageUsage } from "./storage-usage";
+import { handleVmHostRunnerRequest } from "./vm-hosts";
 import {
   STORAGE_CLEANUP_JOB,
   STORAGE_CLEANUP_TICK_MS,
@@ -1245,6 +1246,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           storageReports: async (request, runnerId) =>
             (await storageUsage.fetch(request, runnerId)) ??
             storageCleanup.fetch(request, runnerId),
+          issueVms: (request, runnerId) => handleVmHostRunnerRequest(request, runnerId, store),
           slackReplyAuthority: (q, input) => slackReplyAllowedSteps(q, paths.home, input),
           repositorySummaryAuthority: repositorySummaryAllowedSteps,
         }).then(async (value) => {

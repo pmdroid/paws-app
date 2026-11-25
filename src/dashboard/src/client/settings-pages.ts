@@ -55,7 +55,8 @@ export const WORKSPACE_PAGES = [
   {
     id: "runner-vms",
     name: "Runner VMs",
-    description: "The keys Create VM uses to make runner VMs and join them to your tailnet.",
+    description:
+      "Where Create VM can make runner VMs, whether each key still works, and the key that joins them to your tailnet.",
   },
   {
     id: "brief",
@@ -71,11 +72,6 @@ export const WORKSPACE_PAGES = [
     id: "members",
     name: "Members",
     description: "Change roles, and revoke or restore a member's access.",
-  },
-  {
-    id: "workspace",
-    name: "Workspace access",
-    description: "Manage members and repository access.",
   },
   {
     id: "audit",
@@ -123,6 +119,8 @@ export function settingsRedirect(path: string): string | null {
     .split("/")
     .filter((part) => part.length > 0);
   if ((head === "settings" || head === "workspace") && page === "notebook") return "/notebooks";
+  if ((head === "settings" || head === "workspace") && page === "workspace")
+    return settingsAdmin ? "/workspace/integrations" : "/settings/account";
   if (head === "settings" && isWorkspacePage(page))
     return settingsAdmin ? `/workspace/${page}` : "/settings/account";
   return head === "workspace" && !settingsAdmin ? "/settings/account" : null;

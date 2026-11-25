@@ -48,7 +48,6 @@ const WORKSPACE_PAGE_IDS = [
   "brief",
   "integrations",
   "members",
-  "workspace",
   "audit",
 ];
 
@@ -85,6 +84,8 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   spa("/notebooks", "notebooks", "canonical", "PAS-2293"),
   spa("/workspace/notebook", "workspace", "alias", "PAS-2293"),
   spa("/settings/notebook", "settings", "alias", "PAS-2293"),
+  spa("/workspace/workspace", "workspace", "alias", "PAS-2399"),
+  spa("/settings/workspace", "settings", "alias", "PAS-2399"),
   spa("/merge-queue", "mergeQueue", "canonical", "PAS-905"),
   spa("/evidence", "evidence", "canonical", "PAS-906"),
   spa("/evidence/:id", "evidence", "canonical", "PAS-906"),
