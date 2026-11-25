@@ -61,6 +61,7 @@ type HelperDispatch = {
   conversation?: HelperCommand["conversation"];
   slack?: RunnerSlackReplyScope;
   summary?: HelperCommand["summary"];
+  probe?: HelperCommand["probe"];
   tools?: HostToolDefinitions;
   repositories?: HelperCommand["repositories"];
 };
@@ -98,6 +99,14 @@ type RepositorySummaryAuthority = (
   input: { workspaceId: string; userId: string; repository: string },
 ) => Steps<boolean>;
 
+type ProbeAuthority = (
+  q: Q,
+  input: { workspaceId: string; userId: string; repository: string | null },
+) => Steps<boolean>;
+
+const probePurpose = (purpose: HelperCommand["purpose"] | undefined) =>
+  purpose === "probe_distill" || purpose === "probe_write";
+
 export class HelperFencedError extends Error {
   override readonly name = "HelperFencedError";
 }
@@ -122,6 +131,7 @@ export function createRunnerHelpers(options: {
   ) => Promise<SignedRunnerCommand[]>;
   slack?: SlackReplyAuthority;
   summary?: RepositorySummaryAuthority;
+  probes?: ProbeAuthority;
   repositoryAccess?: {
     github: {
       mintInstallationToken(input: {
@@ -221,8 +231,21 @@ export function createRunnerHelpers(options: {
     slack: RunnerSlackReplyScope | undefined,
     issuedAt: number,
     summary?: HelperCommand["summary"],
+    probe?: HelperCommand["probe"],
   ) {
     const runner = yield* identitySteps(q, runnerId);
+    if (probePurpose(purpose)) {
+      if (
+        !options.probes ||
+        !(yield* options.probes(q, {
+          workspaceId: runner.workspaceId,
+          userId: runner.userId,
+          repository: probe?.repository ?? null,
+        }))
+      )
+        throw new HelperFencedError("Probe collector authority changed");
+      return runner;
+    }
     if (purpose === "repository_summary") {
       if (
         !summary ||
@@ -275,6 +298,7 @@ export function createRunnerHelpers(options: {
       command.slack,
       command.issuedAt,
       command.summary,
+      command.probe,
     );
     return { row: unchangedIdentity(runner, row), command, envelope };
   }
@@ -309,7 +333,8 @@ export function createRunnerHelpers(options: {
   }
   function* dispatchSteps(q: Q, input: HelperDispatch) {
     const slack = input.purpose === "slack_reply";
-    const sessionless = slack || input.purpose === "repository_summary";
+    const sessionless =
+      slack || input.purpose === "repository_summary" || probePurpose(input.purpose);
     const session = sessionless ? null : yield* getLinearSessionSteps(q, input.sessionId);
     if (!sessionless && !session)
       throw new HelperFencedError("Linear helper session is unavailable");
@@ -327,6 +352,7 @@ export function createRunnerHelpers(options: {
       input.slack,
       now(),
       input.summary,
+      input.probe,
     );
     if (runner.status !== "active") throw new Error("Runner is not accepting helper work");
     const conversation = input.purpose === "conversation" || slack;
