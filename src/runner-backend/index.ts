@@ -19,6 +19,9 @@ import {
   unansweredRunnerQuestionsSteps,
   setRunnerWorkConsumedSequenceSteps,
   askedQuestionRowSteps,
+  answeredRunQuestionSteps,
+  largerRunnerIdsSteps,
+  workspaceRunnerIdsSteps,
   questionRowByIdSteps,
   anyActiveRunnerSteps,
   endLostRunnerWorkSteps,
@@ -148,6 +151,8 @@ import {
   checkpointStart,
   isReadOnlyTaskMode,
   isResponseTaskMode,
+  OUT_OF_MEMORY_MOVE,
+  OUT_OF_MEMORY_REASON,
   PawsShutdown,
   RunnerCapacityWait,
   RunnerSetupRequired,
@@ -838,7 +843,7 @@ export function createRemoteAgentRunner(options: {
           profile,
           role: input.role,
           purpose: input.prepareOnly ? "prepare" : "work",
-          excludeRunnerIds: excluded,
+          excludeRunnerIds: move.exclude ? [...excluded, ...move.exclude] : excluded,
           ...(pinnedRunnerId ? { pinnedRunnerId } : {}),
           ...(preferRunnerId ? { preferRunnerId } : {}),
           ...(move.from ? { handedOverFrom: move.from } : {}),
@@ -2942,7 +2947,7 @@ const HANDOVER_FAILURE_STEP = {
 } as const;
 
 /** A run's handover within one failover call: the runner it left, and whether Linear heard why it waits. */
-type HandoverMove = { from?: string; repository?: string; waiting?: boolean };
+type HandoverMove = { from?: string; repository?: string; waiting?: boolean; exclude?: string[] };
 
 /**
  * The owner checks of `ask()` for a question this run already opened. The item version is left
@@ -2977,7 +2982,14 @@ function waitsOnQuestion(store: Db, runId: string): Promise<boolean> {
  */
 async function handedOverFrom(store: Db, itemId: string): Promise<HandoverMove | null> {
   const row = await store.run((q) => lastRunResultSteps(q, itemId));
-  if (!row || (JSON.parse(row.payload) as { handedOver?: boolean }).handedOver !== true)
+  if (!row) return null;
+  const result = JSON.parse(row.payload) as { handedOver?: boolean; failureReason?: string };
+  if (
+    result.handedOver !== true &&
+    (result.failureReason !== OUT_OF_MEMORY_REASON ||
+      (await store.run((q) => answeredRunQuestionSteps(q, row.runId, OUT_OF_MEMORY_REASON))) !==
+        OUT_OF_MEMORY_MOVE)
+  )
     return null;
   const command = JSON.parse(
     Buffer.from((JSON.parse(row.envelope) as { payload: string }).payload, "base64url").toString(
@@ -2985,8 +2997,18 @@ async function handedOverFrom(store: Db, itemId: string): Promise<HandoverMove |
     ),
   ) as { repository?: { owner?: string; repo?: string } };
   const repository = command.repository;
+  const exclude =
+    result.handedOver === true
+      ? []
+      : await store.run(function* (q) {
+          const larger = (yield* largerRunnerIdsSteps(q, row.runnerId)) ?? [];
+          return (yield* workspaceRunnerIdsSteps(q, row.runnerId)).filter(
+            (id) => id !== row.runnerId && !larger.includes(id),
+          );
+        });
   return {
     from: row.runnerId,
+    ...(exclude.length ? { exclude } : {}),
     ...(repository?.owner && repository.repo
       ? { repository: `${repository.owner}/${repository.repo}` }
       : {}),

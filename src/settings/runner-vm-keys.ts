@@ -8,7 +8,12 @@ import {
   tailscaleAuthKeyPath,
   tailscaleAuthKeyStatus,
 } from "../config";
-import type { VmProviderCheckRow, VmProviderKeyName } from "../db";
+import {
+  deleteVmProviderCheckSteps,
+  type Db,
+  type VmProviderCheckRow,
+  type VmProviderKeyName,
+} from "../db";
 import { isWorkspaceAdmin } from "../workspace";
 import { json, localRequest, readJson, sameToken } from "./handler";
 
@@ -26,6 +31,7 @@ export type RunnerVmKeysSettingsOptions = {
   csrfToken: string;
   trustedOrigin?: string;
   role?: string;
+  store?: Db;
   audit: (action: string, subject: string) => Promise<void>;
   checks?: VmProviderCheckService;
 };
@@ -87,6 +93,7 @@ export async function handleRunnerVmKeysSettingsRequest(
     const name = url.searchParams.get("key");
     if (!isKey(name)) return json({ error: "Name a key to clear." }, 400);
     await removeSecret(KEYS[name].path(options.home));
+    if (name === "tailscale") await forgetTailnetJoin(options.store);
     await options.audit("settings.runner_vm_keys", `Cleared the ${KEYS[name].label}`);
     return status();
   }
@@ -98,6 +105,7 @@ export async function handleRunnerVmKeysSettingsRequest(
     return json({ error: "Enter a key without spaces." }, 400);
   for (const [name, value] of values) {
     await saveSecret(KEYS[name].path(options.home), value);
+    if (name === "tailscale") await forgetTailnetJoin(options.store);
     await options.audit("settings.runner_vm_keys", `Saved the ${KEYS[name].label}`);
   }
   if (options.checks === undefined) return status();
@@ -108,4 +116,8 @@ export async function handleRunnerVmKeysSettingsRequest(
       AbortSignal.timeout(VM_PROVIDER_CHECK_BOUND_MS),
     );
   return json({ ...keys(), check });
+}
+
+async function forgetTailnetJoin(store: Db | undefined): Promise<void> {
+  await store?.run((q) => deleteVmProviderCheckSteps(q, "tailscale"));
 }

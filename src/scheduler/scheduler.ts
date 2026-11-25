@@ -654,7 +654,10 @@ async function admit(
       const verdicts = yield* verdictsFor(itemId);
       if (!options.itemRunners) return undefined;
       if (!verdicts) return null;
-      const open = (id: string) => (slots?.open.get(id) ?? 0) + credit(itemId, id);
+      const open = (id: string) =>
+        (slots?.open.get(id) ?? 0) +
+        credit(itemId, id) -
+        (verdicts.pinnedRunnerId ? 0 : (pinnedQueue.get(id) ?? 0));
       const free = [];
       for (const runner of verdicts.runners)
         if (
@@ -683,6 +686,7 @@ async function admit(
       return 0;
     }
     const choices = new Map<string, string>();
+    const pinnedQueue = new Map<string, number>();
     function* takeSlot(itemId: string): Steps<boolean> {
       const runnerId = yield* openRunner(itemId);
       if (runnerId === undefined) return true;
@@ -794,6 +798,11 @@ async function admit(
     if (ownerHasRunner)
       for (const { item } of order)
         if ((yield* ownerHasRunner(q, item.id)) === false) setup.add(item.id);
+    for (const { item, capped } of order) {
+      if (capped || setup.has(item.id)) continue;
+      const pin = (yield* verdictsFor(item.id))?.pinnedRunnerId;
+      if (pin) pinnedQueue.set(pin, (pinnedQueue.get(pin) ?? 0) + 1);
+    }
     const admitted: string[] = [];
     for (const { item, capped } of order) {
       if (capped || setup.has(item.id)) continue;
@@ -810,6 +819,8 @@ async function admit(
         continue;
       }
       if (!(yield* takeSlot(item.id))) continue;
+      const pin = answers.get(item.id)?.pinnedRunnerId;
+      if (pin) pinnedQueue.set(pin, pinnedQueue.get(pin)! - 1);
       yield* cancelPendingItemJobsSteps(q, JOB_KIND.start, item.id, now);
       const handoff = options.handoffForItem
         ? yield* options.handoffForItem(q, item.id)

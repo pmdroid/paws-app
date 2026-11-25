@@ -47,6 +47,8 @@ export const DEFAULT_TIMEOUT_MS: Readonly<Record<ProvisioningOperation, number>>
   execVm: EXE_DEV_EXEC_LIMIT_MS + 5_000,
   listPools: 15_000,
   adoptVm: EXE_DEV_EXEC_LIMIT_MS + 5_000,
+  stopVm: 60_000,
+  resumeVm: 60_000,
 };
 
 export const DEFAULT_MAX_RESPONSE_BYTES: Readonly<Record<ProvisioningOperation, number>> = {
@@ -57,6 +59,8 @@ export const DEFAULT_MAX_RESPONSE_BYTES: Readonly<Record<ProvisioningOperation, 
   execVm: 8 * 1024 * 1024,
   listPools: 64 * 1024,
   adoptVm: 64 * 1024,
+  stopVm: 64 * 1024,
+  resumeVm: 64 * 1024,
 };
 
 const TOKEN = /^[A-Za-z0-9._~+/=-]+$/;

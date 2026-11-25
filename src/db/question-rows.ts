@@ -128,6 +128,29 @@ export function* askedQuestionRowSteps(
   return row ?? null;
 }
 
+export function* answeredRunQuestionSteps(
+  q: Q,
+  runId: string,
+  reason: string,
+): Steps<string | null> {
+  const { question } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ answer: question.answer })
+      .from(question)
+      .where(
+        and(
+          eq(question.runId, runId),
+          eq(question.reason, reason),
+          eq(question.status, "answered"),
+        ),
+      )
+      .orderBy(desc(question.answeredAt), desc(question.id))
+      .limit(1),
+  );
+  return row?.answer ?? null;
+}
+
 export function* nextQueuedQuestionRowSteps(q: Q, sessionId: string): Steps<QuestionRow | null> {
   const { question } = q.t;
   const row = yield* q.one(

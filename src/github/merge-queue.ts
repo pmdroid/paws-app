@@ -181,6 +181,25 @@ export async function hasMergeQueue(
   }
 }
 
+export async function branchHasMergeQueue(input: {
+  owner: string;
+  repo: string;
+  branch: string;
+  client: GitHubClient;
+  appId?: string;
+  installationId?: string;
+  privateKeyPem?: string;
+  tokenProvider?: GitHubTokenProvider;
+  signal?: AbortSignal;
+}): Promise<boolean | null> {
+  const token = await acquireOperationToken(input, "merge").catch((error: unknown) => {
+    journalCaught(error, "merge-queue.branchHasMergeQueue.token", null);
+    return null;
+  });
+  if (token === null) return null;
+  return hasMergeQueue({ ...input, token });
+}
+
 /** The pull request's merge queue entry, or how it left the queue. Null when unreadable. */
 export async function readMergeQueueEntry(
   input: GraphQLInput & { prNumber: number },
@@ -341,6 +360,10 @@ export type GitHubQueueMergeInput = {
   tokenProvider?: GitHubTokenProvider;
   /** This merge pass already saw the pull request in the queue, so a removal is news. */
   queued: boolean;
+  queueCache?: {
+    get(branch: string): boolean | undefined;
+    set(branch: string, found: boolean): void;
+  };
   isCancelled?: () => Promise<boolean>;
   now?: () => Date;
   signal?: AbortSignal;
@@ -398,7 +421,9 @@ export async function githubQueueMerge(
   if (input.queued && entry.lastRemoval) return { outcome: "removed", removal: entry.lastRemoval };
   if (entry.head !== input.head)
     return { outcome: "sha_moved", message: "pull request head changed before it was queued" };
-  const exists = await hasMergeQueue({ ...base, branch: entry.baseBranch });
+  const cachedQueue = input.queueCache?.get(entry.baseBranch);
+  const exists = cachedQueue ?? (await hasMergeQueue({ ...base, branch: entry.baseBranch }));
+  if (cachedQueue === undefined && exists !== null) input.queueCache?.set(entry.baseBranch, exists);
   if (exists === null)
     return { outcome: "unreadable", message: "Could not read the GitHub merge queue." };
   if (!exists)

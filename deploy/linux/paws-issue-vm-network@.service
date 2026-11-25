@@ -1,0 +1,17 @@
+[Unit]
+Description=Paws network rules for issue VM slot %i
+Wants=paws-issue-vm-network.service
+After=paws-issue-vm-network.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 -I -B /opt/paws-runner/current/deploy/linux/issue-vm-network.py up %i
+ExecStop=/usr/bin/python3 -I -B /opt/paws-runner/current/deploy/linux/issue-vm-network.py down %i
+TimeoutStartSec=60s
+TimeoutStopSec=60s
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+ProtectHome=yes
+PrivateTmp=yes

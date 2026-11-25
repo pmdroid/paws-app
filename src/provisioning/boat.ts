@@ -5,9 +5,9 @@ import { assertCommand, assertVmName } from "./names";
 import {
   ProvisioningError,
   type ExeDevVmSize,
+  type BoatProvider,
   type ProvisioningErrorCode,
   type ProvisioningOperation,
-  type VmProvider,
   type VmState,
 } from "./types";
 
@@ -20,13 +20,23 @@ export type BoatOptions = {
   timeoutMs?: Partial<Record<BoatOperation, number>>;
 };
 
-type BoatOperation = Extract<ProvisioningOperation, "createVm" | "deleteVm" | "execVm" | "getVm">;
+type BoatOperation = Extract<
+  ProvisioningOperation,
+  "createVm" | "deleteVm" | "execVm" | "getVm" | "listVms" | "stopVm" | "resumeVm"
+>;
+
+export type BoatSandbox = { id: string; state: VmState };
+
+export type Boat = BoatProvider & { listVms(): Promise<BoatSandbox[]> };
 
 const TIMEOUT_MS: Readonly<Record<BoatOperation, number>> = {
   createVm: 120_000,
   deleteVm: 60_000,
   getVm: 15_000,
   execVm: 75_000,
+  listVms: 10_000,
+  stopVm: 30_000,
+  resumeVm: 60_000,
 };
 
 const SIZES = [
@@ -38,6 +48,7 @@ const SIZES = [
 
 const TOKEN = /^[A-Za-z0-9._~+/=-]+$/;
 const SANDBOX_ID = /^bx_[A-Za-z0-9]{1,64}$/;
+const SNAPSHOT = /^(?:bsh_[A-Za-z0-9]{1,64}|[A-Za-z0-9][A-Za-z0-9._-]{0,63})$/;
 const STATE_WORD = /^[a-z][a-z0-9_-]{0,31}$/;
 const MAX_DETAIL = 300;
 const AUTO_STOP_REFUSED =
@@ -65,7 +76,7 @@ function boatSandboxType(size: ExeDevVmSize | undefined): string {
   throw new ProvisioningError("createVm", "unknown", "boat has no such size.");
 }
 
-export function createBoat(options: BoatOptions): VmProvider {
+export function createBoat(options: BoatOptions): Boat {
   const fetcher: ExeDevFetch = options.fetch ?? ((url, init) => fetch(url, init));
   const timeout = { ...TIMEOUT_MS, ...options.timeoutMs };
 
@@ -105,7 +116,8 @@ export function createBoat(options: BoatOptions): VmProvider {
           response.status,
         );
       const body = parseJson(text);
-      if (!response.ok) throw httpError(operation, vm, response.status, body, token);
+      if (!response.ok)
+        throw httpError(operation, vm, response.status, body, token, response.headers);
       return { status: response.status, body };
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
@@ -157,7 +169,14 @@ export function createBoat(options: BoatOptions): VmProvider {
 
     async createVm(name, size, request) {
       const vm = assertVmName("createVm", name);
-      const type = boatSandboxType(size);
+      const from = request?.from;
+      if (from !== undefined && !SNAPSHOT.test(from))
+        throw new ProvisioningError(
+          "createVm",
+          "invalid_name",
+          `boat createVm for ${vm}: the snapshot name is not a boat snapshot name.`,
+        );
+      const type = from !== undefined && size === undefined ? undefined : boatSandboxType(size);
       try {
         const { status, body } = await call(
           "createVm",
@@ -165,7 +184,13 @@ export function createBoat(options: BoatOptions): VmProvider {
           {
             method: "POST",
             path: "/sandboxes",
-            body: { name: vm, type, ttlSeconds: null, labels: { paws: "runner" } },
+            body: {
+              name: vm,
+              ...(type === undefined ? {} : { type }),
+              ...(from === undefined ? {} : { from }),
+              ttlSeconds: null,
+              labels: { paws: "runner" },
+            },
             ...(request === undefined ? {} : { headers: { "Idempotency-Key": request.key } }),
           },
           timeout.createVm,
@@ -245,6 +270,46 @@ export function createBoat(options: BoatOptions): VmProvider {
       return { exitCode, stdout, stderr };
     },
 
+    async listVms() {
+      const { status, body } = await call(
+        "listVms",
+        "sandboxes",
+        { method: "GET", path: "/sandboxes?limit=200" },
+        timeout.listVms,
+      );
+      const list = record(body)?.["sandboxes"];
+      if (!Array.isArray(list)) throw invalid("listVms", "sandboxes", status);
+      return list.map((entry: unknown) => {
+        const id = record(entry)?.["id"];
+        const state = record(entry)?.["state"];
+        if (typeof id !== "string" || typeof state !== "string" || !STATE_WORD.test(state))
+          throw invalid("listVms", "sandboxes", status);
+        return { id, state: boatVmState(state) };
+      });
+    },
+
+    async stopVm(name) {
+      const vm = assertVmName("stopVm", name);
+      const id = await sandbox("stopVm", vm);
+      await call(
+        "stopVm",
+        vm,
+        { method: "POST", path: `/sandboxes/${id}/stop`, body: {} },
+        timeout.stopVm,
+      );
+    },
+
+    async resumeVm(name) {
+      const vm = assertVmName("resumeVm", name);
+      const id = await sandbox("resumeVm", vm);
+      await call(
+        "resumeVm",
+        vm,
+        { method: "POST", path: `/sandboxes/${id}/resume`, body: {} },
+        timeout.resumeVm,
+      );
+    },
+
     async deleteVm(name) {
       const vm = assertVmName("deleteVm", name);
       let id: string;
@@ -302,6 +367,7 @@ function httpError(
   status: number,
   body: unknown,
   token: string,
+  headers: Headers,
 ): ProvisioningError {
   const code = codeFor(status);
   const said = record(body);
@@ -314,7 +380,24 @@ function httpError(
     `boat ${operation} for ${vm} failed with HTTP ${status} (${code}).`,
     status,
     text.length === 0 ? null : clean(text, token),
+    retryAfter(headers.get("retry-after"), said),
   );
+}
+
+function retryAfter(header: string | null, body: Record<string, unknown> | null): number | null {
+  const candidates = [header, body?.["retryAfterSeconds"], body?.["retryAfter"]];
+  for (const value of candidates) {
+    const seconds =
+      typeof value === "string" && /^\d{1,6}$/.test(value.trim()) ? Number(value) : value;
+    if (
+      typeof seconds === "number" &&
+      Number.isFinite(seconds) &&
+      seconds >= 0 &&
+      seconds <= 86_400
+    )
+      return Math.ceil(seconds * 1000);
+  }
+  return null;
 }
 
 function clean(text: string, token: string): string {

@@ -294,6 +294,7 @@ export type FakeMergeQueue = {
 export function createFakeMergeQueue(
   options: {
     branches?: string[];
+    baseBranch?: string;
     headOf?: (number: number) => string | Promise<string>;
     /** Pull requests ahead of an enqueued one. */
     ahead?: number;
@@ -355,7 +356,7 @@ export function createFakeMergeQueue(
                   id: value.id,
                   state: value.state,
                   headRefOid: value.head ?? "0".repeat(40),
-                  baseRefName: "main",
+                  baseRefName: options.baseBranch ?? "main",
                   mergeCommit: value.mergeSha ? { oid: value.mergeSha } : null,
                   mergeQueueEntry: value.entry,
                   timelineItems: {

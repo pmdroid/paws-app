@@ -6,6 +6,7 @@ import {
   type InstallStatus,
   type JoinTailnetResult,
   type StartInstallResult,
+  type TailnetJoinFailure,
 } from "./bootstrap";
 
 export type FakeBootstrapCall =
@@ -29,7 +30,12 @@ export type FakeBootstrap = ExeDevBootstrap & {
   readonly staged: Map<string, string>;
   readonly tokens: string[];
   readonly installed: Set<string>;
-  fail(step: FakeBootstrapCall["step"], message: string, times?: number): void;
+  fail(
+    step: FakeBootstrapCall["step"],
+    message: string,
+    times?: number,
+    join?: TailnetJoinFailure,
+  ): void;
   scriptInstallStatus(status: InstallStatus, times?: number): void;
 };
 
@@ -49,7 +55,8 @@ export function createFakeBootstrap(options: FakeBootstrapOptions = {}): FakeBoo
   const tokens: string[] = [];
   const installed = new Set<string>();
   const running = new Map<string, number>();
-  const failures: { step: FakeBootstrapCall["step"]; message: string; times: number }[] = [];
+  type Failure = { step: FakeBootstrapCall["step"]; message: string; times: number };
+  const failures: (Failure & { join?: TailnetJoinFailure | undefined })[] = [];
   const statuses: { status: InstallStatus; times: number }[] = [];
   const enrolled = new Map<string, EnrolledRunner>();
 
@@ -60,7 +67,7 @@ export function createFakeBootstrap(options: FakeBootstrapOptions = {}): FakeBoo
     if (failure === undefined) return;
     failure.times -= 1;
     if (failure.times <= 0) failures.splice(index, 1);
-    throw new BootstrapError(STEP[step], `${vm}: ${failure.message}`);
+    throw new BootstrapError(STEP[step], `${vm}: ${failure.message}`, { join: failure.join });
   }
 
   function scripted(): InstallStatus | null {
@@ -77,8 +84,8 @@ export function createFakeBootstrap(options: FakeBootstrapOptions = {}): FakeBoo
     tokens,
     installed,
 
-    fail(step, message, times = 1) {
-      failures.push({ step, message, times });
+    fail(step, message, times = 1, join) {
+      failures.push({ step, message, times, join });
     },
 
     scriptInstallStatus(status, times = 1) {

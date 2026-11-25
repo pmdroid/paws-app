@@ -70,6 +70,7 @@ function fakeSystemctl(fail?: string, exitsAtOnce = false, showFails = false) {
     }
     if (args.includes("--property=ExecMainCode"))
       return { code: 0, output: "ExecMainCode=1\nExecMainStatus=1\n" };
+    if (args.includes("--property=Result")) return { code: 0, output: "Result=oom-kill\n" };
     if (args[0] === "show")
       return showFails
         ? { code: 1, output: "Failed to connect to bus" }
@@ -432,6 +433,7 @@ test("systemd worker exit status is available without a child exit listener", as
   try {
     await f.supervisor.start(id);
     expect(await f.supervisor.exitStatus!(id)).toBe("code 1");
+    expect(await f.supervisor.unitResult!(id)).toBe("oom-kill");
   } finally {
     await f.supervisor.stop(id);
   }

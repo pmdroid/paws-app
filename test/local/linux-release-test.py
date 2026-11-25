@@ -1582,6 +1582,28 @@ class StateDirectories(unittest.TestCase):
         self.assertEqual(owners["agent/.paws-accounts/binding/account.json"], (60980, 60979))
         self.assertEqual(owners["results/01K00000000000000000000000"], (60980, 60981))
 
+    def test_an_upgrade_adopts_work_and_cache_without_walking_them(self):
+        agent = self.root / "agent"
+        run = agent / "work/01K00000000000000000000000/.venv/lib"
+        run.mkdir(parents=True, mode=0o700)
+        for index in range(10000):
+            (run / f"{index}.py").touch(mode=0o600)
+        (agent / ".cache/bun").mkdir(parents=True, mode=0o700)
+        (agent / ".cache/bun/blob").touch(mode=0o600)
+        (agent / ".paws-skills").mkdir(mode=0o700)
+        (agent / ".paws-skills/skill.md").touch(mode=0o640)
+        calls = []
+        with mock.patch.object(self.installer.os, "chmod", lambda path, mode: calls.append(("chmod", str(pathlib.Path(path).relative_to(self.root)), mode))), mock.patch.object(self.installer.os, "lchown", lambda path, uid, gid: calls.append(("lchown", str(pathlib.Path(path).relative_to(self.root)), (uid, gid)))):
+            self.installer.adopt_tree(agent, 60980, 60979, 0o2770, self.installer.SHARED_DIRECTORIES["/var/lib/paws-agent"], frozenset(), {agent / "work", agent / ".cache"})
+        self.assertEqual(sorted(calls), sorted([
+            ("lchown", "agent", (60980, 60979)), ("chmod", "agent", 0o2770),
+            ("lchown", "agent/work", (60980, 60979)), ("chmod", "agent/work", 0o770),
+            ("lchown", "agent/.cache", (60980, 60979)), ("chmod", "agent/.cache", 0o770),
+            ("lchown", "agent/.paws-skills", (60980, 60979)), ("chmod", "agent/.paws-skills", 0o770),
+            ("lchown", "agent/.paws-skills/skill.md", (60980, 60979)),
+        ]))
+        self.assertEqual(self.installer.UNWALKED, {pathlib.Path("/var/lib/paws-agent/work"), pathlib.Path("/var/lib/paws-agent/.cache")})
+
 
 class RootDirectories(unittest.TestCase):
     RULE = "The Paws runner installs only under directories that root owns and only root can change."

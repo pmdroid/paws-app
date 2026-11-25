@@ -18,6 +18,7 @@ import {
   quotaRecheckAtSteps,
   recordAccountObservationSteps,
   runnerExecutionHistorySteps,
+  runnerCpuPercentSteps,
   runnerExecutionReceiptSteps,
   runnerHasCapacitySteps,
   runnerHelperAvailabilitySteps,
@@ -92,6 +93,8 @@ export const SESSION_GRACE_MS = 2 * 60_000;
 export const LOAD_HISTORY_MS = 6 * 60 * 60_000;
 /** Finished work loses half its weight in recent load every hour. */
 export const LOAD_HALF_LIFE_MS = 60 * 60_000;
+const CPU_SATURATED_PERCENT = 85;
+const CPU_REPORT_MAX_AGE_MS = 2 * 60_000;
 
 /** Placement authority cannot currently authorize this task. */
 export class PlacementUnavailableError extends Error {}
@@ -572,13 +575,24 @@ export function createRunnerPlacement(options: {
       at,
       input.reserved,
     );
+    const saturated = new Set<string>();
+    for (const { runner } of ranked)
+      if (
+        ((yield* runnerCpuPercentSteps(q, runner.id, at - CPU_REPORT_MAX_AGE_MS)) ?? 0) >=
+        CPU_SATURATED_PERCENT
+      )
+        saturated.add(runner.id);
+    const spare = ranked.some(
+      ({ runner }) => load.get(runner.id)!.current < 1 && !saturated.has(runner.id),
+    );
+    const full = (id: string) => Number(load.get(id)!.current >= 1 || (spare && saturated.has(id)));
     ranked.sort((a, b) => {
       const left = load.get(a.runner.id)!;
       const right = load.get(b.runner.id)!;
       return (
         Number(a.extra) - Number(b.extra) ||
         a.rank - b.rank ||
-        Number(left.current >= 1) - Number(right.current >= 1) ||
+        full(a.runner.id) - full(b.runner.id) ||
         Number(a.low) - Number(b.low) ||
         right.current - left.current ||
         right.slots - left.slots ||

@@ -31,10 +31,12 @@ export type {
   MiseRelease,
   StartInstallResult,
   TailscalePlatform,
+  TailnetJoinFailure,
+  TailnetJoinOutcome,
   TailscaleRelease,
 } from "./bootstrap";
 export { BOAT_ENDPOINT, createBoat } from "./boat";
-export type { BoatOptions } from "./boat";
+export type { Boat, BoatOptions } from "./boat";
 export {
   createExeDev,
   DEFAULT_MAX_RESPONSE_BYTES,
@@ -43,8 +45,12 @@ export {
   EXE_DEV_EXEC_LIMIT_MS,
 } from "./client";
 export type { ExeDevFetch, ExeDevOptions, ExeDevTokenReader } from "./client";
+export { createInstaBox, INSTABOX_ENDPOINT, INSTABOX_TEMPLATE } from "./instabox";
+export type { InstaBox, InstaBoxLookup, InstaBoxOptions } from "./instabox";
 export { createFakeExeDev, FAKE_UNSCRIPTED_EXIT } from "./fake";
 export { createFakeBootstrap } from "./fake-bootstrap";
+export { createFakeBoat } from "./fake-boat";
+export type { FakeBoat, FakeBoatCall, FakeBoatOptions, FakeBoatSandbox } from "./fake-boat";
 export { PINNED_MISE, PINNED_MISE_VERSION } from "./mise";
 export { PINNED_TAILSCALE, PINNED_TAILSCALE_VERSION } from "./tailscale";
 export { LATEST_RUNNER_RELEASE_URL, latestRunnerRelease } from "./release";
@@ -53,6 +59,7 @@ export type { FakeExecScript, FakeExeDev, FakeExeDevCall, FakeFailure } from "./
 export { isExeDevPoolName, isExeDevVmName, MAX_EXEC_COMMAND_BYTES } from "./names";
 export { exeDevVmState, isProvisioningError, ProvisioningError } from "./types";
 export type {
+  BoatProvider,
   CreatedVm,
   ExeDev,
   ExeDevCreatedVm,

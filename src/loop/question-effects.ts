@@ -3,6 +3,7 @@ import { SLOW_CI_REASON } from "./merge-jobs";
 import { askSteps, restartSteps } from "./operations";
 import {
   JOB_KIND,
+  OUT_OF_MEMORY_REASON,
   TIME_LIMIT_CONTINUE,
   TIME_LIMIT_MERGE,
   TIME_LIMIT_VERIFYING_REASON,
@@ -378,10 +379,31 @@ export function questionEffects(
     if (item?.state === "awaiting_input")
       yield* applyWorkItemEventSteps(q, item.id, "pause", { now: input.now });
   }
+  function* outOfMemory(q: Q, question: StoredQuestion): Steps<void> {
+    if (!/^\s*stop\b/i.test(question.answer ?? "")) {
+      yield* resume(q, question);
+      return;
+    }
+    yield* consumeTurn(q, question);
+    const item = yield* getWorkItemSteps(q, question.itemId);
+    if (item?.state !== "awaiting_input") return;
+    yield* failWorkItemSteps(
+      q,
+      item,
+      "run_error",
+      `Stopped after the runner ran out of memory, as asked in Linear. The work is on branch \`${item.branchName || worktreeBranch(item)}\`.`,
+      input.now,
+      { stoppedByAnswer: true },
+    );
+  }
   return {
     "plan-approval": planApproval,
     "visual-review": visualReview,
     "runner-wait": function* (q, question) {
+      if (question.reason === OUT_OF_MEMORY_REASON) {
+        yield* outOfMemory(q, question);
+        return;
+      }
       if (question.reason === AGENT_HUNG_REASON) {
         yield* agentHung(q, question);
         return;

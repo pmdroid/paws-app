@@ -39,6 +39,14 @@ The size check runs again before Create VM calls the provider, so a size saved f
 
 Paws creates each boat VM with auto-stop turned off, since a runner that stops after an hour is no use. boat's trial plan refuses that, and Create VM fails with "boat's plan does not allow turning auto-stop off; a runner VM needs that." Turn off zero data retention on the boat account too: with it on, boat deletes a stopped VM, and Paws then reports the VM as missing.
 
+## InstaBox
+
+Create an [InstaBox](https://instabox.sh) API key (it starts with `ibk_`) with the scopes `machines:read`, `machines:write` and `machines:delete`, and save it on Settings › Runner VMs as the InstaBox key.
+
+Create VM makes an InstaBox machine from the `agent-browser` template (Debian with systemd and Docker) named after the VM, and installs the runner on it as on exe.dev. `cpu` and `memory_gb` become the machine's vCPUs and memory, and `disk_gb` its data disk; leave them out for InstaBox's default size. InstaBox accepts only the sizes your plan's `allowedSpecs` lists, and refuses any other with `spec_not_allowed`, which the VM's `create` step shows.
+
+The machine's idle pause is turned off and it has no run limit, so a runner VM stays running, and billed, until it is deleted. Deleting the VM on its runner page deletes the machine.
+
 exe.dev VM names are global, so another account may already hold `<name>-paws`. When exe.dev answers that a name is not available, Create VM tries `<name>-paws-2`, `<name>-paws-3` and so on.
 
 Each Create VM makes a new VM, so a member may have several: `<name>-paws`, then `<name>-paws-2` and so on. A member may have at most 5 VMs that are not being deleted; the sixth Create VM is refused with "You already have 5 VMs. Delete one on its runner page first." Retry a failed VM from its runner page.

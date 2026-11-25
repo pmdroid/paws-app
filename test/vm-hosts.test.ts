@@ -42,6 +42,25 @@ test("memory, the cap and missing metrics decide the slots", () => {
   });
 });
 
+test("the thin pool limits slots to its size less 20%, counting each VM's memory snapshot", () => {
+  expect(vmHostSlots({ ...GOLDBOX, poolBytes: 200 * GIB }, DEFAULTS)).toEqual({
+    slots: 4,
+    reason: "disk",
+  });
+  expect(vmHostSlots({ ...GOLDBOX, poolBytes: 340 * GIB }, DEFAULTS)).toEqual({
+    slots: 8,
+    reason: "cpu",
+  });
+  expect(vmHostSlots({ ...GOLDBOX, poolBytes: 200 * GIB }, { ...DEFAULTS, slotCap: 2 })).toEqual({
+    slots: 2,
+    reason: "cap",
+  });
+  expect(vmHostSlots({ ...GOLDBOX, poolBytes: 20 * GIB }, DEFAULTS)).toEqual({
+    slots: 0,
+    reason: "disk",
+  });
+});
+
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();

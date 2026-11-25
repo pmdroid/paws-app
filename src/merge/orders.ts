@@ -39,6 +39,7 @@ import {
 import {
   githubQueueLine,
   githubQueueMerge,
+  type GitHubQueueMergeInput,
   readPullReview,
   type GitHubBinding,
   type OwnComment,
@@ -562,6 +563,7 @@ export async function mergeThroughGitHubQueue(
   merge: MergeContext,
   payload: unknown,
   published: MergePull,
+  queueCache?: GitHubQueueMergeInput["queueCache"],
 ): Promise<MergeStep | "no_queue"> {
   const { store, item, caps } = merge;
   const { repository, github, pull, head } = published;
@@ -580,6 +582,7 @@ export async function mergeThroughGitHubQueue(
     privateKeyPem: github.privateKeyPem,
     ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
     queued: watch.queued,
+    ...(queueCache ? { queueCache } : {}),
     isCancelled: () => mergeHeld(merge),
     signal: published.signal,
   });

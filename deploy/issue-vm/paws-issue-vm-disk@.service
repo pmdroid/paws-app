@@ -1,0 +1,9 @@
+[Unit]
+Description=Paws issue VM disk %i
+After=paws-issue-vm-pool.service
+Requires=paws-issue-vm-pool.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/paws-issue-vm-disk run %i
+TimeoutStartSec=300s

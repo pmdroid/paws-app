@@ -987,6 +987,23 @@ export function* runnerHostVersionSteps(q: Q, runnerId: string) {
   return row?.version ?? null;
 }
 
+export function* runnerCpuPercentSteps(q: Q, runnerId: string, since: number) {
+  const { runner, runnerHostStatus } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        cpuPercent: runnerHostStatus.cpuPercent,
+        reportedAt: runnerHostStatus.reportedAt,
+        lastSeenAt: runner.lastSeenAt,
+      })
+      .from(runnerHostStatus)
+      .innerJoin(runner, eq(runner.id, runnerHostStatus.runnerId))
+      .where(eq(runnerHostStatus.runnerId, runnerId)),
+  );
+  if (!row || Math.max(row.reportedAt, row.lastSeenAt ?? 0) < since) return null;
+  return row.cpuPercent;
+}
+
 export async function runnerTargetForRestore(
   store: Db,
   runnerId: string,

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { FakeClock, HANG_ASK_AFTER, JOB_KIND } from "../core";
+import { FakeClock, HANG_ASK_AFTER, JOB_KIND, OUT_OF_MEMORY_REASON } from "../core";
 import {
   beginImplementRun,
   consecutiveHangsSteps,
@@ -64,14 +64,14 @@ test("hang losses count across runs until a turn completes", async () => {
   expect(await db.run((q) => consecutiveHangsSteps(q, item.id))).toMatchObject({ count: 1 });
 });
 
-async function askHung(answer: string) {
+async function askHung(answer: string, reason = AGENT_HUNG_REASON) {
   const clock = new FakeClock(20_000);
   const { db, item } = await hungItem(clock);
   const { run } = await beginImplementRun(db, item.id, clock.now());
   await db.transaction((q) =>
     askSteps(q, { itemId: item.id, runId: run.id, sessionId: "ses" }, "runner-wait", "Hung.", {
       options: [AGENT_HUNG_RETRY, AGENT_HUNG_STOP],
-      reason: AGENT_HUNG_REASON,
+      reason,
       now: clock.now(),
     }),
   );
@@ -109,5 +109,17 @@ test("Retry on a hung agent restarts the item once", async () => {
 test("Stop on a hung agent pauses the item", async () => {
   const { state, jobs } = await askHung(AGENT_HUNG_STOP);
   expect(state).toBe("paused");
+  expect(jobs.filter((job) => job.status === "pending")).toEqual([]);
+});
+
+test("Retry here after the runner ran out of memory restarts the item once", async () => {
+  const { state, jobs } = await askHung("Retry here", OUT_OF_MEMORY_REASON);
+  expect(state).toBe("queued");
+  expect(jobs.filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
+});
+
+test("Stop after the runner ran out of memory ends the item as stopped", async () => {
+  const { state, jobs } = await askHung("Stop", OUT_OF_MEMORY_REASON);
+  expect(state).toBe("failed");
   expect(jobs.filter((job) => job.status === "pending")).toEqual([]);
 });

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { readRunnerJob } from "../src/runner-execution";
@@ -68,6 +68,7 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
           const command = readRunnerJob(spool, id).command;
           if (command.type !== "task") throw new Error("Unexpected command");
           executions.set(command.runId, id);
+          writeFileSync(join(spool.root, id, "repository-blobs.pack"), "blobs");
           const directory = join(results.root, id);
           mkdirSync(directory);
           chmodSync(directory, 0o750);
@@ -160,6 +161,10 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
       await tickUntil(() => posted.length > 0 && answered.includes("run-a"));
       expect(posted.map((entry) => entry.runId)).toEqual(["run-b"]);
       expect(answered.filter((runId) => runId === "run-a")).toEqual(["run-a"]);
+      await tickUntil(() => !existsSync(join(spool.root, executions.get("run-b")!)));
+      expect(existsSync(join(spool.root, executions.get("run-a")!, "repository-blobs.pack"))).toBe(
+        true,
+      );
       pending = [
         {
           id: "cancel-a",

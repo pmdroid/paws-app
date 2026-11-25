@@ -286,6 +286,10 @@ import {
   isTransient,
   isTransientGitError,
   AgentHungError,
+  OUT_OF_MEMORY_MOVE,
+  OUT_OF_MEMORY_REASON,
+  OUT_OF_MEMORY_RETRY,
+  OUT_OF_MEMORY_STOP,
   MAX_TRANSIENT_RETRIES,
   RUNNER_CAPACITY_WAIT_MS,
   RunnerCapacityWait,
@@ -425,6 +429,8 @@ import {
   recordReviewFindingsSteps,
   rewritePendingLinearTurnSteps,
   runnerHoldsRunWorkSteps,
+  largerRunnerIdsSteps,
+  runPlacementCommandSteps,
   savePullRequestTextSteps,
   startCloseoutRoundSteps,
   suggestedFindingsSteps,
@@ -4193,6 +4199,17 @@ export class Orchestrator {
         await this.keepAskedWork(finished.id, run.id);
         return;
       }
+      if (
+        executed.run.failureReason === OUT_OF_MEMORY_REASON &&
+        finished.state === "running" &&
+        (await this.askOutOfMemory(
+          finished,
+          run.id,
+          executed.run.errorMessage,
+          profiles.implementer,
+        ))
+      )
+        return;
       if (executed.run.stopReason === "error" && isAgentServiceError(executed.run.errorMessage))
         throw new AgentServiceError(executed.run.errorMessage!);
       if (executed.run.stopReason !== "end_turn") {
@@ -5359,6 +5376,49 @@ export class Orchestrator {
       );
     });
     await this.flush();
+  }
+
+  private async askOutOfMemory(
+    item: WorkItemRecord,
+    runId: string,
+    message: string | undefined,
+    profile: { agent: string; model?: string | null },
+  ): Promise<boolean> {
+    const sessionId = this.activitySession(item);
+    if (sessionId === null) return false;
+    const now = this.now();
+    const cause = (message ?? "The runner ran out of memory.").split("\n\n")[0]!.trim();
+    const { itemRunners } = this.options;
+    await this.store.transaction(function* (q) {
+      const runnerId = (yield* runPlacementCommandSteps(q, runId))?.runnerId;
+      const bigger = runnerId === undefined ? null : yield* largerRunnerIdsSteps(q, runnerId);
+      const verdicts =
+        bigger && bigger.length > 0 && itemRunners
+          ? yield* itemRunners(q, item.id, profile, now)
+          : null;
+      const larger =
+        verdicts?.runners.some(
+          (runner) =>
+            bigger!.includes(runner.id) &&
+            (runner.rejection === null || runner.rejection.startsWith("run pinned to ")),
+        ) ?? false;
+      const version = (yield* getWorkItemSteps(q, item.id))?.version;
+      return yield* askSteps(
+        q,
+        { itemId: item.id, runId, sessionId, version },
+        "runner-wait",
+        `${cause} Retry here${larger ? ", retry on another runner with more memory" : ""}, or stop?`,
+        {
+          options: larger
+            ? [OUT_OF_MEMORY_RETRY, OUT_OF_MEMORY_MOVE, OUT_OF_MEMORY_STOP]
+            : [OUT_OF_MEMORY_RETRY, OUT_OF_MEMORY_STOP],
+          reason: OUT_OF_MEMORY_REASON,
+          now,
+        },
+      );
+    });
+    await this.flush();
+    return true;
   }
 
   private runnerWaitQuestion(id: string): RunnerWaitQuestion {

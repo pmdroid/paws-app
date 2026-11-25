@@ -332,6 +332,12 @@ export function createDirectWorkerSupervisor(options: {
       if (!code || !status) return undefined;
       return code === "1" ? `code ${status}` : `signal ${status}`;
     },
+    async unitResult(executionId) {
+      if (!asAgentFor(executionId)) return undefined;
+      const shown = await systemctl(["show", "--property=Result", agentUnit(executionId)]);
+      if (shown.code !== 0) return undefined;
+      return /^Result=([a-z-]{1,64})$/m.exec(shown.output)?.[1];
+    },
     log(executionId) {
       try {
         const text = readFileSync(logPath(executionId), "utf8").slice(-4000);
