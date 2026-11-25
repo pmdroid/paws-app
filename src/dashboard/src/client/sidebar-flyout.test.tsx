@@ -3,7 +3,7 @@ import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, useLocation } from "react-router";
-import type { Route } from "./route";
+import { parseRoute, type Route } from "./route";
 import { setSettingsAdmin, WORKSPACE_PAGES } from "./settings-pages";
 import { settleReactWork } from "./settle-react";
 
@@ -43,22 +43,33 @@ async function sidebar({
   hover = true,
   flyout = true,
   route = { view: "issues", id: null } as Route,
+  entry = "",
 } = {}) {
   const window = installWindow(hover);
   setSettingsAdmin(true);
   const { Navigation } = await import("./shell");
   const paths: string[] = [];
   function Path() {
-    paths.push(useLocation().pathname);
+    const location = useLocation();
+    paths.push(`${location.pathname}${location.search}`);
     return null;
+  }
+  function Live() {
+    return (
+      <Navigation
+        route={entry ? parseRoute(useLocation().pathname) : route}
+        counts={{}}
+        flyout={flyout}
+      />
+    );
   }
   const container = window.document.createElement("div");
   window.document.body.append(container);
   root = createRoot(container as unknown as HTMLElement);
   await act(async () =>
     root!.render(
-      <MemoryRouter initialEntries={["/issues"]}>
-        <Navigation route={route} counts={{}} flyout={flyout} />
+      <MemoryRouter initialEntries={[entry || "/issues"]}>
+        <Live />
         <Path />
       </MemoryRouter>,
     ),
@@ -88,7 +99,23 @@ async function sidebar({
       }),
     );
   const focused = (): unknown => window.document.activeElement;
-  return { item, menu, pointer, key, focused, paths };
+  const search = () =>
+    container.querySelector("[data-settings-search]") as unknown as { value: string } | null;
+  const type = (text: string) => {
+    const field = search()!;
+    const props = Object.entries(field).find(([name]) =>
+      name.startsWith("__reactProps"),
+    )![1] as unknown as {
+      onChange(event: { target: { value: string } }): void;
+    };
+    return act(async () => props.onChange({ target: { value: text } }));
+  };
+  const links = (name: string) =>
+    [...(container.querySelector(`ul[aria-label="${name}"]`)?.querySelectorAll("a") ?? [])].map(
+      (link) => link.textContent,
+    );
+  const text = () => container.textContent ?? "";
+  return { item, menu, pointer, key, focused, paths, search, type, links, text, window };
 }
 
 test("hovering opens the pages after a delay, clicking one opens it, and leaving closes them", async () => {
@@ -168,4 +195,28 @@ test("no flyout on the active route, without hover, or in the mobile sheet", asy
     await act(async () => root?.unmount());
     root = null;
   }
+});
+
+test("the settings search filters the submenu, keeps ?q=, opens the page holding a match and shows an empty state", async () => {
+  const { search, type, links, text, paths, key, focused, window } = await sidebar({
+    entry: "/workspace/merging?q=lane",
+  });
+  expect(search()!.value).toBe("lane");
+  expect(links("Workspace pages")).toEqual(["Merging"]);
+  await type("tailnet");
+  expect(paths.at(-1)).toBe("/workspace/runner-vms?q=tailnet");
+  expect(links("Workspace pages")).toEqual(["Runner VMs"]);
+  await type("no such setting");
+  expect(text()).toContain("No settings match this search.");
+  expect(links("Workspace pages")).toEqual([]);
+  await type("");
+  expect(paths.at(-1)).toBe("/workspace/runner-vms");
+  expect(links("Workspace pages")).toEqual(WORKSPACE_PAGES.map((page) => page.name));
+  await type("setup token");
+  expect(paths.at(-1)).toBe("/settings/agent-accounts?q=setup%20token");
+  expect(search()!.value).toBe("setup token");
+  expect(links("Settings pages")).toEqual(["Agent accounts"]);
+  await act(() => (focused() as { blur(): void }).blur());
+  await key(window.document.body as unknown as Parameters<typeof key>[0], "/");
+  expect(focused()).toBe(search()!);
 });

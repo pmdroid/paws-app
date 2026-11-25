@@ -1,15 +1,26 @@
-import type { Route } from "./route";
+import { routePath, type Route } from "./route";
 
 export const USER_SETTINGS_PAGES = [
   {
     id: "account",
     name: "Your account",
     description: "Manage your sign-in and public GitHub credit.",
+
+    sections: ["Linear account", "Sign out", "GitHub credit"],
   },
   {
     id: "agent-accounts",
     name: "Agent accounts",
     description: "The workspace's agent sign-ins, in the order runs try them.",
+
+    sections: [
+      "Add an account",
+      "Account name",
+      "API key",
+      "Setup token",
+      "Sign in with",
+      "Replace setup token",
+    ],
   },
 ] as const;
 
@@ -19,64 +30,122 @@ export const WORKSPACE_PAGES = [
     name: "Agents",
     description:
       "Choose the agents that implement and review your work. Check each connection on an installed runner after sign-in. Sign in to each agent per runner on the Runners page.",
+
+    sections: ["Global defaults", "Label presets", "Agent", "Model", "Effort"],
   },
   {
     id: "merging",
     name: "Merging",
     description: "Choose how accepted pull requests reach main.",
+
+    sections: [
+      "Merge lanes",
+      "Merge order",
+      "Merges at once in a lane",
+      "When main moved before the merge",
+      "CI fix attempts",
+      "High-risk approval",
+      "High-risk paths",
+      "Conflict-prone files",
+      "Pull request checks",
+      "Pull request comments",
+      "Ignored PR comments",
+      "Issues without a project",
+      "Repositories and projects",
+      "When Paws finishes the Linear session",
+      "Suggested findings",
+    ],
   },
   {
     id: "repositories",
     name: "Repositories",
     description: "Repository access and local Closeout policies.",
+
+    sections: [
+      "GitHub access",
+      "Repository descriptions",
+      "Closeout policy roots",
+      "Comment agents",
+      "Policy root",
+    ],
   },
   {
     id: "closeout",
     name: "Closeout",
     description:
       "What Closeout runs again after a conflict fix or a failed CI check, and how each repository's test checks pick their tests. Each repository sets this in its .agents/closeout.yaml; change it there in a pull request. GitHub CI always runs the full suite before a merge.",
+
+    sections: ["Reruns", "Test selection"],
   },
-  { id: "linear", name: "Linear", description: "Choose which Linear agents may comment." },
+  {
+    id: "linear",
+    name: "Linear",
+    description: "Choose which Linear agents may comment.",
+    sections: ["Comment agents"],
+  },
   {
     id: "storage",
     name: "Storage",
     description: "Object storage, Closeout log retention, disk use and cleanups.",
+
+    sections: [
+      "Storage kind",
+      "Closeout logs",
+      "Disk use",
+      "Cleanup schedule and rules",
+      "Cleanup history",
+      "Clean up the Paws server",
+    ],
   },
   {
     id: "limits",
     name: "Queue and limits",
     description: "How long work may wait and run, and how much runs at once.",
+
+    sections: ["Queue", "Time limits", "Most items one person or project runs at once"],
   },
   {
     id: "member-vm",
     name: "Member VMs",
     description: "The size and pool exe.dev gives each new member VM.",
+
+    sections: ["Member VM size"],
   },
   {
     id: "runner-vms",
     name: "Runner VMs",
     description:
       "Where Create VM can make runner VMs, whether each key still works, and the key that joins them to your tailnet.",
+
+    sections: ["VM providers", "Network", "Tailnet requirements"],
   },
   {
     id: "brief",
     name: "Agent instructions",
     description: "What coding agents are told: the brief, skills and hooks.",
+
+    sections: ["Agent brief", "Template", "Preview", "Skills", "Repository skill roots", "Hooks"],
   },
   {
     id: "integrations",
     name: "Integrations",
     description: "Connect the services your workspace uses.",
+
+    sections: ["GitHub", "Configure the GitHub App", "Slack", "Linked members"],
   },
   {
     id: "members",
     name: "Members",
     description: "Change roles, and revoke or restore a member's access.",
+
+    sections: ["Role", "Revoke access", "Restore access"],
   },
   {
     id: "audit",
     name: "Audit history",
     description: "Review changes to workspace access and settings.",
+
+    sections: ["Recent changes"],
   },
 ] as const;
 
@@ -111,6 +180,33 @@ export function shownSettingsPage(route: Route): SettingsPage | null {
   if (route.view === "settings") return route.page ?? "account";
   if (route.view !== "workspace") return null;
   return settingsAdmin ? (route.page ?? "agents") : "account";
+}
+
+export type SettingsMatch = { id: SettingsPage; name: string; section: string | null };
+
+export function settingsQuery(search: string): string {
+  return new URLSearchParams(search).get("q") ?? "";
+}
+
+export function searchSettings(query: string): SettingsMatch[] {
+  const needle = query.trim().toLowerCase();
+  const pages = settingsAdmin ? SETTINGS_PAGES : USER_SETTINGS_PAGES;
+  const has = (text: string) => text.toLowerCase().includes(needle);
+  return pages.flatMap((page) => {
+    const section = (page.sections as readonly string[]).find(has) ?? null;
+    return has(page.name) || has(page.description) || section !== null
+      ? [{ id: page.id, name: page.name, section: has(page.name) ? null : section }]
+      : [];
+  });
+}
+
+export function settingsSearchPath(route: Route, query: string): string {
+  const current = shownSettingsPage(route);
+  const matches = searchSettings(query);
+  const target =
+    query.trim() === "" ? null : (matches.find((match) => match.id === current) ?? matches[0]);
+  const path = routePath(target ? settingsPageRoute(target.id) : route);
+  return query === "" ? path : `${path}?q=${encodeURIComponent(query)}`;
 }
 
 export function settingsRedirect(path: string): string | null {
