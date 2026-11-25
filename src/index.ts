@@ -217,6 +217,7 @@ import {
   githubBlobCache,
   memberVmProviderId,
 } from "./db";
+import { METRICS_FLUSH_EVERY_MS, METRICS_FLUSH_JOB, flushMetrics } from "./metrics";
 import { DATABASE_HELD, doctorChecks, formatDoctor, realProbe, withSavedStore } from "./doctor";
 import { installHostMain } from "./install-host";
 import { runInstallCli } from "./installer";
@@ -2479,6 +2480,15 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         queue: POLICY_BLOCK_CHECK_JOB,
         jobKey: POLICY_BLOCK_CHECK_JOB,
         recurringEveryMs: POLICY_BLOCK_CHECK_MS,
+        now: Date.now(),
+      });
+      created.jobs.register(METRICS_FLUSH_JOB, async () => {
+        await flushMetrics(store);
+      });
+      await enqueueJobOnce(store, {
+        queue: METRICS_FLUSH_JOB,
+        jobKey: METRICS_FLUSH_JOB,
+        recurringEveryMs: METRICS_FLUSH_EVERY_MS,
         now: Date.now(),
       });
       created.jobs.register("closeout.stall", () => attached.recoverStalledCloseout());
