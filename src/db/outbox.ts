@@ -25,7 +25,7 @@ import {
   JOB_KIND,
   retryBackoffMs,
 } from "../core";
-import { type Db, type Q, type Steps } from "./db";
+import { afterCommit, type Db, type Q, type Steps } from "./db";
 import { jsonField } from "./json-text";
 import { emitJobReady, enqueueJobOnceSteps, errorText } from "./jobs";
 import { journal } from "./journal";
@@ -106,6 +106,27 @@ type OutboxClaimOptions = {
   limit?: number;
 };
 
+const outboxReadyListeners = new Set<(at: number) => void>();
+
+export function onOutboxReady(listener: (at: number) => void): () => void {
+  outboxReadyListeners.add(listener);
+  return () => {
+    outboxReadyListeners.delete(listener);
+  };
+}
+
+function outboxReadyAt(q: Q, at: number): void {
+  afterCommit(q, () => {
+    for (const listener of outboxReadyListeners) {
+      try {
+        listener(at);
+      } catch (error) {
+        journalCaught(error, "outbox.outboxReadyAt", null);
+      }
+    }
+  });
+}
+
 /**
  * Insert in the same transaction as the transition that caused the effect.
  * A duplicate idempotency key throws; wake notes use {@link enqueueOutboxOnce}.
@@ -119,6 +140,7 @@ export function* enqueueOutboxSteps(q: Q, row: NewOutbox) {
   if (inserted === null) {
     throw new Error("enqueueOutbox did not return an id");
   }
+  outboxReadyAt(q, row.notBefore ?? 0);
   return inserted;
 }
 
@@ -129,7 +151,10 @@ export async function enqueueOutboxOnce(store: Db, row: NewOutbox): Promise<numb
 
 export function* enqueueOutboxOnceSteps(q: Q, row: NewOutbox) {
   const inserted = yield* insertOutboxSteps(q, row, true);
-  if (inserted !== null) return inserted;
+  if (inserted !== null) {
+    outboxReadyAt(q, row.notBefore ?? 0);
+    return inserted;
+  }
   const { outbox } = q.t;
   const existing = yield* q.one(
     q.orm
@@ -510,6 +535,7 @@ export function* retryOutboxSteps(
       )
       .returning({ status: outbox.status }),
   );
+  if (updated?.status === "pending") outboxReadyAt(q, now + delay);
   const reasked =
     updated?.status === "dead" ? yield* settleDeadOutboxSteps(q, row, message, now) : false;
   yield* q.exec(

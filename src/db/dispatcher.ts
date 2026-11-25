@@ -1,15 +1,20 @@
 import { journalCaught, journalItemId } from "../journal";
-import { DEFAULT_POLL_MS, sleep, type Clock } from "../core";
+import { sleep, type Clock } from "../core";
 import { type Db } from "./db";
 import {
   claimOutboxHeadsSteps,
   coalesceOutbox,
   completeOutboxSteps,
   isOutboxCurrentSteps,
+  onOutboxReady,
   retryOutbox,
   releaseOutboxLeaseSteps,
   type OutboxRow,
 } from "./outbox";
+
+export const OUTBOX_IDLE_CLAIM_MS = 5_000;
+
+type Sleeper = (ms: number, signal?: AbortSignal) => Promise<void>;
 
 export type OutboxDeliveryContext = { signal: AbortSignal; isCurrent(): Promise<boolean> };
 export type OutboxHandler = (
@@ -28,6 +33,8 @@ export class OutboxDispatcher {
   /** Ticks still claiming. `idle()` waits for them so it covers what they claim. */
   private readonly claiming = new Set<Promise<unknown>>();
   private readonly active = new Map<number, { row: OutboxRow; controller: AbortController }>();
+  private readonly wakes = new Set<number>();
+  private waker: (() => void) | null = null;
   /** The async `Db` for converted code: `sqliteDb(db)` unless startup passes one. */
   readonly store: Db;
 
@@ -48,7 +55,7 @@ export class OutboxDispatcher {
   }
 
   get pollMs(): number {
-    return this.options.pollMs ?? DEFAULT_POLL_MS;
+    return this.options.pollMs ?? OUTBOX_IDLE_CLAIM_MS;
   }
 
   setHandler(handler: OutboxHandler): void {
@@ -98,21 +105,47 @@ export class OutboxDispatcher {
     await Promise.all([...this.pending].flatMap(([task, row]) => (match(row) ? [task] : [])));
   }
 
-  async run(
-    signal: AbortSignal,
-    sleeper: (ms: number, signal?: AbortSignal) => Promise<void> = sleep,
-  ): Promise<void> {
-    while (!signal.aborted) {
-      try {
-        await this.tick();
-      } catch (error) {
-        // Same failure as the job loop: one locked database must not end delivery for good.
-        journalCaught(error, "dispatcher.run.tick", null);
+  async run(signal: AbortSignal, sleeper: Sleeper = sleep): Promise<void> {
+    const stopWake = onOutboxReady((at) => this.wake(at));
+    try {
+      while (!signal.aborted) {
+        const now = this.clock.now();
+        for (const at of this.wakes) if (at <= now) this.wakes.delete(at);
+        try {
+          await this.tick();
+        } catch (error) {
+          // Same failure as the job loop: one locked database must not end delivery for good.
+          journalCaught(error, "dispatcher.run.tick", null);
+        }
+        if (signal.aborted) break;
+        await this.pause(signal, sleeper);
       }
-      if (signal.aborted) break;
-      await sleeper(this.pollMs, signal);
+    } finally {
+      stopWake();
     }
     await this.idle();
+  }
+
+  private wake(at: number): void {
+    this.wakes.add(at);
+    this.waker?.();
+  }
+
+  private async pause(signal: AbortSignal, sleeper: Sleeper): Promise<void> {
+    const started = this.clock.now();
+    while (!signal.aborted) {
+      const now = this.clock.now();
+      const waitMs = Math.min(...this.wakes, started + this.pollMs) - now;
+      if (waitMs <= 0) return;
+      const child = new AbortController();
+      const stop = () => child.abort();
+      signal.addEventListener("abort", stop, { once: true });
+      this.waker = stop;
+      await sleeper(waitMs, child.signal).catch(() => undefined);
+      this.waker = null;
+      signal.removeEventListener("abort", stop);
+      if (!child.signal.aborted) return;
+    }
   }
 
   private track(row: OutboxRow, task: Promise<void>): void {
@@ -147,6 +180,7 @@ export class OutboxDispatcher {
       const released = message;
       await this.store.run((q) => releaseOutboxLeaseSteps(q, released));
       this.active.delete(message.id);
+      this.wake(0);
     }
   }
 }
