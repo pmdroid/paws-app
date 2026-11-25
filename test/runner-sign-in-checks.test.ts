@@ -2,13 +2,17 @@ import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { and, asc, eq } from "drizzle-orm";
 import {
+  bindAgentAccount,
   bindingAccountHealth,
+  createAgentAccount,
   listAgentBindings,
   putWorkspaceUser,
   recordLinearInstallation,
   recordRunnerCapacity,
+  recordRunnerAccountCapability,
   recordRunnerAgentUsage,
   runnerAgentUsage,
+  setAgentAccountEnabled,
   syncWorkspaceMember,
   type Q,
 } from "../src/db";
@@ -567,4 +571,52 @@ test("every check and probe carries the agent account bound on the runner", asyn
           .account,
     ),
   ).toEqual([account]);
+});
+
+test("checks rotate across an agent's enabled accounts on the runner before a disabled one", async () => {
+  const f = await fixture();
+  const runnerId = await f.runner("active", f.now(), ["codex"]);
+  const [first] = await listAgentBindings(f.db, f.owner.workspaceId);
+  for (const label of ["second", "third"]) {
+    const account = await createAgentAccount(f.db, {
+      workspaceId: f.owner.workspaceId,
+      ownerUserId: f.owner.userId,
+      agent: "codex",
+      label,
+      now: f.now(),
+    });
+    await bindAgentAccount(f.db, {
+      workspaceId: f.owner.workspaceId,
+      userId: f.owner.userId,
+      accountId: account.id,
+      runnerId,
+      now: f.now(),
+    });
+  }
+  const bindings = (await listAgentBindings(f.db, f.owner.workspaceId)).filter(
+    (binding) => binding.runnerId === runnerId,
+  );
+  await recordRunnerAccountCapability(
+    f.db,
+    runnerId,
+    { protocol: 1, bindings: bindings.map((b) => ({ bindingId: b.id, agent: b.agent })) },
+    f.now(),
+  );
+  await setAgentAccountEnabled(f.db, {
+    workspaceId: f.owner.workspaceId,
+    accountId: first!.accountId,
+    enabled: false,
+    now: f.now(),
+  });
+  const picked: string[] = [];
+  for (let round = 0; round < 2; round += 1) {
+    await f.seen(runnerId);
+    await f.health.refresh();
+    const check = (await f.checks(runnerId)).at(-1)!;
+    picked.push(check.account!.bindingId);
+    await f.answer(check);
+    f.advance(31 * 60_000);
+  }
+  expect(new Set(picked).size).toBe(2);
+  expect(picked).not.toContain(first!.id);
 });

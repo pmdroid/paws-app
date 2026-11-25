@@ -136,7 +136,7 @@ export function createRunnerModels(options: {
       if (due === undefined) continue;
       const fit = yield* signInFitSteps(q, { id: source.runnerId }, source.workspaceId, {
         agent: source.agent,
-        model: due || null,
+        model: null,
         purpose: "helper",
         at: now(),
       });

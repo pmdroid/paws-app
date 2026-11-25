@@ -3,6 +3,7 @@ import {
   wakeRunnerSlotWaitsSteps,
   workspaceMemberUsable,
   auditWorkspaceAccessSteps,
+  bindingAccountHealthSteps,
   commandAccountSteps,
   getRunnerSteps,
   HEALTH_COMMAND_KINDS,
@@ -163,14 +164,28 @@ export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?:
     agent: string,
     enabled: boolean,
   ) {
+    const ranked: { accountId: string; bindingId: string; enabled: number; checkedAt: number }[] =
+      [];
     for (const row of yield* runnerNamedBindingsSteps(q, runner.id, runner.workspaceId))
       if (
         row.agent === agent &&
         (!enabled || row.enabled === 1) &&
         !(yield* runnerAccountUnsupportedSteps(q, runner.id, row.bindingId, row.agent))
       )
-        return { accountId: row.accountId, bindingId: row.bindingId };
-    return null;
+        ranked.push({
+          accountId: row.accountId,
+          bindingId: row.bindingId,
+          enabled: row.enabled,
+          checkedAt: Math.max(
+            0,
+            ...(yield* bindingAccountHealthSteps(q, row.bindingId))
+              .filter((health) => health.kind === "auth")
+              .map((health) => health.observedAt),
+          ),
+        });
+    ranked.sort((a, b) => b.enabled - a.enabled || a.checkedAt - b.checkedAt);
+    const chosen = ranked[0];
+    return chosen ? { accountId: chosen.accountId, bindingId: chosen.bindingId } : null;
   }
   function* queueCheckSteps(
     q: Q,
