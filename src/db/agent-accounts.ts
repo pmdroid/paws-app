@@ -946,7 +946,6 @@ export function* activeAccountRunnerWorkSteps(
     agentAccountBinding: b,
     agentAccount: a,
     runnerCommand: command,
-    retroDispatch: d,
   } = q.t;
   return (
     (yield* q.one(
@@ -962,7 +961,6 @@ export function* activeAccountRunnerWorkSteps(
         .leftJoin(w, eq(w.commandId, c.commandId))
         .leftJoin(command, eq(command.id, c.commandId))
         .leftJoin(h, eq(h.id, c.commandId))
-        .leftJoin(d, eq(d.commandId, c.commandId))
         .where(
           and(
             eq(r.id, runnerId),
@@ -991,12 +989,6 @@ export function* activeAccountRunnerWorkSteps(
                 isNull(h.endedAt),
                 isNull(h.result),
                 gt(h.expiresAt, now),
-              ),
-              and(
-                eq(d.runnerId, r.id),
-                eq(d.workspaceId, r.workspaceId),
-                eq(d.runnerFence, r.fence),
-                isNull(d.releasedAt),
               ),
             ),
           ),

@@ -1257,7 +1257,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             store,
             artifactRoot: join(paths.home, "retros"),
             sign: value.signRetroCommand,
-            credentials: (runnerId, envelopes) => value.work.attachCredentials(runnerId, envelopes),
           });
           return value;
         });

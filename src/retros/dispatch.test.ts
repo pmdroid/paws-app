@@ -5,7 +5,6 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   accountSlotsInUse,
-  activeAccountRunnerWorkSteps,
   beginRetroCollection,
   closeRetro,
   createRetro,
@@ -29,7 +28,6 @@ import { createRetroDispatcher, retroRetryDelayMs } from "./index";
 import {
   addRunnerPg as addRunner,
   heldAccountBindings,
-  sign,
   trustedKeys,
   worldPg,
 } from "./dispatch.fixtures";
@@ -389,83 +387,6 @@ describe("placement", () => {
     for (const id of ["OLD", "MEMBER", "SIGNED_OUT"])
       expect(await fakeRunner(id, clock).poll(dispatcher)).toEqual([]);
     expect(await listRetroDispatches(db, "r1")).toEqual([]);
-  });
-
-  test("a runner with only a machine login is never chosen; the retro waits and does not fail", async () => {
-    const { db, clock, open } = await world();
-    await addRunner(db, { id: "MACHINE_ONLY", ready: false });
-    await online(db, clock.now);
-    const dispatcher = open(db);
-    await dispatcher.tick();
-    await dispatcher.tick();
-    expect(await dispatcher.generation("r1")).toMatchObject({
-      state: "waiting_for_runner",
-      diagnostic: "no_runner",
-      detail: "No runner has a signed-in codex account.",
-      attempt: 0,
-    });
-    expect((await getRetro(db, "r1"))!.state).toBe("queued");
-    expect(await fakeRunner("MACHINE_ONLY", clock).poll(dispatcher)).toEqual([]);
-    expect(await listRetroDispatches(db, "r1")).toEqual([]);
-  });
-
-  test("a codex retro goes to the runner with a bound codex account and carries its sign-in", async () => {
-    const { db, clock, root } = await world();
-    await addRunner(db, { id: "MACHINE_ONLY", ready: false });
-    const bound = (await addRunner(db, { id: "BOUND" }))!;
-    await online(db, clock.now);
-    const attached: string[] = [];
-    const dispatcher = createRetroDispatcher({
-      store: db,
-      artifactRoot: root,
-      sign,
-      now: () => clock.now,
-      credentials: async (runnerId, envelopes) => {
-        attached.push(runnerId);
-        return envelopes.map((envelope) => ({
-          ...envelope,
-          credential: { version: 1, sealed: "sealed" },
-        }));
-      },
-    });
-    await dispatcher.tick();
-    const listed = await call(dispatcher, "BOUND", "/v1/retro-commands");
-    expect(listed.body.commands).toMatchObject([{ credential: { version: 1, sealed: "sealed" } }]);
-    expect(attached).toEqual(["BOUND"]);
-    expect(await listRetroDispatches(db, "r1")).toMatchObject([
-      { runnerId: "BOUND", command: { account: bound, profile: { agent: "codex" } } },
-    ]);
-  });
-
-  test("an open retro dispatch lets its runner refresh the account's sign-in until released", async () => {
-    const { db, clock, open } = await world();
-    const { accountId } = (await addRunner(db, { id: "R1" }))!;
-    const runner = fakeRunner("R1", clock);
-    await runner.seen(db);
-    const dispatcher = open(db);
-    const active = () => db.run((q) => activeAccountRunnerWorkSteps(q, "R1", accountId, clock.now));
-    expect(await active()).toBe(false);
-    await dispatcher.tick();
-    const [command] = await runner.poll(dispatcher);
-    await runner.start(dispatcher, command!);
-    expect(await active()).toBe(true);
-    await runner.submit(dispatcher, command!, runner.result(command!, null, "auth_required"));
-    expect(await active()).toBe(false);
-  });
-
-  test("an auth_required result names the runner and the agent account", async () => {
-    const { db, clock, open } = await world();
-    await addRunner(db, { id: "R1" });
-    const runner = fakeRunner("R1", clock);
-    await runner.seen(db);
-    const dispatcher = open(db);
-    await dispatcher.tick();
-    const [command] = await runner.poll(dispatcher);
-    await runner.start(dispatcher, command!);
-    await runner.submit(dispatcher, command!, runner.result(command!, null, "auth_required"));
-    const error = (await getRetro(db, "r1"))!.error!;
-    expect(error).toBe("auth_required: The codex account R1 on runner R1 needs to sign in again.");
-    expect(error).not.toContain("on this machine");
   });
 
   test("a quota cooldown on the selected agent is a wait that spends no attempt", async () => {

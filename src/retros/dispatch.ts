@@ -15,8 +15,6 @@ import {
   listRetroAttemptsSteps,
   listWorkspaceMembersSteps,
   listAgentBindingsSteps,
-  listAgentAccountsSteps,
-  runnerNameAndOwnerSteps,
   markRetroDispatchFetchedSteps,
   newRetroCommandId,
   openRetroDispatchSteps,
@@ -334,20 +332,6 @@ function* retroBindingSteps(
   return pick;
 }
 
-function* authRequiredSteps(q: Q, dispatch: RetroDispatch) {
-  const command = dispatch.command as RunnerRetroCommand;
-  const runner = (yield* runnerNameAndOwnerSteps(q, dispatch.runnerId))?.name ?? dispatch.runnerId;
-  const account = command.account
-    ? (yield* listAgentAccountsSteps(q, dispatch.workspaceId)).find(
-        (row) => row.id === command.account!.accountId,
-      )
-    : undefined;
-  const agent = command.profile.agent;
-  return command.account
-    ? `auth_required: The ${agent} account ${account?.label ?? command.account.accountId} on runner ${runner} needs to sign in again.`
-    : `auth_required: Runner ${runner} has no ${agent} account bound.`;
-}
-
 function profileOf(retro: Retro): RetroAgentProfile {
   return retro.agentProfile as RetroAgentProfile;
 }
@@ -389,10 +373,6 @@ export function createRetroDispatcher(options: {
   store: Db;
   artifactRoot: string;
   sign: RetroCommandSigner;
-  credentials?: (
-    runnerId: string,
-    envelopes: SignedRunnerCommand[],
-  ) => Promise<SignedRunnerCommand[]>;
   now?: () => number;
 }) {
   const { store, artifactRoot: root } = options;
@@ -492,9 +472,7 @@ export function createRetroDispatcher(options: {
           });
         else if (settled.reason === "unknown_evidence" || settled.reason === "duplicate_item")
           yield* fail(`The result did not match its evidence: ${settled.reason}.`);
-      } else if (result.outcome === "auth_required")
-        yield* fail(yield* authRequiredSteps(q, dispatch));
-      else {
+      } else {
         const message = result.errorMessage ?? `The retro turn ended with ${result.outcome}.`;
         yield* fail(`${result.outcome}: ${message}`);
       }
@@ -630,7 +608,7 @@ export function createRetroDispatcher(options: {
         "no_runner",
         incompatible > 0
           ? `No paired admin runner can run ${profile.agent} retros yet. ${incompatible} need a runner update.`
-          : `No runner has a signed-in ${profile.agent} account.`,
+          : `No online paired admin runner has ${profile.agent} signed in.`,
       );
     const agent = profile.agent as RunnerCodingAgent;
     const model = profile.model;
@@ -666,13 +644,11 @@ export function createRetroDispatcher(options: {
         const held = holds.find((hold) => hold.reason !== "exhausted");
         const reason = held
           ? BINDING_REASON_TEXT[held.reason]
-          : blocks.find((pick) => pick.refusal !== null)?.refusal;
+          : (blocks.find((pick) => pick.refusal !== null)?.refusal ?? "no agent account bound");
         await note(
           retro.id,
           "no_runner",
-          reason
-            ? `No runner has a signed-in ${profile.agent} account: ${reason}.`
-            : `No runner has a signed-in ${profile.agent} account.`,
+          `The ${profile.agent} account cannot run here: ${reason}.`,
         );
       }
       return;
@@ -953,9 +929,7 @@ export function createRetroDispatcher(options: {
           journalCaught(error, "retros.dispatch.commands", null);
         }
       }
-      return options.credentials && envelopes.length > 0
-        ? options.credentials(runnerId, envelopes)
-        : envelopes;
+      return envelopes;
     },
     async acknowledge(runnerId: string, commandId: string) {
       await store.transaction(function* (q) {
