@@ -157,6 +157,7 @@ router.subscribe((state) => {
   routeChanged();
   if (within) return;
   window.scrollTo({ top: 0, behavior: "instant" });
+  if (document.activeElement?.matches("[data-settings-search]")) return;
   document.querySelector<HTMLElement>("#content")?.focus({ preventScroll: true });
 });
 document.addEventListener("change", (event) => {
