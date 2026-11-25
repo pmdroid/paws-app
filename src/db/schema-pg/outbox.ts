@@ -49,6 +49,9 @@ export const outbox = pgTable(
       table.deliveryGeneration,
       table.status,
     ),
+    index("outbox_terminal_lookup")
+      .on(table.target, table.orderingKey, table.deliveryGeneration, table.priority)
+      .where(sql`delivery_kind IN ('terminal', 'stop') AND status IN ('pending', 'sent')`),
     check("outbox_check_1", sql`target IN ('linear', 'slack', 'github', 'sandbox')`),
     check("outbox_check_3", sql`status IN ('pending', 'sent', 'dead', 'dropped')`),
     check(

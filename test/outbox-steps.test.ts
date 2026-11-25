@@ -135,6 +135,51 @@ describePglite((open) => {
     }
   });
 
+  test("a claim past 400 dead and 30k sent rows stays fast without statistics", async () => {
+    const { db, close } = await open();
+    try {
+      const row = (key: string, orderingKey: string, extra: Record<string, unknown> = {}) => ({
+        target: "linear",
+        op: "activity",
+        orderingKey,
+        idempotencyKey: key,
+        payload: {},
+        createdAt: 0,
+        ...extra,
+      });
+      const sent = { status: "sent", sentAt: 0 };
+      const rows = [
+        ...Array.from({ length: 400 }, (_, i) => row(`dead-${i}`, `ses-${i}`, { status: "dead" })),
+        ...Array.from({ length: 30_000 }, (_, i) => row(`sent-${i}`, `ses-${i % 400}`, sent)),
+        ...[0, 1].map((i) =>
+          row(`terminal-${i}`, `ses-${i}`, { ...sent, deliveryKind: "terminal" }),
+        ),
+        ...[0, 1, 2, 3].map((i) => row(`pending-${i}`, `ses-${i}`)),
+      ];
+      await db.run(function* (q) {
+        for (let start = 0; start < rows.length; start += 2_000)
+          yield* q.exec(
+            q.orm
+              .insert(q.t.outbox)
+              .values(rows.slice(start, start + 2_000) as (typeof q.t.outbox.$inferInsert)[]),
+          );
+      });
+      const timings: number[] = [];
+      for (const now of [1, 2, 3]) {
+        const started = performance.now();
+        const claimed = await db.run((q) => claimOutboxHeadsSteps(q, { now, leaseMs: 1 }));
+        timings.push(performance.now() - started);
+        expect(claimed.map((entry) => entry.idempotencyKey).sort()).toEqual([
+          "pending-0",
+          "pending-1",
+        ]);
+      }
+      expect(Math.min(...timings)).toBeLessThan(100);
+    } finally {
+      await close();
+    }
+  }, 60_000);
+
   test("progress sent within the interval holds the next thought back", async () => {
     const { db, close } = await open();
     try {

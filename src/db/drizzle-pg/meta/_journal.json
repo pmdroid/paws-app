@@ -260,6 +260,13 @@
       "when": 1795619125788,
       "tag": "0036_metric_minute",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1795636333356,
+      "tag": "0037_outbox_terminal_lookup_index",
+      "breakpoints": true
     }
   ]
 }
