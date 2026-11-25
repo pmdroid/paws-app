@@ -40,10 +40,7 @@ async function running() {
   let fail = 0;
   dispatcher.setHandler(() => {
     seen.push(clock.now());
-    if (fail > 0) {
-      fail -= 1;
-      throw new Error("try again");
-    }
+    if (fail-- > 0) throw new Error("try again");
   });
   const asleep = () => elapse !== null;
   const task = dispatcher.run(controller.signal, sleeper);
@@ -52,44 +49,39 @@ async function running() {
     await dispatcher.idle();
     for (let i = 0; i < 1_000 && !asleep(); i++) await Bun.sleep(1);
   };
-  closes.unshift(async () => {
-    controller.abort();
-    await task;
-  });
+  closes.unshift(() => (controller.abort(), task));
   await settled();
+  const failNext = () => (fail = 1);
   return {
     clock,
     db,
     seen,
     sleeps,
     settled,
+    failNext,
     claims: () => claims,
-    failNext: () => (fail += 1),
     elapse: () => elapse?.(),
   };
 }
 
 const row = (key: string, now: number) => ({
-  target: "linear" as const,
-  op: "activity",
-  orderingKey: `ses-${key}`,
-  idempotencyKey: key,
-  payload: { text: key },
-  now,
+  ...{ target: "linear" as const, op: "activity", orderingKey: `ses-${key}` },
+  ...{ idempotencyKey: key, payload: { text: key }, now },
 });
 
 test("an enqueue is delivered without waiting for the idle poll", async () => {
   const { clock, db, seen, sleeps, settled } = await running();
   expect(sleeps).toEqual([OUTBOX_IDLE_CLAIM_MS]);
   const delays: number[] = [];
-  for (const [i, enqueue] of [enqueueOutbox, enqueueOutboxOnce, enqueueOutbox].entries()) {
-    await enqueue(db, row(`k${i}`, clock.now()));
+  for (let i = 0; i < 6; i++) {
+    await (i % 2 ? enqueueOutboxOnce : enqueueOutbox)(db, row(`k${i}`, clock.now()));
     const started = performance.now();
     while (seen.length <= i && performance.now() - started < 1_000) await Bun.sleep(1);
     delays.push(performance.now() - started);
     await settled();
   }
-  expect(seen).toEqual([5_000, 5_000, 5_000]);
+  expect(seen).toEqual(Array(6).fill(5_000));
+  expect(sleeps.every((ms) => ms === OUTBOX_IDLE_CLAIM_MS)).toBe(true);
   expect(Math.min(...delays)).toBeLessThan(50);
 });
 

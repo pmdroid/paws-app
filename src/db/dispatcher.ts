@@ -14,8 +14,6 @@ import {
 
 export const OUTBOX_IDLE_CLAIM_MS = 5_000;
 
-type Sleeper = (ms: number, signal?: AbortSignal) => Promise<void>;
-
 export type OutboxDeliveryContext = { signal: AbortSignal; isCurrent(): Promise<boolean> };
 export type OutboxHandler = (
   message: OutboxRow,
@@ -105,24 +103,24 @@ export class OutboxDispatcher {
     await Promise.all([...this.pending].flatMap(([task, row]) => (match(row) ? [task] : [])));
   }
 
-  async run(signal: AbortSignal, sleeper: Sleeper = sleep): Promise<void> {
+  async run(
+    signal: AbortSignal,
+    sleeper: (ms: number, signal?: AbortSignal) => Promise<void> = sleep,
+  ): Promise<void> {
     const stopWake = onOutboxReady((at) => this.wake(at));
-    try {
-      while (!signal.aborted) {
-        const now = this.clock.now();
-        for (const at of this.wakes) if (at <= now) this.wakes.delete(at);
-        try {
-          await this.tick();
-        } catch (error) {
-          // Same failure as the job loop: one locked database must not end delivery for good.
-          journalCaught(error, "dispatcher.run.tick", null);
-        }
-        if (signal.aborted) break;
-        await this.pause(signal, sleeper);
+    while (!signal.aborted) {
+      const now = this.clock.now();
+      for (const at of this.wakes) if (at <= now) this.wakes.delete(at);
+      try {
+        await this.tick();
+      } catch (error) {
+        // Same failure as the job loop: one locked database must not end delivery for good.
+        journalCaught(error, "dispatcher.run.tick", null);
       }
-    } finally {
-      stopWake();
+      if (signal.aborted) break;
+      await this.pause(signal, sleeper);
     }
+    stopWake();
     await this.idle();
   }
 
@@ -131,20 +129,19 @@ export class OutboxDispatcher {
     this.waker?.();
   }
 
-  private async pause(signal: AbortSignal, sleeper: Sleeper): Promise<void> {
-    const started = this.clock.now();
+  private async pause(
+    signal: AbortSignal,
+    sleeper: (ms: number, signal?: AbortSignal) => Promise<void>,
+  ): Promise<void> {
+    const until = this.clock.now() + this.pollMs;
     while (!signal.aborted) {
-      const now = this.clock.now();
-      const waitMs = Math.min(...this.wakes, started + this.pollMs) - now;
+      const waitMs = Math.min(...this.wakes, until) - this.clock.now();
       if (waitMs <= 0) return;
-      const child = new AbortController();
-      const stop = () => child.abort();
-      signal.addEventListener("abort", stop, { once: true });
-      this.waker = stop;
-      await sleeper(waitMs, child.signal).catch(() => undefined);
+      const woken = new AbortController();
+      this.waker = () => woken.abort();
+      await sleeper(waitMs, AbortSignal.any([signal, woken.signal]));
       this.waker = null;
-      signal.removeEventListener("abort", stop);
-      if (!child.signal.aborted) return;
+      if (!woken.signal.aborted) return;
     }
   }
 

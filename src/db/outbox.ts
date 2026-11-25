@@ -115,15 +115,9 @@ export function onOutboxReady(listener: (at: number) => void): () => void {
   };
 }
 
-function outboxReadyAt(q: Q, at: number): void {
+function outboxReadyAt(q: Q, ...times: number[]): void {
   afterCommit(q, () => {
-    for (const listener of outboxReadyListeners) {
-      try {
-        listener(at);
-      } catch (error) {
-        journalCaught(error, "outbox.outboxReadyAt", null);
-      }
-    }
+    for (const listener of outboxReadyListeners) for (const at of times) listener(at);
   });
 }
 
@@ -140,7 +134,6 @@ export function* enqueueOutboxSteps(q: Q, row: NewOutbox) {
   if (inserted === null) {
     throw new Error("enqueueOutbox did not return an id");
   }
-  outboxReadyAt(q, row.notBefore ?? 0);
   return inserted;
 }
 
@@ -151,10 +144,7 @@ export async function enqueueOutboxOnce(store: Db, row: NewOutbox): Promise<numb
 
 export function* enqueueOutboxOnceSteps(q: Q, row: NewOutbox) {
   const inserted = yield* insertOutboxSteps(q, row, true);
-  if (inserted !== null) {
-    outboxReadyAt(q, row.notBefore ?? 0);
-    return inserted;
-  }
+  if (inserted !== null) return inserted;
   const { outbox } = q.t;
   const existing = yield* q.one(
     q.orm
@@ -982,6 +972,7 @@ function* insertOutboxSteps(q: Q, row: NewOutbox, ignore = false) {
       ? insert.onConflictDoNothing().returning({ id: outbox.id })
       : insert.returning({ id: outbox.id }),
   );
+  if (inserted && !blocked) outboxReadyAt(q, 0, row.notBefore ?? 0);
   if (inserted && !blocked && row.orderingKey && !row.op.startsWith("linear.session."))
     yield* q.exec(
       q.orm
