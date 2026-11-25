@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { parseRemainingParts, type RemainingPart } from "../core";
 import { type Q, type Db } from "./db";
 
@@ -140,6 +140,18 @@ export function* getPullRequestTextSteps(q: Q, itemId: string) {
       .where(eq(pullRequestText.itemId, itemId)),
   );
   return row ?? null;
+}
+
+export function* listPullRequestTitlesSteps(q: Q, itemIds: readonly string[]) {
+  const { pullRequestText } = q.t;
+  if (itemIds.length === 0) return new Map<string, string>();
+  const rows: { itemId: string; title: string }[] = yield* q.all(
+    q.orm
+      .select({ itemId: pullRequestText.itemId, title: pullRequestText.title })
+      .from(pullRequestText)
+      .where(inArray(pullRequestText.itemId, [...itemIds])),
+  );
+  return new Map(rows.map((row) => [row.itemId, row.title]));
 }
 
 export async function getPullRequestText(

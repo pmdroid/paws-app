@@ -383,4 +383,75 @@ describe("merge queue page", () => {
     );
     expect(page(snapshot)).not.toContain("My lanes");
   });
+  test("a search filters waiting and finished entries in every lane", () => {
+    const snapshot = twoRepositories();
+    const search = (query: string, lanes: Partial<NonNullable<RenderModel["mergeLanes"]>> = {}) =>
+      page(snapshot, { filter: "all", userId: null, query, ...lanes });
+    expect(page(snapshot)).toContain("data-merge-search />");
+    const byNumber = search("415");
+    expect(byNumber).toContain('value="415"');
+    expect(byNumber).toContain("ENG-102");
+    for (const hidden of ["ENG-101", "ENG-107", "ENG-120", "ENG-99"])
+      expect(byNumber).not.toContain(`"${hidden}"`);
+    expect(byNumber.match(/data-merge-lane=/g)).toHaveLength(1);
+    expect(search("eng-12")).toContain('data-merge-item="ENG-121"');
+    expect(search("eng-12")).not.toContain("ENG-101");
+    expect(search("TIMEZONE")).toContain('data-merge-item="ENG-107"');
+    expect(search("acme/web").match(/data-merge-lane=/g)).toHaveLength(1);
+    expect(search("waiting for review")).toContain("ENG-121");
+    expect(search("merged")).toContain('data-merge-outcome="ENG-99"');
+    expect(search("merged")).not.toContain('data-merge-outcome="ENG-130"');
+    expect(search("conflict")).toContain('data-merge-outcome="ENG-130"');
+    expect(search("  ")).toContain("ENG-101");
+  });
+
+  test("a search matches the branch the endpoint sends", () => {
+    const snapshot = twoRepositories();
+    snapshot.items[0]!.branch = "paws/audit-rows";
+    const queue = resource(snapshot);
+    expect(queue.issues[0]).toEqual(expect.objectContaining({ branch: "paws/audit-rows" }));
+    const search = (query: string) => page(snapshot, { filter: "all", userId: null, query });
+    expect(search("AUDIT-ROWS")).toContain('data-merge-head="ENG-101"');
+    expect(search("paws/audit-rows")).not.toContain("ENG-102");
+    expect(search("paws/ENG-12")).toContain('data-merge-item="ENG-121"');
+  });
+
+  test("a search matches the pull request title and state", () => {
+    const snapshot = twoRepositories();
+    snapshot.items[0]!.pr = { ...snapshot.items[0]!.pr!, title: "Store audit rows", state: "open" };
+    const search = (query: string) => page(snapshot, { filter: "all", userId: null, query });
+    expect(search("store AUDIT")).toContain('data-merge-head="ENG-101"');
+    expect(search("store audit")).not.toContain("ENG-102");
+    expect(search("open")).toContain('data-merge-head="ENG-101"');
+    expect(search("open")).not.toContain('data-merge-item="ENG-102"');
+  });
+
+  test("a search applies on top of My lanes", () => {
+    const snapshot = twoRepositories();
+    snapshot.items.push({ ...item("ENG-140", "Ben's fix", "acme/web", 430), owner: "Ben Ode" });
+    snapshot.mergeQueue.push(entry("ENG-140", "acme/web", null, "ci", 4, GREEN));
+    const owners = Object.fromEntries(
+      snapshot.items.map((each) => [each.id, each.owner === "Ben Ode" ? "ben" : "aisha"]),
+    );
+    const mine = (query: string) =>
+      page(snapshot, { filter: "mine", userId: "ben", query }, owners);
+    expect(mine("acme")).toContain("ENG-140");
+    expect(mine("acme")).not.toContain("ENG-120");
+    expect(mine("ENG-120")).toContain("No pull requests match");
+  });
+
+  test("an unmatched search shows its own empty state, and an empty queue keeps its copy", () => {
+    const snapshot = twoRepositories();
+    const html = page(snapshot, { filter: "all", userId: null, query: "<nothing>" });
+    expect(html).toContain("No pull requests match \u201c&lt;nothing&gt;\u201d.");
+    expect(html).toContain('data-action="merge-search-clear"');
+    expect(html).not.toContain("data-merge-lane=");
+    expect(html).not.toContain("Nothing is waiting to merge.");
+    snapshot.mergeQueue = [];
+    snapshot.mergeHistory = [];
+    expect(page(snapshot)).not.toContain("data-merge-search");
+    const empty = page(snapshot, { filter: "all", userId: null, query: "x" });
+    expect(empty).toContain("Nothing is waiting to merge.");
+    expect(empty).toContain("data-merge-search");
+  });
 });

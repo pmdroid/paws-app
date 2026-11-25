@@ -1255,6 +1255,7 @@ export interface MergeQueueIssue {
   ownerId?: string | null;
   project: { id: string; name: string } | null;
   pr: StatusPullRequest | null;
+  branch?: string | null;
 }
 
 export interface MergeQueueResponse {
@@ -1303,6 +1304,7 @@ function readMergeQueueIssue(input: unknown, path: string): MergeQueueIssue {
     ownerId: body.ownerId === undefined ? null : nullableText(body, "ownerId", path),
     project: readItemProject(body.project, `${path}.project`),
     pr: readPr(body.pr, `${path}.pr`),
+    branch: body.branch === undefined ? null : nullableText(body, "branch", path),
   };
 }
 

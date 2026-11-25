@@ -8,6 +8,7 @@ import {
   insertQueuedItem,
   joinMergeQueue,
   recordPushOutage,
+  savePullRequestText,
   upsertCloseoutStep,
   type Db,
 } from "../../../db";
@@ -112,6 +113,7 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
   await queued(db, "ENG-2", "ses_mine", 2);
   await queued(db, "ENG-3", "ses_other", 3);
   await insertQueuedItem(db, { id: "ENG-4", title: "Not merging", sessionKey: "ses_mine", now: 4 });
+  await savePullRequestText(db, "ENG-1", { title: "Export worker", body: "", evidence: "" }, now);
   await recordPushOutage(db, {
     repository: "acme/platform",
     error: "denied",
@@ -162,7 +164,8 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
       owner: null,
       ownerId: null,
       project: null,
-      pr: { number: 2, url: "https://github.com/acme/platform/pull/2" },
+      pr: { number: 2, url: "https://github.com/acme/platform/pull/2", state: "open" },
+      branch: "paws/ENG-2",
     },
     {
       id: "ENG-1",
@@ -170,7 +173,13 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
       owner: null,
       ownerId: null,
       project: null,
-      pr: { number: 1, url: "https://github.com/acme/platform/pull/1" },
+      pr: {
+        number: 1,
+        url: "https://github.com/acme/platform/pull/1",
+        title: "Export worker",
+        state: "open",
+      },
+      branch: "paws/ENG-1",
     },
   ]);
   expect(queue.pushOutages.map((outage) => outage.repository)).toEqual(["acme/platform"]);

@@ -11,7 +11,7 @@ import {
   type Db,
   type WorkItemRecord,
 } from "../../../db";
-import type { StatusPullCi, StatusPullRequest, StatusPullSize } from "../contract";
+import type { PullState, StatusPullCi, StatusPullRequest, StatusPullSize } from "../contract";
 
 export type PullFacts = Omit<StatusPullRequest, "number" | "url"> & {
   number?: number;
@@ -59,12 +59,7 @@ export async function pullFactsFor(
     facts.set(id, {
       ...(url ? { number: pull?.pullNumber ?? merge!.pullNumber, url } : {}),
       ...(title?.trim() ? { title: title.trim() } : {}),
-      state:
-        merge || record.state === "merged"
-          ? "merged"
-          : record.state === "cancelled" || record.state === "failed"
-            ? "closed"
-            : "open",
+      state: pullState(record, merge !== undefined),
       ...(pull ? { openedAt: new Date(pull.openedAt).toISOString() } : {}),
       ...(head ? { head } : {}),
       ...(merge?.mergeSha ? { mergeSha: merge.mergeSha } : {}),
@@ -74,6 +69,11 @@ export async function pullFactsFor(
     });
   }
   return facts;
+}
+
+export function pullState(record: WorkItemRecord, merged: boolean): PullState {
+  if (merged || record.state === "merged") return "merged";
+  return record.state === "cancelled" || record.state === "failed" ? "closed" : "open";
 }
 
 export function withPullFacts(

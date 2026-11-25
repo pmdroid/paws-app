@@ -16,20 +16,60 @@ export type LaneFilter = "all" | "mine";
 /** Every task Closeout accepted that waits to merge, one card per lane: person, project, repository. */
 export function renderMergeQueue(
   queue: MergeQueueResponse,
-  lanes: { filter: LaneFilter; userId: string | null } = { filter: "all", userId: null },
+  lanes: { filter: LaneFilter; userId: string | null; query?: string } = {
+    filter: "all",
+    userId: null,
+  },
 ): string {
   const mine = lanes.userId !== null && lanes.filter === "mine";
-  const shown = groups(queue).filter((group) => !mine || group.ownerId === lanes.userId);
+  const query = (lanes.query ?? "").trim();
+  const inLanes = groups(queue).filter((group) => !mine || group.ownerId === lanes.userId);
+  const shown = inLanes.flatMap((group) => matching(queue, group, query));
   const button = (value: LaneFilter, label: string) =>
     `<button type="button" class="btn${lanes.filter === value ? " on" : ""}" data-action="merge-lanes" data-merge-lanes="${value}" aria-pressed="${lanes.filter === value}">${label}</button>`;
   const toggle =
     lanes.userId === null
       ? ""
       : `<div class="row" role="group" aria-label="Filter lanes">${button("all", "All lanes")}${button("mine", "My lanes")}</div>`;
-  const intro = `<div class="between"><p>Accepted pull requests merge in their lane, in the order Closeout accepted them.</p>${toggle}</div>`;
+  const search =
+    inLanes.length || query
+      ? `<label class="field"><span class="sr-only">Search the merge queue</span><input id="merge-search" type="search" name="q" value="${esc(lanes.query ?? "")}" placeholder="Search issue, title, PR, branch or repository" autocomplete="off" spellcheck="false" data-merge-search /></label>`
+      : "";
+  const intro = `<div class="between"><p>Accepted pull requests merge in their lane, in the order Closeout accepted them.</p>${toggle}</div>${search}`;
+  if (inLanes.length && !shown.length)
+    return `${intro}<div class="empty" role="status"><p>No pull requests match “${esc(query)}”.</p><p class="muted">Search by issue id, title, pull request number, branch, state or repository.</p><button type="button" class="btn" data-action="merge-search-clear">Clear search</button></div>`;
   if (!shown.length)
     return `${intro}<div class="empty" role="status"><p>${mine ? "None of your lanes has work waiting to merge." : "Nothing is waiting to merge."}</p><p class="muted">Pull requests appear here once Closeout accepts them.</p></div>`;
   return `${intro}${shown.map((group) => section(queue, group)).join("")}`;
+}
+
+function matching(queue: MergeQueueResponse, group: Group, query: string): Group[] {
+  if (!query) return [group];
+  const needle = query.toLowerCase();
+  const hit = (entry: StatusMergeEntry | StatusMergeOutcome, states: string[]) => {
+    const item = queue.issues.find((candidate) => candidate.id === entry.itemId);
+    return [
+      entry.itemId,
+      item?.title,
+      entry.repository,
+      item?.pr ? `#${item.pr.number}` : null,
+      item?.pr?.title,
+      item?.pr?.state,
+      item?.branch,
+      ...states,
+    ].some((field) => field?.toLowerCase().includes(needle));
+  };
+  const waiting = group.waiting.filter((entry) =>
+    hit(entry, [entry.waitingFor, STEP[entry.waitingFor].label, isMerging(entry) ? "merging" : ""]),
+  );
+  const history = group.history.filter((entry) =>
+    hit(entry, [
+      entry.outcome,
+      entry.outcome === "merged" ? "merged" : "sent back to the agent",
+      entry.reason ?? "",
+    ]),
+  );
+  return waiting.length || history.length ? [{ ...group, waiting, history }] : [];
 }
 
 type Group = {

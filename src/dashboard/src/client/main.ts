@@ -135,8 +135,6 @@ let booted = false;
 let shownPath = router.state.location.pathname;
 let shownSearch = router.state.location.search;
 
-let laneFilter: LaneFilter = "all";
-
 document.addEventListener("click", onClick);
 document.addEventListener("submit", (event) => {
   if (submitVisualReviewAsk(event, reload) || submitQuestionAnswer(event, reload)) return;
@@ -148,8 +146,21 @@ document.addEventListener("input", (event) => {
     setIssueFilter({ query: target.value });
     return;
   }
+  if (target instanceof HTMLInputElement && target.dataset.mergeSearch !== undefined)
+    setMergeSearch({ q: target.value });
   rememberLinkAskDraft(event.target);
   rememberQuestionAnswerDraft(event.target);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
+  const target = event.target as HTMLElement | null;
+  if (target?.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName ?? ""))
+    return;
+  if (document.querySelector('[role="dialog"]')) return;
+  const field = document.querySelector<HTMLInputElement>("input[data-merge-search]");
+  if (currentRoute().view !== "mergeQueue" || !field) return;
+  event.preventDefault();
+  field.focus();
 });
 document.addEventListener("change", (event) => rememberLinkAskDraft(event.target));
 router.subscribe((state) => {
@@ -419,6 +430,24 @@ async function fileFindingIssue(
   paint();
 }
 
+function mergeSearch(): { filter: LaneFilter; query: string } {
+  const params = new URLSearchParams(router.state.location.search);
+  return { filter: params.get("lanes") === "mine" ? "mine" : "all", query: params.get("q") ?? "" };
+}
+
+function setMergeSearch(change: { q?: string; lanes?: LaneFilter }): void {
+  const { filter, query } = mergeSearch();
+  const params = new URLSearchParams();
+  const q = change.q ?? query;
+  const lanes = change.lanes ?? filter;
+  if (q) params.set("q", q);
+  if (lanes === "mine") params.set("lanes", "mine");
+  const search = params.toString();
+  void router.navigate(`${routePath({ view: "mergeQueue" })}${search ? `?${search}` : ""}`, {
+    replace: true,
+  });
+}
+
 function signedInUserId(): string | null {
   const reader = workspaceReader();
   return reader.startsWith("[") ? ((JSON.parse(reader) as [string | null])[0] ?? null) : null;
@@ -434,7 +463,7 @@ function paint(): void {
     issue: page.issue,
     overview: page.overview,
     mergeQueue: page.mergeQueue,
-    mergeLanes: { filter: laneFilter, userId: signedInUserId() },
+    mergeLanes: { ...mergeSearch(), userId: signedInUserId() },
     questions: page.questions,
     question: page.question,
     missingQuestion: page.missingQuestion,
@@ -724,10 +753,11 @@ function onClick(event: MouseEvent): void {
   }
   if (action === "merge-lanes") {
     const filter = target.closest("[data-merge-lanes]")?.getAttribute("data-merge-lanes");
-    if (filter === "all" || filter === "mine") {
-      laneFilter = filter;
-      paint();
-    }
+    if (filter === "all" || filter === "mine") setMergeSearch({ lanes: filter });
+  }
+  if (action === "merge-search-clear") {
+    setMergeSearch({ q: "" });
+    document.querySelector<HTMLInputElement>("input[data-merge-search]")?.focus();
   }
   if (action === "evidence-copy") {
     const button = target.closest<HTMLButtonElement>("button[data-evidence]");
