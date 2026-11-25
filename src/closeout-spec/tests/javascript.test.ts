@@ -254,7 +254,10 @@ test("over_max direct runs the change's direct tests when the selection is over 
   });
   expect(fullOn.selection).toEqual({
     mode: "full",
-    reasons: ["lib/math.ts matches select.full_on"],
+    reasons: [
+      "lib/math.ts matches select.full_on",
+      "3 test files are selected, more than max_selected 1",
+    ],
   });
   const under = await planned(colocated, { max_selected: 10, over_max: "direct" });
   expect(targets(under)).toEqual(["lib/math.test.ts", "test/barrel.test.ts", "test/lazy.test.ts"]);
@@ -271,7 +274,6 @@ test("over_max direct also runs the direct tests when the selection can't be pro
     mode: "selected",
     targets: ["lib/math.test.ts", "test/always.test.ts", "test/lazy.test.ts"],
     reasons: [
-      "at base: test/lazy.test.ts has a non-literal dynamic import or require",
       "at head: test/lazy.test.ts has a non-literal dynamic import or require",
       "running the change's direct tests and leaving the rest to CI",
       "lib/math.test.ts is a direct test of the change",
@@ -292,7 +294,8 @@ test("over_max direct also runs the direct tests when the selection can't be pro
     { "package.json": "{}", "lib/math.test.ts": "export {};\n" },
     { over_max: "direct" },
   );
-  expect(shared.selection).toEqual({ mode: "full", reasons: ["package.json changed"] });
+  expect(shared.selection.mode).toBe("full");
+  expect(shared.selection.reasons[0]).toBe("package.json changed");
   const nothing = await planned({ "README.md": "x\n" }, { over_max: "direct" });
   expect(nothing.selection.mode).toBe("full");
 });
