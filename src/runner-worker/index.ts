@@ -2925,8 +2925,26 @@ export async function runRunnerWorker(options: {
     const command = job.command;
     const inputs = readRunnerJobInputs(spool, options.executionId).retro;
     if (!inputs) throw new Error("Runner retro inputs are missing");
+    const outputDirectory = createRunnerResultDirectory(options.results, options.executionId);
+    const recipient = job.credentials?.certificate;
     return executeRetroCommand({
       executionId: options.executionId,
+      ...(recipient && command.account
+        ? {
+            returnCredentials: (home: string) =>
+              returnRunnerAgentCredentials(home, command.profile.agent, job.executionId, (files) =>
+                replaceOutputFile(
+                  { outputDirectory, resultsGid: options.results.resultsGid },
+                  "credentials.json",
+                  sealForRunner(
+                    recipient,
+                    JSON.stringify(files),
+                    agentCredentialReturnContext(job.executionId),
+                  ),
+                ),
+              ),
+          }
+        : {}),
       command,
       expected: {
         runnerId: command.runnerId,
@@ -2947,7 +2965,7 @@ export async function runRunnerWorker(options: {
           data: bytes.toString("base64"),
         };
       },
-      outputDirectory: createRunnerResultDirectory(options.results, options.executionId),
+      outputDirectory,
       workRoot: options.workRoot,
       home: options.home,
       resultsGid: options.results.resultsGid,
