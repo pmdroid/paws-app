@@ -3,13 +3,10 @@ import {
   activeIssueVmGrantLimitSteps,
   CONFIG_SETTINGS_KEY,
   issueVmsInUseSteps,
+  issueVmTailnetRefusalSteps,
   readSettingSteps,
-  vmProviderCheckSteps,
   type Q,
 } from "../db";
-
-const TAILNET_APPROVAL_REFUSAL =
-  "The Tailscale key's new machines wait for approval, so an issue VM can't enroll without a person. Save a reusable, pre-approved key on Settings › Runner VMs.";
 
 export type IssueVmAdmission =
   | { ok: true }
@@ -20,12 +17,9 @@ export function* issueVmAdmissionSteps(
   q: Q,
   input: { workspaceId: string; memberUserId: string; at: number },
 ) {
-  if ((yield* vmProviderCheckSteps(q, "tailscale"))?.state === "limited")
-    return {
-      ok: false,
-      reason: "tailnet_approval",
-      message: TAILNET_APPROVAL_REFUSAL,
-    } satisfies IssueVmAdmission;
+  const refusal = yield* issueVmTailnetRefusalSteps(q);
+  if (refusal !== null)
+    return { ok: false, reason: "tailnet_approval", message: refusal } satisfies IssueVmAdmission;
   const text = yield* readSettingSteps(q, CONFIG_SETTINGS_KEY);
   const settings = issueVmSettings(text === null ? undefined : parseConfigToml(text).issueVm);
   const granted = yield* activeIssueVmGrantLimitSteps(q, input);

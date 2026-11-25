@@ -13,6 +13,7 @@ import {
   getRunnerSteps,
   insertQueuedItem,
   issueVmByIdSteps,
+  putVmProviderCheckSteps,
   listAgentBindingsSteps,
   putWorkspaceUser,
   recordLinearInstallation,
@@ -198,6 +199,23 @@ test("an issue VM enrolls with its bootstrap token once and gets only its own is
     "Runner is not accepting this assignment.",
   );
   await f.work.assign(f.command(enrolled.runnerId, "mine"));
+});
+
+test("a Tailscale key whose machines wait for approval refuses the bootstrap token", async () => {
+  const f = await fixture();
+  await f.db.run((q) =>
+    putVmProviderCheckSteps(q, {
+      name: "tailscale",
+      state: "limited",
+      message: "",
+      facts: [],
+      checkedAt: f.now(),
+      lastWorkingAt: f.now(),
+    }),
+  );
+  await expect(f.control.createIssueVmEnrollment(f.vmId)).rejects.toThrow(
+    "The Tailscale key's new machines wait for approval, so an issue VM can't enroll without a person.",
+  );
 });
 
 test("an issue VM's bootstrap token expires after ten minutes", async () => {

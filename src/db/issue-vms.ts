@@ -1,5 +1,6 @@
 import { and, count, desc, eq, gt, isNull, max, notInArray, or } from "drizzle-orm";
 import { type Q } from "./db";
+import { vmProviderCheckSteps } from "./vm-provider-checks";
 import { ulid } from "./ulid";
 
 export const ISSUE_VM_PROVIDERS = ["exe-dev", "boat", "instabox", "host"] as const;
@@ -236,4 +237,10 @@ export function* runnerIssueVmItemSteps(q: Q, runnerId: string) {
   );
   if (!row?.issueVmId) return null;
   return { issueVmId: row.issueVmId, itemId: row.itemId };
+}
+
+export function* issueVmTailnetRefusalSteps(q: Q) {
+  return (yield* vmProviderCheckSteps(q, "tailscale"))?.state === "limited"
+    ? "The Tailscale key's new machines wait for approval, so an issue VM can't enroll without a person. Save a reusable, pre-approved key on Settings › Runner VMs."
+    : null;
 }

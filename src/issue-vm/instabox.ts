@@ -212,11 +212,12 @@ export function createInstaBoxIssueVms(options: InstaBoxIssueVmOptions): InstaBo
     async create(input) {
       const refusal = instaBoxPlanRefusal(await instaBox.readPlan(), input.size);
       if (refusal !== null) throw refusal;
+      const { token } = await options.enrollment(input.issueVmId);
       const id = await createMachine(input);
       await options.remember(input.name, id);
       await wake(input.name);
       await exec(input.name, INSTABOX_PREPARE_COMMAND, "Preparing the machine for the runner");
-      await install(input.name, (await options.enrollment(input.issueVmId)).token);
+      await install(input.name, token);
       await exec(input.name, `sudo ${INSTABOX_BOOT_HOOK}`, "The boot step");
       await bootstrap.stageToken(input.name, (await options.enrollment(input.issueVmId)).token);
       await bootstrap.joinTailnet(input.name);

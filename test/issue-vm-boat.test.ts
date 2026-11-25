@@ -14,7 +14,12 @@ import {
 
 const SIZE = { cpu: 8, memoryGb: 16 };
 
-function setup(boatOptions: FakeBoatOptions = {}, startsPerMinute = 10, maxWaitMs?: number) {
+function setup(
+  boatOptions: FakeBoatOptions = {},
+  startsPerMinute = 10,
+  maxWaitMs?: number,
+  refusal?: string,
+) {
   let now = 1_000_000;
   const clock = {
     now: () => now,
@@ -45,6 +50,7 @@ function setup(boatOptions: FakeBoatOptions = {}, startsPerMinute = 10, maxWaitM
     },
     enrollment: async (issueVmId) => {
       await Promise.resolve();
+      if (refusal !== undefined) throw new Error(refusal);
       return { token: `token-${issueVmId}-${minted.push(now)}` };
     },
     clock,
@@ -111,6 +117,12 @@ describe("boat issue VMs", () => {
     expect(await vms.remove("pas-1-vm")).toBe("missing");
   });
 
+  test("a refused bootstrap token creates no sandbox", async () => {
+    const { boat, create } = setup({}, 10, undefined, "The Tailscale key waits for approval.");
+    await expect(create("pas-9-vm")).rejects.toThrow("The Tailscale key waits for approval.");
+    expect(boat.lookup("pas-9-vm")).toBeNull();
+  });
+
   test("a create repeated with the same key reuses the sandbox, even one left asleep", async () => {
     const { boat, vms, create } = setup();
     await create("pas-1-vm");
@@ -138,7 +150,7 @@ describe("boat issue VMs", () => {
     expect(boat.sandboxes.size).toBe(5);
     expect(boat.calls.filter((call) => call.operation === "createVm").length).toBeGreaterThan(5);
     expect(now() - started).toBeGreaterThanOrEqual(20_000);
-    expect(Math.min(...minted)).toBeGreaterThan(started);
+    expect(minted.filter((at) => at > started).length).toBe(names.length);
   });
 
   test("the queue paces starts to its own minute limit without a 429", async () => {

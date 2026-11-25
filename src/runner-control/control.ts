@@ -13,6 +13,7 @@ import {
   getRunnerSteps,
   getWorkItemSteps,
   issueVmByIdSteps,
+  issueVmTailnetRefusalSteps,
   listRunnerOverviewSteps,
   renewRunnerCertificateSteps,
   requestAllRunnerAgentUpdatesSteps,
@@ -115,6 +116,8 @@ export function createRunnerControl(options: {
         const vm = yield* issueVmByIdSteps(q, issueVmId);
         if (!vm || vm.runnerId !== null || !["creating", "awake", "asleep"].includes(vm.state))
           throw new Error("This issue VM can no longer enroll a runner.");
+        const refusal = yield* issueVmTailnetRefusalSteps(q);
+        if (refusal !== null) throw new Error(refusal);
         yield* enrollingMemberSteps(q, vm.workspaceId, vm.memberUserId);
         yield* createRunnerEnrollmentSteps(q, {
           id,

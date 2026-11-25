@@ -59,5 +59,9 @@ async function enrollment(
   if (vm.runnerId !== null || !["creating", "awake"].includes(vm.state))
     return Response.json({ token: null });
   if (!mint) return Response.json({ error: "Runner control is starting." }, { status: 503 });
-  return Response.json({ token: (await mint(id)).token });
+  try {
+    return Response.json({ token: (await mint(id)).token });
+  } catch (error) {
+    return Response.json({ error: (error as Error).message }, { status: 409 });
+  }
 }

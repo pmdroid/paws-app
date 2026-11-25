@@ -140,6 +140,7 @@ export function createBoatIssueVms(options: BoatIssueVmOptions): BoatIssueVms {
 
   return {
     async create(input) {
+      const { token } = await options.enrollment(input.issueVmId);
       const key = await queueKey();
       const created = await queue.start(key, () =>
         boat.createVm(input.name, input.size, { key: input.key, from: input.snapshot }),
@@ -163,7 +164,7 @@ export function createBoatIssueVms(options: BoatIssueVmOptions): BoatIssueVms {
         throw error;
       }
       await resume(input.name, options.wakeMs ?? 120_000);
-      await install(input.name, (await options.enrollment(input.issueVmId)).token);
+      await install(input.name, token);
       await bootstrap.stageToken(input.name, (await options.enrollment(input.issueVmId)).token);
       await bootstrap.joinTailnet(input.name);
       const enrolled = await bootstrap.enroll(input.name);
