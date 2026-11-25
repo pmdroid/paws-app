@@ -5,6 +5,7 @@ import {
   insertAgentModelProbeSteps,
   lastAgentModelProbeAtSteps,
   pendingAgentModelProbesSteps,
+  runnerAccountUnsupportedSteps,
   runnerHasOpenWorkSteps,
   runnerHealthCommandOutstandingSteps,
   runnerStandingSteps,
@@ -19,6 +20,7 @@ import {
 import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
 import type { RunnerWork } from "../runner-work";
+import { signInFitSteps } from "../runner-placement";
 import { RunnerHealthResultSchema, labelModels } from "../runner-protocol";
 import { BUNDLED_MODELS, MODELS_DEV_URL, bundledList, mergeModelsDev } from "./defaults";
 
@@ -131,7 +133,24 @@ export function createRunnerModels(options: {
       if (yield* runnerHasOpenWorkSteps(q, source.runnerId, now())) continue;
       if (yield* runnerHealthCommandOutstandingSteps(q, source.runnerId, now())) continue;
       const due = yield* dueSteps(q, source);
-      if (due !== undefined) return { source, due };
+      if (due === undefined) continue;
+      const fit = yield* signInFitSteps(q, { id: source.runnerId }, source.workspaceId, {
+        agent: source.agent,
+        model: null,
+        purpose: "helper",
+        at: now(),
+      });
+      if (
+        "reason" in fit ||
+        (yield* runnerAccountUnsupportedSteps(
+          q,
+          source.runnerId,
+          fit.account.bindingId,
+          source.agent,
+        ))
+      )
+        continue;
+      return { source, due, account: fit.account };
     }
     return null;
   }
@@ -139,7 +158,7 @@ export function createRunnerModels(options: {
     await receive();
     const next = await store.run((q) => nextProbeSteps(q));
     if (!next) return;
-    const { source, due } = next;
+    const { source, due, account } = next;
     const { runnerId, userId, agent } = source;
     await store.transaction(function* (q) {
       const commandId = randomUUID();
@@ -149,6 +168,7 @@ export function createRunnerModels(options: {
         workspaceId: source.workspaceId,
         type: "probe",
         profile: { agent, model: due || null },
+        account: { accountId: account.accountId, bindingId: account.bindingId },
         issuedAt: now(),
         expiresAt: now() + 120_000,
       });

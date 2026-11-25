@@ -17,7 +17,7 @@ Nothing in the old database is copied. Work items, questions, evidence, settings
    sudo mv /var/lib/paws-runner/identity /var/lib/paws-runner/identity.pre-postgres
    ```
 
-   Then sign in to the runner's agents again on **Runners**.
+   Then sign the runner's agent accounts in again under **Settings › Agent accounts**.
 
 4. Delegate again any Linear issue that was in progress. Its open pull request stays on GitHub; close it or let the new run open its own.
 

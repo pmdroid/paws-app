@@ -47,4 +47,4 @@ export function isAuthRequired(error: unknown): boolean {
 }
 
 export const AUTH_REQUIRED_MESSAGE =
-  "The agent requires authentication. Paws does not call authenticate and does not read credential files. Log in with Claude Code or Codex on this machine, then retry.";
+  "The agent requires authentication. Paws does not call authenticate and does not read credential files. Sign the agent account in under Settings › Agent accounts, then retry.";

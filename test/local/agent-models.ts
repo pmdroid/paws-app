@@ -7,8 +7,10 @@ import { and, count as total, desc, eq } from "drizzle-orm";
 import {
   bindAgentAccount,
   createAgentAccount,
+  listAgentBindings,
   openPawsStore,
   putWorkspaceUser,
+  recordRunnerAccountCapability,
   setAgentAccountEnabled,
   syncWorkspaceMember,
   type Q,
@@ -20,6 +22,7 @@ import { createRunnerModels } from "../../src/runner-models";
 import { RunnerCommandSchema, verifyRunnerCommand } from "../../src/runner-protocol";
 import { workspaceId } from "../../src/workspace";
 import { copyMigratedPglite } from "../pglite";
+import { seedCredential, signInFixtureRunner } from "../pglite-fixtures";
 
 export async function probeAgentModels(
   root: string,
@@ -92,6 +95,10 @@ export async function probeAgentModels(
     runnerId,
     now,
   });
+  await seedCredential(db, account.id, "codex", now);
+  await signInFixtureRunner(db, runnerId, "codex");
+  const [binding] = await listAgentBindings(db, workspace, account.id);
+  const named = { accountId: account.id, bindingId: binding!.id };
   const connected = (enabled: boolean) =>
     setAgentAccountEnabled(db, { workspaceId: workspace, accountId: account.id, enabled, now });
   const policy = (set: { cooldownUntil?: number }) =>
@@ -133,6 +140,7 @@ export async function probeAgentModels(
     const verified = verifyRunnerCommand(envelope, {
       trustedKeys: new Map([["models-proof", key.publicKey]]),
       allowedRepositories: [],
+      accountBindings: new Set([named.bindingId]),
       claimCommand: () => true,
       runnerId,
       workspaceId: workspace,
@@ -147,6 +155,7 @@ export async function probeAgentModels(
     const command = await latest();
     assert.equal(command.type, "probe");
     if (command.type !== "probe") throw Error("Expected model probe");
+    assert.deepEqual(command.account, named);
     const script = join(root, `${command.id}.script.json`),
       trace = join(root, `${command.id}.trace.json`);
     writeFileSync(
@@ -183,6 +192,7 @@ export async function probeAgentModels(
     await health().submit(runnerId, {
       executionId: workspaceId(),
       commandId: command.id,
+      account: named,
       role: result.role,
       stopReason: fail ? "error" : result.stopReason,
       timedOut: result.timedOut,
@@ -210,6 +220,10 @@ export async function probeAgentModels(
     );
     assert.equal(await count(), 0);
     observe("cached HTTP reads do not dispatch ACP", true, { commands: await count() });
+    await recordRunnerAccountCapability(db, runnerId, undefined, now);
+    await catalog.refresh();
+    assert.equal(await count(), 0);
+    await signInFixtureRunner(db, runnerId, "codex");
     await catalog.refresh();
     assert.equal(await count(), 1);
     await catalog.refresh();
