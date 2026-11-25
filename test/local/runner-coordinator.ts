@@ -14,6 +14,7 @@ import {
   insertQueuedItem,
   putWorkspaceUser,
   recordLinearInstallation,
+  runnerNamedBindings,
   syncWorkspaceMember,
 } from "../../src/db";
 import { createRunnerKey } from "../../src/runner-identity";
@@ -22,7 +23,7 @@ import { verifyRunnerCommand, type SignedRunnerCommand } from "../../src/runner-
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 import { tempStore } from "../pglite";
 import { eq } from "drizzle-orm";
-import { seed } from "../pglite-fixtures";
+import { seed, signInFixtureRunner } from "../pglite-fixtures";
 
 export async function probeRunnerCoordinator(
   root: string,
@@ -348,6 +349,8 @@ export async function probeRunnerCoordinator(
         canonicalRunStatus: "active",
       },
     );
+    await signInFixtureRunner(db, identity.runnerId, "codex");
+    const [bound] = await runnerNamedBindings(db, identity.runnerId, workspace.id);
     const healthPath = `/api/runners/${identity.runnerId}/health`;
     const healthRequest = new Request(`https://localhost${healthPath}`, {
       method: "POST",
@@ -382,6 +385,7 @@ export async function probeRunnerCoordinator(
     const healthResult = {
       ...result,
       commandId: healthCommand.commandId,
+      account: { accountId: bound!.accountId, bindingId: bound!.bindingId },
       models: [{ id: "scripted", name: "Scripted model" }],
     };
     delete (healthResult as { candidateSha?: string }).candidateSha;

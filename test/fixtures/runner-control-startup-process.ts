@@ -1,4 +1,5 @@
 import { migratedHome } from "../helpers";
+import { eq } from "drizzle-orm";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -16,7 +17,9 @@ import {
   bindLinearSessionTask,
   getWorkItem,
   listOutbox,
+  runnerNamedBindings,
 } from "../../src/db";
+import { seed, signInFixtureRunner } from "../pglite-fixtures";
 import type { EnvSource } from "../../src/config";
 import { startPaws } from "../../src/index";
 import { createRunnerKey } from "../../src/runner-identity";
@@ -500,6 +503,13 @@ try {
           403,
         );
       }
+      await signInFixtureRunner(paws.store, claimed.body.runnerId, "codex");
+      const [bound] = await runnerNamedBindings(paws.store, claimed.body.runnerId, workspace.id);
+      await seed(paws.store, (q) =>
+        q.orm
+          .delete(q.t.agentAccountCredential)
+          .where(eq(q.t.agentAccountCredential.accountId, bound!.accountId)),
+      );
       const healthInput = { type: "probe", profile: { agent: "codex", model: null } };
       assert.equal((await call(browserPort, healthPath, healthInput, memberHeaders)).status, 403);
       const health = await call<{ commandId: string }>(
@@ -521,6 +531,7 @@ try {
       const healthResult = {
         executionId: workspaceId(),
         commandId: health.body.commandId,
+        account: { accountId: bound!.accountId, bindingId: bound!.bindingId },
         role: "implementer",
         stopReason: "end_turn",
         timedOut: false,

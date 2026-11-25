@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { consumeWorkspaceBootstrap, putWorkspaceUser } from "../../src/db";
+import { consumeWorkspaceBootstrap, putWorkspaceUser, runnerNamedBindings } from "../../src/db";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
 import { openRunnerDaemon, RunnerRequestError } from "../../src/runner-daemon";
 import type { RunnerHealthResult } from "../../src/runner-protocol";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 import { tempStore } from "../pglite";
+import { signInFixtureRunner } from "../pglite-fixtures";
 
 export async function probeRunnerDaemonHealth(
   root: string,
@@ -94,7 +95,9 @@ export async function probeRunnerDaemonHealth(
     runnerApiUrl: `https://127.0.0.1:${runnerPort}`,
     serverCa: tls.cert,
     allowedRepositories: [],
+    accountBindings: () => held,
   };
+  let held: { bindingId: string; agent: "codex" }[] = [];
   let daemon = openRunnerDaemon(daemonOptions);
   try {
     const enrollment = await coordinator.control.createEnrollment(principal, {
@@ -106,6 +109,10 @@ export async function probeRunnerDaemonHealth(
     await coordinator.control.setStatus(principal, paired.runnerId, "active");
     assert.equal(paired.phase, "paired");
     if (paired.phase !== "paired") throw new Error("Missing runner identity");
+    await signInFixtureRunner(db, paired.runnerId, "codex");
+    const [bound] = await runnerNamedBindings(db, paired.runnerId, workspace.id);
+    const account = { accountId: bound!.accountId, bindingId: bound!.bindingId };
+    held = [{ bindingId: account.bindingId, agent: "codex" }];
     const command = await coordinator.health.request(principal, paired.runnerId, {
       type: "probe",
       profile: { agent: "codex", model: null },
@@ -124,6 +131,7 @@ export async function probeRunnerDaemonHealth(
       cancelled: false,
       authRequired: false,
       agentExited: true,
+      account,
       models: [{ id: "scripted", name: "Scripted" }],
     };
     assert.deepEqual(await daemon.postHealth(result), { duplicate: false });
