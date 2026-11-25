@@ -535,6 +535,48 @@ test("a repository summary helper names one repository and carries no tools or S
     expect(RunnerCommandSchema.safeParse(refused).success).toBe(false);
 });
 
+test("probe helpers run under an account; probe_write names one repository and a probe path", () => {
+  const account = { accountId: "account-ada", bindingId: "binding-ada" };
+  const distill = {
+    ...common,
+    type: "helper",
+    expiresAt: common.issuedAt + 900_000,
+    sessionGeneration: 0,
+    sessionId: "probes-distill",
+    purpose: "probe_distill",
+    profile,
+    prompt: "x".repeat(300_000),
+    account,
+  };
+  const write = {
+    ...distill,
+    sessionId: "probes-write",
+    purpose: "probe_write",
+    prompt: "Write the probe.",
+    probe: { repository: "acme/web", path: ".agents/probes/no-raw-sql.ts" },
+    repositories: ["acme/web"],
+  };
+  expect(RunnerCommandSchema.safeParse(distill).success).toBe(true);
+  expect(RunnerCommandSchema.safeParse(write).success).toBe(true);
+  for (const refused of [
+    { ...distill, account: undefined },
+    { ...distill, expiresAt: common.issuedAt + 900_001 },
+    { ...distill, prompt: "x".repeat(393_217) },
+    { ...distill, repositories: ["acme/web"] },
+    { ...distill, probe: write.probe },
+    { ...write, account: undefined },
+    { ...write, probe: undefined },
+    { ...write, repositories: undefined },
+    { ...write, repositories: ["acme/api"] },
+    { ...write, repositories: ["acme/web", "acme/api"] },
+    { ...write, probe: { ...write.probe, path: "src/index.ts" } },
+    { ...write, probe: { ...write.probe, path: ".agents/probes/../index.ts" } },
+    { ...write, probe: { ...write.probe, path: ".agents/probes/nested/rule.ts" } },
+    { ...write, tools: [{ name: "linear_issue", description: "Read.", inputSchema: {} }] },
+  ])
+    expect(RunnerCommandSchema.safeParse(refused).success).toBe(false);
+});
+
 test("run commands parse a Closeout focus with and without since", () => {
   const closeoutFocus = {
     scope: "failed" as const,

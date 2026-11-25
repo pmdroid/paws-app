@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { RunnerAccountSchema } from "./accounts";
-import { RUNNER_HANDOVER_FAILURES } from "./commands";
+import { RUNNER_HANDOVER_FAILURES, RUNNER_PROBE_BYTES, RUNNER_PROBE_PATH } from "./commands";
 
 export const RUNNER_RESULT_BODY_LIMIT = 1_048_576;
 const resultMetadataBudget = 131_072;
@@ -105,6 +105,15 @@ export const RunnerHelperResultSchema = RunnerResultSchema.omit({
   /** The plan of a conversation turn that called `start_work`. The field is accepted from runner
    * 0.1.74; conversations run from 0.1.77, the first runner whose guard allows the call. */
   startWork: z.string().min(1).max(4000).optional(),
+  probe: z
+    .strictObject({
+      path: z.string().regex(RUNNER_PROBE_PATH),
+      text: z
+        .string()
+        .min(1)
+        .refine((text) => Buffer.byteLength(text) <= RUNNER_PROBE_BYTES),
+    })
+    .optional(),
 });
 
 export type RunnerHelperResult = z.infer<typeof RunnerHelperResultSchema>;

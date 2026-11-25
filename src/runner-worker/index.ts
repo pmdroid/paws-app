@@ -49,6 +49,7 @@ import { dirname, join, isAbsolute } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { executeRetroCommand, type RetroWorkerResult } from "./retro";
 import { missingToolchainQuestion } from "./toolchain";
+import { collectProbe, probeTree } from "./probe-write";
 import {
   collectOpenCodeCredential,
   migrateOpenCodeDatabase,
@@ -514,7 +515,17 @@ export function commandRepositories(
     text: `Added at ${run ? join(worktree, "repositories", repository) : `repositories/${repository}`} (commit ${copied.get(repository)}).`,
   });
   const preloaded =
-    command.type === "helper" && command.purpose === "slack_reply" ? command.repositories : [];
+    command.type === "helper" &&
+    (command.purpose === "slack_reply" || command.purpose === "probe_write")
+      ? command.repositories
+      : [];
+  if (command.type === "helper" && command.purpose === "probe_write")
+    return {
+      preload() {
+        for (const added of published?.() ?? [])
+          if (preloaded?.includes(added.repository) && !copied.has(added.repository)) copy(added);
+      },
+    };
   if ((command.type === "run" ? !command.addRepositories : !preloaded) || !answer || !published)
     return { preload() {} };
   const asked = new Set<string>();
@@ -670,6 +681,7 @@ export interface RunnerWorkerResult {
   text?: string;
   replies?: string[];
   startWork?: string;
+  probe?: { path: string; text: string };
   login?: {
     agent: "claude" | "codex" | "grok" | "opencode";
     authenticated: boolean;
@@ -1402,6 +1414,16 @@ export async function executeRunnerCommand(
     } catch (error) {
       journalCaught(error, "runner-worker.preload", null);
     }
+    const probeTarget =
+      command.type === "helper" && command.probe
+        ? {
+            root: join(worktree, "repositories", command.probe.repository),
+            path: command.probe.path,
+          }
+        : undefined;
+    if (probeTarget && !existsSync(probeTarget.root))
+      throw new Error("The probe's repository checkout is not on this runner");
+    const probeBefore = probeTarget ? probeTree(probeTarget.root) : undefined;
     let inputFiles = options.inputs?.inputFiles ?? [];
     if (command.type === "run" || command.type === "review" || command.type === "task") {
       const descriptors = command.inputFiles ?? [];
@@ -1655,7 +1677,9 @@ export async function executeRunnerCommand(
       ...options.launch,
       hostAccess: !(
         command.type === "helper" &&
-        (command.purpose === "slack_reply" || command.purpose === "repository_summary")
+        ["slack_reply", "repository_summary", "probe_distill", "probe_write"].includes(
+          command.purpose,
+        )
       ),
       skillsRoot,
       ...(options.skills && (repository || task)
@@ -1688,7 +1712,11 @@ export async function executeRunnerCommand(
       profile:
         command.type === "login_check" ? { agent: command.agent, model: null } : command.profile,
       role: command.type === "review" ? "reviewer" : "implementer",
-      readOnly: command.type === "task" ? command.purpose !== "artifact" : command.type !== "run",
+      readOnly:
+        command.type === "task"
+          ? command.purpose !== "artifact"
+          : command.type !== "run" &&
+            !(command.type === "helper" && command.purpose === "probe_write"),
       checkpoint: command.type === "run" && command.checkpoint !== false,
       ...(command.type === "run" && command.closeoutRulesFirst ? { closeoutRulesFirst: true } : {}),
       ...(command.type === "run" && command.closeoutFocus
@@ -2550,6 +2578,14 @@ export async function executeRunnerCommand(
     enterPhase("verify");
     const result: RunnerWorkerResult = { executionId: job.executionId, commandId: command.id, run };
     if (command.type === "helper") result.text = reviewText;
+    if (probeTarget && probeBefore) {
+      const collected = collectProbe(probeTarget.root, probeTarget.path, probeBefore);
+      if (collected.probe) result.probe = collected.probe;
+      if (collected.error) {
+        run.stopReason = "error";
+        run.errorMessage = collected.error;
+      }
+    }
     if (sentReplies.length) result.replies = sentReplies;
     if (startWorkPlan) result.startWork = startWorkPlan;
     if (command.type === "login_check") {
@@ -2745,6 +2781,7 @@ export async function executeRunnerCommand(
               text: true,
               replies: true,
               startWork: true,
+              probe: true,
             })
               .strip()
               .parse(run),
