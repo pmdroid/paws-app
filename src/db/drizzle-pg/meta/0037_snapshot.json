@@ -1,5 +1,5 @@
 {
-  "id": "1aa45949-c5aa-46ea-adff-b57bea995099",
+  "id": "ff5d4f8c-ca52-406a-b6f5-577ecc7f6088",
   "prevId": "fdbfb9e6-8d41-4ad9-98bb-3a06144235ee",
   "version": "7",
   "dialect": "postgresql",
@@ -13970,7 +13970,7 @@
       "checkConstraints": {
         "runner_helper_session": {
           "name": "runner_helper_session",
-          "value": "(purpose IN ('slack_reply', 'repository_summary', 'probe_distill', 'probe_write')) = (session_id IS NULL)"
+          "value": "(purpose IN ('slack_reply', 'repository_summary', 'probe_distill')) = (session_id IS NULL)"
         }
       },
       "isRLSEnabled": false

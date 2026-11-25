@@ -19,9 +19,10 @@ to .agents/closeout.yaml. It does not commit, push, or open a pull request.`;
 
 export const PROBES_COLLECT_PAUSED = `paws probes collect is paused: it no longer starts agent turns with this host's own login.
 Probe collection will run through Paws, on a paired runner under a workspace agent account, once
-these land: a runner release with the probe_distill and probe_write helpers, the host route that
-places them with an account chosen under Settings › Agent accounts (PAS-2432 part 2), and this
-command as a client of that route (PAS-2432 part 3). Nothing was collected or written.`;
+these land: the probe_write runner command and a runner release with it and the probe_distill
+helper, the host route that places them with an account chosen under Settings › Agent accounts,
+and this command as a client of that route (the Left for later parts of PAS-2432). Nothing was
+collected or written.`;
 
 export type ProbesCommand = {
   owner: string;

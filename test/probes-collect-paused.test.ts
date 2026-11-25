@@ -26,7 +26,6 @@ test("paws probes collect stops before any agent turn and names the steps it wai
     rmSync(root, { recursive: true, force: true });
   }
   expect(PROBES_COLLECT_PAUSED).toContain("Settings › Agent accounts");
-  expect(PROBES_COLLECT_PAUSED).toContain("PAS-2432 part 2");
-  expect(PROBES_COLLECT_PAUSED).toContain("PAS-2432 part 3");
+  expect(PROBES_COLLECT_PAUSED).toContain("Left for later parts of PAS-2432");
   expect(PROBES_USAGE.toLowerCase()).not.toContain("on this machine");
 }, 20_000);

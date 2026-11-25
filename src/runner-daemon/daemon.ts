@@ -1475,10 +1475,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     async helperRepositoryCredential(id: string, repository: string) {
       const command = helperCommand(id);
       if (
-        !(
-          command.purpose === "slack_reply" ||
-          (command.purpose === "probe_write" && command.probe?.repository === repository)
-        ) ||
+        command.purpose !== "slack_reply" ||
         !command.repositories ||
         !RunnerRepositoryNameSchema.safeParse(repository).success
       )
