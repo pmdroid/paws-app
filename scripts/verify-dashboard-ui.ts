@@ -1440,6 +1440,25 @@ try {
     );
     await follow(page, "/dashboard/issues/PAS-2", "/dashboard/issues/PAS-2", "Issue not found");
 
+    current = `issue-search@${width}`;
+    await page.goto(`${f.origin}/dashboard/issues?q=PAS-7`);
+    const search = page.locator("#issue-search");
+    await expect(search).toHaveValue("PAS-7");
+    await expect(page.locator("tr.issue-row:visible")).toHaveCount(1);
+    await expect(page.locator('tr.issue-row[data-issue-id="PAS-7"]')).toBeVisible();
+    await search.fill("no such issue");
+    await expect(page).toHaveURL(`${f.origin}/dashboard/issues?q=no+such+issue`);
+    await expect(page.locator(".issue-filter-empty")).toBeVisible();
+    await search.fill("");
+    await expect(page).toHaveURL(`${f.origin}/dashboard/issues`);
+    await expect(page.locator(".issue-filter-empty")).toBeHidden();
+    await expect(page.locator("tr.issue-row:visible")).toHaveCount(
+      await page.locator("tr.issue-row").count(),
+    );
+    await page.locator("body").click({ position: { x: 1, y: 1 } });
+    await page.keyboard.press("/");
+    await expect(search).toBeFocused();
+
     current = `history@${width}`;
     await page.goto(`${f.origin}/dashboard/issues/PAS-1`);
     await page.goto(`${f.origin}/dashboard/questions`);

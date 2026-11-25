@@ -1,6 +1,13 @@
 import { openedView, fullStatusFixture, pageData, type FullStatus } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
-import { issueRowMatches, NO_PROJECT_FILTER, render, type RenderModel } from "./render";
+import {
+  issueFilterFromSearch,
+  issueFilterSearch,
+  issueRowMatches,
+  NO_PROJECT_FILTER,
+  render,
+  type RenderModel,
+} from "./render";
 import { parseRoute, routeHref } from "./route";
 import { checkKey } from "./closeout";
 import { clock24, esc } from "./format";
@@ -428,6 +435,62 @@ describe("status views", () => {
     );
     expect(filtered.length).toBeGreaterThan(0);
     expect(filtered.length).toBeLessThan(rows.length);
+  });
+
+  test("the Issues search matches id, title, state and project on top of the filters", () => {
+    const snapshot = fullStatusFixture();
+    const html = render(model({ snapshot, route: { view: "issues", id: null } })).content;
+    expect(html).toContain('id="issue-search"');
+    expect(html).toContain("data-issue-search-field");
+    expect(html).toContain('<p class="empty issue-filter-empty" hidden>');
+    const rows = [...html.matchAll(/<tr class="issue-row"[^>]*>/g)].map((row) => ({
+      id: /data-issue-id="([^"]+)"/.exec(row[0])![1]!,
+      state: /data-issue-state="([^"]+)"/.exec(row[0])?.[1],
+      project: /data-issue-project="([^"]+)"/.exec(row[0])?.[1],
+      text: /data-issue-search="([^"]*)"/.exec(row[0])?.[1],
+    }));
+    const shown = (query: string, state: "all" | "active" | "needs" | "done" = "all") =>
+      rows
+        .filter((row) => issueRowMatches(row, { state, project: "", query }))
+        .map((row) => row.id);
+    const first = snapshot.items[0]!;
+    expect(shown(first.id.toLowerCase())).toContain(first.id);
+    const word = first.title.split(" ").find((part) => part.length > 3)!;
+    expect(shown(` ${word.toUpperCase()} `)).toContain(first.id);
+    const project = snapshot.items.find((item) => item.project)!;
+    expect(shown(project.project!.name)).toContain(project.id);
+    const needs = rows.filter((row) => row.state === "needs").map((row) => row.id);
+    expect(needs.length).toBeGreaterThan(0);
+    expect(shown("needs attention")).toEqual(expect.arrayContaining(needs));
+    expect(shown("")).toEqual(rows.map((row) => row.id));
+    expect(shown("no-such-issue-zzz")).toEqual([]);
+    expect(shown(first.id, "done").length).toBeLessThanOrEqual(
+      rows.filter((row) => row.state === "done").length,
+    );
+    for (const id of shown(first.title.slice(0, 6), "active"))
+      expect(rows.find((row) => row.id === id)!.state).toBe("active");
+  });
+
+  test("the Issues filter reads and writes state, project and q in the query string", () => {
+    expect(issueFilterFromSearch("?q=PAS-7")).toEqual({
+      state: "all",
+      project: "",
+      query: "PAS-7",
+    });
+    expect(issueFilterFromSearch("?state=needs&project=p1&q=a%20b")).toEqual({
+      state: "needs",
+      project: "p1",
+      query: "a b",
+    });
+    expect(issueFilterFromSearch("?state=bogus").state).toBe("all");
+    expect(issueFilterSearch("", { state: "all", project: "", query: "PAS-7" })).toBe("?q=PAS-7");
+    expect(issueFilterSearch("?q=PAS-7&x=1", { state: "all", project: "", query: "" })).toBe(
+      "?x=1",
+    );
+    expect(issueFilterSearch("?q=x", { state: "all", project: "", query: "" })).toBe("");
+    expect(issueFilterSearch("", { state: "done", project: "none", query: "a" })).toBe(
+      "?state=done&project=none&q=a",
+    );
   });
 
   test("a queued item shows its place in line on the run and issue pages", () => {

@@ -30,7 +30,15 @@ import {
 import { captureLogs, restoreLogs } from "./log-scroll";
 import { earlierRoundsKey, findingIssueKey } from "./review-findings";
 import { readCsrfToken } from "./csrf";
-import { issueRowMatches, openDetail, render, type RenderModel } from "./render";
+import {
+  issueFilterFromSearch,
+  issueFilterSearch,
+  issueRowMatches,
+  openDetail,
+  render,
+  type IssueListFilter,
+  type RenderModel,
+} from "./render";
 import type { LaneFilter } from "./merge-queue";
 import {
   issueListRedirect,
@@ -126,10 +134,7 @@ let booted = false;
 let shownPath = router.state.location.pathname;
 let shownSearch = router.state.location.search;
 
-let issueFilter: "all" | "active" | "needs" | "done" = "all";
 let laneFilter: LaneFilter = "all";
-/** A Linear project id, `none` for issues without one, or empty for any project. */
-let issueProject = "";
 
 document.addEventListener("click", onClick);
 document.addEventListener("submit", (event) => {
@@ -137,6 +142,11 @@ document.addEventListener("submit", (event) => {
   submitLinkAsk(event, reload);
 });
 document.addEventListener("input", (event) => {
+  const target = event.target;
+  if (target instanceof HTMLInputElement && target.dataset.issueSearchField !== undefined) {
+    setIssueFilter({ query: target.value });
+    return;
+  }
   rememberLinkAskDraft(event.target);
   rememberQuestionAnswerDraft(event.target);
 });
@@ -161,8 +171,7 @@ router.subscribe((state) => {
 document.addEventListener("change", (event) => {
   const target = event.target;
   if (target instanceof HTMLSelectElement && target.dataset.issueProjectFilter !== undefined) {
-    issueProject = target.value;
-    applyIssueFilter();
+    setIssueFilter({ project: target.value });
     return;
   }
   if (!(target instanceof HTMLSelectElement) || target.dataset.routePicker === undefined) return;
@@ -700,10 +709,8 @@ function onClick(event: MouseEvent): void {
   }
   if (action === "issue-filter") {
     const filter = target.closest("[data-issue-filter]")?.getAttribute("data-issue-filter");
-    if (filter === "all" || filter === "active" || filter === "needs" || filter === "done") {
-      issueFilter = filter;
-      applyIssueFilter();
-    }
+    if (filter === "all" || filter === "active" || filter === "needs" || filter === "done")
+      setIssueFilter({ state: filter });
   }
   if (action === "merge-lanes") {
     const filter = target.closest("[data-merge-lanes]")?.getAttribute("data-merge-lanes");
@@ -938,21 +945,55 @@ function openLinkedCheck(): boolean {
   return true;
 }
 
-function applyIssueFilter(): void {
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
+  const active = document.activeElement;
+  if (
+    active instanceof HTMLElement &&
+    (active.isContentEditable || active.closest("input, textarea, select, [role=dialog]"))
+  )
+    return;
+  const field = document.querySelector<HTMLInputElement>("#content [data-issue-search-field]");
+  if (!field) return;
+  event.preventDefault();
+  field.focus();
+  field.select();
+});
+
+function setIssueFilter(change: Partial<IssueListFilter>): void {
+  const search = router.state.location.search;
+  const next = issueFilterSearch(search, { ...issueFilterFromSearch(search), ...change });
+  if (next !== search) {
+    shownSearch = next;
+    void router.navigate(`${routePath(currentRoute())}${next}${location.hash}`, {
+      replace: true,
+    });
+  }
+  applyIssueFilter(next);
+}
+
+function applyIssueFilter(search = router.state.location.search): void {
   const root = document.querySelector("#content");
   if (!root) return;
   const rows = [...root.querySelectorAll<HTMLElement>("[data-issue-state]")];
   if (!rows.length) return;
+  const filter = issueFilterFromSearch(search);
   const picker = root.querySelector<HTMLSelectElement>("select[data-issue-project-filter]");
   if (picker) {
-    if (![...picker.options].some((option) => option.value === issueProject)) issueProject = "";
-    picker.value = issueProject;
-  } else issueProject = "";
+    if (![...picker.options].some((option) => option.value === filter.project)) filter.project = "";
+    picker.value = filter.project;
+  } else filter.project = "";
+  const field = root.querySelector<HTMLInputElement>("[data-issue-search-field]");
+  if (field && field.value !== filter.query) field.value = filter.query;
   let visible = 0;
   for (const row of rows) {
     const show = issueRowMatches(
-      { state: row.dataset.issueState, project: row.dataset.issueProject },
-      { state: issueFilter, project: issueProject },
+      {
+        state: row.dataset.issueState,
+        project: row.dataset.issueProject,
+        text: row.dataset.issueSearch,
+      },
+      filter,
     );
     row.hidden = !show;
     if (show) visible += 1;
@@ -960,7 +1001,7 @@ function applyIssueFilter(): void {
   const empty = root.querySelector<HTMLElement>(".issue-filter-empty");
   if (empty) empty.hidden = visible > 0;
   for (const button of root.querySelectorAll<HTMLButtonElement>("[data-issue-filter]")) {
-    const on = button.dataset.issueFilter === issueFilter;
+    const on = button.dataset.issueFilter === filter.state;
     button.setAttribute("aria-pressed", on ? "true" : "false");
     button.classList.toggle("bg-main", on);
     button.classList.toggle("text-main-foreground", on);
