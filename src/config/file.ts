@@ -22,7 +22,12 @@ import {
 } from "./merge";
 import { knownConfigSection, readConfigText, updateConfigText } from "./settings-store";
 import { parseTimeLimitTables, type StoredTimeLimits } from "./time-limits";
-import { assignMemberVmKey, type MemberVmSize } from "./member-vm";
+import {
+  assignMemberVmKey,
+  setMemberVmText,
+  type MemberVmProviderName,
+  type MemberVmSize,
+} from "./member-vm";
 import { assignIssueVmKey, type StoredIssueVmSettings } from "./issue-vm";
 import { parseProjectSkills, type ProjectSkills } from "./skills";
 
@@ -429,6 +434,18 @@ function assignConfig(
     if (key === "implementer") config.agents.implementer = implementerName(value, line);
     return;
   }
+}
+
+export function writeMemberVmProviderOff(
+  path: string,
+  provider: MemberVmProviderName,
+  off: boolean,
+): Promise<void> {
+  return updateConfigText(path, (text) => {
+    const size = parseConfigToml(text).memberVm ?? {};
+    const others = (size.offProviders ?? []).filter((name) => name !== provider);
+    return setMemberVmText(text, { ...size, offProviders: off ? [...others, provider] : others });
+  });
 }
 
 const GROUPING_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;

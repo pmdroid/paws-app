@@ -8,11 +8,23 @@ import {
   tailscaleAuthKeyPath,
   tailscaleAuthKeyStatus,
 } from "../config";
-import { deleteVmProviderCheckSteps, type Db } from "../db";
+import {
+  deleteVmProviderCheckSteps,
+  type Db,
+  type VmProviderCheckRow,
+  type VmProviderKeyName,
+} from "../db";
 import { isWorkspaceAdmin } from "../workspace";
 import { json, localRequest, readJson, sameToken } from "./handler";
 
 export const RUNNER_VM_KEYS_SETTINGS_PATH = "/api/settings/runner-vm-keys";
+
+export const VM_PROVIDER_CHECK_BOUND_MS = 10_000;
+
+export type VmProviderCheckService = {
+  run(name: VmProviderKeyName, signal?: AbortSignal): Promise<VmProviderCheckRow | null>;
+  nextCheckAt(): Promise<number | null>;
+};
 
 export type RunnerVmKeysSettingsOptions = {
   home: string;
@@ -21,24 +33,33 @@ export type RunnerVmKeysSettingsOptions = {
   role?: string;
   store?: Db;
   audit: (action: string, subject: string) => Promise<void>;
+  checks?: VmProviderCheckService;
 };
 
-const KEYS = {
-  exeDev: { path: exeDevTokenPath, status: exeDevTokenStatus, label: "exe.dev API token" },
+export const KEYS = {
+  exeDev: {
+    path: exeDevTokenPath,
+    status: exeDevTokenStatus,
+    label: "exe.dev API token",
+    check: "exe-dev",
+  },
   tailscale: {
     path: tailscaleAuthKeyPath,
     status: tailscaleAuthKeyStatus,
     label: "Tailscale auth key",
+    check: "tailscale",
   },
   boat: {
     path: boatTokenPath,
     status: (home: string) => vmProviderTokenStatus(home, "boat"),
     label: "boat API key",
+    check: "boat",
   },
   instabox: {
     path: instaboxTokenPath,
     status: (home: string) => vmProviderTokenStatus(home, "instabox"),
     label: "InstaBox API key",
+    check: "instabox",
   },
 } as const;
 type KeyName = keyof typeof KEYS;
@@ -56,13 +77,13 @@ export async function handleRunnerVmKeysSettingsRequest(
   if (options.role !== undefined && !isWorkspaceAdmin(options.role))
     return json({ error: "Only workspace admins can manage runner VM keys." }, 403);
   const set = (name: KeyName) => KEYS[name].status(options.home) === "readable";
-  const status = () =>
-    json({
-      exeDev: set("exeDev"),
-      tailscale: set("tailscale"),
-      boat: set("boat"),
-      instabox: set("instabox"),
-    });
+  const keys = () => ({
+    exeDev: set("exeDev"),
+    tailscale: set("tailscale"),
+    boat: set("boat"),
+    instabox: set("instabox"),
+  });
+  const status = () => json(keys());
   if (request.method === "GET") return status();
   if (request.method !== "PUT" && request.method !== "DELETE")
     return json({ error: "Method not allowed" }, 405);
@@ -87,7 +108,14 @@ export async function handleRunnerVmKeysSettingsRequest(
     if (name === "tailscale") await forgetTailnetJoin(options.store);
     await options.audit("settings.runner_vm_keys", `Saved the ${KEYS[name].label}`);
   }
-  return status();
+  if (options.checks === undefined) return status();
+  let check: VmProviderCheckRow | null = null;
+  for (const [name] of values)
+    check = await options.checks.run(
+      KEYS[name].check,
+      AbortSignal.timeout(VM_PROVIDER_CHECK_BOUND_MS),
+    );
+  return json({ ...keys(), check });
 }
 
 async function forgetTailnetJoin(store: Db | undefined): Promise<void> {

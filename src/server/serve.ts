@@ -75,6 +75,9 @@ import {
   ISSUE_VM_SETTINGS_PATH,
   handleRunnerVmKeysSettingsRequest,
   RUNNER_VM_KEYS_SETTINGS_PATH,
+  handleVmProvidersSettingsRequest,
+  VM_PROVIDERS_CHECK_PATH,
+  VM_PROVIDERS_SETTINGS_PATH,
   handleTimeLimitSettingsRequest,
   handleLinearCommentSettingsRequest,
   LINEAR_COMMENT_SETTINGS_PATH,
@@ -99,6 +102,7 @@ import {
   type BriefSettingsOptions,
   type StorageCleanupSettingsOptions,
   type StorageUsageSettingsOptions,
+  type VmProviderCheckService,
   type HighRiskFile,
   type OverlapHoldView,
 } from "../settings";
@@ -149,6 +153,7 @@ export type ServerOptions = {
   ) => Promise<Response | null>;
   storageUsage?: StorageUsageSettingsOptions["usage"];
   storageCleanup?: StorageCleanupSettingsOptions["cleanup"];
+  vmProviderChecks?: VmProviderCheckService;
   retros?: (
     request: Request,
     principal: WorkspacePrincipal,
@@ -339,6 +344,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
           ...(options.retros ? { retros: options.retros } : {}),
           ...(options.storageUsage ? { storageUsage: options.storageUsage } : {}),
+          ...(options.vmProviderChecks ? { vmProviderChecks: options.vmProviderChecks } : {}),
           ...(options.storageCleanup ? { storageCleanup: options.storageCleanup } : {}),
           ...(options.improvements ? { improvements: options.improvements } : {}),
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
@@ -402,6 +408,7 @@ type Secrets = {
   retros?: ServerOptions["retros"];
   storageUsage?: ServerOptions["storageUsage"];
   storageCleanup?: ServerOptions["storageCleanup"];
+  vmProviderChecks?: ServerOptions["vmProviderChecks"];
   improvements?: ServerOptions["improvements"];
   executionControls?: ServerOptions["executionControls"];
   blockerChecks?: ServerOptions["blockerChecks"];
@@ -855,6 +862,32 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       home: loadRuntime(secrets.statusEnv ?? process.env).env.home,
       csrfToken,
       store,
+      ...(secrets.vmProviderChecks ? { checks: secrets.vmProviderChecks } : {}),
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(store, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
+  if (
+    (path === VM_PROVIDERS_SETTINGS_PATH || path === VM_PROVIDERS_CHECK_PATH) &&
+    secrets.agentSettings &&
+    secrets.store &&
+    secrets.vmProviderChecks
+  ) {
+    const store = secrets.store;
+    return (await handleVmProvidersSettingsRequest(request, {
+      home: loadRuntime(secrets.statusEnv ?? process.env).env.home,
+      configPath: secrets.agentSettings.configPath,
+      store,
+      checks: secrets.vmProviderChecks,
+      csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
         auditWorkspaceAccess(store, {
