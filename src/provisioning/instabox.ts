@@ -20,21 +20,32 @@ export type InstaBoxOptions = {
   readToken: ExeDevTokenReader;
   lookup: InstaBoxLookup;
   fetch?: ExeDevFetch;
-  timeoutMs?: Partial<Record<"createVm" | "deleteVm" | "getVm" | "listVms", number>>;
+  timeoutMs?: Partial<Record<Exclude<Operation, "execVm">, number>>;
 };
 
 type Operation = Extract<
   ProvisioningOperation,
-  "createVm" | "deleteVm" | "execVm" | "getVm" | "listVms"
+  "createVm" | "deleteVm" | "execVm" | "getVm" | "listVms" | "stopVm" | "resumeVm"
 >;
 
 export type InstaBoxMachine = { id: string; state: VmState };
 
 export type InstaBoxSpec = { vcpus: number; memMiB: number };
 
+export type InstaBoxPlan = {
+  tier: string;
+  alwaysOn: boolean;
+  startsPerMinute: number;
+  sizes: InstaBoxSpec[];
+};
+
 export type InstaBox = VmProvider & {
   listVms(): Promise<InstaBoxMachine[]>;
   listSizes(): Promise<InstaBoxSpec[]>;
+  readPlan(): Promise<InstaBoxPlan>;
+  suspendVm(name: string): Promise<void>;
+  resumeVm(name: string): Promise<void>;
+  startVm(name: string): Promise<void>;
 };
 
 const TIMEOUT_MS: Readonly<Record<Exclude<Operation, "execVm">, number>> = {
@@ -42,6 +53,8 @@ const TIMEOUT_MS: Readonly<Record<Exclude<Operation, "execVm">, number>> = {
   deleteVm: 60_000,
   getVm: 15_000,
   listVms: 10_000,
+  stopVm: 30_000,
+  resumeVm: 60_000,
 };
 const EXEC_MARGIN_MS = 15_000;
 const DEFAULT_EXEC_SECONDS = 60;
@@ -50,12 +63,16 @@ const MAX_BYTES: Readonly<Record<Operation, number>> = {
   deleteVm: 64 * 1024,
   getVm: 256 * 1024,
   listVms: 1024 * 1024,
+  stopVm: 64 * 1024,
+  resumeVm: 64 * 1024,
   execVm: 8 * 1024 * 1024,
 };
 const TOKEN = /^[A-Za-z0-9._~+/=-]+$/;
 const MACHINE_ID = /^m_[A-Za-z0-9]{26}$/;
 const CODE = /^[a-z][a-z0-9_]{0,63}$/;
 const STATE_WORD = /^[a-z][a-z0-9_-]{0,31}$/;
+const SNAPSHOT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const TIER = /^[a-z][a-z0-9_-]{0,31}$/;
 const MAX_DETAIL = 300;
 
 const STATES: Readonly<Record<string, VmState>> = {
@@ -114,7 +131,8 @@ export function createInstaBox(options: InstaBoxOptions): InstaBox {
       const limit = MAX_BYTES[operation];
       const text = await readCapped(response, limit, controller.signal);
       if (text === null) {
-        if (!response.ok) throw httpError(operation, vm, response.status, undefined, token);
+        if (!response.ok)
+          throw httpError(operation, vm, response.status, undefined, token, response.headers);
         throw new ProvisioningError(
           operation,
           "invalid_response",
@@ -123,7 +141,8 @@ export function createInstaBox(options: InstaBoxOptions): InstaBox {
         );
       }
       const body = parseJson(text);
-      if (!response.ok) throw httpError(operation, vm, response.status, body, token);
+      if (!response.ok)
+        throw httpError(operation, vm, response.status, body, token, response.headers);
       return { status: response.status, body };
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
@@ -161,6 +180,58 @@ export function createInstaBox(options: InstaBoxOptions): InstaBox {
     return id;
   }
 
+  async function post(
+    operation: "stopVm" | "resumeVm",
+    name: string,
+    action: "suspend" | "resume" | "start",
+  ): Promise<void> {
+    const id = await machineId(operation, name);
+    await call(operation, name, {
+      method: "POST",
+      path: `/v1/machines/${id}/${action}`,
+      body: {},
+      timeoutMs: timeout[operation],
+    });
+  }
+
+  async function readOrg(): Promise<{ org: Record<string, unknown>; sizes: InstaBoxSpec[] }> {
+    const { status, body } = await call("listVms", "orgs", {
+      method: "GET",
+      path: "/v1/orgs",
+      timeoutMs: timeout.listVms,
+    });
+    const orgs = isRecord(body) ? body["orgs"] : undefined;
+    const org: unknown = Array.isArray(orgs) ? orgs[0] : undefined;
+    const specs = isRecord(org) ? org["allowedSpecs"] : undefined;
+    if (!isRecord(org) || !Array.isArray(specs)) throw invalid("listVms", "orgs", status);
+    const sizes = specs.map((spec: unknown) => {
+      const vcpus = isRecord(spec) ? spec["vcpus"] : undefined;
+      const memMiB = isRecord(spec) ? spec["memMiB"] : undefined;
+      if (!Number.isInteger(vcpus) || !Number.isInteger(memMiB))
+        throw invalid("listVms", "orgs", status);
+      return { vcpus: vcpus as number, memMiB: memMiB as number };
+    });
+    return { org, sizes };
+  }
+
+  async function readPlan(): Promise<InstaBoxPlan> {
+    const { org, sizes } = await readOrg();
+    const limits = isRecord(org["limits"]) ? org["limits"] : {};
+    const tier = org["tier"];
+    const alwaysOn = limits["alwaysOn"];
+    const starts = limits["startsPerMinute"];
+    if (
+      typeof tier !== "string" ||
+      !TIER.test(tier) ||
+      typeof alwaysOn !== "boolean" ||
+      typeof starts !== "number" ||
+      !Number.isInteger(starts) ||
+      starts < 0
+    )
+      throw invalid("listVms", "orgs", 200);
+    return { tier, alwaysOn, startsPerMinute: starts, sizes };
+  }
+
   return {
     id: "instabox",
 
@@ -172,6 +243,13 @@ export function createInstaBox(options: InstaBoxOptions): InstaBox {
         throw new ProvisioningError("createVm", "unknown", (error as Error).message);
       }
       const key = request?.key ?? vm;
+      const from = request?.from;
+      if (from !== undefined && !SNAPSHOT_ID.test(from))
+        throw new ProvisioningError(
+          "createVm",
+          "invalid_name",
+          `InstaBox createVm for ${vm}: the snapshot id is not an InstaBox snapshot id.`,
+        );
       const sized = size.cpu !== undefined && size.memoryGb !== undefined;
       const { status, body } = await call("createVm", vm, {
         method: "POST",
@@ -179,7 +257,7 @@ export function createInstaBox(options: InstaBoxOptions): InstaBox {
         headers: { "Idempotency-Key": key },
         body: {
           name: vm,
-          templateId: INSTABOX_TEMPLATE,
+          ...(from === undefined ? { templateId: INSTABOX_TEMPLATE } : { snapshotId: from }),
           autoSuspendAfterSeconds: 0,
           maxRunMinutes: -1,
           ...(sized ? { vcpus: size.cpu, memMiB: (size.memoryGb ?? 0) * 1024 } : {}),
@@ -266,22 +344,21 @@ export function createInstaBox(options: InstaBoxOptions): InstaBox {
     },
 
     async listSizes() {
-      const { status, body } = await call("listVms", "orgs", {
-        method: "GET",
-        path: "/v1/orgs",
-        timeoutMs: timeout.listVms,
-      });
-      const orgs = isRecord(body) ? body["orgs"] : undefined;
-      const org: unknown = Array.isArray(orgs) ? orgs[0] : undefined;
-      const specs = isRecord(org) ? org["allowedSpecs"] : undefined;
-      if (!Array.isArray(specs)) throw invalid("listVms", "orgs", status);
-      return specs.map((spec: unknown) => {
-        const vcpus = isRecord(spec) ? spec["vcpus"] : undefined;
-        const memMiB = isRecord(spec) ? spec["memMiB"] : undefined;
-        if (!Number.isInteger(vcpus) || !Number.isInteger(memMiB))
-          throw invalid("listVms", "orgs", status);
-        return { vcpus: vcpus as number, memMiB: memMiB as number };
-      });
+      return (await readOrg()).sizes;
+    },
+
+    readPlan,
+
+    async suspendVm(name) {
+      await post("stopVm", name, "suspend");
+    },
+
+    async resumeVm(name) {
+      await post("resumeVm", name, "resume");
+    },
+
+    async startVm(name) {
+      await post("resumeVm", name, "start");
     },
 
     async deleteVm(name) {
@@ -375,6 +452,7 @@ function httpError(
   status: number,
   body: unknown,
   token: string,
+  headers: Headers,
 ): ProvisioningError {
   const error = isRecord(body) && isRecord(body["error"]) ? body["error"] : null;
   const raw = error?.["code"];
@@ -389,7 +467,13 @@ function httpError(
     `InstaBox ${operation} for ${vm} failed with HTTP ${status} (${ours})${said}.`,
     status,
     detail,
+    retryAfter(headers.get("retry-after")),
   );
+}
+
+function retryAfter(header: string | null): number | null {
+  const value = header?.trim() ?? "";
+  return /^\d{1,6}$/.test(value) ? Number(value) * 1000 : null;
 }
 
 function clean(parts: readonly (string | null)[], token: string): string {

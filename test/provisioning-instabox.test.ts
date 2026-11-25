@@ -225,4 +225,60 @@ describe("InstaBox client", () => {
     });
     expect((await failure(box.getVm("ada-paws"))).code).toBe("timeout");
   });
+  test("create from a snapshot sends snapshotId instead of the template", async () => {
+    const { box, sent } = client(() => json(202, { machineId: ID }));
+    await box.createVm("ada-paws", { cpu: 4, memoryGb: 8 }, { key: "row-2", from: "snap_abc-1" });
+    expect(sent[0]!.body).toEqual({
+      name: "ada-paws",
+      snapshotId: "snap_abc-1",
+      autoSuspendAfterSeconds: 0,
+      maxRunMinutes: -1,
+      vcpus: 4,
+      memMiB: 8192,
+    });
+  });
+
+  test("suspend, resume and start post to the machine id", async () => {
+    const { box, sent } = client(() => json(202, { id: "op_2", state: "queued" }));
+    await box.suspendVm("ada-paws");
+    await box.resumeVm("ada-paws");
+    await box.startVm("ada-paws");
+    expect(sent.map((request) => `${request.method} ${request.url}`)).toEqual([
+      `POST ${INSTABOX_ENDPOINT}/v1/machines/${ID}/suspend`,
+      `POST ${INSTABOX_ENDPOINT}/v1/machines/${ID}/resume`,
+      `POST ${INSTABOX_ENDPOINT}/v1/machines/${ID}/start`,
+    ]);
+    expect((await failure(box.suspendVm("other-vm"))).code).toBe("missing");
+  });
+
+  test("the plan reads the first org's tier, always on, start limit and sizes", async () => {
+    const org = {
+      tier: "pro",
+      limits: { alwaysOn: true, startsPerMinute: 30 },
+      allowedSpecs: [{ vcpus: 4, memMiB: 8192, persistentDiskGiB: 20 }],
+    };
+    const { box } = client(() => json(200, { orgs: [org, { ...org, tier: "team" }] }));
+    expect(await box.readPlan()).toEqual({
+      tier: "pro",
+      alwaysOn: true,
+      startsPerMinute: 30,
+      sizes: [{ vcpus: 4, memMiB: 8192 }],
+    });
+    const bare = client(() => json(200, { orgs: [{ allowedSpecs: [] }] }));
+    expect(await bare.box.listSizes()).toEqual([]);
+    expect((await failure(bare.box.readPlan())).code).toBe("invalid_response");
+  });
+
+  test("Retry-After is kept on the error", async () => {
+    const { box } = client(
+      () =>
+        new Response(JSON.stringify({ error: { code: "quota_exceeded" } }), {
+          status: 429,
+          headers: { "retry-after": "7" },
+        }),
+    );
+    const error = await failure(box.resumeVm("ada-paws"));
+    expect(error.code).toBe("rate_limited");
+    expect(error.retryAfterMs).toBe(7_000);
+  });
 });

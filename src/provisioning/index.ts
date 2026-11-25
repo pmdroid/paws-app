@@ -46,11 +46,19 @@ export {
 } from "./client";
 export type { ExeDevFetch, ExeDevOptions, ExeDevTokenReader } from "./client";
 export { createInstaBox, INSTABOX_ENDPOINT, INSTABOX_TEMPLATE } from "./instabox";
-export type { InstaBox, InstaBoxLookup, InstaBoxOptions } from "./instabox";
+export type {
+  InstaBox,
+  InstaBoxLookup,
+  InstaBoxOptions,
+  InstaBoxPlan,
+  InstaBoxSpec,
+} from "./instabox";
 export { createFakeExeDev, FAKE_UNSCRIPTED_EXIT } from "./fake";
 export { createFakeBootstrap } from "./fake-bootstrap";
 export { createFakeBoat } from "./fake-boat";
 export type { FakeBoat, FakeBoatCall, FakeBoatOptions, FakeBoatSandbox } from "./fake-boat";
+export { createFakeInstaBox } from "./fake-instabox";
+export type { FakeInstaBox, FakeInstaBoxOptions } from "./fake-instabox";
 export { PINNED_MISE, PINNED_MISE_VERSION } from "./mise";
 export { PINNED_TAILSCALE, PINNED_TAILSCALE_VERSION } from "./tailscale";
 export { LATEST_RUNNER_RELEASE_URL, latestRunnerRelease } from "./release";
