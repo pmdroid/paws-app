@@ -45,7 +45,6 @@ export type Runner = {
   agentUser?: "runner" | "paws-agent" | null;
   idle: boolean;
   helpersUndelivered?: boolean;
-  unhealthy?: string | null;
   slots?: { used: number; total: number };
   /** Desired is chosen in Paws; applied and ceiling are what the runner last reported. */
   concurrency?: { desired: number | null; applied: number; ceiling: number | null } | null;
@@ -434,7 +433,6 @@ function updateAvailable(runner: Runner, serverVersion: string | null): boolean 
 function availability(runner: Runner, now: number): [string, string] {
   if (runner.status === "revoked") return ["bad", "Revoked"];
   if (!runnerOnline(runner, now)) return ["bad", "Offline"];
-  if (runner.unhealthy) return ["bad", "Unhealthy"];
   if (runner.helpersUndelivered) return ["bad", "Not picking up helper commands"];
   const running = runner.running?.length ?? 0;
   if (running) return ["running", `Running ${running}`];
@@ -1161,9 +1159,6 @@ function statusLine(runner: Runner, view: RunnerListView): string {
           : "",
     stale ? "Stale" : "",
     updateAvailable(runner, view.serverVersion) ? "Update available" : "",
-    runner.unhealthy && runnerOnline(runner, view.now)
-      ? `Health check failed: ${runner.unhealthy}. No new work goes here until one passes.`
-      : "",
   ].filter(Boolean);
   return `<p class="runner-status"><span class="tag ${tone}">${esc(state)}</span>${notes.map((note) => `<span>${esc(note)}</span>`).join("")}</p>`;
 }

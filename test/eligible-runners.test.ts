@@ -32,7 +32,6 @@ type Runner = {
   seenAgoMs?: number;
   ready?: number;
   authExpired?: number;
-  healthFailure?: string;
 };
 
 const MEMBERS: Record<string, Member> = {
@@ -98,7 +97,6 @@ async function workspace(runners: Record<string, Runner>) {
         runnerId: id,
         runnerVersion:
           runner.version === undefined ? MINIMUM_RUNNER_VERSION.join(".") : runner.version,
-        healthFailure: runner.healthFailure ?? null,
         reportedAt: now,
       }),
     );
@@ -417,38 +415,32 @@ test("a repository command goes to the item's last runner while it is eligible a
   }
 });
 
-for (const [label, runner, reason] of [
-  ["outdated", { owner: "me", version: "0.1.83" }, "outdated"],
-  ["unhealthy", { owner: "me", healthFailure: "EACCES" }, "unhealthy"],
-] as const)
-  test(`an owner whose only runner is ${label} is not told to add a runner`, async () => {
-    const w = await workspace({ old: runner });
-    try {
-      const { db, now } = w;
-      await seed(db, (q) =>
-        q.orm.insert(q.t.linearSession).values({
-          sessionId: "ses",
-          organizationId: "org",
-          teamId: "team",
-          createdAt: now,
-        }),
-      );
-      await insertQueuedItem(db, { id: "item", now, sessionKey: "ses" });
-      await seed(db, (q) =>
-        q.orm
-          .update(q.t.workItem)
-          .set({ ownerUserId: w.users.me! })
-          .where(eq(q.t.workItem.id, "item")),
-      );
-      expect(await w.check()).toMatchObject([
-        { eligible: false, reason, ...(reason === "unhealthy" ? { healthFailure: "EACCES" } : {}) },
-      ]);
-      expect(
-        await db.run((q) =>
-          itemOwnerRunnerSetupNeedSteps(q, { itemId: "item", agent: "codex", now }),
-        ),
-      ).toBeNull();
-    } finally {
-      await w.close();
-    }
-  });
+test("an owner whose only runner is outdated is not told to add a runner", async () => {
+  const w = await workspace({ old: { owner: "me", version: "0.1.83" } });
+  try {
+    const { db, now } = w;
+    await seed(db, (q) =>
+      q.orm.insert(q.t.linearSession).values({
+        sessionId: "ses",
+        organizationId: "org",
+        teamId: "team",
+        createdAt: now,
+      }),
+    );
+    await insertQueuedItem(db, { id: "item", now, sessionKey: "ses" });
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.workItem)
+        .set({ ownerUserId: w.users.me! })
+        .where(eq(q.t.workItem.id, "item")),
+    );
+    expect((await w.check()).map((runner) => runner.reason)).toEqual(["outdated"]);
+    expect(
+      await db.run((q) =>
+        itemOwnerRunnerSetupNeedSteps(q, { itemId: "item", agent: "codex", now }),
+      ),
+    ).toBeNull();
+  } finally {
+    await w.close();
+  }
+});

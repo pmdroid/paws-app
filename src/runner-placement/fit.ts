@@ -153,7 +153,7 @@ function* runnerVerdictsSteps(
     if (!runner.eligible) {
       runners.push(
         verdict(
-          eligibleReasonText(runner),
+          eligibleReasonText(runner.reason),
           runner.reason === "agent-not-signed-in" || runner.reason === "auth-expired"
             ? "sign-in"
             : null,

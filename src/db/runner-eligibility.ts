@@ -8,7 +8,7 @@ export function* eligibleRunnerRowsSteps(
   agent: string,
   includeRevoked: boolean,
 ) {
-  const { runner: r, runnerAgentPolicy: a, runnerHostStatus: h } = q.t;
+  const { runner: r, runnerAgentPolicy: a } = q.t;
   return yield* q.all(
     q.orm
       .select({
@@ -24,11 +24,9 @@ export function* eligibleRunnerRowsSteps(
         virtualFinish: sql<number>`COALESCE(${a.virtualFinish}, 0)`.mapWith(Number),
         lastUsedAt: sql<number>`COALESCE(${a.lastUsedAt}, 0)`.mapWith(Number),
         resolvedModel: a.resolvedModel,
-        healthFailure: h.healthFailure,
       })
       .from(r)
       .leftJoin(a, and(eq(a.runnerId, r.id), eq(a.agent, agent)))
-      .leftJoin(h, eq(h.runnerId, r.id))
       .where(
         and(
           eq(r.workspaceId, workspaceId),

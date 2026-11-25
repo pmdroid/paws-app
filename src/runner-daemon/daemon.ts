@@ -970,6 +970,15 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         attempts.unshift({ ...(attempts[0] as object), agentUser: options.agentUser });
       if (conversations !== undefined)
         attempts.unshift({ ...(attempts[0] as object), conversationConcurrency: conversations });
+      if (body.healthFailure !== undefined)
+        attempts.splice(
+          1,
+          attempts.length,
+          ...attempts.map((attempt) => {
+            const { healthFailure: _, ...rest } = attempt as { healthFailure?: unknown };
+            return rest;
+          }),
+        );
       let reply: unknown;
       for (const [index, attempt] of attempts.entries()) {
         try {

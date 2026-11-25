@@ -1,1 +1,0 @@
-ALTER TABLE "runner_host_status" ADD COLUMN "health_failure" text;

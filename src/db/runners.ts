@@ -101,7 +101,6 @@ export type RunnerHostSample = {
   /** Absent when the runner does not report them. */
   strayProcesses?: RunnerStrayProcess[];
   agentUser?: RunnerAgentUser;
-  healthFailure?: string | null;
 };
 
 /** A process of the runner user outside the runner's process tree, as last reported. */
@@ -133,7 +132,6 @@ type RunnerOverview = RunnerRecord & {
   os: { id: string | null; version: string | null } | null;
   version: string | null;
   agentUser: RunnerAgentUser | null;
-  unhealthy: string | null;
   idle: boolean;
   /** Its last 3 helper commands went unacknowledged past the acknowledgement window. */
   helpersUndelivered: boolean;
@@ -259,7 +257,6 @@ export function* recordRunnerHostStatusSteps(
     miseVersion: sample.miseVersion ?? null,
     strayProcesses: sample.strayProcesses ? JSON.stringify(sample.strayProcesses) : null,
     agentUser: sample.agentUser ?? null,
-    healthFailure: sample.healthFailure,
   };
   const {
     runnerId: _runnerId,
@@ -269,8 +266,6 @@ export function* recordRunnerHostStatusSteps(
   const before = yield* q.one(
     q.orm.select(stored).from(runnerHostStatus).where(eq(runnerHostStatus.runnerId, runnerId)),
   );
-  values.healthFailure =
-    sample.healthFailure === undefined ? (before?.healthFailure ?? null) : sample.healthFailure;
   if (before && Bun.deepEquals(before, values)) return;
   yield* q.exec(
     q.orm
@@ -430,7 +425,6 @@ export function* listRunnerOverviewSteps(
         runnerVersion: host.runnerVersion,
         strayProcesses: host.strayProcesses,
         agentUser: sql<RunnerAgentUser | null>`${host.agentUser}`,
-        healthFailure: host.healthFailure,
         reportedAt: host.reportedAt,
         lastSeenAt: runner.lastSeenAt,
         busy: flag(
@@ -505,7 +499,6 @@ export function* listRunnerOverviewSteps(
           : { id: row.osId, version: row.osVersion },
       version: row.runnerVersion,
       agentUser: row.agentUser,
-      unhealthy: row.healthFailure,
       idle: row.busy === 0,
       helpersUndelivered: yield* undeliveredHelperStreakSteps(q, row.id, now, 3),
       slots: { used: row.used, total: row.total },

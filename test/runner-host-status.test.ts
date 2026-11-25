@@ -123,7 +123,6 @@ async function fixture() {
           os: unknown;
           version: unknown;
           agentUser?: string | null;
-          unhealthy?: string | null;
           idle: boolean;
         }[];
         serverVersion: string | null;
@@ -212,19 +211,15 @@ test("the runner list says who a runner starts agents as", async () => {
   );
 });
 
-test("a failed health check stays until a heartbeat reports a passing one", async () => {
+test("a heartbeat with a health check's failure or its pass is accepted", async () => {
   const runner = await fixture();
   const failure = "EACCES: permission denied, lstat '/var/lib/paws-agent/.local/share'";
-  expect(
-    (await runner.heartbeat({ runnerVersion: "0.1.84", healthFailure: failure }))!.status,
-  ).toBe(200);
-  expect((await runner.list()).runners[0]!.unhealthy).toBe(failure);
-  expect((await runner.heartbeat({ runnerVersion: "0.1.85" }))!.status).toBe(200);
-  expect((await runner.list()).runners[0]!.unhealthy).toBe(failure);
-  expect((await runner.heartbeat({ runnerVersion: "0.1.85", healthFailure: null }))!.status).toBe(
+  expect((await runner.heartbeat({ runnerVersion: "1.4.0", healthFailure: failure }))!.status).toBe(
     200,
   );
-  expect((await runner.list()).runners[0]!.unhealthy).toBeNull();
+  expect((await runner.heartbeat({ runnerVersion: "1.4.0", healthFailure: null }))!.status).toBe(
+    200,
+  );
   expect((await runner.heartbeat({ healthFailure: "x".repeat(501) }))!.status).toBe(403);
 });
 

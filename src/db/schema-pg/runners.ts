@@ -346,7 +346,6 @@ export const runnerHostStatus = pgTable(
     strayProcesses: text("stray_processes"),
     miseVersion: text("mise_version"),
     agentUser: text("agent_user"),
-    healthFailure: text("health_failure"),
   },
   () => [
     check("runner_host_status_check_1", sql`cpu_percent BETWEEN 0 AND 100`),
