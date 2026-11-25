@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -284,13 +285,21 @@ function vmScript(active: string[] = []) {
   const dev = join(root, "dev");
   const state = join(root, "state");
   const log = join(root, "log");
-  for (const dir of [bin, lib, dev]) mkdirSync(dir);
+  const copied = join(root, "copied");
+  const enroll = join(root, "enroll");
+  const config = join(root, "config.json");
+  for (const dir of [bin, lib, dev, copied]) mkdirSync(dir);
   writeFileSync(join(dev, A), "");
   const stub = (dir: string, name: string, body = "") => {
     writeFileSync(join(dir, name), `#!/bin/bash\necho "${name} $*" >>${log}\n${body}\n`);
     chmodSync(join(dir, name), 0o755);
   };
-  for (const name of ["chown", "mkfs.vfat", "mcopy"]) stub(bin, name);
+  for (const name of ["chown", "mkfs.vfat"]) stub(bin, name);
+  stub(
+    bin,
+    "mcopy",
+    `for f in "$@"; do [[ -f $f && $f != *.img ]] && cp "$f" ${copied}/; done; true`,
+  );
   stub(
     bin,
     "systemctl",
@@ -308,21 +317,23 @@ true`,
         PAWS_ISSUE_VM_LIB: lib,
         PAWS_ISSUE_VM_STATE: state,
         PAWS_ISSUE_VM_DEV: dev,
+        PAWS_ISSUE_VM_ENROLL: enroll,
+        PAWS_ISSUE_VM_CONFIG: config,
       },
     });
   const calls = () => readFileSync(log, "utf8");
-  return { run, calls, lib, dev, state };
+  return { run, calls, lib, dev, state, copied, enroll, config };
 }
 
 test("vm.sh seeds the VM, starts its network rules and runs Cloud Hypervisor with its disk, TAP and size", () => {
-  const { run, calls, lib, dev, state } = vmScript();
+  const { run, calls, lib, dev, state, copied } = vmScript();
   expect(run("prepare", `${A}-7-2-4`).exitCode).toBe(0);
-  expect(readFileSync(join(state, `seed-${A}`, "network-config"), "utf8")).toContain(
+  expect(readFileSync(join(copied, "network-config"), "utf8")).toContain(
     'addresses: [ "10.199.7.2/24" ]',
   );
-  expect(readFileSync(join(state, `seed-${A}`, "meta-data"), "utf8")).toContain(
-    `instance-id: ${A}-7`,
-  );
+  expect(readFileSync(join(copied, "meta-data"), "utf8")).toContain(`instance-id: ${A}-7`);
+  expect(readFileSync(join(copied, "user-data"), "utf8")).toBe("#cloud-config\n{}\n");
+  expect(existsSync(join(state, `seed-${A}`))).toBe(false);
   expect(calls()).toContain(`chown paws-issue-vm ${dev}/${A}`);
   expect(calls()).toContain("systemctl start paws-issue-vm-network@7.service");
   expect(run("run", `${A}-7-2-4`).exitCode).toBe(0);
@@ -341,6 +352,32 @@ test("vm.sh seeds the VM, starts its network rules and runs Cloud Hypervisor wit
   for (const bad of [`${A}-0-2-4`, `${A}-255-2-4`, `${A}-7-33-4`, `${A}-7-2-129`, `${A}-7-2`, "x"])
     expect(run("prepare", bad).exitCode).toBe(2);
   expect(run("prepare", `${B}-8-2-4`).exitCode).toBe(2);
+});
+
+test("vm.sh moves a staged bootstrap token into the seed once, and the seed goes when the VM stops", () => {
+  const { run, copied, enroll, config, state } = vmScript();
+  mkdirSync(enroll);
+  writeFileSync(join(enroll, A), "bootstrap-token-0123456789");
+  writeFileSync(config, '{"controlPlaneUrl":"https://paws.test"}\n');
+  expect(run("prepare", `${A}-7-2-4`).exitCode).toBe(0);
+  const userData = readFileSync(join(copied, "user-data"), "utf8");
+  expect(userData).toContain(
+    `content: ${Buffer.from("bootstrap-token-0123456789").toString("base64")}`,
+  );
+  expect(userData).toContain(
+    `content: ${Buffer.from('{"controlPlaneUrl":"https://paws.test"}\n').toString("base64")}`,
+  );
+  expect(userData).toContain(
+    `paws-runner runner enroll --config /etc/paws-runner/config.json --name paws-vm-${A.toLowerCase()} --token-file /var/lib/paws-bootstrap/enrollment-token`,
+  );
+  expect(existsSync(join(enroll, A))).toBe(false);
+  expect(existsSync(join(state, `seed-${A}.img`))).toBe(true);
+  expect(run("clean", `${A}-7-2-4`).exitCode).toBe(0);
+  expect(existsSync(join(state, `seed-${A}.img`))).toBe(false);
+  writeFileSync(join(enroll, A), "not a token\n");
+  expect(run("prepare", `${A}-7-2-4`).exitCode).toBe(0);
+  expect(readFileSync(join(copied, "user-data"), "utf8")).toBe("#cloud-config\n{}\n");
+  expect(existsSync(join(enroll, A))).toBe(false);
 });
 
 test("vm.sh refuses a second unit for the same VM or the same slot", () => {

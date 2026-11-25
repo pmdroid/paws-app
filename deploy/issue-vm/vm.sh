@@ -63,8 +63,10 @@ EOF
 
 user_data() {
   local staged=$enroll/$id token=
-  if [[ -f $staged && ! -L $staged ]]; then token=$(head -c 300 "$staged"); fi
-  rm -f "$staged"
+  if [[ -e $staged || -L $staged ]]; then
+    if [[ -f $staged && ! -L $staged ]]; then token=$(head -c 300 "$staged"); fi
+    rm -f "$staged"
+  fi
   if [[ ! $token =~ ^[A-Za-z0-9_-]{16,256}$ || ! -f $config || -L $config ]]; then
     printf '#cloud-config\n{}\n'
     return
