@@ -1,4 +1,4 @@
-import { and, asc, gte, inArray, lt } from "drizzle-orm";
+import { and, asc, count, eq, gte, inArray, lt, lte, min, sql } from "drizzle-orm";
 import { type Q } from "./db";
 
 const INSERT_CHUNK = 1_000;
@@ -49,4 +49,34 @@ export function* metricMinutesSteps(
       .orderBy(asc(m.minute), asc(m.id)),
   );
   return rows as MetricMinuteRow[];
+}
+
+export type QueueDepthRow = { key: string; depth: number; oldestAt: number };
+
+export function* jobQueueDepthsSteps(q: Q, now: number) {
+  const { job } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ key: job.queue, depth: count(), oldestAt: min(job.runAt) })
+      .from(job)
+      .where(and(eq(job.status, "pending"), lte(job.runAt, now)))
+      .groupBy(job.queue),
+  );
+  return rows.map((row) => ({ ...row, oldestAt: Number(row.oldestAt ?? now) })) as QueueDepthRow[];
+}
+
+export function* outboxQueueDepthsSteps(q: Q, now: number) {
+  const { outbox } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        key: outbox.deliveryKind,
+        depth: count(),
+        oldestAt: sql<number>`min(greatest(${outbox.createdAt}, ${outbox.notBefore}))`,
+      })
+      .from(outbox)
+      .where(and(eq(outbox.status, "pending"), lte(outbox.notBefore, now)))
+      .groupBy(outbox.deliveryKind),
+  );
+  return rows.map((row) => ({ ...row, oldestAt: Number(row.oldestAt ?? now) })) as QueueDepthRow[];
 }

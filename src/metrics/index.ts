@@ -17,3 +17,4 @@ export {
   readMetricSeries,
 } from "./store";
 export type { MetricPoint, MetricSeries, MetricStep } from "./store";
+export { QUEUE_DEPTH_EVERY_MS, QUEUE_DEPTH_JOB, recordQueueDepths } from "./queues";

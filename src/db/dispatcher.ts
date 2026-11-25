@@ -1,6 +1,7 @@
 import { journalCaught, journalItemId } from "../journal";
 import { DEFAULT_POLL_MS, sleep, type Clock } from "../core";
 import { type Db } from "./db";
+import { type QueueObserver } from "./loop";
 import {
   claimOutboxHeadsSteps,
   coalesceOutbox,
@@ -16,6 +17,10 @@ export type OutboxHandler = (
   message: OutboxRow,
   context: OutboxDeliveryContext,
 ) => Promise<void> | void;
+
+function kindOf(row: OutboxRow): string {
+  return row.delivery ?? "ordered";
+}
 
 /**
  * Delivers the head of every ready session at once. A session whose head is
@@ -42,6 +47,7 @@ export class OutboxDispatcher {
       batchSize?: number;
       backoffBaseMs?: number;
       progressIntervalMs?: number;
+      observe?: QueueObserver;
     } = {},
   ) {
     this.store = options.store ?? db;
@@ -86,6 +92,8 @@ export class OutboxDispatcher {
     // The claim is one `UPDATE … RETURNING`, so each claim is its own transaction.
     const claimed = await this.store.run((q) => claimOutboxHeadsSteps(q, options));
     for (const message of claimed) {
+      const waitedMs = options.now - Math.max(message.createdAt, message.notBefore);
+      this.options.observe?.("outbox.wait", { kind: kindOf(message) }, waitedMs);
       const controller = new AbortController();
       this.active.set(message.id, { row: message, controller });
       this.track(message, this.deliver(message, controller));
@@ -125,6 +133,8 @@ export class OutboxDispatcher {
   private async deliver(message: OutboxRow, controller: AbortController): Promise<void> {
     const handler = this.targets.get(message.target) ?? this.handler;
     if (handler === null) return;
+    const startedAt = this.clock.now();
+    let outcome = "superseded";
     try {
       const claimed = message;
       if (!(await this.store.run((q) => isOutboxCurrentSteps(q, claimed)))) return;
@@ -137,13 +147,17 @@ export class OutboxDispatcher {
       });
       const now = this.clock.now();
       await this.store.transaction((q) => completeOutboxSteps(q, delivered, now));
+      outcome = "delivered";
     } catch (error) {
+      outcome = "failed";
       journalCaught(error, "dispatcher.deliver.isOutboxCurrent", journalItemId(message.payload));
       await retryOutbox(this.store, message, error, {
         now: this.clock.now(),
         baseMs: this.options.backoffBaseMs,
       });
     } finally {
+      const labels = { kind: kindOf(message), outcome };
+      this.options.observe?.("outbox.deliver", labels, this.clock.now() - startedAt);
       const released = message;
       await this.store.run((q) => releaseOutboxLeaseSteps(q, released));
       this.active.delete(message.id);
