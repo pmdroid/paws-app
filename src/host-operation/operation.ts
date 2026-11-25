@@ -4,6 +4,7 @@ type Operation = { name: string; now: () => number; owner?: string };
 const context = new AsyncLocalStorage<Operation>();
 let stalled = "idle";
 let longest = 5000;
+let slowest: { name: string; ms: number } | null = null;
 const active = new Map<string, number>();
 
 function leave(name: string): void {
@@ -21,6 +22,7 @@ export function measureHostOperation<T>(run: () => T): T {
     return run();
   } finally {
     const elapsed = operation.now() - at;
+    if (elapsed > (slowest?.ms ?? 0)) slowest = { name: operation.name, ms: elapsed };
     if (elapsed > longest) {
       longest = elapsed;
       stalled = operation.name;
@@ -64,4 +66,10 @@ export function sampleHostOperations(): string {
 
 export function hostOperationOwner(): string | undefined {
   return context.getStore()?.owner;
+}
+
+export function sampleSlowestHostOperation(): { name: string; ms: number } | null {
+  const found = slowest;
+  slowest = null;
+  return found;
 }

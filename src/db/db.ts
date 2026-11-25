@@ -80,6 +80,26 @@ export function postgresDb(pg: PgOrm): PgDb {
   };
 }
 
+export function observeDb<D extends Db>(
+  db: D,
+  record: (ms: number) => void,
+  now: () => number = () => performance.now(),
+): D {
+  const timed = async <T>(work: () => Promise<T>): Promise<T> => {
+    const at = now();
+    try {
+      return await work();
+    } finally {
+      record(now() - at);
+    }
+  };
+  return {
+    ...db,
+    run: (body) => timed(() => db.run(body)),
+    transaction: (body) => timed(() => db.transaction(body)),
+  };
+}
+
 export function* syncSteps<T>(work: () => T): Steps<T> {
   yield* [];
   return work();

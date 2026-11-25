@@ -59,7 +59,16 @@ export {
 } from "./db-check";
 export * from "./linear-budget";
 export { closingParen, createTableParts, splitTopLevel, unquoteName } from "./ddl";
-export { postgresDb, type Db, type PgDb, type PgOrm, type Q, syncSteps, type Steps } from "./db";
+export {
+  observeDb,
+  postgresDb,
+  type Db,
+  type PgDb,
+  type PgOrm,
+  type Q,
+  syncSteps,
+  type Steps,
+} from "./db";
 export * as pgSchema from "./schema-pg";
 export * from "./journal";
 export * from "./outbox";
