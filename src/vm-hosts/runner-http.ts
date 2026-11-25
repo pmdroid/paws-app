@@ -16,7 +16,7 @@ export type VmHostRunnerView =
       vms: { id: string; state: string }[];
     };
 
-export type IssueVmEnrollmentMint = (issueVmId: string) => Promise<{ token: string } | null>;
+export type IssueVmEnrollmentMint = (issueVmId: string) => Promise<{ token: string }>;
 
 export async function handleVmHostRunnerRequest(
   request: Request,
@@ -60,7 +60,7 @@ async function enrollment(
     return Response.json({ token: null });
   if (!mint) return Response.json({ error: "Runner control is starting." }, { status: 503 });
   try {
-    return Response.json({ token: (await mint(id))?.token ?? null });
+    return Response.json({ token: (await mint(id)).token });
   } catch (error) {
     return Response.json({ error: (error as Error).message }, { status: 409 });
   }

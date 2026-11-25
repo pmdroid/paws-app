@@ -143,7 +143,7 @@ test("an issue VM enrolls with its bootstrap token once and gets only its own is
     now: f.now(),
   });
   await seedCredential(f.db, account.id, "claude", f.now());
-  const { token, expiresAt } = (await f.control.createIssueVmEnrollment(f.vmId))!;
+  const { token, expiresAt } = await f.control.createIssueVmEnrollment(f.vmId);
   expect(expiresAt).toBe(f.now() + 10 * 60_000);
   const client = await createRunnerKey(join(f.root, "vm"));
   const enrolled = await f.control.enroll({ token, name: "vm", csr: client.csr });
@@ -169,7 +169,9 @@ test("an issue VM enrolls with its bootstrap token once and gets only its own is
   await expect(f.control.enroll({ token, name: "vm", csr: again.csr })).rejects.toThrow(
     RunnerEnrollmentDenied,
   );
-  expect(await f.control.createIssueVmEnrollment(f.vmId)).toBeNull();
+  await expect(f.control.createIssueVmEnrollment(f.vmId)).rejects.toThrow(
+    "This issue VM can no longer enroll a runner.",
+  );
 
   await seed(f.db, (q) =>
     q.orm
@@ -215,7 +217,7 @@ test("a Tailscale key that needs approval refuses the token, and a token expires
     "The Tailscale key's new machines wait for approval, so an issue VM can't enroll without a person.",
   );
   await f.db.run((q) => q.exec(q.orm.delete(q.t.vmProviderCheck)));
-  const { token } = (await f.control.createIssueVmEnrollment(f.vmId))!;
+  const { token } = await f.control.createIssueVmEnrollment(f.vmId);
   f.advance(10 * 60_000);
   const client = await createRunnerKey(join(f.root, "late"));
   await expect(f.control.enroll({ token, name: "vm", csr: client.csr })).rejects.toThrow(

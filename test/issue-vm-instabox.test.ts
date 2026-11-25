@@ -36,13 +36,7 @@ function setup(boxOptions: FakeInstaBoxOptions = {}, startsPerMinute = 10) {
     },
   };
   const instaBox = createFakeInstaBox({ now: clock.now, ...boxOptions });
-  const bound = new Set<string>();
-  const bootstrap = createFakeBootstrap({
-    enroll: (vm) => {
-      bound.add(`vm-${vm}`);
-      return { runnerId: `runner-${vm}`, workspaceId: "workspace" };
-    },
-  });
+  const bootstrap = createFakeBootstrap();
   const queue = createStartQueue({ startsPerMinute, clock });
   const remembered = new Map<string, string>();
   const vms = createInstaBoxIssueVms({
@@ -53,11 +47,6 @@ function setup(boxOptions: FakeInstaBoxOptions = {}, startsPerMinute = 10) {
     remember: (name, id) => {
       remembered.set(name, id);
     },
-    enrollment: async (issueVmId) => {
-      await Promise.resolve();
-      if (bound.has(issueVmId)) return null;
-      return { token: `token-${issueVmId}-${now}` };
-    },
     clock,
   });
   const create = (name: string, size = SIZE) =>
@@ -66,7 +55,7 @@ function setup(boxOptions: FakeInstaBoxOptions = {}, startsPerMinute = 10) {
       key: `key-${name}`,
       snapshot: SNAPSHOT,
       size,
-      issueVmId: `vm-${name}`,
+      mintToken: async () => `token-${now}`,
     });
   return { instaBox, bootstrap, vms, create, remembered, now: () => now };
 }
@@ -124,16 +113,6 @@ describe("InstaBox issue VMs", () => {
     expect(await vms.remove("pas-1-vm")).toBe("deleted");
     expect(await vms.remove("pas-1-vm")).toBe("missing");
     expect((await refusal(vms.wake("pas-1-vm"))).code).toBe("lost");
-  });
-
-  test("a create retried after its runner enrolled starts that runner without a new token", async () => {
-    const { bootstrap, create } = setup();
-    bootstrap.fail("startRunner", "the runner service did not start");
-    await expect(create("pas-7-vm")).rejects.toThrow("the runner service did not start");
-    const staged = bootstrap.tokens.length;
-    const vm = await create("pas-7-vm");
-    expect(vm.runnerId).toBe("runner-pas-7-vm");
-    expect(bootstrap.tokens.length).toBe(staged);
   });
 
   test("a burst over InstaBox's start limit queues instead of failing", async () => {

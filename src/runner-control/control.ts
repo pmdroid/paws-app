@@ -112,11 +112,10 @@ export function createRunnerControl(options: {
       const id = workspaceId(at);
       const token = workspaceSecret();
       const expiresAt = at + ISSUE_VM_ENROLLMENT_MS;
-      const minted = await store.transaction(function* (q) {
+      await store.transaction(function* (q) {
         const vm = yield* issueVmByIdSteps(q, issueVmId);
-        if (!vm || !["creating", "awake", "asleep"].includes(vm.state))
+        if (!vm || vm.runnerId !== null || !["creating", "awake", "asleep"].includes(vm.state))
           throw new Error("This issue VM can no longer enroll a runner.");
-        if (vm.runnerId !== null) return false;
         const refusal = yield* issueVmTailnetRefusalSteps(q);
         if (refusal !== null) throw new Error(refusal);
         yield* enrollingMemberSteps(q, vm.workspaceId, vm.memberUserId);
@@ -137,9 +136,8 @@ export function createRunnerControl(options: {
           subject: id,
           now: at,
         });
-        return true;
       });
-      return minted ? { token, expiresAt } : null;
+      return { token, expiresAt };
     },
     /**
      * The host's one round trip: a valid unused token, a name and a CSR give a certificate for a

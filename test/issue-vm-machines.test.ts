@@ -369,14 +369,17 @@ test("vm.sh moves a staged bootstrap token into the seed once and deletes the se
   const { run, copied, enroll, config, state, proc } = vmScript();
   mkdirSync(enroll);
   writeFileSync(join(enroll, A), "bootstrap-token-0123456789");
-  writeFileSync(config, '{"controlPlaneUrl":"https://paws.test"}\n');
+  writeFileSync(
+    config,
+    '{"controlPlaneUrl":"https://paws.test:8787","runnerApiUrl":"https://public.test"}\n',
+  );
   expect(run("prepare", `${A}-7-2-4`).exitCode).toBe(0);
   const userData = readFileSync(join(copied, "user-data"), "utf8");
   expect(userData).toContain(
     `content: ${Buffer.from("bootstrap-token-0123456789").toString("base64")}`,
   );
   expect(userData).toContain(
-    `content: ${Buffer.from('{"controlPlaneUrl":"https://paws.test"}\n').toString("base64")}`,
+    `content: ${Buffer.from('{"controlPlaneUrl":"https://paws.test:8787","runnerApiUrl":"https://public.test"}\n').toString("base64")}`,
   );
   expect(userData).toContain(
     `paws-runner runner enroll --config /etc/paws-runner/config.json --name paws-vm-${A.toLowerCase()} --token-file /var/lib/paws-bootstrap/enrollment-token`,

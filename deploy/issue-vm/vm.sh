@@ -73,7 +73,7 @@ user_data() {
     return
   fi
   local names
-  names=$(python3 -I -c 'import json, sys, urllib.parse; c = json.load(open(sys.argv[1])); print(" ".join(sorted({urllib.parse.urlsplit(c.get(k) or "").hostname or "" for k in ("controlPlaneUrl", "runnerApiUrl")} - {""})))' "$config")
+  names=$(python3 -I -c 'import json, sys, urllib.parse; c = json.load(open(sys.argv[1])); u = [urllib.parse.urlsplit(c.get(k) or "") for k in ("controlPlaneUrl", "runnerApiUrl")]; r = {x.hostname for x in u if x.port in (8787, 8788)} - {x.hostname for x in u if x.port not in (8787, 8788)}; print(" ".join(sorted(h for h in r if h)))' "$config") || names=
   [[ $names =~ ^[A-Za-z0-9.\ -]*$ ]] || names=
   cat <<EOF
 #cloud-config

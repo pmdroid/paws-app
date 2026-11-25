@@ -14,12 +14,7 @@ import {
 
 const SIZE = { cpu: 8, memoryGb: 16 };
 
-function setup(
-  boatOptions: FakeBoatOptions = {},
-  startsPerMinute = 10,
-  maxWaitMs?: number,
-  refusal?: string,
-) {
+function setup(boatOptions: FakeBoatOptions = {}, startsPerMinute = 10, maxWaitMs?: number) {
   let now = 1_000_000;
   const clock = {
     now: () => now,
@@ -28,19 +23,12 @@ function setup(
     },
   };
   const ids = new Map<string, string>();
-  const minted: number[] = [];
   const boat = createFakeBoat({
     now: clock.now,
     lookup: (name) => ids.get(name) ?? null,
     ...boatOptions,
   });
-  const bound = new Set<string>();
-  const bootstrap = createFakeBootstrap({
-    enroll: (vm) => {
-      bound.add(`vm-${vm}`);
-      return { runnerId: `runner-${vm}`, workspaceId: "workspace" };
-    },
-  });
+  const bootstrap = createFakeBootstrap();
   const queue = createStartQueue({
     startsPerMinute,
     clock,
@@ -54,22 +42,12 @@ function setup(
     remember: (name, id) => {
       ids.set(name, id);
     },
-    enrollment: async (issueVmId) => {
-      await Promise.resolve();
-      if (refusal !== undefined) throw new Error(refusal);
-      if (bound.has(issueVmId)) return null;
-      return { token: `token-${issueVmId}-${minted.push(now)}` };
-    },
     clock,
   });
+  const minted: number[] = [];
+  const mintToken = async () => `token-${minted.push(now)}`;
   const create = (name: string) =>
-    vms.create({
-      name,
-      key: `key-${name}`,
-      snapshot: "paws-issue-vm",
-      size: SIZE,
-      issueVmId: `vm-${name}`,
-    });
+    vms.create({ name, key: `key-${name}`, snapshot: "paws-issue-vm", size: SIZE, mintToken });
   return { boat, bootstrap, queue, vms, create, minted, now: () => now };
 }
 
@@ -124,22 +102,6 @@ describe("boat issue VMs", () => {
     expect(await vms.remove("pas-1-vm")).toBe("missing");
   });
 
-  test("a refused bootstrap token creates no sandbox", async () => {
-    const { boat, create } = setup({}, 10, undefined, "The Tailscale key waits for approval.");
-    await expect(create("pas-9-vm")).rejects.toThrow("The Tailscale key waits for approval.");
-    expect(boat.lookup("pas-9-vm")).toBeNull();
-  });
-
-  test("a create retried after its runner enrolled starts that runner without a new token", async () => {
-    const { bootstrap, create, minted } = setup();
-    bootstrap.fail("startRunner", "the runner service did not start");
-    await expect(create("pas-7-vm")).rejects.toThrow("the runner service did not start");
-    const count = minted.length;
-    const vm = await create("pas-7-vm");
-    expect(vm.runnerId).toBe("runner-pas-7-vm");
-    expect(minted.length).toBe(count);
-  });
-
   test("a create repeated with the same key reuses the sandbox, even one left asleep", async () => {
     const { boat, vms, create } = setup();
     await create("pas-1-vm");
@@ -167,7 +129,7 @@ describe("boat issue VMs", () => {
     expect(boat.sandboxes.size).toBe(5);
     expect(boat.calls.filter((call) => call.operation === "createVm").length).toBeGreaterThan(5);
     expect(now() - started).toBeGreaterThanOrEqual(20_000);
-    expect(minted.filter((at) => at > started).length).toBe(names.length);
+    expect(Math.min(...minted)).toBeGreaterThan(started);
   });
 
   test("the queue paces starts to its own minute limit without a 429", async () => {

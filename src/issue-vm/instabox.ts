@@ -55,7 +55,6 @@ export type InstaBoxIssueVmOptions = {
   queue: StartQueue;
   readToken: ExeDevTokenReader;
   remember: (name: string, id: string) => void | Promise<void>;
-  enrollment: (issueVmId: string) => Promise<{ token: string } | null>;
   clock?: BootstrapClock;
   pollMs?: number;
   sleepMs?: number;
@@ -68,7 +67,7 @@ export type InstaBoxIssueVmCreate = {
   key: string;
   snapshot: string;
   size: { cpu: number; memoryGb: number };
-  issueVmId: string;
+  mintToken: () => Promise<string>;
 };
 
 export type InstaBoxIssueVm = EnrolledRunner & { name: string; id: string };
@@ -212,15 +211,13 @@ export function createInstaBoxIssueVms(options: InstaBoxIssueVmOptions): InstaBo
     async create(input) {
       const refusal = instaBoxPlanRefusal(await instaBox.readPlan(), input.size);
       if (refusal !== null) throw refusal;
-      const first = await options.enrollment(input.issueVmId);
       const id = await createMachine(input);
       await options.remember(input.name, id);
       await wake(input.name);
       await exec(input.name, INSTABOX_PREPARE_COMMAND, "Preparing the machine for the runner");
-      if (first) await install(input.name, first.token);
+      await install(input.name, await input.mintToken());
       await exec(input.name, `sudo ${INSTABOX_BOOT_HOOK}`, "The boot step");
-      const fresh = first && (await options.enrollment(input.issueVmId));
-      if (fresh) await bootstrap.stageToken(input.name, fresh.token);
+      await bootstrap.stageToken(input.name, await input.mintToken());
       await bootstrap.joinTailnet(input.name);
       const enrolled = await bootstrap.enroll(input.name);
       await bootstrap.startRunner(input.name);
