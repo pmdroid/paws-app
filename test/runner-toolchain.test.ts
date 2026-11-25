@@ -14,6 +14,7 @@ import { parseRuntimeFiles } from "../src/runtimes";
 import { git } from "../src/acp";
 import { publishRunnerJob, readRunnerJobInputs, type RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 for (const [
   manifest,
@@ -98,6 +99,7 @@ for (const [
           issuedAt: Date.now(),
           expiresAt: Date.now() + 60_000,
           profile: { agent: "claude", model: "fixture-model" },
+          account: RUNNER_ACCOUNT,
           repository: {
             owner: "acme",
             repo: "repo",
@@ -118,6 +120,7 @@ for (const [
       };
       mkdirSync(spool.root);
       chmodSync(spool.root, 0o750);
+      signInRunnerAccount(join(root, "home"), "claude");
       publishRunnerJob(spool, job, { repositoryBundle });
       const toolCall = (toolCallId: string) => ({
         type: "update",

@@ -20,6 +20,7 @@ import type { FakeResult, FakeScript } from "../src/acp/testing/script";
 import type { RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
 import { withoutJournalTime } from "../src/runner-protocol";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 const linux = process.platform === "linux" && process.getuid!() !== 0;
 const roots: string[] = [];
@@ -73,9 +74,10 @@ async function fixture() {
   const repositoryBundle = join(root, "source.bundle");
   await git(["-C", source, "bundle", "create", repositoryBundle, "--all"]);
   chmodSync(repositoryBundle, 0o600);
-  const codex = join(home, ".codex");
-  mkdirSync(codex, { mode: 0o700 });
-  const rollout = join(home, ROLLOUT_PATH);
+  const accountHome = signInRunnerAccount(home, "codex");
+  const codex = join(accountHome, ".codex");
+  mkdirSync(codex, { recursive: true, mode: 0o700 });
+  const rollout = join(accountHome, ROLLOUT_PATH);
   const sessionBundle = join(root, "session.ndjson.gz");
   function command(restore?: Buffer): RunnerJob["command"] {
     return {
@@ -89,6 +91,7 @@ async function fixture() {
       issuedAt: 1,
       expiresAt: Date.now() + 60_000,
       profile: { agent: "codex", model: "fixture-model" },
+      account: RUNNER_ACCOUNT,
       repository: {
         owner: "acme",
         repo: "repo",

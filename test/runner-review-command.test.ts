@@ -4,12 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/acp";
 import { REVIEW_COMMAND_RULE } from "../src/closeout-spec";
-import {
-  markRunnerAccountSignedIn,
-  openRunnerAccountHome,
-  type RunnerJob,
-} from "../src/runner-execution";
+import type { RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -63,21 +60,14 @@ async function reviewOnRunner(input: {
   const repositoryBundle = join(root, "source.bundle");
   await git(["-C", source, "bundle", "create", repositoryBundle, "--all"]);
   chmodSync(repositoryBundle, 0o600);
-  const account = {
-    accountId: "01J00000000000000000000001",
-    bindingId: "01J00000000000000000000002",
-  };
-  if (input.oauthToken !== undefined) {
-    chmodSync(home, 0o700);
-    const accountHome = openRunnerAccountHome(home, account, "claude", { signIn: true });
-    markRunnerAccountSignedIn(accountHome, account, "claude");
+  const accountHome = signInRunnerAccount(home, input.agent);
+  if (input.oauthToken !== undefined)
     writeFileSync(
       join(accountHome, ".claude/paws-oauth.json"),
       input.oauthToken.startsWith("sk-ant-")
         ? JSON.stringify({ kind: "oauth_token", token: input.oauthToken, createdAt: 1 })
         : input.oauthToken,
     );
-  }
   const record = join(root, "record.json");
   const cli = join(root, input.agent);
   writeFileSync(
@@ -107,7 +97,7 @@ async function reviewOnRunner(input: {
       workspaceId: "workspace",
       runId: "run",
       itemId: "item",
-      ...(input.oauthToken !== undefined ? { account } : {}),
+      account: RUNNER_ACCOUNT,
       generation: 1,
       issuedAt: 1,
       expiresAt: Date.now() + 60_000,
@@ -166,11 +156,11 @@ async function reviewOnRunner(input: {
       return undefined;
     }
   })();
-  return { result, ran, base, head, home, worktree: join(workRoot, job.executionId) };
+  return { result, ran, base, head, home, accountHome, worktree: join(workRoot, job.executionId) };
 }
 
 test("a Codex review command runs codex exec review of base..head in the run's checkout at head", async () => {
-  const { result, ran, base, head, home, worktree } = await reviewOnRunner({
+  const { result, ran, base, head, accountHome, worktree } = await reviewOnRunner({
     agent: "codex",
     events: [
       { type: "thread.started", thread_id: "thread-1" },
@@ -185,8 +175,8 @@ test("a Codex review command runs codex exec review of base..head in the run's c
   expect(ran?.cwd).toBe(worktree);
   expect(ran?.head).toBe(head);
   // The runner's own login, not the host's.
-  expect(ran?.home).toBe(home);
-  expect(ran?.codexHome).toBe(join(home, ".codex"));
+  expect(ran?.home).toBe(accountHome);
+  expect(ran?.codexHome).toBe(join(accountHome, ".codex"));
   expect(result.run).toMatchObject({
     role: "reviewer",
     stopReason: "end_turn",

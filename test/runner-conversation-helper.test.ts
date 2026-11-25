@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import type { FakeScript } from "../src/acp/testing/script";
 import { RunnerHelperResultSchema, type RunnerCommand } from "../src/runner-protocol";
 import { CONVERSATION_RESULT_MARGIN_MS, executeRunnerCommand } from "../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 const env = {
   PATH: "/usr/bin:/bin",
@@ -45,7 +46,9 @@ function createFixture(): Fixture {
   );
   git(checkout, "add", "README.md");
   git(checkout, "commit", "-q", "-m", "Add the acme checkout page");
-  const session = join(root, "home", ".claude", "projects", "run-acme-1", "session-acme.jsonl");
+  mkdirSync(join(root, "home"));
+  const accountHome = signInRunnerAccount(join(root, "home"), "claude");
+  const session = join(accountHome, ".claude", "projects", "run-acme-1", "session-acme.jsonl");
   mkdirSync(join(session, ".."), { recursive: true });
   writeFileSync(session, '{"type":"user","message":"Build the acme checkout page"}\n');
   mkdirSync(join(root, "output"));
@@ -74,6 +77,7 @@ function command(lifetime = 900_000): Extract<RunnerCommand, { type: "helper" }>
     sessionGeneration: 1,
     purpose: "conversation",
     profile: { agent: "claude", model: "fixture-model" },
+    account: RUNNER_ACCOUNT,
     prompt: "What does the acme checkout page do?",
     conversation: { itemId: "item-acme", runId: "run-acme-1", resumeSessionId: "session-acme" },
   };
@@ -395,6 +399,7 @@ test(
         issuedAt: now,
         expiresAt: now + 60_000,
         profile: { agent: "claude", model: "fixture-model" },
+        account: RUNNER_ACCOUNT,
         prompt: "What does the acme checkout page do?",
         inputFiles: [],
       };

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { git } from "../src/acp";
 import { publishRunnerJob, readRunnerJobInputs, type RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 test("a remote run that stops early still reports its work as a WIP candidate", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-remote-wip-"));
@@ -42,6 +43,7 @@ test("a remote run that stops early still reports its work as a WIP candidate", 
         issuedAt: 1,
         expiresAt: Date.now() + 60_000,
         profile: { agent: "claude", model: "fixture-model" },
+        account: RUNNER_ACCOUNT,
         repository: {
           owner: "acme",
           repo: "repo",
@@ -93,6 +95,7 @@ test("a remote run that stops early still reports its work as a WIP candidate", 
       }),
     );
     const fake = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
+    signInRunnerAccount(join(root, "home"), "claude");
     const result = await executeRunnerCommand({
       job,
       repositoryBundle,

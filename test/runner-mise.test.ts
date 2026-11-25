@@ -23,6 +23,7 @@ import {
   withoutRunnerBin,
 } from "../src/runner-mise";
 import { executeRunnerCommand } from "../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 /**
  * A fake mise. It logs each call with its environment, installs into
@@ -78,6 +79,7 @@ beforeEach(() => {
   chmodSync(mise, 0o755);
   home = join(root, "home");
   mkdirSync(home, { mode: 0o700 });
+  signInRunnerAccount(home, "claude");
 });
 
 afterEach(() => rmSync(root, { recursive: true, force: true }));
@@ -107,6 +109,7 @@ function command(
     issuedAt: Date.now(),
     expiresAt: Date.now() + 60_000,
     profile: { agent: "claude", model: "fixture-model" },
+    account: RUNNER_ACCOUNT,
     prompt: "Check the runtimes",
     runtimes,
   };

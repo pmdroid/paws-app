@@ -17,6 +17,7 @@ import type { FakeScript } from "../src/acp/testing/script";
 import type { RunnerJob } from "../src/runner-execution";
 import { checkpointRef, createRunnerRepositories } from "../src/runner-repositories";
 import { CHECKPOINT_COMMIT_MESSAGE, executeRunnerCommand } from "../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 const linux = process.platform === "linux" && process.getuid!() !== 0;
 const roots: string[] = [];
@@ -42,6 +43,8 @@ async function fixture() {
   const source = join(root, "source");
   const remote = join(root, "remote.git");
   mkdirSync(source);
+  mkdirSync(join(root, "home"));
+  signInRunnerAccount(join(root, "home"), "claude");
   await git(["init", "-q", "-b", "main", source]);
   writeFileSync(join(source, "original.txt"), "original");
   await git(["-C", source, "add", "."]);
@@ -75,6 +78,7 @@ async function fixture() {
       issuedAt: 1,
       expiresAt: Date.now() + 60_000,
       profile: { agent: "claude", model: "fixture-model" },
+      account: RUNNER_ACCOUNT,
       repository: {
         owner: "acme",
         repo: "repo",

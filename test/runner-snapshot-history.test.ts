@@ -22,6 +22,7 @@ import {
 } from "../src/runner-execution";
 import { createRunnerRepositories } from "../src/runner-repositories";
 import { executeRunnerCommand } from "../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 const linux = process.platform === "linux" && process.getuid!() !== 0;
 const roots: string[] = [];
@@ -47,6 +48,7 @@ async function fixture(snapshotFilter?: string) {
   const origin = join(root, "origin.git");
   const home = join(root, "home");
   mkdirSync(home);
+  signInRunnerAccount(home, "claude");
   await git(["init", "-q", "-b", "main", source], { env });
   const big = randomBytes(2_000_000);
   const blob = (content: Buffer | string) => {
@@ -90,6 +92,7 @@ async function fixture(snapshotFilter?: string) {
     issuedAt: 1,
     expiresAt: Date.now() + 60_000,
     profile: { agent: "claude", model: "fixture-model" },
+    account: RUNNER_ACCOUNT,
     repository: {
       owner: "acme",
       repo: "repo",

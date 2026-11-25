@@ -119,9 +119,13 @@ test("checks run with their binding's home and never see another account's secre
   for (const secret of ["synthetic-token-a", "synthetic-token-b", "synthetic-xai-key"])
     expect(persisted).not.toContain(secret);
 
-  const legacy = await check(root);
-  expect(legacy.reads[0]!.HOME).toBe(root);
-  expect(legacy.reads[0]!.CODEX_HOME).toBe(join(root, ".codex"));
+  const unnamed = await check(root);
+  expect(unnamed.reads).toEqual([]);
+  expect(unnamed.result.run).toMatchObject({
+    authRequired: true,
+    errorMessage: "No signed-in codex account on this runner",
+  });
+  expect(unnamed.result.login).toMatchObject({ authenticated: false, method: "none" });
 }, 30_000);
 
 test("a named check for a binding this runner does not hold fails instead of using the default", async () => {

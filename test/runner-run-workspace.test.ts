@@ -15,6 +15,7 @@ import { git } from "../src/acp";
 import type { FakeResult, FakeScript } from "../src/acp/testing/script";
 import type { RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -33,6 +34,7 @@ async function fixture() {
   const home = join(root, "home");
   const workRoot = join(root, "work");
   for (const path of [source, home]) mkdirSync(path, { recursive: true });
+  signInRunnerAccount(home, "claude");
   const env = {
     ...process.env,
     GIT_AUTHOR_NAME: "Test",
@@ -58,6 +60,7 @@ async function fixture() {
     issuedAt: 1,
     expiresAt: Date.now() + 60_000,
     profile: { agent: "claude" as const, model: "fixture-model" },
+    account: RUNNER_ACCOUNT,
     repository: {
       owner: "acme",
       repo: "repo",

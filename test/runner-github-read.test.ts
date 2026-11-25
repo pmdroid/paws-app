@@ -28,6 +28,7 @@ import { executeRunnerCommand, writeCodexSessionBundle } from "../src/runner-wor
 import { GITHUB_READ_PROMPT } from "../src/acp";
 import { redactGitHubTokens, type GitHubReadFailure } from "../src/runner-protocol";
 import { openGitHubReadConfig } from "../src/runner-worker/github-read";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -81,6 +82,7 @@ async function turn(
     issuedAt: 1,
     expiresAt: Date.now() + 60_000,
     profile: { agent: "claude", model: "fixture-model" },
+    account: RUNNER_ACCOUNT,
     repository: {
       owner: "acme",
       repo: "monorepo",
@@ -113,13 +115,16 @@ async function turn(
   const outputDirectory = join(root, "output");
   mkdirSync(outputDirectory);
   const workRoot = join(root, "work");
+  const home = join(root, "home");
+  mkdirSync(home);
+  signInRunnerAccount(home, "claude");
   const asked: number[] = [];
   const result = await executeRunnerCommand({
     job: { executionId, command },
     repositoryBundle,
     outputDirectory,
     workRoot,
-    home: join(root, "home"),
+    home,
     resultsGid: process.getgid!(),
     launch: {
       command: process.execPath,

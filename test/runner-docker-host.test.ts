@@ -11,6 +11,7 @@ import {
   type RunnerJob,
 } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 const roots: string[] = [];
 const inherited = process.env.DOCKER_HOST;
@@ -74,8 +75,10 @@ test("the agent inherits the worker's local DOCKER_HOST and never a remote one",
         expiresAt: Date.now() + 60_000,
         type: "login_check",
         agent: "codex",
+        account: RUNNER_ACCOUNT,
       },
     };
+    signInRunnerAccount(root, "codex");
     const script = join(root, "script.json");
     writeFileSync(script, JSON.stringify({ model: "fixture-model", steps: [{ type: "hang" }] }));
     const fake = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;

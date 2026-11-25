@@ -10,6 +10,7 @@ import {
   type RunnerCommand,
 } from "../src/runner-protocol";
 import { executeRunnerCommand } from "../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 type Helper = Extract<RunnerCommand, { type: "helper" }>;
 const now = Date.now();
@@ -20,6 +21,7 @@ const base = {
   workspaceId: "workspace",
   issuedAt: now,
   profile: { agent: "claude", model: "fixture-model" },
+  account: RUNNER_ACCOUNT,
 } as const;
 
 test("a Slack reply answers from its prompt and cannot read or write outside its empty folder", async () => {
@@ -62,6 +64,7 @@ async function sandboxed(input: Helper) {
     const secret = join(root, "other-checkout", "secret.txt");
     mkdirSync(outputDirectory);
     mkdirSync(home);
+    const accountHome = signInRunnerAccount(home, input.profile.agent);
     mkdirSync(join(root, "other-checkout"));
     writeFileSync(secret, "not for Slack");
     const script = join(root, "script.json");
@@ -72,7 +75,7 @@ async function sandboxed(input: Helper) {
         model: "fixture-model",
         steps: [
           { type: "fs_read", path: secret },
-          { type: "fs_read", path: join(home, ".claude.json") },
+          { type: "fs_read", path: join(accountHome, ".claude.json") },
           { type: "fs_write", path: "note.txt", content: "denied" },
           {
             type: "permission",

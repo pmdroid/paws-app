@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, test } from "bun:test";
 import { createDirectWorkerSupervisor } from "../src/runner-execution";
+import { signInRunnerAccount } from "./runner-account-home";
 
 const roots: string[] = [];
 const pids: number[] = [];
@@ -68,6 +69,7 @@ function fixture(final: "end" | "hang") {
   for (const path of ["output", "home", join("work", executionId)])
     mkdirSync(join(root, path), { recursive: true, mode: 0o700 });
   chmodSync(join(root, "work", executionId), 0o770);
+  signInRunnerAccount(join(root, "home"), "claude");
   const sandboxes = { tagged: join(root, "tagged.pid"), orphan: join(root, "orphan.pid") };
   writeFileSync(
     join(root, "script.json"),

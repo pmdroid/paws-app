@@ -61,9 +61,7 @@ function hold(home: string, id: string, root: string, worker: { pid: number; bor
 
 test("a command without an account opens no home", () => {
   const root = agentHome();
-  expect(() =>
-    openRunnerAccountHome(root, undefined as unknown as typeof a, "claude"),
-  ).toThrow();
+  expect(() => openRunnerAccountHome(root, undefined as unknown as typeof a, "claude")).toThrow();
   expect(runnerAccountBindings(root)).toEqual([]);
 });
 

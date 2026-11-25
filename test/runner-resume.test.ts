@@ -15,6 +15,7 @@ import { git } from "../src/acp";
 import type { FakeResult, FakeScript } from "../src/acp/testing/script";
 import { publishRunnerJob, readRunnerJobInputs, type RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 test("a crashed worker resumes its session in the same workspace", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-resume-"));
@@ -52,6 +53,7 @@ test("a crashed worker resumes its session in the same workspace", async () => {
         issuedAt: 1,
         expiresAt: Date.now() + 60_000,
         profile: { agent: "claude", model: "fixture-model" },
+        account: RUNNER_ACCOUNT,
         repository: {
           owner: "acme",
           repo: "repo",
@@ -61,6 +63,7 @@ test("a crashed worker resumes its session in the same workspace", async () => {
         prompt: "Implement the original request",
       },
     };
+    signInRunnerAccount(home, "claude");
     const spool = {
       root: join(root, "spool"),
       runnerUid: process.getuid!(),

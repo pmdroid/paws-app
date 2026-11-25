@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 async function loginCheck(agent: "claude" | "codex", authenticated: boolean, rateLimits: unknown) {
   const root = mkdtempSync(join(tmpdir(), "paws-agent-usage-"));
@@ -23,8 +24,10 @@ async function loginCheck(agent: "claude" | "codex", authenticated: boolean, rat
         expiresAt: Date.now() + 60_000,
         type: "login_check",
         agent,
+        account: RUNNER_ACCOUNT,
       },
     };
+    const accountHome = signInRunnerAccount(home, agent);
     const reads: NodeJS.ProcessEnv[] = [];
     const fake = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
     const result = await executeRunnerCommand({
@@ -46,14 +49,14 @@ async function loginCheck(agent: "claude" | "codex", authenticated: boolean, rat
         return rateLimits;
       },
     });
-    return { result, reads, home };
+    return { result, reads, accountHome };
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }
 
 test("a Codex sign-in check reads its rate limits with the agent's home", async () => {
-  const { result, reads, home } = await loginCheck("codex", true, {
+  const { result, reads, accountHome } = await loginCheck("codex", true, {
     rateLimits: {
       primary: { usedPercent: 100, windowDurationMins: 10080, resetsAt: 1793082749 },
       secondary: null,
@@ -64,7 +67,7 @@ test("a Codex sign-in check reads its rate limits with the agent's home", async 
     { window: "Weekly", usedPercent: 100, resetsAt: 1793082749_000 },
   ]);
   expect(reads).toHaveLength(1);
-  expect(reads[0]!.HOME).toBe(home);
+  expect(reads[0]!.HOME).toBe(accountHome);
   expect(reads[0]!.GH_TOKEN).toBeUndefined();
 }, 20_000);
 
@@ -78,7 +81,7 @@ test("a signed-out or unreadable Codex check reports no usage and still finishes
 }, 20_000);
 
 test("a Claude sign-in check reads the signed-in account's usage", async () => {
-  const { result, reads, home } = await loginCheck("claude", true, {
+  const { result, reads, accountHome } = await loginCheck("claude", true, {
     limits: [
       { kind: "session", percent: 7, resets_at: "2026-10-30T19:09:59Z" },
       { kind: "weekly_all", percent: 6, resets_at: "2026-11-02T19:59:59Z" },
@@ -90,7 +93,7 @@ test("a Claude sign-in check reads the signed-in account's usage", async () => {
     { window: "Weekly", usedPercent: 6, resetsAt: Date.parse("2026-11-02T19:59:59Z") },
   ]);
   expect(reads).toHaveLength(1);
-  expect(reads[0]!.HOME).toBe(home);
+  expect(reads[0]!.HOME).toBe(accountHome);
 }, 20_000);
 
 test("a signed-out or unreadable Claude check reports no usage and still finishes", async () => {

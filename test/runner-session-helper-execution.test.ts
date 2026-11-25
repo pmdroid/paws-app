@@ -9,6 +9,7 @@ import { RunnerRequestError } from "../src/runner-daemon";
 import { openRunnerHealthRuntime } from "../src/runner-health-runtime";
 import { RunnerHelperResultSchema, type RunnerCommand } from "../src/runner-protocol";
 import { executeRunnerCommand } from "../src/runner-worker";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 function command(now: number): Extract<RunnerCommand, { type: "helper" }> {
   return {
@@ -22,6 +23,7 @@ function command(now: number): Extract<RunnerCommand, { type: "helper" }> {
     sessionGeneration: 1,
     purpose: "classify",
     profile: { agent: "claude", model: "fixture-model" },
+    account: RUNNER_ACCOUNT,
     prompt: "Classify this request without tools",
   };
 }
@@ -35,6 +37,7 @@ for (const text of ["界".repeat(250_000), "\u0000".repeat(152_917)]) {
       const home = join(root, "home");
       mkdirSync(outputDirectory);
       mkdirSync(home);
+      signInRunnerAccount(home, input.profile.agent);
       const script = join(root, "script.json");
       const recorded = join(root, "agent.json");
       writeFileSync(

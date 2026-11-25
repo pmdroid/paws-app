@@ -20,6 +20,7 @@ import type { FakeResult, FakeScript } from "../src/acp/testing/script";
 import type { RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
 import { withoutJournalTime } from "../src/runner-protocol";
+import { RUNNER_ACCOUNT, signInRunnerAccount } from "./runner-account-home";
 
 const linux = process.platform === "linux" && process.getuid!() !== 0;
 const roots: string[] = [];
@@ -51,10 +52,10 @@ async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "paws-grok-session-"));
   roots.push(root);
   const source = join(root, "source");
-  const home = join(root, "home");
+  const agentHome = join(root, "home");
   const workRoot = join(root, "work");
   const output = join(root, "output", EXECUTION);
-  for (const path of [source, home, output]) mkdirSync(path, { recursive: true });
+  for (const path of [source, agentHome, output]) mkdirSync(path, { recursive: true });
   const env = {
     ...process.env,
     GIT_AUTHOR_NAME: "Test",
@@ -70,8 +71,8 @@ async function fixture() {
   const repositoryBundle = join(root, "source.bundle");
   await git(["-C", source, "bundle", "create", repositoryBundle, "--all"]);
   chmodSync(repositoryBundle, 0o600);
+  const home = signInRunnerAccount(agentHome, "grok");
   const grok = join(home, ".grok");
-  mkdirSync(grok, { mode: 0o700 });
   const workspace = join(workRoot, RUN);
   // As Grok 1.0.50 names it: the cwd with every `/` as `%2F`.
   const encoded = workspace.replaceAll("/", "%2F");
@@ -90,6 +91,7 @@ async function fixture() {
       issuedAt: 1,
       expiresAt: Date.now() + 60_000,
       profile: { agent: "grok", model: "fixture-model" },
+      account: RUNNER_ACCOUNT,
       repository: {
         owner: "acme",
         repo: "repo",
@@ -134,7 +136,7 @@ async function fixture() {
       ...(options.restore ? { sessionBundle } : {}),
       outputDirectory: output,
       workRoot,
-      home,
+      home: agentHome,
       resultsGid: process.getgid!(),
       launch: {
         command: process.execPath,
