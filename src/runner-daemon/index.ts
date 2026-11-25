@@ -8,6 +8,17 @@ export {
 } from "./daemon";
 export { RunnerRequestError, RunnerTransportError, transportFailure } from "./transport";
 export { isIdentityRejected } from "./transport";
+export {
+  createFakeIssueVmDiskHelper,
+  issueVmDisks,
+  systemdIssueVmDiskHelper,
+  type IssueVmClone,
+  type IssueVmDisk,
+  type IssueVmDiskHelper,
+  type IssueVmDisks,
+  type IssueVmDiskSize,
+  type IssueVmPool,
+} from "./issue-vm-disks";
 export { createRunnerHostSampler, type RunnerHostSamplerOptions } from "./host";
 export type {
   RunnerHeartbeat,
