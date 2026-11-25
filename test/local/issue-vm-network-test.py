@@ -112,13 +112,15 @@ class Rules(unittest.TestCase):
         self.assertNotIn("masquerade", ruleset)
         self.assertNotIn("oifname !=", ruleset)
 
-    def test_the_relay_forwards_only_paws_runner_ports_over_the_tailnet(self):
+    def test_the_relay_forwards_only_the_paws_runner_urls_over_the_tailnet(self):
         config = pathlib.Path(tempfile.mkdtemp()) / "config.json"
         config.write_text(json.dumps({"controlPlaneUrl": "https://paws.example.ts.net:8787", "runnerApiUrl": "https://paws.example.ts.net:8788/v1", "agentUser": "paws-agent"}))
         resolve = lambda host, port, *rest: [(2, 1, 6, "", ("100.90.1.2", port))] if host == "paws.example.ts.net" else []
         relay = self.network.paws_relay(config, resolve)
         self.assertEqual(relay, [("100.90.1.2", 8787), ("100.90.1.2", 8788)])
-        config.write_text(json.dumps({"controlPlaneUrl": "https://paws.example.ts.net:22", "runnerApiUrl": 7}))
+        config.write_text(json.dumps({"controlPlaneUrl": "https://paws.example.ts.net", "runnerApiUrl": 7}))
+        self.assertEqual(self.network.paws_relay(config, resolve), [("100.90.1.2", 443)])
+        config.write_text(json.dumps({"controlPlaneUrl": "ftp://paws.example.ts.net", "runnerApiUrl": "https://elsewhere:9000"}))
         self.assertEqual(self.network.paws_relay(config, resolve), [])
         self.assertEqual(self.network.paws_relay(config.parent / "missing.json", resolve), [])
         ruleset, _ = self.network.render([1], LINKS, ROUTES, relay)

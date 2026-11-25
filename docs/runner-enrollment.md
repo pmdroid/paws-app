@@ -105,7 +105,7 @@ On a VM host, each issue VM gets a slot from 1 to 254, the TAP `pawsvm<slot>` an
 - drops traffic from a VM to private, loopback, link-local (169.254.169.254), tailnet (100.64.0.0/10), multicast and reserved IPv4 ranges, and to the host's own addresses and their subnets;
 - forwards a VM's traffic only out of the devices of the IPv4 default routes, masqueraded, and lets only replies back in;
 - drops traffic a VM sends from an address other than its own;
-- relays Paws's runner API, and nothing else, over the host's own tailnet connection. TCP from a VM to `10.199.0.0/16` on port 8787 or 8788 goes to the address that the host's `controlPlaneUrl` or `runnerApiUrl` (in `/etc/paws-runner/config.json`) resolves to on that port. Only URLs on ports 8787 and 8788 are relayed. Issue VMs get no Tailscale and no Tailscale key.
+- relays Paws's runner API, and nothing else, over the host's own tailnet connection. TCP from a VM to `10.199.0.0/16` on the port of the host's `controlPlaneUrl` or `runnerApiUrl` (in `/etc/paws-runner/config.json`; 8787 and 8788 by default, 443 for `https` without a port) goes to the address that URL resolves to. Issue VMs get no Tailscale and no Tailscale key.
 
 When a `DOCKER-USER` chain exists, as on a host with rootful Docker, which sets the `FORWARD` policy to `DROP`, the helper adds two accept rules there for `pawsvm+` traffic to and from the uplink, and two for each relayed port. It also turns on IPv4 forwarding. While any VM runs, `paws-issue-vm-network.service` rewrites the rules when a host address or default route changes. To check them:
 

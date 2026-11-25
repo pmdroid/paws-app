@@ -385,7 +385,7 @@ test("vm.sh moves a staged bootstrap token into the seed once and deletes the se
     `paws-runner runner enroll --config /etc/paws-runner/config.json --name paws-vm-${A.toLowerCase()} --token-file /var/lib/paws-bootstrap/enrollment-token`,
   );
   expect(userData).toContain("for try in $(seq 40)");
-  expect(userData).toContain('    content: "10.199.7.1 paws.test\\n"');
+  expect(userData).toContain('    content: "10.199.7.1 paws.test public.test\\n"');
   expect(existsSync(join(enroll, A))).toBe(false);
   const seed = join(state, `seed-${A}.img`);
   expect(existsSync(seed)).toBe(true);

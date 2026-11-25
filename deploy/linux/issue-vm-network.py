@@ -38,7 +38,7 @@ INTERFACE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,14}\Z")
 SLOT = re.compile(r"[1-9][0-9]{0,2}\Z")
 DOCKER_CHAIN = "DOCKER-USER"
 CONFIG = pathlib.Path("/etc/paws-runner/config.json")
-RELAY_PORTS = (8787, 8788)
+DEFAULT_PORTS = {"https": 443, "http": 80}
 
 
 def paws_relay(config=None, resolve=socket.getaddrinfo):
@@ -51,8 +51,8 @@ def paws_relay(config=None, resolve=socket.getaddrinfo):
         value = loaded.get(key) if isinstance(loaded, dict) else None
         try:
             url = urllib.parse.urlsplit(value) if isinstance(value, str) else None
-            port = url.port if url else None
-            addresses = resolve(url.hostname, port, socket.AF_INET, socket.SOCK_STREAM) if port in RELAY_PORTS and url.hostname else []
+            port = (url.port or DEFAULT_PORTS.get(url.scheme)) if url else None
+            addresses = resolve(url.hostname, port, socket.AF_INET, socket.SOCK_STREAM) if port and url.hostname else []
         except (OSError, ValueError):
             continue
         for entry in addresses:
