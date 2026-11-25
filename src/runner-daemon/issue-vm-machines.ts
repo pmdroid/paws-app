@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 const UNIT = /^paws-issue-vm@([0-7][0-9A-HJKMNP-TV-Z]{25})-([0-9]+)-([0-9]+)-([0-9]+)\.service$/;
 const ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 const MAX_SLOT = 254;
@@ -183,4 +185,51 @@ export function createFakeIssueVmUnits() {
     },
   };
   return { units, active, calls };
+}
+
+const VmId = z.string().regex(ID);
+
+export const IssueVmHostViewSchema = z.discriminatedUnion("vmHost", [
+  z.strictObject({ vmHost: z.literal(false) }),
+  z.strictObject({
+    vmHost: z.literal(true),
+    slots: z.number().int().min(0),
+    size: z.strictObject({ vcpus: z.number().int().min(1), memoryGb: z.number().int().min(1) }),
+    vms: z.array(z.strictObject({ id: VmId, state: z.string() })),
+  }),
+]);
+
+export type IssueVmHostView = z.infer<typeof IssueVmHostViewSchema>;
+
+export type IssueVmHostReport = {
+  adopted: string[];
+  stopped: { id: string; slot: number; reason: IssueVmStopReason }[];
+  missing: string[];
+};
+
+export type IssueVmHostClient = {
+  issueVmHost(): Promise<IssueVmHostView>;
+  postIssueVmsReconciled(report: IssueVmHostReport): Promise<void>;
+};
+
+export async function reconcileIssueVmHost(
+  daemon: IssueVmHostClient,
+  units: IssueVmUnits,
+): Promise<{ machines: IssueVmMachines; report: IssueVmHostReport }> {
+  let slots = 0;
+  const machines = issueVmMachines(units, () => slots);
+  const host = await daemon.issueVmHost();
+  if (host.vmHost) slots = host.slots;
+  const result = await machines.reconcile(host.vmHost ? host.vms : []);
+  const report: IssueVmHostReport = {
+    adopted: result.adopted.map((vm) => vm.id),
+    stopped: result.stopped.map((entry) => ({
+      id: entry.machine.id,
+      slot: entry.machine.slot,
+      reason: entry.reason,
+    })),
+    missing: result.missing,
+  };
+  await daemon.postIssueVmsReconciled(report);
+  return { machines, report };
 }

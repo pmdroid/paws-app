@@ -1,8 +1,14 @@
 import { journalCaught, journalRejection } from "../journal";
-import { lstatSync, mkdirSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { isIdentityRejected, type RunnerDaemon } from "../runner-daemon";
+import {
+  isIdentityRejected,
+  reconcileIssueVmHost,
+  systemdIssueVmUnits,
+  type IssueVmUnits,
+  type RunnerDaemon,
+} from "../runner-daemon";
 import { openRunnerHealthRuntime } from "../runner-health-runtime";
 import { openRunnerRetroRuntime } from "../runner-retro-runtime";
 import {
@@ -18,6 +24,30 @@ import { createRunnerStorageCleaner } from "../storage-cleanup";
 import { createRunnerStorageReporter } from "../storage-usage";
 
 export const RUNNER_WORK_ROOT = "/var/lib/paws-agent/work";
+
+const ISSUE_VM_UNIT = "/etc/systemd/system/paws-issue-vm@.service";
+const ISSUE_VM_RETRY_MS = 60_000;
+
+export function issueVmReconciler(
+  daemon: Parameters<typeof reconcileIssueVmHost>[0],
+  units: IssueVmUnits | null,
+  report: (error: Error) => void,
+  now: () => number = Date.now,
+) {
+  let done = units === null;
+  let retryAt = 0;
+  return async () => {
+    if (done || now() < retryAt) return;
+    retryAt = now() + ISSUE_VM_RETRY_MS;
+    try {
+      await reconcileIssueVmHost(daemon, units!);
+      done = true;
+    } catch (error) {
+      journalCaught(error, "runner-cli/daemon.issueVmReconciler", null);
+      report(error instanceof Error ? error : new Error("Issue VM reconcile failed"));
+    }
+  };
+}
 
 export async function runPairedDaemon(
   daemon: RunnerDaemon,
@@ -122,6 +152,11 @@ export async function runPairedDaemon(
       ]);
     cleaner = createRunnerWorkCleaner({ workRoot: RUNNER_WORK_ROOT, signal, holds });
     const spool = createRunnerSpoolCleaner({ spool: shared.spool, signal, holds });
+    const reconcileIssueVms = issueVmReconciler(
+      daemon,
+      existsSync(ISSUE_VM_UNIT) ? systemdIssueVmUnits() : null,
+      report,
+    );
     let sweepAt = 0;
     while (!signal.aborted) {
       if (daemon.identityReplaced()) throw new Error("Runner identity was replaced.");
@@ -139,6 +174,7 @@ export async function runPairedDaemon(
             .sweep()
             .catch(journalRejection("runner-cli/daemon.runPairedDaemon.spool", report, null));
         }
+        if (!signal.aborted) await reconcileIssueVms();
         if (!signal.aborted) await runtime.tick();
         if (!signal.aborted) await health.tick();
         if (!signal.aborted) await retro.tick();

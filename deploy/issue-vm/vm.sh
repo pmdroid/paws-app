@@ -81,8 +81,10 @@ run() {
 }
 
 clean() {
-  rm -f "$dir/api.sock"
-  if [[ -e $disk ]]; then chown root "$(readlink -f "$disk")"; fi
+  if [[ -z $(others "$id-*") ]]; then
+    rm -f "$dir/api.sock"
+    if [[ -e $disk ]]; then chown root "$(readlink -f "$disk")"; fi
+  fi
   if [[ -z $(others "*-$slot-*-*") ]]; then systemctl stop "paws-issue-vm-network@$slot.service"; fi
 }
 

@@ -2,13 +2,25 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { liveHostIssueVmsSteps, type Db, type IssueVmState } from "../src/db";
+import {
+  liveHostIssueVmsSteps,
+  recordRunnerHostStatusSteps,
+  saveVmHostSteps,
+  type Db,
+  type IssueVmState,
+} from "../src/db";
+import { setJournalSink } from "../src/journal";
+import { issueVmReconciler } from "../src/runner-cli/daemon";
+import { handleVmHostRunnerRequest, type VmHostRunnerView } from "../src/vm-hosts";
 import { recordIssueVmSteps, setIssueVmStateSteps } from "../src/issue-vm";
 import {
   createFakeIssueVmUnits,
   issueVmMachines,
   issueVmUnit,
+  reconcileIssueVmHost,
   systemdIssueVmUnits,
+  type IssueVmHostClient,
+  type IssueVmHostReport,
 } from "../src/runner-daemon";
 import { withoutForeignKeys } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
@@ -256,4 +268,168 @@ test("vm.sh refuses a second unit for the same VM or the same slot", () => {
   expect(other.run("clean", `${A}-7-2-4`).exitCode).toBe(0);
   expect(other.calls()).not.toContain("systemctl stop paws-issue-vm-network@7.service");
   expect(calls()).not.toContain("systemctl start");
+});
+
+test("vm.sh cleaning a rejected second unit for a running VM keeps its socket and disk", () => {
+  const { run, calls, dev } = vmScript([`paws-issue-vm@${A}-3-2-4.service`]);
+  expect(run("prepare", `${A}-7-2-4`).exitCode).toBe(2);
+  expect(run("clean", `${A}-7-2-4`).exitCode).toBe(0);
+  expect(calls()).not.toContain(`chown root ${dev}/${A}`);
+  expect(calls()).toContain("systemctl stop paws-issue-vm-network@7.service");
+});
+
+async function host(db: Db) {
+  await db.run((q) =>
+    q.exec(
+      q.orm.insert(q.t.runner).values({
+        id: HOST,
+        workspaceId: "acme",
+        ownerUserId: "ada",
+        name: "goldbox",
+        status: "active",
+        createdAt: 0,
+      }),
+    ),
+  );
+}
+
+const request = (path: string, method = "GET", body?: unknown) =>
+  new Request(`https://runner.paws.test${path}`, {
+    method,
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+
+test("Paws gives a VM host its slots, VM size and live issue VMs, and journals its report", async () => {
+  const db = await store();
+  await host(db);
+  const read = async () =>
+    (await (await handleVmHostRunnerRequest(
+      request("/v1/issue-vms"),
+      HOST,
+      db,
+    ))!.json()) as VmHostRunnerView;
+  expect(await read()).toEqual({ vmHost: false });
+  await db.run((q) =>
+    recordRunnerHostStatusSteps(q, HOST, { cpuCount: 20, memoryTotalBytes: 121 * 1024 ** 3 }, 1),
+  );
+  await db.run((q) =>
+    saveVmHostSteps(q, {
+      runnerId: HOST,
+      vmVcpus: 2,
+      vmMemoryGb: 4,
+      vmDiskGb: 30,
+      reserveVcpus: 4,
+      reserveMemoryGb: 8,
+      slotCap: 3,
+      updatedAt: 1,
+      updatedBy: "ada",
+    }),
+  );
+  await vm(db, A, "awake");
+  await vm(db, B, "deleted");
+  expect(await read()).toEqual({
+    vmHost: true,
+    slots: 3,
+    size: { vcpus: 2, memoryGb: 4 },
+    vms: [{ id: A, state: "awake" }],
+  });
+  expect(await handleVmHostRunnerRequest(request("/v1/other"), HOST, db)).toBeNull();
+
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  cleanups.push(restore);
+  const reported = await handleVmHostRunnerRequest(
+    request("/v1/issue-vms/reconciled", "POST", {
+      adopted: [A],
+      stopped: [{ id: C, slot: 2, reason: "unknown" }],
+      missing: [D],
+    }),
+    HOST,
+    db,
+  );
+  expect(await reported!.json()).toEqual({ ok: true });
+  expect(lines).toContain(`issue_vm_stopped runner=${HOST} vm=${C} slot=2 reason=unknown`);
+  expect(lines).toContain(`issue_vm_missing runner=${HOST} vm=${D}`);
+  const bad = await handleVmHostRunnerRequest(
+    request("/v1/issue-vms/reconciled", "POST", { adopted: ["base"], stopped: [], missing: [] }),
+    HOST,
+    db,
+  );
+  expect(bad!.status).toBe(400);
+});
+
+function client(view: Awaited<ReturnType<IssueVmHostClient["issueVmHost"]>>) {
+  const reports: IssueVmHostReport[] = [];
+  let failures = 0;
+  const daemon: IssueVmHostClient & { fail(n: number): void } = {
+    fail: (n) => (failures = n),
+    async issueVmHost() {
+      await Promise.resolve();
+      if (failures-- > 0) throw new Error("Paws is unreachable");
+      return view;
+    },
+    async postIssueVmsReconciled(report) {
+      await Promise.resolve();
+      reports.push(report);
+    },
+  };
+  return { daemon, reports };
+}
+
+test("at daemon start the runner reconciles its VM units with Paws and reports the result", async () => {
+  const fake = createFakeIssueVmUnits();
+  for (const [id, slot] of [
+    [A, 1],
+    [C, 2],
+  ] as const)
+    fake.active.add(issueVmUnit(id, slot, SIZE));
+  const { daemon, reports } = client({
+    vmHost: true,
+    slots: 2,
+    size: SIZE,
+    vms: [
+      { id: A, state: "awake" },
+      { id: B, state: "awake" },
+    ],
+  });
+  const { machines, report } = await reconcileIssueVmHost(daemon, fake.units);
+  expect(report).toEqual({
+    adopted: [A],
+    stopped: [{ id: C, slot: 2, reason: "unknown" }],
+    missing: [B],
+  });
+  expect(reports).toEqual([report]);
+  expect(await machines.start(B, SIZE)).toMatchObject({ ok: true, machine: { slot: 2 } });
+  expect(await machines.start(D, SIZE)).toMatchObject({ ok: false, reason: "no_slot", slots: 2 });
+});
+
+test("a runner that is no VM host stops every VM unit, and a failed reconcile retries a minute later", async () => {
+  const fake = createFakeIssueVmUnits();
+  fake.active.add(issueVmUnit(A, 1, SIZE));
+  const { daemon, reports } = client({ vmHost: false });
+  daemon.fail(1);
+  let now = 0;
+  const failures: Error[] = [];
+  const tick = issueVmReconciler(
+    daemon,
+    fake.units,
+    (error) => failures.push(error),
+    () => now,
+  );
+  await tick();
+  expect(failures.map((error) => error.message)).toEqual(["Paws is unreachable"]);
+  now = 30_000;
+  await tick();
+  expect(reports).toEqual([]);
+  now = 60_000;
+  await tick();
+  expect(reports).toEqual([
+    { adopted: [], stopped: [{ id: A, slot: 1, reason: "unknown" }], missing: [] },
+  ]);
+  now = 200_000;
+  await tick();
+  expect(reports).toHaveLength(1);
+  expect(fake.active.size).toBe(0);
+  await issueVmReconciler(daemon, null, () => undefined)();
+  expect(reports).toHaveLength(1);
 });

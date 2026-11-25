@@ -9,6 +9,11 @@ import { and, desc, eq, gt, inArray, lt, notInArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { createCommandStore } from "./commands-ddl";
 import {
+  IssueVmHostViewSchema,
+  type IssueVmHostReport,
+  type IssueVmHostView,
+} from "./issue-vm-machines";
+import {
   agentCredential,
   commandReceipt,
   pendingCommand,
@@ -1022,6 +1027,14 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       return z
         .strictObject({ duplicate: z.boolean() })
         .parse(await authenticated("/v1/storage-report", "POST", body));
+    },
+    async issueVmHost(): Promise<IssueVmHostView> {
+      return IssueVmHostViewSchema.parse(await authenticated("/v1/issue-vms", "GET"));
+    },
+    async postIssueVmsReconciled(report: IssueVmHostReport) {
+      z.strictObject({ ok: z.literal(true) }).parse(
+        await authenticated("/v1/issue-vms/reconciled", "POST", report),
+      );
     },
     async postStorageCleanup(result: RunnerStorageCleanupResult) {
       const body = RunnerStorageCleanupResultSchema.parse(result);
