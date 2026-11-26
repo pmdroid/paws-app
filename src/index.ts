@@ -53,7 +53,6 @@ import {
   slackReplyAllowedSteps,
   slackSigningSecret,
 } from "./slack";
-import { parseProbesArgs, PROBES_COLLECT_PAUSED } from "./probe-collector";
 import {
   envelopeSubkey,
   importCredentialFile,
@@ -3039,8 +3038,6 @@ Commands:
   paws runner <command>         enroll and run a remote runner
   paws runner-authority init    create the runner command key
   paws public-tls validate      check the public HTTPS certificate
-  paws probes collect <owner/repo>
-                                draft Closeout probe rules into probes.proposed.yaml
 
 GitHub access uses the GitHub App only. See docs/github-app.md.`;
 
@@ -3245,18 +3242,6 @@ async function withCommandStore<T>(command: string, work: (store: Db) => Promise
   }
 }
 
-/** `paws probes collect`: refuses before any agent turn until it runs through Paws on a runner. */
-function probesMain(argv: string[]): number {
-  try {
-    parseProbesArgs(argv);
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    return 1;
-  }
-  console.error(PROBES_COLLECT_PAUSED);
-  return 1;
-}
-
 if (import.meta.main || compiled()) {
   const argv = process.argv.slice(2);
   const command = argv[0];
@@ -3264,7 +3249,6 @@ if (import.meta.main || compiled()) {
     console.log(installedPawsVersion() ?? "unknown");
     process.exit(0);
   }
-  if (command === "probes") process.exit(probesMain(argv.slice(1)));
   if (command === "runner") process.exit(await runRunnerCli(argv.slice(1)));
   if (command === "runner-storage")
     process.exit(
