@@ -124,6 +124,7 @@ function fixtureGitHub(input: {
   refusedToken?: { token: string; status: number };
   mergeServerErrors?: number;
   mergeQueue?: boolean;
+  noCommitsAhead?: boolean;
 }): {
   client: GitHubClient;
   queue: FakeMergeQueue | null;
@@ -324,6 +325,11 @@ function fixtureGitHub(input: {
       if (request.token === input.refusedToken?.token)
         return { status: input.refusedToken.status, body: { message: "Resource not accessible" } };
       const body = request.body as { title: string; head: string; base: string; body: string };
+      if (input.noCommitsAhead)
+        return {
+          status: 422,
+          body: { errors: [{ message: `No commits between main and ${body.head}` }] },
+        };
       if (pulls.opened.some((pull, index) => pull.head === body.head && !closed.has(index + 1)))
         return { status: 422, body: { message: "A pull request already exists" } };
       const pull = await pulls.open({ repository, ...body });
@@ -475,6 +481,7 @@ export type Proof = {
   /** How many squash merges GitHub answers with HTTP 500 before it merges. */
   mergeServerErrors?: number;
   mergeQueue?: boolean;
+  noCommitsAhead?: boolean;
   /** `.agents/closeout.yaml` for this scenario, instead of the default. */
   policy?: string;
   /** Appended to the scenario's saved settings. */
@@ -566,6 +573,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     noCi: proof.noCi,
     mergeServerErrors: proof.mergeServerErrors,
     mergeQueue: proof.mergeQueue,
+    noCommitsAhead: proof.noCommitsAhead,
     ...(proof.member?.refused
       ? { refusedToken: { token: proof.member.token, status: proof.member.refused } }
       : {}),
