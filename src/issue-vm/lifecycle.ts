@@ -5,6 +5,7 @@ import {
   issueVmByIdSteps,
   lastIssueVmForItemSteps,
   liveIssueVmForItemSteps,
+  lockIssueVmSteps,
   moveIssueVmSteps,
   noteIssueVmFailureSteps,
   parkLeasedJobSteps,
@@ -21,7 +22,7 @@ import {
   type JobLoop,
   type Q,
 } from "../db";
-import { journal } from "../journal";
+import { journal, journalCaught } from "../journal";
 import {
   issueVmAdmissionSteps,
   issueVmWakeAdmissionSteps,
@@ -95,6 +96,11 @@ function* createSteps(q: Q, input: IssueVmRequest, replaces: string | null) {
   return (yield* issueVmByIdSteps(q, id))!;
 }
 
+function* sleepNowSteps(q: Q, vm: IssueVm, now: number) {
+  const set = { state: "sleeping", deadlineAt: now + ISSUE_VM_SLEEP_MS, attempts: 0 } as const;
+  yield* moveIssueVmSteps(q, { id: vm.id, from: vm, set, now });
+}
+
 export function* requestIssueVmAwakeSteps(q: Q, input: IssueVmRequest) {
   const live = yield* liveIssueVmForItemSteps(q, input.itemId);
   if (live === null) {
@@ -109,10 +115,13 @@ export function* requestIssueVmAwakeSteps(q: Q, input: IssueVmRequest) {
   if (live.state === "deleting")
     return { ok: true, vm: live, ready: false } satisfies IssueVmReadiness;
   if (live.want === "asleep") {
-    if (live.state === "sleeping" || live.state === "asleep") {
-      const admission = yield* issueVmWakeAdmissionSteps(q, { ...live, at: input.now });
-      if (!admission.ok) return { ok: false, refusal: admission } satisfies IssueVmReadiness;
+    if (live.state === "creating" || live.state === "waking") {
+      yield* armSteps(q, live.id, input.now);
+      return { ok: true, vm: live, ready: false } satisfies IssueVmReadiness;
     }
+    const admission = yield* issueVmWakeAdmissionSteps(q, { ...live, at: input.now });
+    if (!admission.ok) return { ok: false, refusal: admission } satisfies IssueVmReadiness;
+    if (live.state === "awake") yield* sleepNowSteps(q, live, input.now);
     yield* setIssueVmWantSteps(q, { id: live.id, want: "awake" });
   }
   yield* armSteps(q, live.id, input.now);
@@ -123,14 +132,7 @@ export function* requestIssueVmAsleepSteps(q: Q, input: { itemId: string; now: n
   const live = yield* liveIssueVmForItemSteps(q, input.itemId);
   if (live === null || live.want === "asleep" || live.state === "deleting") return false;
   yield* setIssueVmWantSteps(q, { id: live.id, want: "asleep" });
-  if (live.state === "awake") {
-    const set = {
-      state: "sleeping",
-      deadlineAt: input.now + ISSUE_VM_SLEEP_MS,
-      attempts: 0,
-    } as const;
-    yield* moveIssueVmSteps(q, { id: live.id, from: live, set, now: input.now });
-  }
+  if (live.state === "awake") yield* sleepNowSteps(q, live, input.now);
   yield* armSteps(q, live.id, input.now);
   return true;
 }
@@ -143,7 +145,11 @@ export type IssueVmLifecycleOptions = {
 
 type Outcome = "again" | "settled";
 
-class PastDeadline extends Error {}
+class PastDeadline extends Error {
+  constructor(readonly late: Promise<unknown> | null = null) {
+    super("past deadline");
+  }
+}
 
 const DEADLINE_MISSED: Partial<Record<IssueVm["state"], string>> = {
   creating: "The VM did not start before its deadline",
@@ -164,14 +170,24 @@ export function createIssueVmLifecycleHandler(store: Db, options: IssueVmLifecyc
     return "again";
   }
 
-  async function replace(vm: IssueVm, driver: IssueVmDriver, reason: string): Promise<Outcome> {
+  async function replace(
+    vm: IssueVm,
+    driver: IssueVmDriver,
+    reason: string,
+    late: Promise<unknown> | null = null,
+  ): Promise<Outcome> {
     await driver.remove(vm);
+    void late?.then(() =>
+      driver.remove(vm).catch((error) => journalCaught(error, "issue-vm.lifecycle.lateRemove")),
+    );
     const at = now();
     const replaced = await store.transaction(function* (q) {
+      const current = yield* lockIssueVmSteps(q, vm.id);
+      if (current === null) return null;
       const failed = { state: "failed", deadlineAt: null, failure: reason } as const;
       if (!(yield* moveIssueVmSteps(q, { id: vm.id, from: vm, set: failed, now: at }))) return null;
       yield* followIssueVmSpendSteps(q, vm.id, "failed", at);
-      if (vm.want !== "awake") return vm.id;
+      if (current.want !== "awake") return vm.id;
       const { workspaceId, itemId, memberUserId, provider, hostRunnerId } = vm;
       const request = { workspaceId, itemId, memberUserId, provider, hostRunnerId, now: at };
       const next = yield* createSteps(q, request, vm.id);
@@ -188,11 +204,15 @@ export function createIssueVmLifecycleHandler(store: Db, options: IssueVmLifecyc
     if (deadline === null) return call();
     if (now() > deadline) throw new PastDeadline();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const running = call();
     const late = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new PastDeadline()), Math.max(0, deadline - now()));
+      timer = setTimeout(
+        () => reject(new PastDeadline(running.catch(() => undefined))),
+        Math.max(0, deadline - now()),
+      );
     });
     try {
-      const result = await Promise.race([call(), late]);
+      const result = await Promise.race([running, late]);
       if (now() > deadline) throw new PastDeadline();
       return result;
     } finally {
@@ -243,7 +263,12 @@ export function createIssueVmLifecycleHandler(store: Db, options: IssueVmLifecyc
       return "settled";
     } catch (error) {
       if (error instanceof PastDeadline)
-        return replace(vm, driver, DEADLINE_MISSED[vm.state] ?? "The VM missed its deadline");
+        return replace(
+          vm,
+          driver,
+          DEADLINE_MISSED[vm.state] ?? "The VM missed its deadline",
+          error.late,
+        );
       if (lost(error)) return replace(vm, driver, errorText(error).slice(0, MAX_FAILURE));
       throw error;
     }

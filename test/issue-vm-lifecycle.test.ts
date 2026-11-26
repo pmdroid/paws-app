@@ -231,6 +231,76 @@ describePglite((connect) => {
     expect(w.driver.calls.map((call) => call.op)).toEqual(["create", "sleep", "wake"]);
   });
 
+  function gate() {
+    let release = () => {};
+    let reached = () => {};
+    const atGate = new Promise<void>((resolve) => (reached = resolve));
+    const open = new Promise<void>((resolve) => (release = resolve));
+    return {
+      atGate,
+      release,
+      hold: () => {
+        reached();
+        return open;
+      },
+    };
+  }
+
+  test("a create that finishes after its deadline leaves no extra VM", async () => {
+    const w = await world(connect);
+    const { vm } = (await awake(w)) as { vm: IssueVm };
+    const held = gate();
+    w.driver.holdNext("create", held.hold);
+    w.clock.t = vm.deadlineAt! - 20;
+    await drain(w);
+    held.release();
+    await Bun.sleep(10);
+    const [old, next] = await rows(w.db);
+    expect(old).toMatchObject({
+      state: "failed",
+      failure: "The VM did not start before its deadline",
+    });
+    expect(next).toMatchObject({ state: "awake", replaces: old!.id });
+    expect([...w.driver.vms.keys()]).toEqual([next!.id]);
+  });
+
+  test("a sleep request while the VM is created is kept by a later awake request", async () => {
+    const w = await world(connect);
+    await awake(w);
+    const held = gate();
+    w.driver.holdNext("create", held.hold);
+    const running = drain(w);
+    await held.atGate;
+    await asleep(w);
+    expect(await awake(w)).toMatchObject({ ok: true, ready: false });
+    held.release();
+    await running;
+    expect(await live(w.db)).toMatchObject([{ state: "asleep" }]);
+    await awake(w);
+    await drain(w);
+    expect(await live(w.db)).toMatchObject([{ state: "awake", want: "awake" }]);
+    expect(w.driver.calls.map((call) => call.op)).toEqual(["create", "sleep", "wake"]);
+  });
+
+  test("a lost VM is not replaced when the item asked for sleep during its removal", async () => {
+    const w = await world(connect);
+    await awake(w);
+    await drain(w);
+    await asleep(w);
+    await drain(w);
+    const [first] = await live(w.db);
+    w.driver.vms.delete(first!.id);
+    await awake(w);
+    const held = gate();
+    w.driver.holdNext("remove", held.hold);
+    const running = drain(w);
+    await held.atGate;
+    await asleep(w);
+    held.release();
+    await running;
+    expect(await rows(w.db)).toMatchObject([{ state: "failed" }]);
+  });
+
   test("a VM gone after sleeping is lost and replaced on the next dispatch", async () => {
     const w = await world(connect);
     await awake(w);
