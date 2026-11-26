@@ -223,9 +223,8 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     }
   createCommandStore(db, options.credentialStore ? "credentials" : "main");
   const memorySignIns = () => {
-    if (!options.credentialStore || !options.memorySignIns) return false;
     try {
-      return options.memorySignIns();
+      return Boolean(options.credentialStore && options.memorySignIns?.());
     } catch (error) {
       journalCaught(error, "daemon.memorySignIns", null);
       return false;

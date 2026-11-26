@@ -119,13 +119,7 @@ sudo journalctl -u paws-issue-vm-network.service
 
 A runner treats its host as an issue VM when `/etc/paws-runner/issue-vm` exists. There it refuses an agent sign-in unless the account homes in `/var/lib/paws-agent/.paws-accounts` are on a tmpfs, and it keeps its own sealed copies of sign-ins in `/run/paws-runner/credentials`, which must be a tmpfs folder only `paws-runner` can read, instead of in `commands.db`. Agent caches (`XDG_CACHE_HOME`, Bun, npm, pip, and mise through `XDG_CACHE_HOME`) go to `/var/lib/paws-agent/.paws-account-caches` on disk. After each turn the worker hands the refreshed sign-in back through the tmpfs and removes the sign-in files, including OpenCode's token in `opencode.db`. The runner uploads the refreshed sign-in to Paws, then deletes its copy. While both tmpfs folders are in place, it tells Paws that it keeps sign-ins in memory only.
 
-Before an issue VM sleeps, check that nothing is left:
-
-```sh
-sudo -u paws-runner /opt/paws-runner/bin/paws-runner runner sleep-check
-```
-
-It exits non-zero and names what remains while a sign-in file, a returned sign-in or an upload Paws hasn't received yet is still there.
+Before an issue VM sleeps, `sudo -u paws-runner /opt/paws-runner/bin/paws-runner runner sleep-check` checks that nothing is left. It exits non-zero and names what remains while a sign-in file, a returned sign-in, an unfinished OpenCode cleanup or an upload Paws hasn't received yet is still there.
 
 ## Configure the runner
 

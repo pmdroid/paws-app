@@ -13,6 +13,7 @@ import {
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { accountHomeEnv } from "../src/acp";
 import { setJournalSink } from "../src/journal";
 import { Database } from "bun:sqlite";
 import { runnerSleepLeftovers } from "../src/runner-cli";
@@ -21,6 +22,7 @@ import {
   onTmpfs,
   openRunnerAccountHome,
   returnRunnerAgentCredentials,
+  runnerAccountCache,
   runnerAgentCredentials,
   writeReturnedCredentials,
 } from "../src/runner-execution";
@@ -36,6 +38,7 @@ import {
 import { serverIdentity } from "./local/runner-daemon";
 
 const account = { accountId: "account-1", bindingId: "binding-1" };
+const urls = { controlPlaneUrl: "https://localhost:1", runnerApiUrl: "https://localhost:2" };
 const shmTmpfs = existsSync("/dev/shm") && onTmpfs("/dev/shm");
 const stored = [
   {
@@ -468,7 +471,7 @@ test("central Codex credentials are access-only, replaced ten minutes before exp
 });
 
 test("Claude OAuth accounts use the token environment and never return refreshed credentials", async () => {
-  const { accountAgentEnv, accountHomeEnv, minimalAgentEnv } = await import("../src/acp");
+  const { accountAgentEnv, minimalAgentEnv } = await import("../src/acp");
   const { claudeTokenHealth } = await import("../src/runner-protocol");
   const root = mkdtempSync(join(tmpdir(), "paws-oauth-"));
   const createdAt = Date.now();
@@ -556,6 +559,15 @@ test.skipIf(!shmTmpfs)(
       rmSync(credentials);
       writeFileSync(credentials, '{"claudeAiOauth":{"refreshToken":"r2"}}', { mode: 0o600 });
       const accountHome = join(home, ".paws-accounts", account.bindingId);
+      const cache = runnerAccountCache(root, accountHome)!;
+      expect(cache).toBe(join(root, ".paws-account-caches", account.bindingId));
+      expect(runnerAccountCache(root, join(root, "daemon"))).toBeNull();
+      expect(accountHomeEnv(accountHome, cache)).toMatchObject({
+        XDG_CACHE_HOME: cache,
+        BUN_INSTALL_CACHE_DIR: join(cache, "bun"),
+        npm_config_cache: join(cache, "npm"),
+        PIP_CACHE_DIR: join(cache, "pip"),
+      });
       returnRunnerAgentCredentials(accountHome, "claude", EXECUTION, (files) =>
         writeReturnedCredentials(
           accountHome,
@@ -601,12 +613,7 @@ test.skipIf(onTmpfs(tmpdir()))(
         runnerAgentCredentials(home, undefined, true).write(account, "claude", stored),
       ).toThrow("Agent sign-ins on an issue VM need a tmpfs account root");
       expect(() =>
-        openRunnerDaemon({
-          root: join(home, "daemon"),
-          controlPlaneUrl: "https://localhost:1",
-          runnerApiUrl: "https://localhost:2",
-          credentialStore: home,
-        }),
+        openRunnerDaemon({ root: join(home, "daemon"), ...urls, credentialStore: home }),
       ).toThrow("Runner credential store must be a private tmpfs folder.");
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -617,11 +624,7 @@ test.skipIf(onTmpfs(tmpdir()))(
 test.skipIf(!shmTmpfs)("switching to an issue VM store scrubs sign-ins kept in commands.db", () => {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-scrub-"));
   const store = mkdtempSync("/dev/shm/paws-issue-vm-store-");
-  const options = {
-    root: join(root, "daemon"),
-    controlPlaneUrl: "https://localhost:1",
-    runnerApiUrl: "https://localhost:2",
-  };
+  const options = { root: join(root, "daemon"), ...urls };
   try {
     chmodSync(store, 0o700);
     openRunnerDaemon(options).close();

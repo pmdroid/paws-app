@@ -193,25 +193,6 @@ export function writeReturnedCredentials(home: string, executionId: string, seal
   }
 }
 
-function readReturnedCredentials(home: string, executionId: string): Buffer | null {
-  const target = join(home, RETURNED, ExecutionIdSchema.parse(executionId));
-  let descriptor: number;
-  try {
-    descriptor = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
-  try {
-    const info = fstatSync(descriptor);
-    if (!info.isFile() || info.size > RETURN_LIMIT)
-      throw new RunnerAccountHomeError("Returned agent sign-in is unsafe");
-    return readFileSync(descriptor);
-  } finally {
-    closeSync(descriptor);
-  }
-}
-
 export function runnerSignInsLeft(agentHome: string, inDatabase: (home: string) => boolean) {
   const root = join(agentHome, RUNNER_ACCOUNT_HOMES);
   const entries = (path: string) => {
@@ -248,6 +229,8 @@ export function runnerAgentCredentials(
       path,
       target: join(runnerAccountHome(agentHome, account), path),
     }));
+  const returnedPath = (account: RunnerAccount, executionId: string) =>
+    join(runnerAccountHome(agentHome, account), RETURNED, ExecutionIdSchema.parse(executionId));
   return {
     write(account, agent, written) {
       const home = openRunnerAccountHome(agentHome, account, agent, { signIn: true, owners });
@@ -275,14 +258,9 @@ export function runnerAgentCredentials(
     },
     busy: (account) => activeExecutions(runnerAccountHome(agentHome, account)).length > 0,
     readReturned: (account, executionId) =>
-      readReturnedCredentials(runnerAccountHome(agentHome, account), executionId),
+      readCredentialFile(returnedPath(account, executionId), RETURN_LIMIT),
     dropReturned: (account, executionId) =>
-      rmSync(
-        join(runnerAccountHome(agentHome, account), RETURNED, ExecutionIdSchema.parse(executionId)),
-        {
-          force: true,
-        },
-      ),
+      rmSync(returnedPath(account, executionId), { force: true }),
     remove(account, agent) {
       for (const { path, target } of files(account, agent))
         if (path !== CLAUDE_STATE) rmSync(target, { force: true });
@@ -361,7 +339,7 @@ function credentialFolder(path: string, owners: RunnerAccountOwners): void {
     throw new RunnerAccountHomeError("Agent sign-in folder is not shared with the runner");
 }
 
-function readCredentialFile(path: string): Buffer | null {
+function readCredentialFile(path: string, limit = CREDENTIAL_LIMIT): Buffer | null {
   let descriptor: number;
   try {
     descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -371,7 +349,7 @@ function readCredentialFile(path: string): Buffer | null {
   }
   try {
     const info = fstatSync(descriptor);
-    if (!info.isFile() || info.size > CREDENTIAL_LIMIT)
+    if (!info.isFile() || info.size > limit)
       throw new RunnerAccountHomeError("Agent sign-in file is unsafe");
     return readFileSync(descriptor);
   } finally {
