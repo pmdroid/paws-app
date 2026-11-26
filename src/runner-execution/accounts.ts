@@ -166,8 +166,12 @@ export function onTmpfs(path: string): boolean {
   return Number(statfsSync(path).type) === TMPFS_MAGIC;
 }
 
-export function runnerAccountCache(agentHome: string, home: string): string | null {
-  if (!onTmpfs(home)) return null;
+export function runnerAccountCache(
+  agentHome: string,
+  home: string,
+  issueVm = existsSync(ISSUE_VM_MARKER),
+): string | null {
+  if (!issueVm) return null;
   const cache = join(agentHome, CACHES, basename(home));
   mkdirSync(cache, { recursive: true, mode: 0o700 });
   return cache;

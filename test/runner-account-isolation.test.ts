@@ -1,5 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -138,6 +146,28 @@ test("checks run with their binding's home and never see another account's secre
   });
   expect(unnamed.result.login).toMatchObject({ authenticated: false, method: "none" });
 }, 30_000);
+
+const shmTmpfs = existsSync("/dev/shm") && onTmpfs("/dev/shm");
+
+test.skipIf(!shmTmpfs)("a normal runner keeps caches in an account home on tmpfs", () => {
+  const root = mkdtempSync("/dev/shm/paws-account-cache-");
+  roots.push(root);
+  const home = openRunnerAccountHome(root, a, "codex", { signIn: true });
+  expect(onTmpfs(home)).toBe(true);
+  expect(runnerAccountCache(root, home, false)).toBeNull();
+  expect(readdirSync(root)).not.toContain(".paws-account-caches");
+});
+
+test.skipIf(!shmTmpfs)("an issue VM moves caches out of the tmpfs account home to disk", () => {
+  const root = runnerHomeRoot("paws-account-cache-");
+  const accounts = mkdtempSync("/dev/shm/paws-account-homes-");
+  roots.push(accounts);
+  const home = join(accounts, a.bindingId);
+  mkdirSync(home);
+  const cache = runnerAccountCache(root, home, true);
+  expect(cache).toBe(join(root, ".paws-account-caches", a.bindingId));
+  expect(onTmpfs(cache!)).toBe(false);
+});
 
 test("a named check for a binding this runner does not hold fails instead of using the default", async () => {
   const root = temporary("paws-account-missing-");
