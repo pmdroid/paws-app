@@ -9,6 +9,7 @@ export const ISSUE_VM_STATES = [
   "creating",
   "awake",
   "asleep",
+  "unknown",
   "deleting",
   "deleted",
   "failed",
@@ -29,10 +30,17 @@ export type IssueVm = {
   createdAt: number;
   stateAt: number;
   deletedAt: number | null;
+  want: "awake" | "asleep";
+  operation: IssueVmOperation | null;
+  deadlineAt: number | null;
+  generation: number;
+  failure: string | null;
 };
 
+export type IssueVmOperation = "create" | "wake" | "sleep";
+
 export type NewIssueVm = {
-  id: string;
+  id?: string;
   workspaceId: string;
   itemId: string;
   memberUserId: string;
@@ -42,16 +50,18 @@ export type NewIssueVm = {
 };
 
 export function* insertIssueVmSteps(q: Q, input: NewIssueVm) {
-  const { now, hostRunnerId, ...row } = input;
+  const { now, hostRunnerId, id = ulid(now), ...row } = input;
   yield* q.exec(
     q.orm.insert(q.t.issueVm).values({
       ...row,
+      id,
       hostRunnerId: hostRunnerId ?? null,
       state: "creating",
       createdAt: now,
       stateAt: now,
     }),
   );
+  return id;
 }
 
 export function* issueVmByIdSteps(q: Q, id: string) {
@@ -77,6 +87,70 @@ export function* updateLiveIssueVmStateSteps(
       .returning({ id: v.id }),
   );
   return rows.length;
+}
+
+export function* lockIssueVmSteps(q: Q, id: string) {
+  const { issueVm: v } = q.t;
+  const row = yield* q.one(q.orm.select().from(v).where(eq(v.id, id)).for("update"));
+  return (row ?? null) as IssueVm | null;
+}
+
+export function* latestItemIssueVmSteps(q: Q, itemId: string) {
+  const { issueVm: v } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select()
+      .from(v)
+      .where(eq(v.itemId, itemId))
+      .orderBy(desc(v.createdAt), desc(v.id))
+      .limit(1),
+  );
+  return (row ?? null) as IssueVm | null;
+}
+
+export type IssueVmMove = Partial<Pick<IssueVm, "state" | "operation" | "deadlineAt" | "failure">>;
+
+export function* moveIssueVmSteps(
+  q: Q,
+  input: { id: string; generation: number; set: IssueVmMove; now: number },
+) {
+  const { issueVm: v } = q.t;
+  const { state, ...rest } = input.set;
+  const rows = yield* q.all(
+    q.orm
+      .update(v)
+      .set({
+        ...rest,
+        ...(state === undefined ? {} : { state, stateAt: input.now }),
+        generation: input.generation + 1,
+      })
+      .where(
+        and(
+          eq(v.id, input.id),
+          eq(v.generation, input.generation),
+          notInArray(v.state, ENDED_STATES),
+        ),
+      )
+      .returning({ id: v.id }),
+  );
+  return rows.length > 0;
+}
+
+export function* setIssueVmWantSteps(q: Q, input: { id: string; want: IssueVm["want"] }) {
+  const { issueVm: v } = q.t;
+  yield* q.exec(q.orm.update(v).set({ want: input.want }).where(eq(v.id, input.id)));
+}
+
+export function* sweptIssueVmIdsSteps(q: Q) {
+  const { issueVm: v } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ id: v.id })
+      .from(v)
+      .where(notInArray(v.state, [...ENDED_STATES, "deleting"]))
+      .orderBy(v.id),
+  );
+  return rows.map((row) => row.id);
 }
 
 export function* deletingHostIssueVmIdsSteps(q: Q, hostRunnerId: string) {
