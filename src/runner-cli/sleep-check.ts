@@ -14,7 +14,7 @@ export function runnerSleepLeftovers(
 ) {
   const accounts = join(agentHome, ".paws-accounts");
   const left = [
-    ...(issueVm ? openCodeSignInsLeft(agentHome, owners) : []),
+    ...(issueVm ? openCodeSignInsLeft(agentHome, credentials, owners) : []),
     ...runnerSignInsLeft(agentHome),
   ];
   const held = heldCredentialsLeft(credentials);

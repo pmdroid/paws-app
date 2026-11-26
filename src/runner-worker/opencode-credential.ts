@@ -6,14 +6,18 @@ import {
   constants,
   existsSync,
   fstatSync,
+  fsyncSync,
+  ftruncateSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { journalCaught } from "../journal";
@@ -182,57 +186,128 @@ function size(path: string): number {
   return lstatSync(path, { throwIfNoEntry: false })?.size ?? 0;
 }
 
-function rewriteDatabase(path: string, folder: string, fd: number, returned: Set<string | null>) {
-  const info = lstatSync(join(folder, DATABASE), { throwIfNoEntry: false });
-  if (info && !info.isFile()) throw new Error("opencode.db is not a file");
-  if (info) {
-    const db = new Database(path, sqlite.SQLITE_OPEN_READWRITE | sqlite.SQLITE_OPEN_NOFOLLOW);
-    try {
-      const opened = lstatSync(dirname(path));
-      const held = fstatSync(fd);
-      if (opened.ino !== held.ino || opened.dev !== held.dev)
-        throw new Error("OpenCode's database folder moved");
-      db.run("PRAGMA busy_timeout = 5000");
-      db.run("PRAGMA secure_delete = ON");
-      db.transaction(() => {
-        for (const row of db
-          .query<Pick<Row, "id" | "value">, []>(
-            "SELECT id, value FROM credential WHERE integration_id = 'opencode'",
-          )
-          .all())
-          if (returned.has(digest(row.value)))
-            db.run("DELETE FROM credential WHERE id = ?", [row.id]);
-      })();
-      db.run("VACUUM");
-      const checkpoint = db.query<{ busy: number }, []>("PRAGMA wal_checkpoint(TRUNCATE)").get();
-      if (checkpoint && checkpoint.busy !== 0)
-        throw new Error("OpenCode's database is still in use");
-    } finally {
-      db.close();
-    }
-  }
-  for (const suffix of info ? ["-journal"] : SIDECARS)
-    rmSync(join(folder, `${DATABASE}${suffix}`), { force: true });
-  if (size(join(folder, `${DATABASE}-wal`)) > 0)
-    throw new Error("OpenCode's database journal still holds a sign-in");
+function scrubDatabase(db: Database, returned: Set<string | null>): void {
+  db.run("PRAGMA busy_timeout = 5000");
+  db.run("PRAGMA secure_delete = ON");
+  const table = db
+    .query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'credential'")
+    .get();
+  if (table)
+    db.transaction(() => {
+      for (const row of db
+        .query<Pick<Row, "id" | "value">, []>(
+          "SELECT id, value FROM credential WHERE integration_id = 'opencode'",
+        )
+        .all())
+        if (returned.has(digest(row.value)))
+          db.run("DELETE FROM credential WHERE id = ?", [row.id]);
+    })();
+  db.run("VACUUM");
+  const checkpoint = db.query<{ busy: number }, []>("PRAGMA wal_checkpoint(TRUNCATE)").get();
+  if (checkpoint && checkpoint.busy !== 0) throw new Error("OpenCode's database is still in use");
 }
 
-function scrubOpenCodeDatabase(home: string, at: string): void {
+function plainFile(path: string, flags: number): number | null {
+  let fd: number;
+  try {
+    fd = openSync(path, flags | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if ((error as NodeJS.ErrnoException).code === "ELOOP")
+      throw new Error(`${basename(path)} is not a plain file`, { cause: error });
+    throw error;
+  }
+  const info = fstatSync(fd);
+  if (!info.isFile() || info.nlink !== 1) {
+    closeSync(fd);
+    throw new Error(`${basename(path)} is not a plain file`);
+  }
+  return fd;
+}
+
+function readPlain(path: string): Buffer | null {
+  const fd = plainFile(path, constants.O_RDONLY);
+  if (fd === null) return null;
+  try {
+    return readFileSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function rewriteInPlace(folder: string, folderFd: number, returned: Set<string | null>) {
+  const path = join(folder, DATABASE);
+  if (!lstatSync(path, { throwIfNoEntry: false })) return;
+  const db = new Database(path, sqlite.SQLITE_OPEN_READWRITE);
+  try {
+    const opened = db.query<{ file: string }, []>("PRAGMA database_list").get()!.file;
+    const held = fstatSync(folderFd);
+    const info = lstatSync(dirname(opened));
+    if (info.ino !== held.ino || info.dev !== held.dev)
+      throw new Error("OpenCode's database folder moved");
+    scrubDatabase(db, returned);
+  } finally {
+    db.close();
+  }
+}
+
+function rewriteCopy(folder: string, scratch: string, returned: Set<string | null>) {
+  const main = readPlain(join(folder, DATABASE));
+  if (main === null) return;
+  const work = mkdtempSync(join(scratch, "opencode-"));
+  try {
+    writeFileSync(join(work, DATABASE), main, { mode: 0o600 });
+    for (const suffix of ["-wal", "-journal"]) {
+      const sidecar = readPlain(join(folder, `${DATABASE}${suffix}`));
+      if (sidecar?.length)
+        writeFileSync(join(work, `${DATABASE}${suffix}`), sidecar, { mode: 0o600 });
+    }
+    const copy = new Database(join(work, DATABASE), sqlite.SQLITE_OPEN_READWRITE);
+    try {
+      scrubDatabase(copy, returned);
+    } finally {
+      copy.close();
+    }
+    const clean = readFileSync(join(work, DATABASE));
+    for (const suffix of SIDECARS) rmSync(join(folder, `${DATABASE}${suffix}`), { force: true });
+    const fd = plainFile(join(folder, DATABASE), constants.O_WRONLY);
+    if (fd === null) throw new Error("OpenCode's database moved during cleanup");
+    try {
+      ftruncateSync(fd, 0);
+      writeSync(fd, clean, 0, clean.length, 0);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}
+
+function scrubOpenCodeDatabase(at: string, scratch?: string): void {
   pinned(at, [OPENCODE_PURGE], (purge) => {
     const markers = purge ? names(purge) : [];
     const returned = new Set(markers.map((name) => marked(join(purge!, name))));
     pinned(at, DATABASE_FOLDER, (folder, fd) => {
-      if (folder) rewriteDatabase(join(home, OPENCODE_DATABASE), folder, fd, returned);
+      if (!folder) return;
+      if (scratch) rewriteCopy(folder, scratch, returned);
+      else rewriteInPlace(folder, fd, returned);
+      for (const suffix of lstatSync(join(folder, DATABASE), { throwIfNoEntry: false })
+        ? ["-journal"]
+        : SIDECARS)
+        rmSync(join(folder, `${DATABASE}${suffix}`), { force: true });
+      if (size(join(folder, `${DATABASE}-wal`)) > 0)
+        throw new Error("OpenCode's database journal still holds a sign-in");
     });
     for (const name of markers) rmSync(join(purge!, name), { recursive: true, force: true });
   });
 }
 
-function purgeAt(home: string, at: string, owners?: RunnerAccountOwners, except = ""): boolean {
+function purgeAt(at: string, owners?: RunnerAccountOwners, except = "", scratch?: string) {
   if (!existsSync(join(at, OPENCODE_PURGE)) && !existsSync(join(at, ...DATABASE_FOLDER)))
     return true;
   try {
-    publishRunnerAccountHome(at, except, () => scrubOpenCodeDatabase(home, at), owners);
+    publishRunnerAccountHome(at, except, () => scrubOpenCodeDatabase(at, scratch), owners, false);
     return true;
   } catch (error) {
     if (error instanceof RunnerAccountHomeError) return false;
@@ -246,12 +321,14 @@ export function purgeOpenCodeCredential(
   except = "",
 ): boolean {
   return pinned(dirname(home), [basename(home)], (at) =>
-    at === null ? true : purgeAt(home, at, owners, except),
+    at === null ? true : purgeAt(at, owners, except),
   );
 }
 
-function openCodeRows(path: string): number {
-  const db = new Database(path, sqlite.SQLITE_OPEN_READONLY | sqlite.SQLITE_OPEN_NOFOLLOW);
+function openCodeRows(main: Buffer): number {
+  const bytes = Buffer.from(main);
+  if (bytes.length >= 20) bytes[18] = bytes[19] = 1;
+  const db = Database.deserialize(bytes, true);
   try {
     const table = db
       .query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'credential'")
@@ -267,10 +344,16 @@ function openCodeRows(path: string): number {
   }
 }
 
-function bindingLeft(home: string, at: string, owners?: RunnerAccountOwners): string[] {
+function privateFolder(path: string): boolean {
+  const info = lstatSync(path, { throwIfNoEntry: false });
+  return !!info?.isDirectory() && info.uid === process.getuid?.() && (info.mode & 0o077) === 0;
+}
+
+function bindingLeft(at: string, scratch: string | null, owners?: RunnerAccountOwners): string[] {
   const left: string[] = [];
   try {
-    if (!purgeAt(home, at, owners))
+    if (scratch === null) left.push(`${OPENCODE_DATABASE} cleanup needs a private scratch folder`);
+    else if (!purgeAt(at, owners, "", scratch))
       left.push(`${OPENCODE_DATABASE} cleanup waits for work on the account`);
   } catch (error) {
     left.push(`${OPENCODE_DATABASE}: ${(error as Error).message}`);
@@ -278,15 +361,15 @@ function bindingLeft(home: string, at: string, owners?: RunnerAccountOwners): st
   try {
     for (const name of pinned(at, [OPENCODE_PURGE], (purge) => (purge ? names(purge) : [])))
       left.push(`${OPENCODE_PURGE}/${name}`);
-    const database = pinned(at, DATABASE_FOLDER, (folder) => {
-      if (!folder) return false;
+    const main = pinned(at, DATABASE_FOLDER, (folder) => {
+      if (!folder) return null;
       for (const suffix of SIDECARS.filter((sidecar) => sidecar !== "-shm"))
         if (size(join(folder, `${DATABASE}${suffix}`)) > 0)
           left.push(`${OPENCODE_DATABASE}${suffix}`);
-      return lstatSync(join(folder, DATABASE), { throwIfNoEntry: false }) !== undefined;
+      return readPlain(join(folder, DATABASE));
     });
-    if (database) {
-      const rows = openCodeRows(join(home, OPENCODE_DATABASE));
+    if (main) {
+      const rows = openCodeRows(main);
       if (rows > 0) left.push(`${OPENCODE_DATABASE} holds ${rows} OpenCode sign-ins`);
     }
   } catch (error) {
@@ -295,14 +378,18 @@ function bindingLeft(home: string, at: string, owners?: RunnerAccountOwners): st
   return left;
 }
 
-export function openCodeSignInsLeft(agentHome: string, owners?: RunnerAccountOwners): string[] {
+export function openCodeSignInsLeft(
+  agentHome: string,
+  scratch: string,
+  owners?: RunnerAccountOwners,
+): string[] {
   const left: string[] = [];
+  const work = privateFolder(scratch) ? scratch : null;
   for (const binding of names(join(agentHome, RUNNER_ACCOUNT_HOMES))) {
-    const home = join(agentHome, RUNNER_ACCOUNT_HOMES, binding);
-    if (!lstatSync(home).isDirectory()) continue;
+    if (!lstatSync(join(agentHome, RUNNER_ACCOUNT_HOMES, binding)).isDirectory()) continue;
     try {
       for (const entry of pinned(agentHome, [RUNNER_ACCOUNT_HOMES, binding], (at) =>
-        at === null ? [] : bindingLeft(home, at, owners),
+        at === null ? [] : bindingLeft(at, work, owners),
       ))
         left.push(`${binding}/${entry}`);
     } catch (error) {

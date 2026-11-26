@@ -192,6 +192,12 @@ function returnAndMark(root: string, execution = EXECUTION) {
   );
 }
 
+function scratch(): string {
+  const folder = mkdtempSync(join(tmpdir(), "paws-opencode-scratch-"));
+  roots.push(folder);
+  return folder;
+}
+
 const staged = (value: string) => [
   { path: OPENCODE_CREDENTIAL_FILE, data: Buffer.from(value).toString("base64") },
 ];
@@ -220,7 +226,7 @@ test("after the return, the returned sign-in leaves opencode.db and its journals
   expect(readdirSync(join(root, OPENCODE_PURGE))).toEqual([]);
   expect(leaked(root, "access-")).toEqual([]);
   expect(leaked(root, "refresh-1")).toEqual([]);
-  expect(openCodeSignInsLeft(agentHome)).toEqual([]);
+  expect(openCodeSignInsLeft(agentHome, scratch())).toEqual([]);
 });
 
 test("a purge deletes only the credential it returned, never a newer one", async () => {
@@ -232,7 +238,7 @@ test("a purge deletes only the credential it returned, never a newer one", async
   await placeOpenCodeCredential(root, "opencode", migrate(root));
   expect(purgeOpenCodeCredential(root)).toBe(true);
   expect(rows(root).map((row) => row.value)).toEqual([newer]);
-  expect(openCodeSignInsLeft(agentHome)).toEqual([
+  expect(openCodeSignInsLeft(agentHome, scratch())).toEqual([
     `binding-1/${OPENCODE_DATABASE} holds 1 OpenCode sign-ins`,
   ]);
 });
@@ -245,13 +251,13 @@ test("a purge waits for other turns on the account and sleep-check finishes it",
   mkdirSync(join(root, ".paws-active"));
   writeFileSync(join(root, ".paws-active", other), '{"scope":"0123456789abcdef"}');
   expect(purgeOpenCodeCredential(root, undefined, EXECUTION)).toBe(false);
-  expect(openCodeSignInsLeft(agentHome)).toEqual([
+  expect(openCodeSignInsLeft(agentHome, scratch())).toEqual([
     `binding-1/${OPENCODE_DATABASE} cleanup waits for work on the account`,
     `binding-1/${OPENCODE_PURGE}/${EXECUTION}`,
     `binding-1/${OPENCODE_DATABASE} holds 1 OpenCode sign-ins`,
   ]);
   rmSync(join(root, ".paws-active", other));
-  expect(openCodeSignInsLeft(agentHome)).toEqual([]);
+  expect(openCodeSignInsLeft(agentHome, scratch())).toEqual([]);
   expect(rows(root)).toEqual([]);
 });
 
@@ -259,7 +265,7 @@ test("a worker stopped before publishing leaves the file copy, so its marked row
   const { agentHome, root } = accountHome();
   await placeOpenCodeCredential(root, "opencode", migrate(root));
   markOpenCodePurge(root, EXECUTION, staged(credential));
-  expect(openCodeSignInsLeft(agentHome)).toEqual([]);
+  expect(openCodeSignInsLeft(agentHome, scratch())).toEqual([]);
   expect(rows(root)).toEqual([]);
   expect(readFileSync(join(root, OPENCODE_CREDENTIAL_FILE), "utf8")).toBe(credential);
 });
@@ -273,7 +279,7 @@ test("sleep-check rewrites an idle database whose deleted row still sits in free
   db.run("PRAGMA wal_checkpoint(TRUNCATE)");
   db.close();
   expect(leaked(root, "refresh-1")).toContain("opencode.db");
-  expect(openCodeSignInsLeft(agentHome)).toEqual([]);
+  expect(openCodeSignInsLeft(agentHome, scratch())).toEqual([]);
   expect(leaked(root, "refresh-1")).toEqual([]);
 });
 
@@ -283,7 +289,7 @@ test("a half-written marker is cleared by the next cleanup", async () => {
   mkdirSync(join(root, OPENCODE_PURGE));
   writeFileSync(join(root, OPENCODE_PURGE, `${EXECUTION}.0-x.tmp`), "ab");
   writeFileSync(join(root, OPENCODE_PURGE, EXECUTION), "ab");
-  expect(openCodeSignInsLeft(agentHome)).toEqual([
+  expect(openCodeSignInsLeft(agentHome, scratch())).toEqual([
     `binding-1/${OPENCODE_DATABASE} holds 1 OpenCode sign-ins`,
   ]);
   expect(readdirSync(join(root, OPENCODE_PURGE))).toEqual([]);
@@ -307,7 +313,7 @@ test("the marker digests the files being returned, not a later read of the crede
   const newer = JSON.stringify({ ...JSON.parse(credential), access: "access-4" });
   writeFileSync(join(root, OPENCODE_CREDENTIAL_FILE), newer);
   markOpenCodePurge(root, EXECUTION, staged(credential));
-  expect(openCodeSignInsLeft(agentHome)).toEqual([]);
+  expect(openCodeSignInsLeft(agentHome, scratch())).toEqual([]);
   expect(rows(root)).toEqual([]);
 });
 
@@ -321,7 +327,7 @@ test("cleanup never follows a symlinked folder out of the account home", async (
   insert(outside, "cred_outside", "opencode", credential);
   mkdirSync(join(root, ".local/share"), { recursive: true });
   symlinkSync(join(outside, ".local/share/opencode"), join(root, ".local/share/opencode"));
-  const left = openCodeSignInsLeft(agentHome);
+  const left = openCodeSignInsLeft(agentHome, scratch());
   expect(left.length).toBeGreaterThan(0);
   expect(left.every((entry) => entry.includes("is not a folder in the account home"))).toBe(true);
   expect(readFileSync(join(outside, EXECUTION), "utf8")).toBe("keep");
@@ -333,6 +339,59 @@ test("a journal left without its database is removed", () => {
   mkdirSync(dirname(join(root, OPENCODE_DATABASE)), { recursive: true });
   writeFileSync(`${join(root, OPENCODE_DATABASE)}-wal`, "access-1");
   writeFileSync(`${join(root, OPENCODE_DATABASE)}-journal`, "access-1");
-  expect(openCodeSignInsLeft(agentHome)).toEqual([]);
+  expect(openCodeSignInsLeft(agentHome, scratch())).toEqual([]);
   expect(readdirSync(dirname(join(root, OPENCODE_DATABASE)))).toEqual([]);
+});
+
+test("a database OpenCode never finished creating does not block sleep", () => {
+  const { agentHome, root } = accountHome();
+  mkdirSync(dirname(join(root, OPENCODE_DATABASE)), { recursive: true });
+  new Database(join(root, OPENCODE_DATABASE)).close();
+  expect(openCodeSignInsLeft(agentHome, scratch())).toEqual([]);
+});
+
+test("sleep-check never prunes holds through a symlinked .paws-active", async () => {
+  const { agentHome, root } = accountHome();
+  await placeOpenCodeCredential(root, "opencode", migrate(root));
+  returnAndMark(root);
+  const outside = scratch();
+  const stale = JSON.stringify({
+    scope: "0123456789abcdef",
+    pid: Bun.spawnSync(["true"]).pid,
+    born: "gone",
+  });
+  writeFileSync(join(outside, EXECUTION), stale);
+  symlinkSync(outside, join(root, ".paws-active"));
+  expect(openCodeSignInsLeft(agentHome, scratch())).toEqual([]);
+  expect(readFileSync(join(outside, EXECUTION), "utf8")).toBe(stale);
+});
+
+test("sleep-check reports instead of cleaning without a private scratch folder", async () => {
+  const { agentHome, root } = accountHome();
+  await placeOpenCodeCredential(root, "opencode", migrate(root));
+  returnAndMark(root);
+  expect(openCodeSignInsLeft(agentHome, join(agentHome, "missing"))).toEqual([
+    `binding-1/${OPENCODE_DATABASE} cleanup needs a private scratch folder`,
+    `binding-1/${OPENCODE_PURGE}/${EXECUTION}`,
+    `binding-1/${OPENCODE_DATABASE} holds 1 OpenCode sign-ins`,
+  ]);
+  expect(rows(root)).toHaveLength(1);
+});
+
+test("sleep-check cleans a private copy, so a WAL copy of the token is gone too", async () => {
+  const { agentHome, root } = accountHome();
+  const placed = await placeOpenCodeCredential(root, "opencode", migrate(root));
+  insert(root, "cred_xai", "xai", '{"type":"key","key":"k"}');
+  const writer = new Database(join(root, OPENCODE_DATABASE));
+  writer.run("PRAGMA wal_autocheckpoint = 0");
+  const refreshed = JSON.stringify({ ...JSON.parse(credential), access: "access-5" });
+  writer.run("UPDATE credential SET value = ? WHERE integration_id = 'opencode'", [refreshed]);
+  writer.close();
+  expect(collectOpenCodeCredential(root, placed!)).toBe(true);
+  returnAndMark(root);
+  const work = scratch();
+  expect(openCodeSignInsLeft(agentHome, work)).toEqual([]);
+  expect(rows(root).map((row) => row.integration_id)).toEqual(["xai"]);
+  expect(leaked(root, "access-")).toEqual([]);
+  expect(readdirSync(work)).toEqual([]);
 });

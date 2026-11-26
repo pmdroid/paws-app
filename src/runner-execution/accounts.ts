@@ -444,6 +444,7 @@ export function publishRunnerAccountHome(
   executionId: string,
   publish: () => void,
   owners: RunnerAccountOwners = processOwners(),
+  prune = true,
 ): void {
   const born = startTime(process.pid);
   if (!born) throw new RunnerAccountHomeError("Runner sign-in process is unavailable");
@@ -468,7 +469,7 @@ export function publishRunnerAccountHome(
     } finally {
       closeSync(descriptor);
     }
-    const busy = activeExecutions(home, executionId);
+    const busy = activeExecutions(home, executionId, prune);
     if (busy.length)
       throw new RunnerAccountHomeError(
         "Work is still running with this agent account. Let it finish or stop it, then sign in again.",
@@ -479,7 +480,7 @@ export function publishRunnerAccountHome(
   }
 }
 
-export function activeExecutions(home: string, except?: string): string[] {
+export function activeExecutions(home: string, except?: string, prune = true): string[] {
   const active = join(home, ACTIVE);
   let names: string[];
   try {
@@ -495,8 +496,8 @@ export function activeExecutions(home: string, except?: string): string[] {
   for (const name of names) {
     if (name === except || !ExecutionIdSchema.safeParse(name).success) continue;
     const state = readHold(join(active, name), name);
-    if (state === "stale") rmSync(join(active, name), { force: true });
-    else if (state) live.push(name);
+    if (state === "live") live.push(name);
+    else if (state === "stale" && prune) rmSync(join(active, name), { force: true });
   }
   return live;
 }
