@@ -22,7 +22,6 @@ import type {
   UpdatePlanHook,
 } from "./ask-team";
 import type { ArtifactLimits, PublishArtifactHook } from "./artifacts";
-import type { AgentSandbox } from "./sandbox";
 
 export const DEFAULT_RUN_TIMEOUT_MS = DEFAULT_MAX_AWAKE_MS;
 export const DEFAULT_CANCEL_GRACE_MS = 2_000;
@@ -113,8 +112,7 @@ export interface RunAgentOptions {
     fallbackProfile?: AgentProfile;
   }>;
   readOnly?: boolean;
-  writableRoot?: string;
-  sandbox?: AgentSandbox;
+  sandbox?: boolean;
   closeoutRulesFirst?: boolean;
   closeoutFocus?: CloseoutFocus;
   pullRequestDraft?: PullRequestDraft;

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { z } from "zod";
 import { git } from "../acp";
-import { RunnerProbeEntrySchema } from "../runner-protocol";
 import { jsonIn, replyOf } from "./agent";
 import type { AgentTurn, Candidate, ProposedEntry, Source } from "./types";
 
@@ -9,7 +9,12 @@ export function probePath(id: string): string {
   return `.agents/probes/${id}.ts`;
 }
 
-const entrySchema = RunnerProbeEntrySchema;
+const entrySchema = z.object({
+  exec: z.array(z.string().min(1).max(4096)).min(1).max(32).optional(),
+  paths: z.array(z.string().min(1).max(256)).min(1).max(100).optional(),
+  failOn: z.enum(["P0", "P1", "P2", "P3"]),
+  onFail: z.enum(["fix", "approve"]).optional(),
+});
 
 export function writePrompt(input: {
   repository: string;

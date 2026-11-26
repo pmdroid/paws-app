@@ -49,7 +49,6 @@ import { dirname, join, isAbsolute } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { executeRetroCommand, type RetroWorkerResult } from "./retro";
 import { missingToolchainQuestion } from "./toolchain";
-import { checkoutProbe, collectProbe, probeSnapshot } from "./probe-write";
 import {
   collectOpenCodeCredential,
   migrateOpenCodeDatabase,
@@ -167,7 +166,6 @@ import {
   type RunnerArtifact,
   type RunnerCodingAgent,
   type RunnerCommand,
-  type RunnerHelperResult,
   type RunnerEvent,
   type RunnerHandoverFailure,
   type RunnerInstalledRuntime,
@@ -676,7 +674,6 @@ export interface RunnerWorkerResult {
   text?: string;
   replies?: string[];
   startWork?: string;
-  probe?: NonNullable<RunnerHelperResult["probe"]>;
   login?: {
     agent: "claude" | "codex" | "grok" | "opencode";
     authenticated: boolean;
@@ -1453,16 +1450,6 @@ export async function executeRunnerCommand(
     } catch (error) {
       journalCaught(error, "runner-worker.preload", null);
     }
-    const probe = command.type === "helper" ? command.probe : undefined;
-    const mirror = options
-      .helperRepositories?.()
-      .find((added) => added.repository === probe?.repository);
-    const probeRoot =
-      probe && (await checkoutProbe(mirror, join(worktree, "repositories", probe.repository)));
-    const probeHelper =
-      command.type === "helper" &&
-      (command.purpose === "probe_distill" || command.purpose === "probe_write");
-    const probeBefore = probeRoot ? probeSnapshot(probeRoot) : undefined;
     let inputFiles = options.inputs?.inputFiles ?? [];
     if (command.type === "run" || command.type === "review" || command.type === "task") {
       const descriptors = command.inputFiles ?? [];
@@ -1715,10 +1702,11 @@ export async function executeRunnerCommand(
       ...options.launch,
       hostAccess: !(
         command.type === "helper" &&
-        ["slack_reply", "repository_summary", "probe_distill", "probe_write"].includes(
-          command.purpose,
-        )
+        ["slack_reply", "repository_summary", "probe_distill"].includes(command.purpose)
       ),
+      ...(command.type === "helper" && command.purpose === "probe_distill"
+        ? { sandbox: true }
+        : {}),
       skillsRoot,
       ...(options.skills && (repository || task)
         ? {
@@ -1751,8 +1739,6 @@ export async function executeRunnerCommand(
         command.type === "login_check" ? { agent: command.agent, model: null } : command.profile,
       role: command.type === "review" ? "reviewer" : "implementer",
       readOnly: command.type === "task" ? command.purpose !== "artifact" : command.type !== "run",
-      ...(probeRoot ? { writableRoot: join(probeRoot, ".agents", "probes") } : {}),
-      ...(probeHelper ? { sandbox: probeRoot ? { probes: probeRoot } : {} } : {}),
       checkpoint: command.type === "run" && command.checkpoint !== false,
       ...(command.type === "run" && command.closeoutRulesFirst ? { closeoutRulesFirst: true } : {}),
       ...(command.type === "run" && command.closeoutFocus
@@ -1820,7 +1806,7 @@ export async function executeRunnerCommand(
           }
         : {}),
       inputFiles: inputFiles.map((file) => ({ ...file, path: join(worktree, file.path) })),
-      worktreePath: probeRoot ?? worktree,
+      worktreePath: worktree,
       pawsRoot: join(task ? worktree : options.workRoot, ".paws"),
       home,
       signal: options.signal,
@@ -2614,15 +2600,6 @@ export async function executeRunnerCommand(
     enterPhase("verify");
     const result: RunnerWorkerResult = { executionId: job.executionId, commandId: command.id, run };
     if (command.type === "helper") result.text = reviewText;
-    const collected =
-      probe && probeRoot && probeBefore && run.stopReason !== "error"
-        ? collectProbe(probeRoot, probe.path, probeBefore, reviewText ?? "")
-        : {};
-    if (collected.probe) result.probe = collected.probe;
-    if (collected.error) {
-      run.stopReason = "error";
-      run.errorMessage = collected.error;
-    }
     if (sentReplies.length) result.replies = sentReplies;
     if (startWorkPlan) result.startWork = startWorkPlan;
     if (command.type === "login_check") {
@@ -2811,7 +2788,6 @@ export async function executeRunnerCommand(
               text: true,
               replies: true,
               startWork: true,
-              probe: true,
             })
               .strip()
               .parse(run),

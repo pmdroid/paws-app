@@ -82,10 +82,8 @@ const helperWorker = z.object({
     text: true,
     replies: true,
     startWork: true,
-    probe: true,
   }).strip(),
   text: RunnerHelperResultSchema.shape.text,
-  probe: RunnerHelperResultSchema.shape.probe,
   replies: RunnerHelperResultSchema.shape.replies,
   startWork: RunnerHelperResultSchema.shape.startWork,
 });
@@ -304,9 +302,6 @@ export async function openRunnerHealthRuntime(options: {
         workspace,
         commit: credential.commit,
         maxArchiveBytes: 536_870_912,
-        ...(entry.command.type === "helper" && entry.command.purpose === "probe_write"
-          ? { bare: true }
-          : {}),
         signal,
         env,
         async networkGit(args) {
@@ -507,7 +502,6 @@ export async function openRunnerHealthRuntime(options: {
             text: result.text,
             ...(result.replies ? { replies: result.replies } : {}),
             ...(result.startWork ? { startWork: result.startWork } : {}),
-            ...(result.probe ? { probe: result.probe } : {}),
           });
           markPublishing(entry.id, JSON.stringify(entry.result));
         } else {
