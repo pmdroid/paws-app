@@ -103,7 +103,7 @@ export function* signInFitSteps(
       purpose: input.purpose,
       runnerCapacity: false,
       exceptCommandId: input.exceptCommandId,
-      refreshable: refreshableSteps ? yield* refreshableSteps(q, binding.accountId) : false,
+      refreshable: refreshableSteps ? yield* refreshableSteps(q, binding.accountId) : true,
     });
     if (readiness.ready)
       return {

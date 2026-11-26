@@ -28,6 +28,7 @@ import {
   classifyAgentFailure,
   eligibleRunnersSteps,
   createRunnerPlacement,
+  signInFitSteps,
 } from "../src/runner-placement";
 import type { RunnerResult } from "../src/runner-protocol";
 import { copyMigratedPglite, tempStore } from "./pglite";
@@ -742,6 +743,15 @@ test("issue VM account work needs memory-only sign-ins and one issue per refresh
   await write(db, (q) => memorySignIns(q, "R1"));
   expect(await reason(bindings.a2, true)).toBe("busy");
   expect(await reason(bindings.a2)).toBe("ready");
+  const helper = await db.run((q) =>
+    signInFitSteps(q, { id: "R2" }, "W1", {
+      agent: "claude",
+      model: null,
+      purpose: "helper",
+      at: NOW + 1,
+    }),
+  );
+  expect(helper).toMatchObject({ reason: "account at its concurrency limit" });
   expect(await reason(bindings.a1, true)).toBe("ready");
   await isolate("R2", "issue_vm");
   await write(db, (q) => memorySignIns(q, "R2"));
