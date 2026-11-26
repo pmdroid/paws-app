@@ -113,6 +113,7 @@ export {
   RETRO_GENERATION_STATES,
   retroRetryDelayMs,
   retroRunnerCandidates,
+  type RetroCommandCredentials,
   type RetroCommandSigner,
   type RetroDispatcher,
   type RetroGenerationState,

@@ -689,6 +689,24 @@ describe("recovery", () => {
     });
   });
 
+  test("delivered retro commands carry the account's sign-in from the credentials hook", async () => {
+    const { db, clock, open } = await world();
+    await addRunner(db, { id: "R1" });
+    await fakeRunner("R1", clock).seen(db);
+    const asked: string[] = [];
+    const dispatcher = open(db, async (runnerId, envelopes) => {
+      asked.push(runnerId);
+      return envelopes.map((envelope) => ({
+        ...envelope,
+        credential: { version: 1, sealed: "c2VhbGVk" },
+      }));
+    });
+    await dispatcher.tick();
+    const [command] = await dispatcher.commands("R1");
+    expect(asked).toEqual(["R1"]);
+    expect(command?.credential).toEqual({ version: 1, sealed: "c2VhbGVk" });
+  });
+
   test("an online runner that never fetches does not hold its slot after the command expires", async () => {
     const { db, clock, open } = await world({ retries: 0 });
     await addRunner(db, { id: "R1" });
