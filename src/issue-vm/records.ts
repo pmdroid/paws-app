@@ -1,6 +1,8 @@
 import {
+  closeIssueVmAwakeSteps,
   insertIssueVmSteps,
   issueVmByIdSteps,
+  openIssueVmAwakeSteps,
   updateLiveIssueVmStateSteps,
   type IssueVmState,
   type NewIssueVm,
@@ -21,8 +23,21 @@ export function* setIssueVmStateSteps(
   input: { id: string; state: IssueVmState; now: number },
 ) {
   const changed = yield* updateLiveIssueVmStateSteps(q, input);
-  if (changed > 0) return { ok: true } satisfies IssueVmStateChange;
+  if (changed > 0) {
+    if (input.state === "awake")
+      yield* openIssueVmAwakeSteps(q, { issueVmId: input.id, now: input.now });
+    else yield* closeIssueVmAwakeSteps(q, { issueVmId: input.id, now: input.now });
+    return { ok: true } satisfies IssueVmStateChange;
+  }
   const current = yield* issueVmByIdSteps(q, input.id);
   if (current === null) return { ok: false, reason: "missing" } satisfies IssueVmStateChange;
   return { ok: false, reason: "ended", state: current.state } satisfies IssueVmStateChange;
+}
+
+export function* markIssueVmAwakeSteps(q: Q, input: { id: string; now: number }) {
+  return yield* setIssueVmStateSteps(q, { ...input, state: "awake" });
+}
+
+export function* markIssueVmAsleepSteps(q: Q, input: { id: string; now: number }) {
+  return yield* setIssueVmStateSteps(q, { ...input, state: "asleep" });
 }

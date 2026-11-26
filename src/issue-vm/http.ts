@@ -8,6 +8,7 @@ import {
   listWorkspaceMembersSteps,
   readSettingSteps,
   revokeIssueVmGrantSteps,
+  saveIssueVmSpendSettingsSteps,
   workspaceMemberSteps,
   workspaceMemberUsable,
   type Db,
@@ -17,9 +18,11 @@ import {
 import { journalCaught } from "../journal";
 import { json, localRequest, readJson, sameToken } from "../settings";
 import { isWorkspaceAdmin, type WorkspacePrincipal } from "../workspace";
+import { issueVmSpendLimitSteps, issueVmSpendSteps, type IssueVmSpendLimit } from "./spend";
 
 export const ISSUE_VM_MEMBERS_PATH = "/api/settings/issue-vm/members";
 export const ISSUE_VM_GRANTS_PATH = "/api/settings/issue-vm/grants";
+export const ISSUE_VM_SPEND_PATH = "/api/settings/issue-vm/spend";
 const GRANT_PATH = /^\/api\/settings\/issue-vm\/grants\/([0-9A-Za-z]+)$/;
 
 const DAY = 86_400_000;
@@ -45,7 +48,12 @@ export type IssueVmHttpOptions = {
 };
 
 export function isIssueVmGrantPath(path: string): boolean {
-  return path === ISSUE_VM_MEMBERS_PATH || path === ISSUE_VM_GRANTS_PATH || GRANT_PATH.test(path);
+  return (
+    path === ISSUE_VM_MEMBERS_PATH ||
+    path === ISSUE_VM_GRANTS_PATH ||
+    path === ISSUE_VM_SPEND_PATH ||
+    GRANT_PATH.test(path)
+  );
 }
 
 function view({ workspaceId: _workspaceId, ...grant }: IssueVmGrant): IssueVmGrantView {
@@ -99,6 +107,82 @@ function parseGrant(body: unknown, now: number): GrantInput | string {
   return { memberUserId, limit, endsAt: ends };
 }
 
+const MAX_USD = 1_000_000;
+
+function amount(value: unknown, name: string): number | null | string {
+  if (value === null) return null;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > MAX_USD)
+    return `${name} must be a number of US dollars from 0 to ${MAX_USD}`;
+  return value;
+}
+
+function parseSpend(body: unknown, current: IssueVmSpendLimit): IssueVmSpendLimit | string {
+  if (typeof body !== "object" || body === null) return "Expected a JSON object";
+  const { monthlyLimitUsd, prices } = body as Record<string, unknown>;
+  const next: IssueVmSpendLimit = { ...current, prices: { ...current.prices } };
+  if (monthlyLimitUsd !== undefined) {
+    const limit = amount(monthlyLimitUsd ?? Number.NaN, "monthlyLimitUsd");
+    if (typeof limit !== "number") return limit ?? "monthlyLimitUsd is required";
+    next.monthlyLimitUsd = limit;
+  }
+  if (prices !== undefined) {
+    if (typeof prices !== "object" || prices === null) return "prices must be an object";
+    for (const [provider, value] of Object.entries(prices)) {
+      if (provider !== "boat" && provider !== "instabox")
+        return "prices takes only boat and instabox";
+      const price = amount(value, `prices.${provider}`);
+      if (typeof price === "string") return price;
+      next.prices[provider] = price;
+    }
+  }
+  return next;
+}
+
+const usd = (value: number | null) => (value === null ? "none" : `$${value}`);
+
+function describeSpend(spend: IssueVmSpendLimit) {
+  return `monthly limit ${usd(spend.monthlyLimitUsd)}, boat ${usd(spend.prices.boat)}/h, instabox ${usd(spend.prices.instabox)}/h`;
+}
+
+async function handleSpend(request: Request, options: IssueVmHttpOptions, now: number) {
+  const { db, principal } = options;
+  const workspaceId = principal.workspaceId;
+  if (request.method === "GET")
+    return json(await db.run((q) => issueVmSpendSteps(q, { workspaceId, at: now })));
+  if (request.method !== "PUT") return json({ error: "Method not allowed" }, 405);
+  if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))
+    return json({ error: "CSRF token missing" }, 403);
+  let body: unknown;
+  try {
+    body = await readJson(request);
+  } catch (error) {
+    journalCaught(error, "issue-vm.handleSpend.parse", null);
+    return json({ error: "Expected a JSON body" }, 400);
+  }
+  const saved = await db.transaction(function* (q) {
+    const next = parseSpend(body, yield* issueVmSpendLimitSteps(q, workspaceId));
+    if (typeof next === "string") return next;
+    yield* saveIssueVmSpendSettingsSteps(q, {
+      workspaceId,
+      monthlyLimitUsd: next.monthlyLimitUsd,
+      boatHourlyUsd: next.prices.boat,
+      instaboxHourlyUsd: next.prices.instabox,
+      updatedBy: principal.userId,
+      now,
+    });
+    yield* auditWorkspaceAccessSteps(q, {
+      workspaceId,
+      userId: principal.userId,
+      action: "settings.issue_vm_spend",
+      subject: `Set issue VM spend: ${describeSpend(next)}`,
+      now,
+    });
+    return yield* issueVmSpendSteps(q, { workspaceId, at: now });
+  });
+  if (typeof saved === "string") return json({ error: saved }, 400);
+  return json(saved);
+}
+
 function describe(name: string | null, userId: string, grant: { limit: number; endsAt: number }) {
   return `${name ?? userId} (${userId}): ${grant.limit} issue VMs until ${new Date(grant.endsAt).toISOString()}`;
 }
@@ -115,6 +199,7 @@ export async function handleIssueVmGrantRequest(
     return json({ error: "Only workspace admins can see and grant issue VMs." }, 403);
   const { db, principal } = options;
   const now = (options.now ?? Date.now)();
+  if (path === ISSUE_VM_SPEND_PATH) return handleSpend(request, options, now);
   if (path === ISSUE_VM_MEMBERS_PATH) {
     if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
     return json(await db.run((q) => membersSteps(q, principal.workspaceId, now)));
