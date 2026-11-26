@@ -1,7 +1,6 @@
 import { z } from "zod";
 import type { StageLimits } from "../core";
-import { updateConfigText } from "./settings-store";
-import type { PawsConfigFile } from "./file";
+import { saveSettingsSection, type PawsConfigFile } from "./file";
 
 export const MAX_TIME_LIMIT_MINUTES = 7 * 24 * 60;
 
@@ -55,9 +54,9 @@ function fromToml(value: {
   };
 }
 
-export function parseTimeLimitTables(text: string): Pick<PawsConfigFile, "timeLimits"> {
-  if (!/^\s*\[\s*time_limits\s*[\].]/m.test(text)) return {};
-  const parsed = tomlSchema.safeParse(Bun.TOML.parse(text));
+export function parseTimeLimitTables(section: unknown): Pick<PawsConfigFile, "timeLimits"> {
+  if (section === undefined) return {};
+  const parsed = tomlSchema.safeParse({ time_limits: section });
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     throw new Error(
@@ -108,38 +107,14 @@ export function parseTimeLimitSettings(value: unknown): StoredTimeLimits {
   return result.data.default;
 }
 
-function levelLines(value: TimeLimitMinutes): string {
-  return [
-    value.implementationMinutes === undefined
-      ? null
-      : `implementation_minutes = ${value.implementationMinutes}`,
-    value.fixesMinutes === undefined ? null : `fixes_minutes = ${value.fixesMinutes}`,
-    value.closeoutMinutes === undefined ? null : `closeout_minutes = ${value.closeoutMinutes}`,
-  ]
-    .filter((line) => line !== null)
-    .map((line) => `${line}\n`)
-    .join("");
-}
-
-export function renderTimeLimits(settings: StoredTimeLimits): string {
-  return `\n[time_limits]\n${levelLines(settings)}`;
-}
-
-export function setTimeLimitsText(current: string, settings: StoredTimeLimits): string {
-  let section = "";
-  const retained = current
-    .split(/\r?\n/)
-    .filter((line) => {
-      const heading = /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
-      if (heading?.[1]) section = heading[1].toLowerCase();
-      return section !== "time_limits" && !section.startsWith("time_limits.");
-    })
-    .join("\n")
-    .trimEnd();
-  const table = renderTimeLimits(settings);
-  return retained === "" ? table.trimStart() : `${retained}\n${table}`;
-}
-
 export function writeTimeLimits(path: string, settings: StoredTimeLimits): Promise<void> {
-  return updateConfigText(path, (text) => setTimeLimitsText(text, settings));
+  return saveSettingsSection(path, "time_limits", {
+    ...(settings.implementationMinutes === undefined
+      ? {}
+      : { implementation_minutes: settings.implementationMinutes }),
+    ...(settings.fixesMinutes === undefined ? {} : { fixes_minutes: settings.fixesMinutes }),
+    ...(settings.closeoutMinutes === undefined
+      ? {}
+      : { closeout_minutes: settings.closeoutMinutes }),
+  });
 }

@@ -53,30 +53,14 @@ export function parseQueueSettings(value: unknown): Partial<QueueSettings> {
   return { startTimeoutHours, ...cap };
 }
 
-export function renderQueueSettings(settings: Partial<QueueSettings>): string {
-  const lines = [
+export function queueSection(settings: Partial<QueueSettings>): Record<string, number> | undefined {
+  const section = {
     ...(settings.startTimeoutHours === undefined
-      ? []
-      : [`start_timeout_hours = ${settings.startTimeoutHours}`]),
+      ? {}
+      : { start_timeout_hours: settings.startTimeoutHours }),
     ...(settings.maxRunningPerOwner == null
-      ? []
-      : [`max_running_per_owner = ${settings.maxRunningPerOwner}`]),
-  ];
-  return lines.length ? `\n[queue]\n${lines.join("\n")}\n` : "";
-}
-
-/** Replace the `[queue]` table, keeping every other line. */
-export function setQueueSettingsText(current: string, settings: QueueSettings): string {
-  let section = "";
-  const retained = current
-    .split(/\r?\n/)
-    .filter((line) => {
-      const heading = /^\s*\[([^\]]+)\]\s*(?:#.*)?$/.exec(line);
-      if (heading?.[1]) section = heading[1].trim().toLowerCase();
-      return section !== "queue";
-    })
-    .join("\n")
-    .trimEnd();
-  const table = renderQueueSettings(settings);
-  return retained === "" ? table.trimStart() : `${retained}\n${table}`;
+      ? {}
+      : { max_running_per_owner: settings.maxRunningPerOwner }),
+  };
+  return Object.keys(section).length ? section : undefined;
 }

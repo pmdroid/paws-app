@@ -2,14 +2,13 @@ import { afterEach, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import {
+  parseConfigToml,
   BOAT_SIZES,
   loadConfigFile,
-  parseBriefTemplates,
-  readConfigText,
   updateVmSizes,
   useSettingsStore,
 } from "../src/config";
-import { savedSettingsText, sectionSettings, seedSettings } from "./saved-settings";
+import { savedSettingsText, sectionSettings, seedSettings, readConfigText } from "./saved-settings";
 import { handleMemberVmSettingsRequest, type MemberVmSettingsOptions } from "../src/settings";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
@@ -136,7 +135,7 @@ test("a [member_vm] line inside a multiline brief template survives a save", asy
   const { configPath } = await instance(`${SEEDED}\n[brief]\ntemplate = """\n${template}"""\n`);
   await updateVmSizes(configPath, () => ({ sizes: { "exe-dev": { cpu: 6 } } }));
   const text = readConfigText(configPath);
-  expect(parseBriefTemplates(text).template).toBe(template);
+  expect(parseConfigToml(text).briefTemplate).toBe(template);
   expect(text).toContain("[vm_sizes.exe-dev]\ncpu = 6\n");
   expect(text).not.toContain("cpu = 2");
 });

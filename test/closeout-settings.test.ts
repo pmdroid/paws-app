@@ -6,9 +6,9 @@ import {
   closeoutPolicyRoot,
   loadConfigFile,
   useSettingsStore,
-  renderSettingsToml,
   settingsSectionsOf,
 } from "../src/config";
+import { renderSettingsToml } from "./saved-settings";
 import { handleCloseoutSettingsRequest, type CloseoutSettingsOptions } from "../src/settings";
 
 let dir: string;

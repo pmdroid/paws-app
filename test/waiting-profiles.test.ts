@@ -15,7 +15,8 @@ import {
 } from "../src/db";
 import { eq } from "drizzle-orm";
 import { runDir, type RunAgentOptions, type RunAgentResult } from "../src/acp";
-import { readConfigText, useMemorySettings, writeAgentSettings } from "../src/config";
+import { useMemorySettings, writeAgentSettings } from "../src/config";
+import { readConfigText } from "./saved-settings";
 import { handleAgentSettingsRequest } from "../src/settings";
 import { createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";

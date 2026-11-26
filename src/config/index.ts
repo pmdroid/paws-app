@@ -14,7 +14,9 @@ export {
   isImplementer,
   loadConfigFile,
   parseConfigToml,
-  setConfigKeys,
+  saveSettingsSection,
+  saveSettingsSections,
+  configFromSections,
   writeFindingsGroupingTime,
   updateVmSizes,
   writeMemberVmProviderOff,
@@ -23,15 +25,14 @@ export {
 export type {
   AgentsConfig,
   CloseoutSettings,
-  ConfigKeyValue,
+  SettingsSectionName,
   GitHubConfigAuth,
   ImplementerName,
   PawsConfigFile,
   TrackerKind,
 } from "./file";
 export {
-  readConfigText,
-  renderSettingsToml,
+  readSettingSections,
   SETTINGS_SECTIONS,
   settingsSectionsOf,
   useMemorySettings,
@@ -61,7 +62,7 @@ export {
   MEMBER_VM_PROVIDERS,
   memberVmProvider,
   parseMemberVmSettings,
-  renderMemberVmSettings,
+  memberVmSection,
   vmSizeFor,
 } from "./member-vm";
 export type { MemberVmProviderName, MemberVmSize, VmSizes } from "./member-vm";
@@ -185,11 +186,5 @@ export {
   writeProjectSkills,
 } from "./skills";
 export type { ProjectSkillRoots, ProjectSkills } from "./skills";
-export {
-  parseBriefTemplates,
-  renderBriefTemplates,
-  resolveBriefTemplate,
-  setBriefTemplatesText,
-  writeBriefTemplates,
-} from "./brief";
+export { parseBriefTemplates, resolveBriefTemplate, writeBriefTemplates } from "./brief";
 export type { BriefTemplates } from "./brief";

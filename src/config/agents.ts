@@ -1,8 +1,7 @@
-import { updateConfigText } from "./settings-store";
 import { z } from "zod";
-import { setImplementerText, type ImplementerName, type PawsConfigFile } from "./file";
-import { setMergeSettingsText, type StoredMerge } from "./merge";
-import { setQueueSettingsText, type QueueSettings } from "./queue";
+import { saveSettingsSections, type ImplementerName, type PawsConfigFile } from "./file";
+import { mergeSection, type StoredMerge } from "./merge";
+import { queueSection, type QueueSettings } from "./queue";
 
 export type AgentProfile = {
   agent: ImplementerName;
@@ -162,22 +161,21 @@ export function resolveAgentProfiles(
   };
 }
 
-export function parseAgentSettingsToml(
-  text: string,
+export function parseAgentSettingsSection(
+  section: unknown,
   implementer: ImplementerName,
 ): AgentSettings | null {
-  if (!/^\s*\[agents\.(defaults|presets)(?:[.\]])/m.test(text)) return null;
-  const parsed = Bun.TOML.parse(text) as {
-    agents?: {
-      defaults?: {
-        implementer?: Partial<AgentProfile>;
-        reviewer?: Partial<AgentProfile>;
-        reviewer_fallback?: Partial<AgentProfile>;
-      };
-      presets?: Record<string, Partial<Record<keyof AgentPreset, object>>>;
-    };
-  };
-  const agents = parsed.agents;
+  const agents = section as
+    | {
+        defaults?: {
+          implementer?: Partial<AgentProfile>;
+          reviewer?: Partial<AgentProfile>;
+          reviewer_fallback?: Partial<AgentProfile>;
+        };
+        presets?: Record<string, Partial<Record<keyof AgentPreset, object>>>;
+      }
+    | undefined;
+  if (agents?.defaults === undefined && agents?.presets === undefined) return null;
   const defaults = {
     implementer: { model: null, ...(agents?.defaults?.implementer ?? { agent: implementer }) },
     reviewer: { model: null, ...(agents?.defaults?.reviewer ?? { agent: "codex" }) },
@@ -203,31 +201,36 @@ export function parseAgentSettingsToml(
   });
 }
 
-export function renderAgentSettingsText(current: string, input: AgentSettings): string {
+export function agentsSection(current: unknown, input: AgentSettings): Record<string, unknown> {
   const settings = parseAgentSettings(input);
-  let section = "";
-  const retained = current
-    .split(/\r?\n/)
-    .filter((line) => {
-      const heading = /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
-      if (heading?.[1]) section = heading[1].trim();
-      return !/^agents\.(defaults|presets)(?:\.|$)/i.test(section);
-    })
-    .join("\n");
-  const base = setImplementerText(retained, settings.defaults.implementer.agent).trimEnd();
-  const sections = [
-    renderProfile("agents.defaults.implementer", settings.defaults.implementer),
-    renderProfile("agents.defaults.reviewer", settings.defaults.reviewer),
-  ];
-  if (settings.defaults.reviewerFallback)
-    sections.push(
-      renderProfile("agents.defaults.reviewer_fallback", settings.defaults.reviewerFallback),
-    );
-  const presets = renderAgentPresetsText(settings);
-  if (presets) sections.push(presets);
-  const next = `${base}\n\n${sections.join("\n\n")}\n`;
-  Bun.TOML.parse(next);
-  return next;
+  const {
+    defaults: _defaults,
+    presets: _presets,
+    ...rest
+  } = (typeof current === "object" && current !== null ? current : {}) as Record<string, unknown>;
+  const fallback = settings.defaults.reviewerFallback;
+  return {
+    ...rest,
+    implementer: settings.defaults.implementer.agent,
+    defaults: {
+      implementer: profileSection(settings.defaults.implementer),
+      reviewer: profileSection(settings.defaults.reviewer),
+      ...(fallback ? { reviewer_fallback: profileSection(fallback) } : {}),
+    },
+    ...(settings.presets && Object.keys(settings.presets).length > 0
+      ? {
+          presets: Object.fromEntries(
+            Object.entries(settings.presets).map(([name, preset]) => [
+              name,
+              {
+                implementer: profileSection(preset.implementer),
+                reviewer: profileSection(preset.reviewer),
+              },
+            ]),
+          ),
+        }
+      : {}),
+  };
 }
 
 export function writeAgentSettings(
@@ -236,27 +239,18 @@ export function writeAgentSettings(
   merge?: StoredMerge,
   queue?: QueueSettings,
 ): Promise<void> {
-  return updateConfigText(path, (current) => {
-    const agents = renderAgentSettingsText(current, input);
-    const merged = merge === undefined ? agents : setMergeSettingsText(agents, merge);
-    return queue === undefined ? merged : setQueueSettingsText(merged, queue);
-  });
+  return saveSettingsSections(path, (stored) => ({
+    agents: agentsSection(stored["agents"], input),
+    ...(merge === undefined ? {} : { merge: mergeSection(merge) }),
+    ...(queue === undefined ? {} : { queue: queueSection(queue) }),
+  }));
 }
 
-function renderAgentPresetsText(settings: AgentSettings): string {
-  return Object.entries(settings.presets ?? {})
-    .flatMap(([name, preset]) =>
-      (["implementer", "reviewer"] as const).map((role) =>
-        renderProfile(`agents.presets.${JSON.stringify(name)}.${role}`, preset[role]),
-      ),
-    )
-    .join("\n\n");
-}
-
-function renderProfile(section: string, profile: AgentProfile): string {
-  const lines = [`[${section}]`, `agent = ${JSON.stringify(profile.agent)}`];
-  if (profile.model !== null) lines.push(`model = ${JSON.stringify(profile.model)}`);
-  if (profile.effort !== undefined) lines.push(`effort = ${JSON.stringify(profile.effort)}`);
-  if (profile.fast !== undefined) lines.push(`fast = ${profile.fast}`);
-  return lines.join("\n");
+function profileSection(profile: AgentProfile): Record<string, unknown> {
+  return {
+    agent: profile.agent,
+    ...(profile.model === null ? {} : { model: profile.model }),
+    ...(profile.effort === undefined ? {} : { effort: profile.effort }),
+    ...(profile.fast === undefined ? {} : { fast: profile.fast }),
+  };
 }

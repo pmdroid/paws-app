@@ -2,12 +2,8 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  loadConfigFile,
-  readConfigText,
-  resolveTimeLimits,
-  useMemorySettings,
-} from "../src/config";
+import { loadConfigFile, resolveTimeLimits, useMemorySettings } from "../src/config";
+import { readConfigText } from "./saved-settings";
 import { handleTimeLimitSettingsRequest, type TimeLimitSettingsOptions } from "../src/settings";
 
 let dir: string;

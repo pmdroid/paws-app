@@ -2,15 +2,14 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfigFile, parseConfigToml } from "./file";
+import { configFromSections, loadConfigFile, saveSettingsSection } from "./file";
 import {
-  readConfigText,
-  updateConfigText,
+  readSettingSections,
   useMemorySettings,
   useMemorySettingsByDefault,
   useSettingsStore,
-  renderSettingsToml,
   settingsSectionsOf,
+  type SettingSections,
 } from "./settings-store";
 
 const cleanups: (() => void)[] = [];
@@ -52,14 +51,14 @@ const BODIES: Record<string, string> = {
   [`skills.projects.${PROJECT}`]: 'root = ".agents/skills"',
 };
 
-async function storedSettings(initial: string | null) {
+async function storedSettings(initial: SettingSections) {
   const home = mkdtempSync(join(tmpdir(), "paws-settings-store-"));
   const configPath = join(home, "config.toml");
   let stored = initial;
   const settings = await useSettingsStore(configPath, {
-    read: async () => settingsSectionsOf(stored ?? ""),
+    read: async () => stored,
     update: async (change) => {
-      stored = renderSettingsToml(change(settingsSectionsOf(stored ?? "")));
+      stored = change(stored);
     },
   });
   cleanups.push(() => {
@@ -69,32 +68,25 @@ async function storedSettings(initial: string | null) {
   return { configPath, stored: () => stored };
 }
 
-test("every section the settings writer emits parses again", async () => {
-  const { configPath, stored } = await storedSettings(null);
-  await updateConfigText(configPath, (current) =>
-    [
-      current,
-      ...WRITER_SECTIONS.map((name) => `[${name}]\n${BODIES[name] ?? ""}`),
-      "[agents.grok]",
-    ].join("\n\n"),
+test("every section the startup conversion keeps parses as typed sections", () => {
+  const sections = settingsSectionsOf(
+    [...WRITER_SECTIONS.map((name) => `[${name}]\n${BODIES[name] ?? ""}`), "[agents.grok]"].join(
+      "\n\n",
+    ),
   );
-  const saved = stored() ?? "";
-  expect(Object.keys(settingsSectionsOf(saved)).sort()).toEqual(
+  expect(Object.keys(sections).sort()).toEqual(
     [...new Set(WRITER_SECTIONS.map((name) => name.replace(/\..*/, "")))].sort(),
   );
-  expect(saved).not.toContain("[agents.grok]");
-  expect(() => parseConfigToml(saved)).not.toThrow();
+  expect(sections["agents"]).not.toHaveProperty("grok");
+  expect(() => configFromSections(sections)).not.toThrow();
 });
 
 test("a config.toml on disk is never read or written", async () => {
-  const { configPath, stored } = await storedSettings("[merge]\nci_fix_attempts = 4\n");
+  const { configPath, stored } = await storedSettings({ merge: { ci_fix_attempts: 4 } });
   writeFileSync(configPath, '[linear]\nteam = "ACME"\n\n[merge]\nci_fix_attempts = 9\n');
-  expect(readConfigText(configPath)).toBe("[merge]\nci_fix_attempts = 4\n");
-  await updateConfigText(
-    configPath,
-    (current) => `${current}\n[queue]\nstart_timeout_hours = 12\n`,
-  );
-  expect(stored()).toContain("[queue]\nstart_timeout_hours = 12");
+  expect(readSettingSections(configPath)).toEqual({ merge: { ci_fix_attempts: 4 } });
+  await saveSettingsSection(configPath, "queue", { start_timeout_hours: 12 });
+  expect(stored()).toEqual({ merge: { ci_fix_attempts: 4 }, queue: { start_timeout_hours: 12 } });
   expect(readFileSync(configPath, "utf8")).toBe(
     '[linear]\nteam = "ACME"\n\n[merge]\nci_fix_attempts = 9\n',
   );
@@ -107,7 +99,7 @@ test("a save does not create a file", async () => {
     update: async () => undefined,
   });
   cleanups.push(() => settings.release());
-  await updateConfigText(configPath, () => "[queue]\nstart_timeout_hours = 2\n");
+  await saveSettingsSection(configPath, "queue", { start_timeout_hours: 2 });
   expect(existsSync(configPath)).toBe(false);
 });
 
@@ -115,24 +107,24 @@ test("with no store and no default store, a save rejects and nothing is kept", a
   const configPath = join(tmpdir(), `paws-memory-${crypto.randomUUID()}`, "config.toml");
   useMemorySettingsByDefault(false);
   try {
-    expect(readConfigText(configPath)).toBe("");
+    expect(readSettingSections(configPath)).toEqual({});
     await expect(
-      updateConfigText(configPath, () => "[queue]\nstart_timeout_hours = 2\n"),
+      saveSettingsSection(configPath, "queue", { start_timeout_hours: 2 }),
     ).rejects.toThrow("Settings are not available: the database is not open");
-    expect(readConfigText(configPath)).toBe("");
+    expect(readSettingSections(configPath)).toEqual({});
     expect(existsSync(configPath)).toBe(false);
   } finally {
     useMemorySettingsByDefault();
   }
 });
 
-test("a stored unknown section is not read and is gone after any save", async () => {
-  const { configPath, stored } = await storedSettings(
-    "[merge]\nci_fix_attempts = 4\n\n[project_memory]\nwork_summary = true\n",
+test("a save that fails its section's checks keeps the stored sections", async () => {
+  const { configPath, stored } = await storedSettings({ merge: { ci_fix_attempts: 4 } });
+  await expect(saveSettingsSection(configPath, "merge", { parallel: 9 })).rejects.toThrow(
+    "Saved settings merge.parallel must be from 1 to 5",
   );
-  expect(readConfigText(configPath)).toBe("[merge]\nci_fix_attempts = 4\n");
-  await updateConfigText(configPath, (current) => current);
-  expect(stored()).toBe("[merge]\nci_fix_attempts = 4\n");
+  expect(stored()).toEqual({ merge: { ci_fix_attempts: 4 } });
+  expect(readSettingSections(configPath)).toEqual({ merge: { ci_fix_attempts: 4 } });
 });
 
 test("memory settings seed loadConfigFile with no file on disk and keep a save", async () => {
@@ -140,12 +132,11 @@ test("memory settings seed loadConfigFile with no file on disk and keep a save",
   const settings = useMemorySettings(configPath, '[agents]\nimplementer = "codex"\n');
   cleanups.push(() => settings.release());
   expect(loadConfigFile(configPath).agents.implementer).toBe("codex");
-  await updateConfigText(
-    configPath,
-    (current) => `${current}\n[queue]\nstart_timeout_hours = 12\n`,
-  );
-  expect(readConfigText(configPath)).toContain("[queue]\nstart_timeout_hours = 12");
-  expect(readConfigText(configPath)).toContain('implementer = "codex"');
+  await saveSettingsSection(configPath, "queue", { start_timeout_hours: 12 });
+  expect(readSettingSections(configPath)).toEqual({
+    agents: { implementer: "codex" },
+    queue: { start_timeout_hours: 12 },
+  });
   expect(existsSync(configPath)).toBe(false);
 });
 
@@ -153,7 +144,7 @@ test("releasing memory settings removes the registration", () => {
   const configPath = join(tmpdir(), `paws-memory-${crypto.randomUUID()}`, "config.toml");
   const settings = useMemorySettings(configPath, '[agents]\nimplementer = "codex"\n');
   settings.release();
-  expect(readConfigText(configPath)).toBe("");
+  expect(readSettingSections(configPath)).toEqual({});
   expect(loadConfigFile(configPath).agents.implementer).not.toBe("codex");
 });
 
@@ -161,5 +152,5 @@ test("memory settings without text start empty", () => {
   const configPath = join(tmpdir(), `paws-memory-${crypto.randomUUID()}`, "config.toml");
   const settings = useMemorySettings(configPath);
   cleanups.push(() => settings.release());
-  expect(readConfigText(configPath)).toBe("");
+  expect(readSettingSections(configPath)).toEqual({});
 });

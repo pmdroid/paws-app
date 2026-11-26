@@ -1,11 +1,6 @@
 import type { IssueBrief } from "../core";
 import { journalCaught } from "../journal";
-import {
-  parseBriefTemplates,
-  readConfigText,
-  writeBriefTemplates,
-  type BriefTemplates,
-} from "../config";
+import { loadConfigFile, writeBriefTemplates, type BriefTemplates } from "../config";
 import {
   BRIEF_PLACEHOLDERS,
   BRIEF_RUN_SAMPLES,
@@ -144,7 +139,7 @@ async function previewBrief(request: Request, options: BriefSettingsOptions): Pr
 }
 
 function stored(path: string): BriefTemplates {
-  return parseBriefTemplates(readConfigText(path));
+  return { template: loadConfigFile(path).briefTemplate ?? null };
 }
 
 function listing(options: BriefSettingsOptions) {

@@ -15,7 +15,8 @@ import { worktreePath } from "../src/acp";
 import { REVIEW_COMMAND_RULE } from "../src/closeout-spec";
 import { JobLoop, OutboxDispatcher, getWorkItem, listWorkItems, openPawsStore } from "../src/db";
 import { systemClock, defaultBriefTemplate } from "../src/core";
-import { readConfigText, useMemorySettings, writeBriefTemplates } from "../src/config";
+import { useMemorySettings, writeBriefTemplates } from "../src/config";
+import { readConfigText } from "./saved-settings";
 import {
   createFakeTracker,
   createLinearTracker,

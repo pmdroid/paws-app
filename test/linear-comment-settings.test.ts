@@ -3,12 +3,11 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   loadConfigFile,
-  readConfigText,
   resolveLinearCommentAgents,
   useMemorySettings,
   useSettingsStore,
 } from "../src/config";
-import { sectionSettings } from "./saved-settings";
+import { sectionSettings, readConfigText } from "./saved-settings";
 import { handleLinearCommentSettingsRequest } from "../src/settings";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";

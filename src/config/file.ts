@@ -1,7 +1,7 @@
 import { parseBriefTemplates } from "./brief";
 import { existsSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { parseAgentSettingsToml, type AgentSettings } from "./agents";
+import { parseAgentSettingsSection, type AgentSettings } from "./agents";
 
 import {
   MAIN_MOVED,
@@ -22,16 +22,18 @@ import {
 } from "./merge";
 import {
   knownConfigSection,
-  readConfigText,
+  readSettingSections,
   SAVED_SETTINGS_SECTIONS,
   savedSettingsSections,
-  updateConfigText,
+  SETTINGS_SECTIONS,
+  tomlSettingSections,
+  updateSettingSections,
   type SettingSections,
 } from "./settings-store";
 import { parseTimeLimitTables, type StoredTimeLimits } from "./time-limits";
 import {
   assignMemberVmKey,
-  setMemberVmText,
+  memberVmSection,
   upgradeSettingSections,
   type MemberVmProviderName,
   type VmSizes,
@@ -120,46 +122,44 @@ export function emptyConfigFile(): PawsConfigFile {
 }
 
 export function loadConfigFile(path: string): PawsConfigFile {
-  const text = readConfigText(path);
-  return text === "" ? emptyConfigFile() : parseConfigToml(text);
+  return configFromSections(readSettingSections(path));
 }
 
-/** The setup writer’s subset: sections, comments, quoted strings, integers, booleans. */
 export function parseConfigToml(text: string): PawsConfigFile {
+  return configFromSections(tomlSettingSections(text));
+}
+
+export function configFromSections(sections: SettingSections): PawsConfigFile {
   const config = emptyConfigFile();
-  let section = "";
-  const lines = text.split(/\r?\n/);
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = stripComment(lines[index] ?? "").trim();
-    if (line.length === 0) continue;
-    const heading = /^\[\[?\s*([^[\]]+?)\s*\]\]?$/.exec(line);
-    if (heading?.[1]) {
-      section = heading[1].toLowerCase();
-      if (!knownConfigSection(section))
-        throw new Error(`Saved settings line ${index + 1} has an unknown section: ${section}`);
-      continue;
-    }
-    const eq = line.indexOf("=");
-    if (eq <= 0) throw new Error(`Saved settings line ${index + 1} is not a key`);
-    if (section === "brief" || section.startsWith("brief.")) continue;
-    if (section === "time_limits" || section.startsWith("time_limits.")) continue;
-    if (section === "member_vm") continue;
-    const key = line.slice(0, eq).trim().toLowerCase();
-    const raw = line.slice(eq + 1).trim();
-    if (key.length === 0 || raw.length === 0) {
-      throw new Error(`Saved settings line ${index + 1} is not a key`);
-    }
-    assignConfig(config, section, key, parseValue(raw, index + 1), index + 1);
-  }
-  const skills = parseProjectSkills(text);
+  for (const [name, value] of Object.entries(sections))
+    if (isTable(value)) assignTable(config, name.toLowerCase(), value);
+  const skills = parseProjectSkills(sections["skills"]);
   if (skills.length > 0) config.projectSkills = skills;
-  const settings = parseAgentSettingsToml(text, config.agents.implementer);
+  const settings = parseAgentSettingsSection(sections["agents"], config.agents.implementer);
   if (settings !== null) config.agentSettings = settings;
-  const brief = parseBriefTemplates(text);
+  const brief = parseBriefTemplates(sections["brief"]);
   if (brief.template !== null) config.briefTemplate = brief.template;
-  Object.assign(config, parseMergeTables(text));
-  Object.assign(config, parseTimeLimitTables(text));
+  Object.assign(config, parseMergeTables(sections["merge"]));
+  Object.assign(config, parseTimeLimitTables(sections["time_limits"]));
   return config;
+}
+
+function isTable(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function assignTable(config: PawsConfigFile, section: string, table: Record<string, unknown>) {
+  const values = Object.values(table);
+  if (!knownConfigSection(section) && !(values.length > 0 && values.every(isTable)))
+    throw new Error(`Saved settings have an unknown section: ${section}`);
+  if (/^(brief|time_limits|member_vm)(\.|$)/.test(section)) return;
+  for (const [key, value] of Object.entries(table)) {
+    const nested = `${section}.${/^[A-Za-z0-9_-]+$/.test(key) ? key : JSON.stringify(key)}`;
+    if (isTable(value)) assignTable(config, nested.toLowerCase(), value);
+    else if (Array.isArray(value) && value.length > 0 && value.every(isTable))
+      for (const item of value) assignTable(config, nested.toLowerCase(), item);
+    else assignConfig(config, section, key.toLowerCase(), value as ConfigValue);
+  }
 }
 
 export function configSettingsSections(text: string): SettingSections {
@@ -182,282 +182,138 @@ export function githubMirrorsOn(config: Pick<PawsConfigFile, "githubAccess">) {
   return config.githubAccess?.mirrors ?? true;
 }
 
-export type ConfigKeyValue = string | number | readonly string[] | null;
-
-/**
- * Set keys in one `[section]` of saved settings text, keeping every other line,
- * section and comment. A null value removes the key. A missing section is appended.
- */
-export function setConfigKeys(
-  current: string,
-  section: string,
-  values: Record<string, ConfigKeyValue>,
-): string {
-  const pending = new Map(Object.entries(values));
-  const render = (key: string, value: string | number | readonly string[]) =>
-    `${key} = ${typeof value === "string" ? tomlString(value) : typeof value === "number" ? tomlNumber(value) : tomlStringArray(value)}`;
-  const out: string[] = [];
-  let state: "before" | "in" | "after" = "before";
-  let insertAt = -1;
-  for (const line of current.length === 0 ? [] : current.split(/\r?\n/)) {
-    const trimmed = stripComment(line).trim();
-    const heading = /^\[\s*([^[\]]+?)\s*\]$/.exec(trimmed);
-    if (heading?.[1] || trimmed.startsWith("[[")) {
-      if (state === "in") state = "after";
-      if (state === "before" && heading?.[1]?.toLowerCase() === section) state = "in";
-      out.push(line);
-      if (state === "in") insertAt = out.length;
-      continue;
-    }
-    if (state === "in") {
-      const eq = trimmed.indexOf("=");
-      const key = eq > 0 ? trimmed.slice(0, eq).trim().toLowerCase() : "";
-      if (pending.has(key)) {
-        const value = pending.get(key)!;
-        pending.delete(key);
-        if (value !== null) {
-          out.push(render(key, value));
-          insertAt = out.length;
-        }
-        continue;
-      }
-      if (trimmed.length > 0) insertAt = out.length + 1;
-    }
-    out.push(line);
-  }
-  const added = [...pending].flatMap(([key, value]) =>
-    value === null ? [] : [render(key, value)],
-  );
-  if (insertAt >= 0) out.splice(insertAt, 0, ...added);
-  else if (added.length > 0) {
-    while (out.length > 0 && out[out.length - 1]!.trim() === "") out.pop();
-    if (out.length > 0) out.push("");
-    out.push(`[${section}]`, ...added);
-  }
-  const text = out.join("\n");
-  return text.endsWith("\n") || text.length === 0 ? text : `${text}\n`;
-}
-
-function tomlNumber(value: number): string {
-  if (!Number.isFinite(value)) throw new Error("config value must be a finite number");
-  return String(value);
-}
-
-function tomlStringArray(values: readonly string[]): string {
-  return `[${values.map((value) => tomlString(value)).join(", ")}]`;
-}
-
-function tomlString(value: string): string {
-  if (value.includes("\n") || value.includes("\r")) {
-    throw new Error("config value cannot contain a newline");
-  }
-  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-}
-
-function stripComment(line: string): string {
-  let quote = false;
-  let escaped = false;
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-    if (quote) {
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (char === "\\") {
-        escaped = true;
-        continue;
-      }
-      if (char === '"') quote = false;
-      continue;
-    }
-    if (char === '"') {
-      quote = true;
-      continue;
-    }
-    if (char === "#") return line.slice(0, index);
-  }
-  return line;
-}
-
-function parseValue(raw: string, line: number): string | number | boolean | string[] {
-  if (raw === "true") return true;
-  if (raw === "false") return false;
-  if (raw.startsWith("[")) return parseArray(raw, line);
-  if (/^-?\d+$/.test(raw)) return Number(raw);
-  if (raw.startsWith('"')) return parseString(raw, line);
-  throw new Error(`Saved settings line ${line} has an unsupported value`);
-}
-
-function parseArray(raw: string, line: number): string[] {
-  if (!raw.endsWith("]")) throw new Error(`Saved settings line ${line} has an unclosed array`);
-  const inner = raw.slice(1, -1).trim();
-  if (inner.length === 0) return [];
-  const parts: string[] = [];
-  let buf = "";
-  let quote = false;
-  let escaped = false;
-  for (let index = 0; index < inner.length; index += 1) {
-    const char = inner[index] ?? "";
-    if (quote) {
-      buf += char;
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (char === "\\") {
-        escaped = true;
-        continue;
-      }
-      if (char === '"') quote = false;
-      continue;
-    }
-    if (char === '"') {
-      quote = true;
-      buf += char;
-      continue;
-    }
-    if (char === ",") {
-      parts.push(buf.trim());
-      buf = "";
-      continue;
-    }
-    buf += char;
-  }
-  if (buf.trim().length > 0) parts.push(buf.trim());
-  return parts.map((part) => {
-    if (!part.startsWith('"')) {
-      throw new Error(`Saved settings line ${line} has an unsupported array value`);
-    }
-    return parseString(part, line);
-  });
-}
-
-function parseString(raw: string, line: number): string {
-  if (!raw.endsWith('"') || raw.length < 2) {
-    throw new Error(`Saved settings line ${line} has an unclosed string`);
-  }
-  let out = "";
-  for (let index = 1; index < raw.length - 1; index += 1) {
-    const char = raw[index];
-    if (char !== "\\") {
-      out += char;
-      continue;
-    }
-    const next = raw[index + 1];
-    if (next === "\\" || next === '"') {
-      out += next;
-      index += 1;
-      continue;
-    }
-    throw new Error(`Saved settings line ${line} has an unknown escape`);
-  }
-  return out;
-}
+type ConfigValue = string | number | boolean | string[];
 
 function assignConfig(
   config: PawsConfigFile,
   section: string,
   key: string,
-  value: string | number | boolean | string[],
-  line: number,
+  value: ConfigValue,
 ): void {
+  const at = `${section}.${key}`;
   if (section === "findings") {
     if (key !== "grouping_time" || typeof value !== "string" || !GROUPING_TIME_PATTERN.test(value))
-      throw new Error(`Saved settings line ${line}: findings.grouping_time must be HH:MM UTC`);
+      throw new Error(`Saved settings findings.grouping_time must be HH:MM UTC`);
     config.findingsGroupingTime = value;
     return;
   }
   if (section === "linear_comments") {
-    if (key !== "agents")
-      throw new Error(`Saved settings line ${line} has an unknown key: ${section}.${key}`);
-    config.savedLinearCommentAgents = asStringArray(value, line);
+    if (key !== "agents") throw new Error(`Saved settings have an unknown key: ${section}.${key}`);
+    config.savedLinearCommentAgents = asStringArray(value, at);
     return;
   }
   if (section === "github_access") {
     const access = (config.githubAccess ??= {});
-    if (key === "agent_read") access.agentRead = asBoolean(value, line);
-    else if (key === "mirrors") access.mirrors = asBoolean(value, line);
-    else throw new Error(`Saved settings line ${line} has an unknown key: ${section}.${key}`);
+    if (key === "agent_read") access.agentRead = asBoolean(value, at);
+    else if (key === "mirrors") access.mirrors = asBoolean(value, at);
+    else throw new Error(`Saved settings have an unknown key: ${section}.${key}`);
     return;
   }
   const closeoutProject = /^closeout\.projects\."([^"\\]+)"$/.exec(section);
   if (closeoutProject) {
     const repo = closeoutProject[1]!;
     if (!/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repo))
-      throw new Error(`Saved settings line ${line} requires a Closeout owner/repo`);
+      throw new Error(`Saved settings ${at} requires a Closeout owner/repo`);
     if (key !== "policy_root")
-      throw new Error(`Saved settings line ${line} has an unknown Closeout project key`);
-    const root = asString(value, line);
+      throw new Error(`Saved settings ${at} has an unknown Closeout project key`);
+    const root = asString(value, at);
     if (!root.trim() || root.includes("\0"))
-      throw new Error(`Saved settings line ${line} requires a nonempty Closeout policy_root`);
+      throw new Error(`Saved settings ${at} requires a nonempty Closeout policy_root`);
     (config.closeoutProjects ??= {})[repo] = root;
     return;
   }
   if (section.startsWith("closeout.projects"))
-    throw new Error(`Saved settings line ${line} requires [closeout.projects."owner/repo"]`);
+    throw new Error(`Saved settings require [closeout.projects."owner/repo"]`);
   if (section === "closeout") {
     return;
   }
   if (section === "merge") {
-    if (key === "auto_approve_high_risk") config.autoApproveHighRisk = asBoolean(value, line);
-    else if (key === "overlap_hold") config.overlapHold = asBoolean(value, line);
-    else if (key === "ci_fix_attempts") config.ciFixAttempts = asInt(value, line);
-    else if (key === "parallel") config.mergeParallel = mergeParallel(value, line);
+    if (key === "auto_approve_high_risk") config.autoApproveHighRisk = asBoolean(value, at);
+    else if (key === "overlap_hold") config.overlapHold = asBoolean(value, at);
+    else if (key === "ci_fix_attempts") config.ciFixAttempts = asInt(value, at);
+    else if (key === "parallel") config.mergeParallel = mergeParallel(value, at);
     else if (key === "conflict_prone_after")
       config.conflictProneAfter = mergeRange(
         value,
-        line,
+        at,
         "conflict_prone_after",
         MAX_CONFLICT_PRONE_AFTER,
       );
     else if (key === "conflict_prone_days")
       config.conflictProneDays = mergeRange(
         value,
-        line,
+        at,
         "conflict_prone_days",
         MAX_CONFLICT_PRONE_DAYS,
       );
-    else if (key === "comment_quiet_seconds") config.commentQuietSeconds = asInt(value, line);
-    else if (key === "comment_max_wait_seconds") config.commentMaxWaitSeconds = asInt(value, line);
-    else if (key === "review_wait_max_seconds") config.reviewWaitMaxSeconds = asInt(value, line);
-    else if (key === "order") config.mergeOrder = oneOf(MERGE_ORDERS, value, line, "merge.order");
+    else if (key === "comment_quiet_seconds") config.commentQuietSeconds = asInt(value, at);
+    else if (key === "comment_max_wait_seconds") config.commentMaxWaitSeconds = asInt(value, at);
+    else if (key === "review_wait_max_seconds") config.reviewWaitMaxSeconds = asInt(value, at);
+    else if (key === "order") config.mergeOrder = oneOf(MERGE_ORDERS, value, at, "merge.order");
     else if (key === "main_moved")
-      config.mainMoved = oneOf(MAIN_MOVED, value, line, "merge.main_moved");
-    else if (key === "lanes") config.mergeLanes = mergeLanes(value, line);
+      config.mainMoved = oneOf(MAIN_MOVED, value, at, "merge.main_moved");
+    else if (key === "lanes") config.mergeLanes = mergeLanes(value);
     else if (key === "lane")
       config.mergeLanes ??=
-        oneOf(MERGE_LANES, value, line, "merge.lane") === "project"
+        oneOf(MERGE_LANES, value, at, "merge.lane") === "project"
           ? ["project", "person"]
           : ["person"];
     else if (key === "no_project")
-      config.mergeNoProject = oneOf(MERGE_NO_PROJECT, value, line, "merge.no_project");
-    else throw new Error(`Saved settings line ${line} has an unknown key: ${section}.${key}`);
+      config.mergeNoProject = oneOf(MERGE_NO_PROJECT, value, at, "merge.no_project");
+    else throw new Error(`Saved settings have an unknown key: ${section}.${key}`);
     return;
   }
   if (section === "queue") {
-    if (key === "start_timeout_hours") config.queueStartTimeoutHours = asInt(value, line);
-    if (key === "max_running_per_owner") config.queueMaxRunningPerOwner = asInt(value, line);
+    if (key === "start_timeout_hours") config.queueStartTimeoutHours = asInt(value, at);
+    if (key === "max_running_per_owner") config.queueMaxRunningPerOwner = asInt(value, at);
     return;
   }
   if (section === "vm_sizes" || section.startsWith("vm_sizes.")) {
-    assignMemberVmKey((config.vmSizes ??= {}), section, key, value, line);
+    assignMemberVmKey((config.vmSizes ??= {}), section, key, value);
     return;
   }
   if (section === "issue_vm") {
-    assignIssueVmKey((config.issueVm ??= {}), key, value, line);
+    assignIssueVmKey((config.issueVm ??= {}), key, value);
     return;
   }
   if (section === "agents") {
-    if (key === "implementer") config.agents.implementer = implementerName(value, line);
+    if (key === "implementer") config.agents.implementer = implementerName(value, at);
     return;
   }
 }
 
+export type SettingsSectionName = (typeof SETTINGS_SECTIONS)[number];
+
+export type SettingsSectionValues = Partial<Record<SettingsSectionName, unknown>>;
+
+export function saveSettingsSections(
+  path: string,
+  values: SettingsSectionValues | ((stored: SettingSections) => SettingsSectionValues),
+): Promise<void> {
+  return updateSettingSections(path, (stored) => {
+    const next = { ...stored };
+    for (const [name, value] of Object.entries(
+      typeof values === "function" ? values(stored) : values,
+    ))
+      if (value === undefined) delete next[name];
+      else next[name] = value;
+    configFromSections(next);
+    return next;
+  });
+}
+
+export function saveSettingsSection(
+  path: string,
+  name: SettingsSectionName,
+  value: unknown,
+): Promise<void> {
+  return saveSettingsSections(path, { [name]: value });
+}
+
 export function updateVmSizes(path: string, change: (saved: VmSizes) => VmSizes): Promise<void> {
-  return updateConfigText(path, (text) =>
-    setMemberVmText(text, change(parseConfigToml(text).vmSizes ?? {})),
-  );
+  return saveSettingsSections(path, (stored) => ({
+    vm_sizes: memberVmSection(change(configFromSections(stored).vmSizes ?? {})),
+  }));
 }
 
 export function writeMemberVmProviderOff(
@@ -476,114 +332,70 @@ const GROUPING_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 export function writeFindingsGroupingTime(path: string, groupingTime: string): Promise<void> {
   if (!GROUPING_TIME_PATTERN.test(groupingTime))
     throw new Error("findings.grouping_time must be HH:MM UTC");
-  return updateConfigText(path, (text) =>
-    setConfigKeys(text, "findings", { grouping_time: groupingTime }),
-  );
+  return saveSettingsSection(path, "findings", { grouping_time: groupingTime });
 }
 
 function oneOf<T extends string>(
   choices: readonly T[],
-  value: string | number | boolean | string[],
-  line: number,
+  value: ConfigValue,
+  at: string,
   name: string,
 ): T {
-  const text = asString(value, line);
+  const text = asString(value, at);
   if (!(choices as readonly string[]).includes(text))
-    throw new Error(`Saved settings line ${line} ${name} must be ${choices.join(", ")}`);
+    throw new Error(`Saved settings ${name} must be ${choices.join(", ")}`);
   return text as T;
 }
 
-function mergeParallel(value: string | number | boolean | string[], line: number): number {
-  return mergeRange(value, line, "parallel", MAX_MERGE_PARALLEL);
+function mergeParallel(value: ConfigValue, at: string): number {
+  return mergeRange(value, at, "parallel", MAX_MERGE_PARALLEL);
 }
 
-function mergeRange(
-  value: string | number | boolean | string[],
-  line: number,
-  key: string,
-  max: number,
-): number {
-  const count = asInt(value, line);
+function mergeRange(value: ConfigValue, at: string, key: string, max: number): number {
+  const count = asInt(value, at);
   if (count < 1 || count > max)
-    throw new Error(`Saved settings line ${line} merge.${key} must be from 1 to ${max}`);
+    throw new Error(`Saved settings merge.${key} must be from 1 to ${max}`);
   return count;
 }
 
-function mergeLanes(value: string | number | boolean | string[], line: number): MergeLaneSplit[] {
+function mergeLanes(value: ConfigValue): MergeLaneSplit[] {
   try {
     return parseMergeLanes(value);
   } catch (error) {
-    throw new Error(`Saved settings line ${line} merge.${(error as Error).message}`, {
+    throw new Error(`Saved settings merge.${(error as Error).message}`, {
       cause: error,
     });
   }
 }
 
-function implementerName(
-  value: string | number | boolean | string[],
-  line: number,
-): ImplementerName {
-  const name = asString(value, line);
+function implementerName(value: ConfigValue, at: string): ImplementerName {
+  const name = asString(value, at);
   if (!isImplementer(name)) {
-    throw new Error(
-      `Saved settings line ${line} agents.implementer must be claude, grok, codex, or opencode`,
-    );
+    throw new Error(`Saved settings agents.implementer must be claude, grok, codex, or opencode`);
   }
   return name;
 }
 
-export function setImplementerText(current: string, implementer: ImplementerName): string {
-  const lines = current.split(/\r?\n/);
-  const assignment = `implementer = "${implementer}"`;
-  let section = "";
-  let header = -1;
-  let replaced = false;
-  const next = lines.map((line, index) => {
-    const trimmed = stripComment(line).trim();
-    const headerMatch = /^\[([A-Za-z0-9_.-]+)]$/.exec(trimmed);
-    if (headerMatch) {
-      section = headerMatch[1] ?? "";
-      if (section === "agents" && header === -1) header = index;
-      return line;
-    }
-    if (section === "agents" && /^implementer\s*=/.test(trimmed)) {
-      replaced = true;
-      const indent = /^(\s*)/.exec(line)?.[1] ?? "";
-      const comment = line.slice(stripComment(line).length);
-      return `${indent}${assignment}${comment.length > 0 ? ` ${comment}` : ""}`;
-    }
-    return line;
-  });
-  if (replaced) return next.join("\n");
-  if (header >= 0) {
-    next.splice(header + 1, 0, assignment);
-    return next.join("\n");
-  }
-  const body = current.trim().length === 0 ? "" : current.replace(/\s*$/, "\n");
-  return `${body}[agents]\n${assignment}\n`;
-}
-
-function asString(value: string | number | boolean | string[], line: number): string {
-  if (typeof value !== "string") throw new Error(`Saved settings line ${line} must be a string`);
+function asString(value: ConfigValue, at: string): string {
+  if (typeof value !== "string") throw new Error(`Saved settings ${at} must be a string`);
   return value;
 }
 
-function asStringArray(value: string | number | boolean | string[], line: number): string[] {
+function asStringArray(value: ConfigValue, at: string): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
-    throw new Error(`Saved settings line ${line} must be an array of strings`);
+    throw new Error(`Saved settings ${at} must be an array of strings`);
   }
   return value;
 }
 
-function asBoolean(value: string | number | boolean | string[], line: number): boolean {
-  if (typeof value !== "boolean")
-    throw new Error(`Saved settings line ${line} must be true or false`);
+function asBoolean(value: ConfigValue, at: string): boolean {
+  if (typeof value !== "boolean") throw new Error(`Saved settings ${at} must be true or false`);
   return value;
 }
 
-function asInt(value: string | number | boolean | string[], line: number): number {
+function asInt(value: ConfigValue, at: string): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`Saved settings line ${line} must be a non-negative integer`);
+    throw new Error(`Saved settings ${at} must be a non-negative integer`);
   }
   return value;
 }
@@ -631,26 +443,16 @@ export function parseCloseoutSettings(value: unknown): CloseoutSettings {
   return { projects: parsed };
 }
 
-export function setCloseoutSettingsText(current: string, settings: CloseoutSettings): string {
-  let section = "";
-  const retained = current
-    .split(/\r?\n/)
-    .filter((line) => {
-      const heading = /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
-      if (heading?.[1]) section = heading[1].toLowerCase();
-      return section !== "closeout.projects" && !section.startsWith("closeout.projects.");
-    })
-    .join("\n")
-    .trimEnd();
-  const tables = Object.entries(settings.projects)
-    .map(
-      ([repo, { policyRoot }]) =>
-        `[closeout.projects.${tomlString(repo)}]\npolicy_root = ${tomlString(policyRoot)}\n`,
-    )
-    .join("\n");
-  return [retained, tables].filter((part) => part !== "").join("\n\n") + "\n";
-}
-
 export function writeCloseoutSettings(path: string, settings: CloseoutSettings): Promise<void> {
-  return updateConfigText(path, (text) => setCloseoutSettingsText(text, settings));
+  return saveSettingsSections(path, (stored) => {
+    const { projects: _projects, ...rest } = isTable(stored["closeout"]) ? stored["closeout"] : {};
+    const projects = Object.fromEntries(
+      Object.entries(settings.projects).map(([repo, { policyRoot }]) => [
+        repo,
+        { policy_root: policyRoot },
+      ]),
+    );
+    const closeout = Object.keys(projects).length > 0 ? { ...rest, projects } : rest;
+    return { closeout: Object.keys(closeout).length > 0 ? closeout : undefined };
+  });
 }

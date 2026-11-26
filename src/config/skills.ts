@@ -1,8 +1,7 @@
 import { statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { z } from "zod";
-import type { PawsConfigFile } from "./file";
-import { updateConfigText } from "./settings-store";
+import { saveSettingsSection, type PawsConfigFile } from "./file";
 
 export type ProjectSkills = { repo: string; root: string };
 
@@ -21,10 +20,9 @@ const skillsSchema = z.strictObject({
   ),
 });
 
-export function parseProjectSkills(text: string): ProjectSkills[] {
-  if (!/^\s*\[skills(?:\.|\])/m.test(text)) return [];
-  const parsed = Bun.TOML.parse(text) as { skills?: unknown };
-  const skills = skillsSchema.parse(parsed.skills);
+export function parseProjectSkills(section: unknown): ProjectSkills[] {
+  if (section === undefined) return [];
+  const skills = skillsSchema.parse(section);
   const projects = Object.entries(skills.projects).map(([repo, value]) => ({
     repo: repo.toLowerCase(),
     root: value.root,
@@ -41,15 +39,6 @@ export function projectSkillsRoot(
 ): string | undefined {
   const root = config.projectSkills?.find((entry) => entry.repo === repository.toLowerCase())?.root;
   return root === undefined ? undefined : isAbsolute(root) ? root : resolve(pawsRoot, root);
-}
-
-export function renderProjectSkills(projects: readonly ProjectSkills[]): string {
-  return projects
-    .map(
-      ({ repo, root }) =>
-        `\n[skills.projects.${JSON.stringify(repo)}]\nroot = ${JSON.stringify(root)}\n`,
-    )
-    .join("");
 }
 
 export type ProjectSkillRoots = { projects: Record<string, { root: string }> };
@@ -94,17 +83,11 @@ export function writeProjectSkills(
   path: string,
   projects: readonly ProjectSkills[],
 ): Promise<void> {
-  return updateConfigText(path, (text) => {
-    let section = "";
-    const retained = text
-      .split(/\r?\n/)
-      .filter((line) => {
-        const heading = /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
-        if (heading?.[1]) section = heading[1].toLowerCase();
-        return section !== "skills" && !section.startsWith("skills.");
-      })
-      .join("\n")
-      .trimEnd();
-    return `${retained}\n${renderProjectSkills(projects)}`.trimStart();
-  });
+  return saveSettingsSection(
+    path,
+    "skills",
+    projects.length === 0
+      ? undefined
+      : { projects: Object.fromEntries(projects.map(({ repo, root }) => [repo, { root }])) },
+  );
 }

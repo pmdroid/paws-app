@@ -4,9 +4,7 @@ import { join } from "node:path";
 import {
   SETTINGS_CONVERSION,
   loadConfigFile,
-  parseBriefTemplates,
   parseConfigToml,
-  readConfigText,
   SETTINGS_SECTIONS,
   useSettingsStore,
   writeFindingsGroupingTime,
@@ -22,7 +20,7 @@ import {
 import { handleTimeLimitSettingsRequest } from "../src/settings";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
-import { sectionSettings } from "./saved-settings";
+import { sectionSettings, readConfigText } from "./saved-settings";
 
 const KNOWN = `[github_access]
 agent_read = false
@@ -128,7 +126,7 @@ test("a blob that does not parse stops the conversion with its line and stays in
   const broken =
     '[merge]\norder = "queue"\n\n[project_memory]\nnote = 1\n\n[queue]\nstart_timeout_hours =\n';
   await updateSetting(db, CONFIG_SETTINGS_KEY, () => broken, 1);
-  await expect(convert(db)).rejects.toThrow("Saved settings line 8 is not a key");
+  await expect(convert(db)).rejects.toThrow("Saved settings line 8 could not be read");
   expect(await readSetting(db, CONFIG_SETTINGS_KEY)).toBe(broken);
   expect(Object.keys(await rows(db))).toEqual([CONFIG_SETTINGS_KEY]);
 });
@@ -211,7 +209,7 @@ test("a string with a DEL character reads back after a save", async () => {
   );
   const reopened = await open(db);
   expect(readConfigText(reopened)).toContain("\\u007f");
-  expect(parseBriefTemplates(readConfigText(reopened)).template).toBe("Keep\u007f short.");
+  expect(parseConfigToml(readConfigText(reopened)).briefTemplate).toBe("Keep\u007f short.");
   await writeFindingsGroupingTime(reopened, "08:00");
   expect(loadConfigFile(reopened).findingsGroupingTime).toBe("08:00");
   expect(JSON.parse((await rows(db))["settings.brief"]!.value)).toEqual({

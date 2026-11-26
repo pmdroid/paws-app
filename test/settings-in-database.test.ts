@@ -2,11 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  parseConfigToml,
   emptyConfigFile,
   loadConfigFile,
   loadRuntime,
-  parseBriefTemplates,
-  readConfigText,
   readMergeSettings,
   resolveAgentProfiles,
   settingsSectionsOf,
@@ -24,7 +23,7 @@ import {
 import { fakeSkillResolver } from "../src/skills";
 import { tempHome } from "./helpers";
 import { copyMigratedPglite, pgliteServer, tempStore } from "./pglite";
-import { savedSettingsText, sectionSettings, seedSettings } from "./saved-settings";
+import { savedSettingsText, sectionSettings, seedSettings, readConfigText } from "./saved-settings";
 
 const BOOTSTRAP = `[merge]
 order = "queue"
@@ -177,7 +176,7 @@ test("a table-like line inside a multiline string is not read as a section", asy
   );
   await a.refresh();
   const text = readConfigText(a.configPath);
-  expect(parseBriefTemplates(text).template).toBe(template);
+  expect(parseConfigToml(text).briefTemplate).toBe(template);
   expect(text).toContain("[queue]\nmax_running_per_owner = 2");
 });
 

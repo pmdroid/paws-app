@@ -1,6 +1,5 @@
 import { z } from "zod";
-import { updateConfigText } from "./settings-store";
-import type { PawsConfigFile } from "./file";
+import { saveSettingsSection, type PawsConfigFile } from "./file";
 
 export type LinearCommentSettings = { agents: string[]; configured: boolean };
 
@@ -36,21 +35,6 @@ export function parseLinearCommentSettings(value: unknown): string[] {
   return [...new Set(result.data.agents)];
 }
 
-export function setLinearCommentAgentsText(current: string, agents: readonly string[]): string {
-  let section = "";
-  const retained = current
-    .split(/\r?\n/)
-    .filter((line) => {
-      const heading = /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
-      if (heading?.[1]) section = heading[1].toLowerCase();
-      return section !== "linear_comments";
-    })
-    .join("\n")
-    .trimEnd();
-  const table = `[linear_comments]\nagents = [${agents.map((id) => `"${id}"`).join(", ")}]\n`;
-  return retained === "" ? table : `${retained}\n\n${table}`;
-}
-
 export function writeLinearCommentAgents(path: string, agents: readonly string[]): Promise<void> {
-  return updateConfigText(path, (text) => setLinearCommentAgentsText(text, agents));
+  return saveSettingsSection(path, "linear_comments", { agents: [...agents] });
 }
