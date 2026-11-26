@@ -13,7 +13,12 @@ import {
 import { answerSteps } from "../questions";
 import { askSteps } from "./operations";
 import { questionEffects } from "./question-effects";
-import { AGENT_HUNG_REASON, AGENT_HUNG_RETRY, AGENT_HUNG_STOP } from "./runner-wait";
+import {
+  AGENT_HUNG_REASON,
+  AGENT_HUNG_RETRY,
+  AGENT_HUNG_STOP,
+  REVIEWER_MODEL_REASON,
+} from "./runner-wait";
 import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
@@ -122,4 +127,11 @@ test("Stop after the runner ran out of memory ends the item as stopped", async (
   const { state, jobs } = await askHung("Stop", OUT_OF_MEMORY_REASON);
   expect(state).toBe("failed");
   expect(jobs.filter((job) => job.status === "pending")).toEqual([]);
+});
+
+test("a reviewer model answer always queues its own re-verification", async () => {
+  const { state, jobs } = await askHung("codex gpt-other", REVIEWER_MODEL_REASON);
+  expect(state).toBe("verifying");
+  const keys = jobs.filter((job) => job.queue === JOB_KIND.reverify).map((job) => job.jobKey);
+  expect(keys).toEqual([expect.stringMatching(/^reviewer-model:/)]);
 });

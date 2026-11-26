@@ -188,12 +188,14 @@ const UNUSABLE_FOR_ITEM = [
   "owner-inactive",
 ];
 
+const NEEDS_ANOTHER_MODEL = [REVIEWER_MODEL_MATCHES, "agent-not-signed-in", "auth-expired"];
+const reasonOf = (entry: string) => entry.slice(entry.indexOf(":") + 2);
+
 export function reviewerModelDeadEnd(rejected: readonly string[]): boolean {
-  const reason = (entry: string) => entry.slice(entry.indexOf(":") + 2);
   return (
-    rejected.some((entry) => reason(entry) === REVIEWER_MODEL_MATCHES) &&
+    rejected.some((entry) => reasonOf(entry) === REVIEWER_MODEL_MATCHES) &&
     rejected.every((entry) =>
-      [REVIEWER_MODEL_MATCHES, ...UNUSABLE_FOR_ITEM].includes(reason(entry)),
+      [...NEEDS_ANOTHER_MODEL, ...UNUSABLE_FOR_ITEM].includes(reasonOf(entry)),
     )
   );
 }
@@ -401,7 +403,7 @@ export function createRemoteAgentRunner(options: {
       const implementation = (yield* lastSuccessfulImplementationSteps(q, itemId))?.model;
       if (!implementation) return null;
       const inScope = rejected
-        .filter((entry) => entry.endsWith(`: ${REVIEWER_MODEL_MATCHES}`))
+        .filter((entry) => NEEDS_ANOTHER_MODEL.includes(reasonOf(entry)))
         .map((entry) => entry.slice(0, entry.indexOf(":")));
       const alternatives: string[] = [];
       for (const source of yield* agentModelSourcesSteps(q, now()))

@@ -6,6 +6,7 @@ const matches = "a: reviewer model matches implementation model";
 test("only a reviewer model match on every usable runner is a dead end", () => {
   expect(reviewerModelDeadEnd([matches, "b: not-yours", "c: revoked"])).toBe(true);
   expect(reviewerModelDeadEnd([matches, "b: run pinned to another online runner"])).toBe(true);
+  expect(reviewerModelDeadEnd([matches, "b: agent-not-signed-in"])).toBe(true);
   for (const waits of ["b: offline", "b: paused", "b: no free capacity (work 1 of 1)"])
     expect(reviewerModelDeadEnd([matches, waits])).toBe(false);
   expect(reviewerModelDeadEnd([])).toBe(false);

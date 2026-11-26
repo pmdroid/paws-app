@@ -422,6 +422,10 @@ export function questionEffects(
           );
         return;
       }
+      if (question.reason === REVIEWER_MODEL_REASON) {
+        yield* verifyAgainSteps(q, question, { now: input.now, key: "reviewer-model" });
+        return;
+      }
       yield* consumeTurn(q, question);
       if ((yield* findOpenQuestionSteps(q, question.sessionId))?.itemId === question.itemId) return;
       const item = yield* getWorkItemSteps(q, question.itemId);
