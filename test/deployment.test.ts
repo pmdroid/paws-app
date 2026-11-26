@@ -7,6 +7,7 @@ import {
   loadPublicTls,
   publicTlsProxy,
   PROXY_RUNNER_TLS_REQUIRED,
+  reloadPublicTls,
   validateTlsRenewal,
   type PublicTls,
 } from "../src/deployment";
@@ -151,21 +152,36 @@ describe("public HTTPS terminated by a proxy", () => {
     });
   });
 
-  test("certificate validation has nothing to check behind the proxy", async () => {
-    const child = Bun.spawn(
-      [process.execPath, "--no-env-file", "src/index.ts", "public-tls", "validate"],
-      {
-        cwd: join(import.meta.dir, ".."),
-        env: { PATH: "/usr/bin:/bin", HOME: root, ...proxied },
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    );
-    const [exit, stdout] = await Promise.all([child.exited, new Response(child.stdout).text()]);
-    expect(exit).toBe(0);
-    expect(stdout).toContain(
-      "Public HTTPS is terminated by the proxy; no certificate to validate.",
-    );
+  test("a reload restarts for a valid pair and keeps the current certificate otherwise", () => {
+    const current = createPublicTlsFixture(join(root, "reload-current"));
+    const other = createPublicTlsFixture(join(root, "reload-other"));
+    const env: Record<string, string | undefined> = {
+      ...proxied,
+      PAWS_HOME: tempHome(),
+      PAWS_PUBLIC_TLS: undefined,
+      PAWS_PUBLIC_URL: "https://localhost",
+      ...current,
+    };
+    const reload = () => {
+      const seen: { restarted: number; rejected: string[] } = { restarted: 0, rejected: [] };
+      reloadPublicTls(env, {
+        restart: () => seen.restarted++,
+        rejected: (error) => seen.rejected.push((error as Error).message),
+      });
+      return seen;
+    };
+    expect(reload()).toEqual({ restarted: 1, rejected: [] });
+    env.PAWS_TLS_CERT_PATH = other.PAWS_TLS_CERT_PATH;
+    const broken = reload();
+    expect(broken.restarted).toBe(0);
+    expect(broken.rejected).toHaveLength(1);
+    expect(broken.rejected[0]).toContain("Public TLS certificate and private key must be valid");
+    env.PAWS_PUBLIC_URL = "https://paws.example";
+    env.PAWS_TLS_CERT_PATH = current.PAWS_TLS_CERT_PATH;
+    expect(reload().rejected).toEqual(["Public HTTPS certificate does not match its hostname."]);
+    env.PAWS_PUBLIC_TLS = "proxy";
+    env.PAWS_TLS_KEY_PATH = env.PAWS_TLS_CERT_PATH = undefined;
+    expect(reload()).toEqual({ restarted: 1, rejected: [] });
   });
 
   async function signInStarts(proxy: boolean, forwardedFor: string[]) {

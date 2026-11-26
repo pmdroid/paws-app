@@ -193,42 +193,17 @@ if (mode === "invalid") {
   console.log(JSON.stringify(observations));
   process.exit(0);
 }
-if (enabled || mode === "pending") {
-  async function initialize() {
-    const child = Bun.spawn(
-      [process.execPath, "--no-env-file", "src/index.ts", "runner-authority", "init"],
-      { env: source, stdout: "pipe", stderr: "pipe" },
-    );
-    const [exit, output, error] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    return { exit, output, error };
-  }
-  const first = await initialize();
-  assert.equal(first.exit, 0, first.error);
-  const identity = join(root, "secrets", "runner-identity");
-  const hashes = () =>
-    ["runner-authority.json", "runner-command-key.pem", ".envelope-key"].map((name) =>
-      createHash("sha256")
-        .update(readFileSync(join(identity, name)))
-        .digest("hex"),
-    );
-  const before = hashes();
-  const keyId = first.output.trim().split(" ").at(-1);
-  const second = await initialize();
-  assert.equal(second.exit, 0, second.error);
-  assert.equal(second.output.trim(), `Runner authority already initialized. Command key: ${keyId}`);
-  assert.deepEqual(hashes(), before);
-  observe(
-    "normal CLI initializes protected runner identities and preserves them on repeated init",
-    { firstExit: 0, duplicateExit: 0, identitiesUnchanged: true },
+const identity = join(root, "secrets", "runner-identity");
+const identityHashes = () =>
+  ["runner-authority.json", "runner-command-key.pem", ".envelope-key"].map((name) =>
+    createHash("sha256")
+      .update(readFileSync(join(identity, name)))
+      .digest("hex"),
   );
-}
 const pending = Promise.withResolvers<void>();
 if (mode === "pending") runtimeLinear.installation = pending.promise;
 if (mode === "remote") {
+  mkdirSync(join(root, "secrets"), { recursive: true, mode: 0o700 });
   const config = join(root, "secrets", "runner-transcript-storage.json");
   writeFileSync(config, "invalid", { mode: 0o600 });
   await assert.rejects(
@@ -264,6 +239,7 @@ const paws = await startPaws(source, {
     : {}),
 });
 let stopped = false;
+let firstIdentity: string[] = [];
 async function call<T = Record<string, unknown>>(
   port: number,
   path: string,
@@ -336,12 +312,12 @@ async function closed(port: number) {
 try {
   if (mode === "missing") {
     await paws.ready;
-    const identity = join(root, "secrets", "runner-identity");
     for (const name of ["runner-authority.json", "runner-command-key.pem"])
       assert(existsSync(join(identity, name)), name);
     assert(existsSync(join(identity, "inputs")));
     assert.equal(readSecretFile(join(identity, "agent-read-tokens.json")), "{}");
     assert(!(await closed(runnerPort)));
+    firstIdentity = identityHashes();
     observe("normal startup creates a missing runner identity beside existing runner files", {
       ready: true,
       runnerListenerOpen: true,
@@ -672,4 +648,16 @@ observe("normal shutdown closes both owned HTTPS listeners", {
   browserClosed: true,
   runnerClosed: true,
 });
+if (mode === "missing") {
+  const again = await startPaws({ ...source, PAWS_PORT: "0" });
+  try {
+    await again.ready;
+  } finally {
+    await again.stop();
+  }
+  assert.deepEqual(identityHashes(), firstIdentity);
+  observe("a second start leaves the runner identity byte for byte the same", {
+    identityUnchanged: true,
+  });
+}
 console.log(JSON.stringify(observations));

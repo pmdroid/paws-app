@@ -9,5 +9,6 @@ export {
   validatePublicTls,
   validatePublicTlsFiles,
   validateTlsRenewal,
+  reloadPublicTls,
   PUBLIC_TLS_RESTART_EXIT,
 } from "./renewal";

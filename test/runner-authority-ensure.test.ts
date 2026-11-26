@@ -86,26 +86,3 @@ test("a failure after the authority is written removes only what this call wrote
   expect(existsSync(join(root, "agent-read-tokens.json"))).toBe(true);
   expect((await ensureRunnerCoordinator(root)).created).toBe(true);
 });
-
-test("paws runner-authority init succeeds twice with the same key id", async () => {
-  const { dir } = secretsDir();
-  const home = join(dir, "..");
-  const run = () => {
-    const result = Bun.spawnSync(
-      [
-        process.execPath,
-        join(import.meta.dir, "..", "src", "index.ts"),
-        "runner-authority",
-        "init",
-      ],
-      { env: { ...process.env, PAWS_HOME: home, PAWS_SECRET_KEY: "" } },
-    );
-    expect(result.exitCode).toBe(0);
-    return result.stdout.toString().trim();
-  };
-  const first = run();
-  const second = run();
-  expect(first).toStartWith("Runner authority initialized. Command key: ");
-  const keyId = first.slice(first.lastIndexOf(" ") + 1);
-  expect(second).toBe(`Runner authority already initialized. Command key: ${keyId}`);
-}, 30_000);

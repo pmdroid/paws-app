@@ -12,7 +12,12 @@ import {
   getWorkItem,
   insertQueuedItem,
 } from "../../src/db";
-import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "../../src/deployment";
+import {
+  loadPublicTls,
+  reloadPublicTls,
+  validatePublicTls,
+  PUBLIC_TLS_RESTART_EXIT,
+} from "../../src/deployment";
 import { startServer } from "../../src/server";
 
 /** App mode commits WIP only under a run commit policy. */
@@ -148,21 +153,9 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/nonexistent-verification-bus",
   };
   const cwd = fileURLToPath(new URL("../..", import.meta.url));
-  async function validateCli() {
-    const child = Bun.spawn(
-      [process.execPath, "--no-env-file", "src/index.ts", "public-tls", "validate"],
-      {
-        cwd,
-        env,
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    );
-    const [exit] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
+  function reload() {
+    let exit = 1;
+    reloadPublicTls(env, { restart: () => (exit = 0), rejected: () => undefined });
     return exit;
   }
   const { db: healthDb, close: closeHealthDb } = await tempStore();
@@ -219,7 +212,7 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
     }
     for (const [name, tls] of validPurposes) {
       stage(tls);
-      assert.equal(await validateCli(), 0);
+      assert.equal(reload(), 0);
       assert.deepEqual(loadPublicTls(env), tls);
       const candidate = listen();
       try {
@@ -239,7 +232,7 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
       ...wrongPurposes,
     ] as const) {
       stage(tls);
-      assert.equal(await validateCli(), 1);
+      assert.equal(reload(), 1);
       assert.throws(() => validatePublicTls(env));
       if (wrongPurposes.some(([purpose]) => purpose === name))
         assert.throws(() => loadPublicTls(env));
@@ -247,7 +240,7 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
       rejected.push(name);
     }
     stage(replacement);
-    assert.equal(await validateCli(), 0);
+    assert.equal(reload(), 0);
     await server.stop(true);
     server = listen(port);
     const newFingerprint = await fingerprint(port);
