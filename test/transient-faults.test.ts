@@ -322,7 +322,7 @@ test("a wait with no runner offered still stops the task after the hour and its 
   ]);
 }, 90_000);
 
-test("a wait for a runner that offers the model has no time limit and spends no retries", async () => {
+test("a wait for a runner that offers the model puts the item back in the queue", async () => {
   const clock = new FakeClock(Date.now());
   const result = await runWithFault({
     error: () => new RunnerCapacityWait([], undefined, ["box: claude does not offer m"], true),
@@ -330,10 +330,10 @@ test("a wait for a runner that offers the model has no time limit and spends no 
     clock,
     untilMs: 12 * HOUR_MS,
   });
-  expect(["running", "recovering"], result.detail).toContain(result.state!);
-  expect(new Set(result.retries), result.detail).toEqual(new Set([0]));
+  expect(result.state, result.detail).toBe("queued");
+  expect(result.states, result.detail).not.toContain("failed");
+  expect(result.states, result.detail).not.toContain("awaiting_input");
   expect(result.errors, result.detail).toEqual([]);
-  expect(result.capacityWait, result.detail).toMatchObject({ runnerIds: [], untimed: true });
 }, 90_000);
 
 test("a busy runner wait that outlasts the hour, then loses its runners, gets a fresh hour", async () => {

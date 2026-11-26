@@ -708,9 +708,18 @@ export function createRunnerPlacement(options: {
     const result = input.result;
     if ((!result && !input.failure) || (result && result.commandId !== input.commandId))
       throw new Error("Runner result is not bound to its command");
+    const selected = input.profile?.model;
+    const missing = selected
+      ? [selected, selected.replace(/\[1m\]$/i, "")].find((id) =>
+          new RegExp(
+            `Agent does not advertise model ${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.?(?:\\s|$)`,
+          ).test(result?.errorMessage ?? ""),
+        )
+      : undefined;
     // A replay after a restart repeats the recorded decision without counting usage again.
     if (usage.endedAt !== null)
       return {
+        ...(missing ? { modelMissing: missing } : {}),
         retryable: RETRYABLE_OUTCOMES.has(usage.outcome ?? ""),
         ...(usage.outcome === "quota_exhausted"
           ? { usageLimit: { resetsAt: usage.resetsAt } }
@@ -800,14 +809,6 @@ export function createRunnerPlacement(options: {
       recheckAt
     )
       yield* setRunnerAgentCooldownSteps(q, input.runnerId, usage.agent, recheckAt);
-    const selected = input.profile?.model;
-    const missing = selected
-      ? [selected, selected.replace(/\[1m\]$/i, "")].find((id) =>
-          new RegExp(
-            `Agent does not advertise model ${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.?(?:\\s|$)`,
-          ).test(result?.errorMessage ?? ""),
-        )
-      : undefined;
     if (missing && usage.agent)
       yield* dropCatalogModelSteps(q, {
         runnerId: input.runnerId,

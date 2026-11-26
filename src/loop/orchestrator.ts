@@ -2789,6 +2789,16 @@ export class Orchestrator {
         );
         return;
       }
+      if (capacityWaitIn(error)?.untimed && (await this.requeueForModel(item))) {
+        journalCaught(
+          error,
+          "orchestrator.executeRetried.executeQueued",
+          item.id,
+          "queued until a runner offers the model",
+          this.options.journal,
+        );
+        return;
+      }
       const refused = repositoryRefusedIn(error);
       if (refused && (await this.askRunnerRepository(item, refused))) {
         journalCaught(
@@ -2978,6 +2988,33 @@ export class Orchestrator {
     );
     if (held) emitJobReady(this.store);
     return held;
+  }
+
+  private async requeueForModel(item: WorkItemRecord): Promise<boolean> {
+    const now = this.now();
+    const queued = await this.store.transaction(function* (q) {
+      const current = yield* getWorkItemSteps(q, item.id);
+      if (
+        !current ||
+        current.cancelRequested ||
+        (current.state !== "running" && current.state !== "recovering")
+      )
+        return false;
+      if (current.currentRunId !== null) {
+        const run = yield* getRunSteps(q, current.currentRunId);
+        if (run && (run.status === "active" || run.status === "provisioning"))
+          yield* markRunSteps(q, run.id, "lost", now);
+      }
+      return (
+        (yield* restartSteps(q, current, {
+          reason: "follow_up",
+          body: "Retry once a runner offers the selected model.",
+          now,
+        })) !== null
+      );
+    });
+    if (queued) emitJobReady(this.store);
+    return queued;
   }
 
   private *holdForRunnerSetupSteps(

@@ -98,31 +98,33 @@ test("a turn whose agent does not advertise the model drops it from that runner'
       startedAt: NOW,
     }),
   );
-  const disposition = await db.transaction((q) =>
-    placement.finishedSteps(q, {
-      commandId: "turn",
-      runnerId: stale,
-      profile: request.profile,
-      result: {
-        executionId: "01M5GCQ27RE0YMKT767K0P3451",
+  const finish = () =>
+    db.transaction((q) =>
+      placement.finishedSteps(q, {
         commandId: "turn",
-        role: "implementer",
-        stopReason: "error",
-        timedOut: false,
-        cancelled: false,
-        authRequired: false,
-        agentExited: true,
-        errorMessage: `Run failed during agent: Agent does not advertise model ${MODEL}.`,
-      },
-      finishedAt: NOW + 2_000,
-    }),
-  );
-  expect(disposition).toMatchObject({ retryable: false, modelMissing: MODEL });
+        runnerId: stale,
+        profile: request.profile,
+        result: {
+          executionId: "01M5GCQ27RE0YMKT767K0P3451",
+          commandId: "turn",
+          role: "implementer",
+          stopReason: "error",
+          timedOut: false,
+          cancelled: false,
+          authRequired: false,
+          agentExited: true,
+          errorMessage: `Run failed during agent: Agent does not advertise model ${MODEL}.`,
+        },
+        finishedAt: NOW + 2_000,
+      }),
+    );
+  expect(await finish()).toMatchObject({ retryable: false, modelMissing: MODEL });
   const offered = await placement.candidates(request);
   expect(offered.map((runner) => runner.id)).toEqual([other]);
   const pinned = await placement.candidates({ ...request, pinnedRunnerId: stale });
   expect(pinned.map((runner) => runner.id)).toEqual([other]);
   await offer(db, stale, [MODEL], NOW + 3_000);
+  expect(await finish()).toMatchObject({ retryable: false, modelMissing: MODEL });
   const again = await placement.candidates(request);
   expect(again.map((runner) => runner.id).sort()).toEqual([other, stale].sort());
 });
@@ -140,4 +142,19 @@ test("the model wait reason shows while another runner is offline", () => {
       ],
     }),
   ).toBe(`No runner offers claude ${MODEL}`);
+});
+
+test("an eligible runner without a free slot shows the slot wait, not the model", () => {
+  const runner = { hostConfig: null } as const;
+  expect(
+    noRunnerOffersLine({
+      repository: null,
+      agent: "claude",
+      model: MODEL,
+      runners: [
+        { ...runner, id: "a", name: "a", rejection: `claude does not offer ${MODEL}` },
+        { ...runner, id: "b", name: "b", rejection: null },
+      ],
+    }),
+  ).toBeNull();
 });
