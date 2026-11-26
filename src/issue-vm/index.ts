@@ -46,3 +46,14 @@ export type {
   IssueVmReadiness,
   IssueVmRequest,
 } from "./lifecycle";
+export { createBoatIssueVmDriver } from "./boat";
+export { createInstaBoxIssueVmDriver } from "./instabox";
+export { issueVmName } from "./driver";
+export type { IssueVmDriverOptions } from "./driver";
+export { createIssueVmReplacer } from "./replace";
+export type {
+  IssueVmReplacement,
+  IssueVmReplacementResult,
+  IssueVmReplacer,
+  IssueVmSession,
+} from "./replace";
