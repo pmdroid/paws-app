@@ -1,41 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { migrate as pgliteMigrate } from "drizzle-orm/pglite/migrator";
 import { databaseUrlOf, loadRuntime } from "../src/config";
-import {
-  migrationTags,
-  openPawsStore,
-  PG_MIGRATIONS_FOLDER,
-  PgliteInUseError,
-  type PostgresConnection,
-} from "../src/db";
-import { dbCheckMain } from "../src/index";
+import { openPawsStore, PgliteInUseError } from "../src/db";
 import { tempHome } from "./helpers";
-import { copyMigratedPglite, pgliteDb } from "./pglite";
-
-const URL_WITH_PASSWORD = "postgres://paws:s3cr%40t@127.0.0.1:1/paws_db";
-
-async function pglite(): Promise<PostgresConnection> {
-  const db = await pgliteDb({ migrated: false });
-  return {
-    db,
-    migrate: () => pgliteMigrate(db, { migrationsFolder: PG_MIGRATIONS_FOLDER }),
-    close: () => db.$client.close(),
-  };
-}
-
-async function check(env: Record<string, string>, connect?: (url: string) => PostgresConnection) {
-  const out: string[] = [];
-  const err: string[] = [];
-  const code = await dbCheckMain(
-    env,
-    connect,
-    (line) => out.push(line),
-    (line) => err.push(line),
-  );
-  return { code, out: out.join("\n"), err: err.join("\n") };
-}
+import { copyMigratedPglite } from "./pglite";
 
 describe("PAWS_DATABASE_URL", () => {
   test("a config.toml [database] url is not read and the variable sets the URL", () => {
@@ -59,87 +28,6 @@ describe("PAWS_DATABASE_URL", () => {
   });
 });
 
-describe("paws db check", () => {
-  test("against PGlite it applies migrations and prints ok", async () => {
-    const connection = await pglite();
-    const ok = await check(
-      { PAWS_HOME: tempHome(), PAWS_DATABASE_URL: URL_WITH_PASSWORD },
-      () => connection,
-    );
-    expect(ok.err).toBe("");
-    expect(ok.code).toBe(0);
-    expect(ok.out).toContain(`· ${migrationTags(PG_MIGRATIONS_FOLDER).length} of `);
-    expect(ok.out).toMatch(
-      /^ok · Postgres 127\.0\.0\.1:1\/paws_db · server \d+\.\d+ · (\d+) of \1 migrations applied$/,
-    );
-  });
-
-  test("a bad URL exits non-zero without the password", async () => {
-    const result = await check({ PAWS_HOME: tempHome(), PAWS_DATABASE_URL: URL_WITH_PASSWORD });
-    expect(result.code).toBe(1);
-    expect(result.err).toStartWith("paws db check failed on Postgres 127.0.0.1:1/paws_db: ");
-    expect(result.err).not.toContain("s3cr");
-    expect(result.out).toBe("");
-  });
-
-  test("a failure message that repeats the URL is redacted", async () => {
-    const result = await check(
-      { PAWS_HOME: tempHome(), PAWS_DATABASE_URL: URL_WITH_PASSWORD },
-      () => {
-        throw new Error(`cannot reach ${URL_WITH_PASSWORD} with s3cr@t`);
-      },
-    );
-    expect(result.code).toBe(1);
-    expect(result.err).toBe(
-      "paws db check failed on Postgres 127.0.0.1:1/paws_db: cannot reach *** with ***",
-    );
-  });
-
-  test("without a URL and before the first start there is no PGlite database yet", async () => {
-    const home = tempHome();
-    const result = await check({ PAWS_HOME: home });
-    expect(result.code).toBe(0);
-    expect(result.out).toBe(
-      `ok · PGlite ${join(home, "pglite")} · no database yet; migrations apply at start`,
-    );
-    expect(existsSync(join(home, "pglite"))).toBe(false);
-  });
-
-  test("without a URL it checks the idle PGlite directory and releases it", async () => {
-    const home = tempHome();
-    await copyMigratedPglite(join(home, "pglite"));
-    const result = await check({ PAWS_HOME: home });
-    expect(result.err).toBe("");
-    expect(result.code).toBe(0);
-    expect(result.out).toMatch(
-      /^ok · PGlite .*pglite · server \d+\.\d+ · (\d+) of \1 migrations applied$/,
-    );
-    expect(existsSync(join(home, "pglite.lock"))).toBe(false);
-  }, 30_000);
-
-  test("without a URL while Paws holds PGlite it says Paws is running", async () => {
-    const home = tempHome();
-    await copyMigratedPglite(join(home, "pglite"));
-    writeFileSync(join(home, "pglite.lock"), String(process.ppid));
-    const result = await check({ PAWS_HOME: home });
-    expect(result.code).toBe(1);
-    expect(result.out).toBe("");
-    expect(result.err).toBe(
-      "paws db check: Paws is running; stop it or set PAWS_DATABASE_URL to check",
-    );
-    expect(readFileSync(join(home, "pglite.lock"), "utf8")).toBe(String(process.ppid));
-  });
-
-  test("a lock left by a process that exited does not hold PGlite", async () => {
-    const home = tempHome();
-    await copyMigratedPglite(join(home, "pglite"));
-    writeFileSync(join(home, "pglite.lock"), String(Bun.spawnSync(["true"]).pid));
-    const result = await check({ PAWS_HOME: home });
-    expect(result.code).toBe(0);
-    expect(existsSync(join(home, "pglite.lock"))).toBe(false);
-  }, 30_000);
-});
-
 test("the store Paws starts on refuses a PGlite directory another process holds", async () => {
   const home = tempHome();
   const pgliteDir = join(home, "pglite");
@@ -147,3 +35,13 @@ test("the store Paws starts on refuses a PGlite directory another process holds"
   await expect(openPawsStore({ url: null, pgliteDir })).rejects.toBeInstanceOf(PgliteInUseError);
   expect(existsSync(pgliteDir)).toBe(false);
 });
+
+test("a lock left by a process that exited does not hold PGlite", async () => {
+  const home = tempHome();
+  const pgliteDir = join(home, "pglite");
+  await copyMigratedPglite(pgliteDir);
+  writeFileSync(`${pgliteDir}.lock`, String(Bun.spawnSync(["true"]).pid));
+  const store = await openPawsStore({ url: null, pgliteDir });
+  await store.close();
+  expect(existsSync(`${pgliteDir}.lock`)).toBe(false);
+}, 30_000);

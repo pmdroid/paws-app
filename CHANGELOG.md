@@ -6,7 +6,7 @@ Changes that need action on upgrade come first in each entry. Settings are in th
 
 ### Changed
 
-- **Reset the database before starting this version.** The Postgres migrations are squashed into one `0000_baseline`. Paws refuses a database created by an older Paws, prints `This database was created by an older Paws. Reset it to start this version.` and exits with status 1 without changing it. Move `~/.paws/pglite` aside or drop and create the database at `[database] url`, then onboard again. `paws db check` and `paws doctor` report the same message. See [A database from an older Paws](docs/postgres.md#a-database-from-an-older-paws).
+- **Reset the database before starting this version.** The Postgres migrations are squashed into one `0000_baseline`. Paws refuses a database created by an older Paws, prints `This database was created by an older Paws. Reset it to start this version.` and exits with status 1 without changing it. Move `~/.paws/pglite` aside or drop and create the database at `[database] url`, then onboard again. `paws doctor` reports the same message. See [A database from an older Paws](docs/postgres.md#a-database-from-an-older-paws).
 
 ## 2026-11-15: Runners install through apt
 
@@ -25,7 +25,7 @@ The installer configures the signed Paws apt repository and installs the runner 
 ### Changed
 
 - **The upgrade moves Paws to Postgres and starts on an empty database.** Paws runs embedded Postgres (PGlite) in `~/.paws/pglite`, or the Postgres server named by `[database] url` or `PAWS_DATABASE_URL`. At the first start, `~/.paws/paws.db` is renamed to `paws.db.pre-postgres-<UTC time>` beside it, with its `-wal` and `-shm` files, never deleted, and one journal line names it. Nothing is copied over: pair each runner again after moving its identity aside, and connect GitHub and Linear again in **Settings**. Delegate in-progress issues again. Secrets, `config.toml` and the environment file stay. See [Moving to Postgres](docs/database-reset.md).
-- `paws review-score` and `paws login slack` need `[database] url`: only the running Paws opens `~/.paws/pglite`.
+- `paws login slack` needs `[database] url`.
 
 ## 2026-11-09: Paws no longer resets a pre-drizzle database without asking
 

@@ -14,7 +14,7 @@ import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
 import { createAccountManagement } from "./account-management";
 import { join } from "node:path";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { createOnboardingReadiness } from "./onboarding-readiness";
 import {
@@ -54,13 +54,6 @@ import {
   slackSigningSecret,
 } from "./slack";
 import {
-  collectProbes,
-  keepCandidates,
-  parseProbesArgs,
-  readStoredFindings,
-  type ProbesCommand,
-} from "./probe-collector";
-import {
   envelopeSubkey,
   importCredentialFile,
   loadSecretKey,
@@ -69,21 +62,13 @@ import {
   useDatabaseSecrets,
   readAgentCredentialSteps,
 } from "./credentials";
-import {
-  ArtifactRejectedError,
-  commitCheckpointSync,
-  git,
-  mirrorFiles,
-  runAgent,
-  worktreePath,
-} from "./acp";
+import { ArtifactRejectedError, commitCheckpointSync, git, mirrorFiles, worktreePath } from "./acp";
 import { useGitReader } from "./closeout";
 import { useEvidenceRecordObjects } from "./closeout-spec";
 import {
   closeoutRecordObjects,
   createEvidenceStore,
   EvidenceRejectedError,
-  migrateCloseoutEvidence,
   uploadLocalCloseoutEvidence,
   uploadLocalEvidence,
   closeoutLogStorage,
@@ -98,8 +83,6 @@ import {
 } from "./run-files";
 import {
   closeoutPolicyRoot,
-  describeDatabaseUrl,
-  redactDatabaseUrl,
   DEFAULT_COMMENT_WAIT,
   DEFAULT_IGNORED_COMMENT_BOTS,
   ensureLayout,
@@ -148,15 +131,9 @@ import {
   getTaskModeSteps,
   taskRequiresRepositorySteps,
   listWorkItemsSteps,
-  listReviewEscapesSteps,
   countLinearRequest,
   linearBudgetStore,
-  checkPostgres,
-  connectPglite,
-  connectPostgres,
-  PgliteInUseError,
   UnknownDatabaseError,
-  type PostgresConnection,
   readSettingSteps,
   updateSettingSteps,
   convertConfigSettingsSteps,
@@ -233,7 +210,7 @@ import {
   recordQueueDepths,
   setGauge,
 } from "./metrics";
-import { DATABASE_HELD, doctorChecks, formatDoctor, realProbe, withSavedStore } from "./doctor";
+import { doctorChecks, formatDoctor, realProbe } from "./doctor";
 import { installHostMain } from "./install-host";
 import { runInstallCli } from "./installer";
 import {
@@ -300,7 +277,6 @@ import {
   type PullCommentFilter,
   attachOrchestrator,
   createLinearArtifactReader,
-  createRepositoryGit,
   itemPathId,
   repositoryAtPath,
   repositoryAnswer,
@@ -328,12 +304,6 @@ import {
   repositoryGrant,
   recordMissingProjectTeams,
 } from "./loop";
-import {
-  formatReviewScore,
-  readReviewEscapesFile,
-  REVIEW_ESCAPES_FILE,
-  scoreReview,
-} from "./review-score";
 import { handleLinkAskAnswer, handleQuestionAnswer } from "./questions";
 import { createFindingIssueRoute } from "./finding-issues";
 import { dashboardUrl } from "./dashboard-links";
@@ -3064,18 +3034,13 @@ const CLI_HELP = `usage: paws
 Commands:
   paws                          start Paws on 127.0.0.1:8787
   paws doctor                   check prerequisites, including the GitHub App
-  paws db check                 connect to the database, apply migrations and report
   paws install                  set up the env file, config.toml and the user service
   paws install secrets          print the public URL and the browser setup link
-  paws review-score [--since D] count review escapes, found after merge and after the PR
-  paws evidence migrate         copy local Closeout evidence records to the object store
   paws login slack              connect Slack
   paws setup-link               print the browser setup link
   paws runner <command>         enroll and run a remote runner
   paws runner-authority init    create the runner command key
   paws public-tls validate      check the public HTTPS certificate
-  paws probes collect <owner/repo>
-                                draft Closeout probe rules into probes.proposed.yaml
 
 GitHub access uses the GitHub App only. See docs/github-app.md.`;
 
@@ -3110,88 +3075,6 @@ async function doctorMain(): Promise<number> {
   return checks.every((item) => item.ok) ? 0 : 1;
 }
 
-export async function dbCheckMain(
-  source: EnvSource,
-  connect: (url: string) => PostgresConnection = connectPostgres,
-  print: (line: string) => void = console.log,
-  fail: (line: string) => void = console.error,
-): Promise<number> {
-  const runtime = loadRuntime(source);
-  if (runtime.configError !== null) {
-    fail(`paws db check failed: ${runtime.configError}`);
-    return 1;
-  }
-  const url = runtime.databaseUrl;
-  if (url === null) return checkPglite(pawsPaths(runtime.env.home).pgliteDir, print, fail);
-  const where = describeDatabaseUrl(url);
-  let connection: PostgresConnection | null = null;
-  try {
-    connection = connect(url);
-    const report = await checkPostgres(connection);
-    print(
-      `ok · Postgres ${where} · server ${report.serverVersion} · ${report.applied} of ${report.known} migrations applied`,
-    );
-    return 0;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    fail(`paws db check failed on Postgres ${where}: ${redactDatabaseUrl(message, url)}`);
-    return 1;
-  } finally {
-    await connection?.close().catch(() => undefined);
-  }
-}
-
-async function checkPglite(
-  dir: string,
-  print: (line: string) => void,
-  fail: (line: string) => void,
-): Promise<number> {
-  if (!existsSync(dir)) {
-    print(`ok · PGlite ${dir} · no database yet; migrations apply at start`);
-    return 0;
-  }
-  let connection: PostgresConnection | null = null;
-  try {
-    connection = connectPglite(dir);
-    const report = await checkPostgres(connection);
-    print(
-      `ok · PGlite ${dir} · server ${report.serverVersion} · ${report.applied} of ${report.known} migrations applied`,
-    );
-    return 0;
-  } catch (error) {
-    if (error instanceof PgliteInUseError) {
-      fail("paws db check: Paws is running; stop it or set PAWS_DATABASE_URL to check");
-      return 1;
-    }
-    fail(`paws db check failed on PGlite ${dir}: ${(error as Error).message}`);
-    return 1;
-  } finally {
-    await connection?.close().catch(() => undefined);
-  }
-}
-
-/** `paws review-score [--since YYYY-MM-DD] [--escapes path]`: the independent reviewer's escapes. */
-async function reviewScoreMain(args: string[]): Promise<number> {
-  let since = 0;
-  let escapesFile = REVIEW_ESCAPES_FILE;
-  for (let index = 0; index < args.length; index += 2) {
-    const value = args[index + 1];
-    if (args[index] === "--since" && value && !Number.isNaN(Date.parse(value)))
-      since = Date.parse(value);
-    else if (args[index] === "--escapes" && value) escapesFile = value;
-    else {
-      console.error("usage: paws review-score [--since YYYY-MM-DD] [--escapes path]");
-      return 1;
-    }
-  }
-  return withCommandStore("review-score", async (store) => {
-    const escapes = await store.run((q) => listReviewEscapesSteps(q, since));
-    const score = scoreReview(escapes, readReviewEscapesFile(escapesFile));
-    console.log(formatReviewScore(score));
-    return 0;
-  });
-}
-
 function sealedEvidenceObjects(paths: { home: string; secretsDir: string }): EvidenceObjects {
   return () => {
     const s3 = loadRunnerTranscriptS3(paths.home);
@@ -3199,30 +3082,6 @@ function sealedEvidenceObjects(paths: { home: string; secretsDir: string }): Evi
     const key = envelopeSubkey(paths.secretsDir, "paws-evidence-objects");
     return withSealedRunFileObjects(createS3RunFileObjects("evidence", s3), key);
   };
-}
-
-async function evidenceMain(args: string[]): Promise<number> {
-  if (args.length !== 1 || args[0] !== "migrate") {
-    console.error("usage: paws evidence migrate");
-    return 1;
-  }
-  const paths = pawsPaths(loadEnv(process.env).home);
-  const storage = {
-    root: join(paths.home, "closeout", "evidence"),
-    objects: sealedEvidenceObjects(paths),
-  };
-  try {
-    const counts = await withCommandStore("evidence migrate", (store) =>
-      migrateCloseoutEvidence(store, storage),
-    );
-    console.log(
-      `Copied ${counts.copied} Closeout evidence records to the object store; ${counts.skipped} were already there.`,
-    );
-    return 0;
-  } catch (error) {
-    journalCaught(error, "paws evidence migrate failed.", null);
-    return 1;
-  }
 }
 
 async function withDatabaseSecrets(
@@ -3280,73 +3139,6 @@ async function withCommandStore<T>(command: string, work: (store: Db) => Promise
   }
 }
 
-/** `paws probes collect`: the agent runs here, with the signed-in agent of whoever runs it. */
-async function probesMain(argv: string[]): Promise<number> {
-  let command: ProbesCommand;
-  try {
-    command = parseProbesArgs(argv);
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    return 1;
-  }
-  const controller = new AbortController();
-  process.once("SIGINT", () => controller.abort());
-  const print = (text: string) => console.log(text);
-  try {
-    ensureLayout(pawsPaths(loadEnv(process.env).home));
-    await withSavedStore(process.env, async ({ store, held }) => {
-      if (held) print(`note: ${DATABASE_HELD}`);
-      const runtime = loadRuntime(process.env);
-      const paths = pawsPaths(runtime.env.home);
-      const repository = {
-        owner: command.owner,
-        repo: command.repo,
-        remoteUrl: githubHttpsUrl(command.owner, command.repo),
-      };
-      const appActivation = store
-        ? createWorkspaceGitHubActivation(store, runtime.env.home, process.env)
-        : null;
-      const provider = authProvider(
-        runtime,
-        repository,
-        "read",
-        appActivation ? (name) => appActivation.resolve(name) : undefined,
-      );
-      if (!provider) throw new Error("The GitHub App is not configured. Run `paws doctor`.");
-      await collectProbes({
-        repository,
-        pawsRoot: paths.home,
-        since: command.since,
-        dryRun: command.dryRun,
-        out: command.out,
-        github: { client: createFetchGitHubClient(), tokenProvider: gitHostToken(provider) },
-        turn: runAgent,
-        networkGit: createRepositoryGit({
-          remoteUrl: repository.remoteUrl,
-          token: () => provider.token(),
-          signal: controller.signal,
-          assert: async () => undefined,
-          onCleanupFailure: () => undefined,
-        }),
-        findings: () =>
-          readStoredFindings({
-            home: paths.home,
-            store,
-            owner: command.owner,
-            repo: command.repo,
-          }),
-        keep: keepCandidates(command.keep, print),
-        print,
-        signal: controller.signal,
-      });
-    });
-    return 0;
-  } catch (error) {
-    journalCaught(error, "paws probes collect failed.", null);
-    return 1;
-  }
-}
-
 if (import.meta.main || compiled()) {
   const argv = process.argv.slice(2);
   const command = argv[0];
@@ -3354,7 +3146,6 @@ if (import.meta.main || compiled()) {
     console.log(installedPawsVersion() ?? "unknown");
     process.exit(0);
   }
-  if (command === "probes") process.exit(await probesMain(argv.slice(1)));
   if (command === "runner") process.exit(await runRunnerCli(argv.slice(1)));
   if (command === "runner-storage")
     process.exit(
@@ -3403,18 +3194,9 @@ if (import.meta.main || compiled()) {
   if (command === "doctor") {
     process.exit(await doctorMain());
   }
-  if (command === "db") {
-    if (argv.length !== 2 || argv[1] !== "check") {
-      console.error("usage: paws db check");
-      process.exit(1);
-    }
-    process.exit(await dbCheckMain(process.env));
-  }
   if (command === "install" && argv[1] === "secrets")
     process.exit(await runInstallCli(argv.slice(1), process.env, withSecretStore));
   if (command === "install") process.exit(await installHostMain(argv.slice(1)));
-  if (command === "review-score") process.exit(await reviewScoreMain(argv.slice(1)));
-  if (command === "evidence") process.exit(await evidenceMain(argv.slice(1)));
   if (command === "setup-link") process.exit(await setupLinkMain(argv.slice(1), process.env));
   if (command === "login" && argv[1] === "slack") {
     try {
@@ -3445,7 +3227,7 @@ if (import.meta.main || compiled()) {
   }
   const unknown = argv.find((arg) => arg !== "--no-tunnel");
   if (unknown) {
-    console.error(`Unknown option ${unknown}.`);
+    console.error(`Unknown option ${unknown}.\n\n${CLI_HELP}`);
     process.exit(1);
   }
   process.on("unhandledRejection", (error) =>

@@ -77,7 +77,6 @@ export {
   maxAwakeMsFrom,
   startupSettings,
 } from "./runtime";
-export { describeDatabaseUrl, redactDatabaseUrl } from "./database";
 export type { PawsRole, RuntimeConfig } from "./runtime";
 export { loadGitHubAppCredentials, saveGitHubAppCredentials } from "./github-app";
 export type { GitHubAppCredentials } from "./github-app";

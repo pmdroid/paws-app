@@ -29,7 +29,7 @@ import { drizzle as drizzlePglite, type PgliteDatabase } from "drizzle-orm/pglit
 import { migrate as migratePglite } from "drizzle-orm/pglite/migrator";
 import { PG_MIGRATIONS_FOLDER } from "./migrate";
 import * as pgSchema from "./schema-pg";
-import { refuseOlderDatabase, type PostgresConnection } from "./db-check";
+import { refuseOlderDatabase } from "./db-check";
 import { postgresDb, type PgDb } from "./db";
 
 const runtimeOptions = await pgliteOptions();
@@ -52,15 +52,6 @@ export function openPostgres(url: string): PostgresDb {
   const max = Number(new URL(url).searchParams.get("max") ?? 10);
   const client = new SQL({ url, max, idleTimeout: 30, connectionTimeout: 10, maxLifetime: 0 });
   return drizzle({ client, schema: pgSchema });
-}
-
-export function connectPostgres(url: string): PostgresConnection {
-  const db = openPostgres(url);
-  return {
-    db,
-    migrate: () => migratePostgres(db),
-    close: () => db.$client.close(),
-  };
 }
 
 export class PgliteInUseError extends Error {
@@ -94,22 +85,6 @@ function lockPglite(dir: string): () => void {
     if (attempt > 0 || (holder > 0 && holder !== process.pid && alive(holder)))
       throw new PgliteInUseError(dir, holder);
     rmSync(lock, { force: true });
-  }
-}
-
-export function connectPglite(dir: string): PostgresConnection {
-  const release = lockPglite(dir);
-  try {
-    const client = new PGlite(dir, runtimeOptions);
-    const db = drizzlePglite({ client, schema: pgSchema });
-    return {
-      db,
-      migrate: () => migrateOwnPglite(db),
-      close: () => client.close().finally(release),
-    };
-  } catch (error) {
-    release();
-    throw error;
   }
 }
 

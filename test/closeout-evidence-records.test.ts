@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CommandRecord } from "../src/closeout-spec";
 import { createEvidenceStore } from "../src/closeout-spec/evidence";
-import { closeoutRecordObjects, migrateCloseoutEvidence } from "../src/evidence";
+import { closeoutRecordObjects } from "../src/evidence";
 import {
   createFakeRunFileObjects,
   createLocalRunFileObjects,
@@ -89,22 +89,6 @@ describe.each(backends)("closeout evidence records in the %s object store", (_na
     await store.add(record(2));
     expect(existsSync(join(root, "evidence", HEX, HEAD, "quality", "test", "2.json"))).toBe(false);
     expect((await store.load()).records).toEqual([record(1), record(2)]);
-  });
-
-  test("migrate copies local records once and is idempotent", async () => {
-    const { db, storage, root, objects, store } = await setup(backend);
-    writeLocal(root, 1);
-    writeLocal(root, 1, "quality/lint");
-    writeFileSync(join(root, "retry.lock"), "");
-    expect(await migrateCloseoutEvidence(db, storage)).toEqual({ copied: 2, skipped: 0 });
-    expect(await migrateCloseoutEvidence(db, storage)).toEqual({ copied: 0, skipped: 2 });
-    expect((await objects!.list()).sort()).toEqual([
-      `evidence/${HEX}/${HEAD}/quality/lint/1.json`,
-      `evidence/${HEX}/${HEAD}/quality/test/1.json`,
-    ]);
-    const only = createEvidenceStore({ root: join(storage.root, "elsewhere"), objects: null });
-    expect(await only.load()).toEqual({ records: [] });
-    expect((await store.load()).records).toEqual([record(1, "quality/lint"), record(1)]);
   });
 });
 

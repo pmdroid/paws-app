@@ -19,12 +19,16 @@ import {
   type GitHubResponse,
   type GitHubTokenProvider,
 } from "../github";
-import { collectProbes, type CollectOptions } from "./collect";
-import { checkStatus } from "./check";
-import { parseProbesArgs } from "./cli";
-import { checkNotes, proposalScripts } from "./output";
-import { collectPullSources } from "./sources";
-import type { AgentTurn, StoredFinding } from "./types";
+import {
+  collectProbes,
+  checkStatus,
+  checkNotes,
+  proposalScripts,
+  collectPullSources,
+  type AgentTurn,
+  type CollectOptions,
+  type StoredFinding,
+} from "./index";
 
 const temps: string[] = [];
 afterEach(() => {
@@ -37,7 +41,6 @@ function tempDir(): string {
   return dir;
 }
 
-const NOW = new Date("2026-10-27T12:00:00Z");
 const tokenProvider: GitHubTokenProvider = { mode: "token", tokenFor: async () => "test-token" };
 
 type FakePull = {
@@ -376,7 +379,7 @@ function collectOptions(input: {
   };
 }
 
-describe("paws probes collect", () => {
+describe("collectProbes", () => {
   test("drafts checked rules whose sources link back to AGENTS.md and the review comments", async () => {
     const fixture = fixtureRepository();
     const pawsRoot = tempDir();
@@ -571,55 +574,5 @@ describe("check status", () => {
     expect(checkNotes({ check: { main, breaks: [], status: "unverified" } })).toContain(
       "no source names a commit that broke the rule",
     );
-  });
-});
-
-describe("probes arguments", () => {
-  test("defaults to 90 days and probes.proposed.yaml", () => {
-    expect(parseProbesArgs(["collect", "acme/widgets"], NOW)).toEqual({
-      owner: "acme",
-      repo: "widgets",
-      since: new Date("2026-07-29T12:00:00Z"),
-      out: "probes.proposed.yaml",
-      keep: null,
-      dryRun: false,
-    });
-  });
-
-  test("reads --since, --out, --keep and --dry-run", () => {
-    expect(
-      parseProbesArgs(
-        [
-          "collect",
-          "acme/widgets",
-          "--since",
-          "30d",
-          "--out",
-          "rules.yaml",
-          "--keep",
-          "a, b",
-          "--dry-run",
-        ],
-        NOW,
-      ),
-    ).toEqual({
-      owner: "acme",
-      repo: "widgets",
-      since: new Date("2026-09-27T12:00:00Z"),
-      out: "rules.yaml",
-      keep: ["a", "b"],
-      dryRun: true,
-    });
-    expect(
-      parseProbesArgs(["collect", "acme/widgets", "--since", "2026-10-01"], NOW).since,
-    ).toEqual(new Date("2026-10-01T00:00:00Z"));
-  });
-
-  test("rejects a missing repository and unknown options", () => {
-    expect(() => parseProbesArgs(["collect"], NOW)).toThrow("owner/repo");
-    expect(() => parseProbesArgs(["collect", "acme/widgets", "--push"], NOW)).toThrow(
-      "Unknown option --push.",
-    );
-    expect(() => parseProbesArgs(["list"], NOW)).toThrow("Unknown probes command.");
   });
 });
