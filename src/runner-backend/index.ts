@@ -145,6 +145,7 @@ import {
   type FailoverLedger,
   type UsageLimit,
 } from "./failover";
+import { busyRunners, modelMissWait, NO_FREE_CAPACITY } from "./model-wait";
 import {
   AgentHungError,
   HANG_ASK_AFTER,
@@ -205,8 +206,6 @@ const RUN_HUNG_THOUGHT = (minutes: number) =>
 const RUN_LOST_MESSAGE = "The runner no longer runs this command.";
 export const restoredCheckpointNote = (sha: string) =>
   `This checkout holds the work saved at the last checkpoint (${sha.slice(0, 8)}) of the turn before this one, as uncommitted changes. Read git status and git diff, keep that work, and continue from it.`;
-const NO_FREE_CAPACITY = ": no free capacity";
-const ACCOUNT_CONCURRENCY_LIMIT = ": account at its concurrency limit";
 
 async function earlierSession(
   store: Db,
@@ -405,16 +404,7 @@ export function createRemoteAgentRunner(options: {
       placement.session !== undefined &&
       offered.length === 1 &&
       offered[0] === placement.session.runnerId;
-    const busy = [
-      ...new Set(
-        rejected
-          .filter(
-            (reason) =>
-              reason.includes(NO_FREE_CAPACITY) || reason.endsWith(ACCOUNT_CONCURRENCY_LIMIT),
-          )
-          .map((reason) => reason.slice(0, reason.indexOf(":"))),
-      ),
-    ];
+    const busy = busyRunners(rejected);
     const model = placement.profile?.model;
     const modelWait = Boolean(
       busy.length === 0 &&
@@ -547,14 +537,25 @@ export function createRemoteAgentRunner(options: {
     );
     return new RunnerCapacityWait([], undefined, [`${name}: ${error.message}`]);
   }
-  async function modelMissing(itemId: string, runnerId: string, model: string) {
+  async function modelMissing(
+    itemId: string,
+    runnerId: string,
+    model: string,
+    placement: Parameters<RunnerPlacement["candidates"]>[0],
+  ) {
     const name = await runnerName(runnerId);
     journal(`item ${itemId} runner ${runnerId} no longer offers model ${model}; placing again`);
-    return new RunnerCapacityWait(
-      [],
-      undefined,
-      [`${name}: the agent no longer offers ${model}`],
-      true,
+    const rejected: string[] = [];
+    const offered = options.placement
+      ? await options.placement.candidates({
+          ...placement,
+          onRejected: (id, reason) => rejected.push(`${id}: ${reason}`),
+        })
+      : [];
+    return modelMissWait(
+      rejected,
+      offered.map((runner) => runner.id),
+      `${name}: the agent no longer offers ${model}`,
     );
   }
   /** Whether any runner has already run work, not just preparation, for the item. */
@@ -1053,7 +1054,12 @@ export function createRemoteAgentRunner(options: {
                   );
                 });
                 if (disposition?.modelMissing)
-                  throw await modelMissing(itemId, selected.id, disposition.modelMissing);
+                  throw await modelMissing(
+                    itemId,
+                    selected.id,
+                    disposition.modelMissing,
+                    placementRequest,
+                  );
                 if (
                   disposition?.retryable &&
                   result.agentExited &&
@@ -1983,7 +1989,12 @@ export function createRemoteAgentRunner(options: {
               });
             if (complete && disposition?.modelMissing) {
               await cancelItem(itemId, signal);
-              throw await modelMissing(itemId, selected.id, disposition.modelMissing);
+              throw await modelMissing(
+                itemId,
+                selected.id,
+                disposition.modelMissing,
+                placementRequest,
+              );
             }
             if (complete && disposition?.retryable && input.role === "reviewer")
               throw new RetryableRunnerError(
