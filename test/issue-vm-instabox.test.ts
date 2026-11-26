@@ -23,11 +23,17 @@ import {
   createFakeInstaBox,
   type FakeInstaBoxOptions,
 } from "../src/provisioning";
+import { loadConfigFile, useMemorySettings, vmSizeFor } from "../src/config";
 
 const SIZE = { cpu: 4, memoryGb: 8 };
 const SNAPSHOT = "snap_paws-issue-vm";
 
-function setup(boxOptions: FakeInstaBoxOptions = {}, startsPerMinute = 10) {
+function setup(
+  boxOptions: FakeInstaBoxOptions = {},
+  startsPerMinute = 10,
+  sized?: () => { cpu?: number; memoryGb?: number },
+) {
+  let size: { cpu?: number; memoryGb?: number } = SIZE;
   let now = 1_000_000;
   const clock = {
     now: () => now,
@@ -44,19 +50,21 @@ function setup(boxOptions: FakeInstaBoxOptions = {}, startsPerMinute = 10) {
     bootstrap,
     queue,
     readToken: () => "ibk_fake-key",
+    size: sized ?? (() => size),
     remember: (name, id) => {
       remembered.set(name, id);
     },
     clock,
   });
-  const create = (name: string, size = SIZE) =>
-    vms.create({
+  const create = (name: string, asked = SIZE) => {
+    size = asked;
+    return vms.create({
       name,
       key: `key-${name}`,
       snapshot: SNAPSHOT,
-      size,
       mintToken: async () => `token-${now}`,
     });
+  };
   return { instaBox, bootstrap, vms, create, remembered, now: () => now };
 }
 
@@ -70,6 +78,28 @@ async function refusal(promise: Promise<unknown>): Promise<InstaBoxIssueVmError>
 }
 
 describe("InstaBox issue VMs", () => {
+  test("a VM gets InstaBox's saved size, and none leaves InstaBox's default", async () => {
+    const path = "/paws-test/instabox-issue-vm/config.toml";
+    const settings = useMemorySettings(
+      path,
+      "[vm_sizes.boat]\ncpu = 16\nmemory_gb = 32\n\n[vm_sizes.instabox]\ncpu = 8\nmemory_gb = 16\n",
+    );
+    try {
+      const { instaBox, create } = setup(
+        { plan: { sizes: [{ vcpus: 8, memMiB: 16384 }] } },
+        10,
+        () => vmSizeFor(loadConfigFile(path).vmSizes, "instabox"),
+      );
+      await create("pas-1-vm");
+      expect(instaBox.machines.get("pas-1-vm")?.size).toEqual({ cpu: 8, memoryGb: 16 });
+      const unset = setup({}, 10, () => vmSizeFor(undefined, "instabox"));
+      await unset.create("pas-2-vm");
+      expect(unset.instaBox.machines.get("pas-2-vm")?.size).toEqual({});
+    } finally {
+      settings.release();
+    }
+  });
+
   test("an issue gets a VM from the snapshot, sleeps, wakes and is deleted", async () => {
     const { instaBox, bootstrap, vms, create, remembered } = setup();
     const vm = await create("pas-1-vm");

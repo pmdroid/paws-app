@@ -108,7 +108,7 @@ function checkOnce(
 async function status(options: VmProvidersSettingsOptions): Promise<Response> {
   let off: MemberVmProviderName[];
   try {
-    off = loadConfigFile(options.configPath).memberVm?.offProviders ?? [];
+    off = loadConfigFile(options.configPath).vmSizes?.offProviders ?? [];
   } catch (error) {
     journalCaught(error, "vm-providers.status", null);
     return json({ error: "Member VM settings could not be read" }, 503);

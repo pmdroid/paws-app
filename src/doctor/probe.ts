@@ -14,7 +14,7 @@ import {
   type EnvSource,
   type ExeDevTokenStatus,
   type MemberVmProviderName,
-  type MemberVmSize,
+  type VmSizes,
   type PawsConfigFile,
   type RuntimeConfig,
   type TailscaleAuthKeyStatus,
@@ -156,14 +156,14 @@ export async function realProbeFacts(env: EnvSource, saved: SavedStore): Promise
     codexLogin,
     closeout: await closeoutPolicyFact(runtime, repos),
     linear,
-    ...(await vmProviderKeyFacts(runtime.env.home, runtime.file.memberVm, store)),
+    ...(await vmProviderKeyFacts(runtime.env.home, runtime.file.vmSizes, store)),
     tailscaleAuthKey: tailscaleAuthKeyStatus(runtime.env.home),
   };
 }
 
 export async function vmProviderKeyFacts(
   home: string,
-  settings: MemberVmSize | undefined,
+  settings: VmSizes | undefined,
   store: Db | null,
 ): Promise<Pick<ProbeFacts, "exeDevToken" | "boatToken" | "instaboxToken">> {
   const used = new Set([

@@ -4,7 +4,7 @@ import { esc } from "./format";
 import type { MemberVmSize } from "./runners";
 import { renderMarkup } from "./theme";
 
-const PATH = "/api/settings/member-vm";
+const PATH = "/api/settings/vm-sizes";
 const FIELDS = [
   ["cpu", "CPUs"],
   ["memoryGb", "Memory (GB)"],

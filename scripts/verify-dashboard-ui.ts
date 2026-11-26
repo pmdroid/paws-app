@@ -312,7 +312,7 @@ try {
       route.fulfill({ json: { runners: [], serverVersion: null, workspaceReady: true } }),
     );
     let vmSize = { cpu: 4, memoryGb: 8 };
-    await admin.route("**/api/settings/member-vm", async (route) => {
+    await admin.route("**/api/settings/vm-sizes", async (route) => {
       if (route.request().method() === "PUT") {
         const body = route.request().postDataJSON();
         if (body.cpu < 1) {

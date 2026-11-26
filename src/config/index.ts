@@ -4,6 +4,7 @@ export {
   agentReadAllowed,
   closeoutPolicyRoot,
   configSettingsSections,
+  SETTINGS_CONVERSION,
   defaultAgents,
   parseCloseoutSettings,
   readCloseoutSettings,
@@ -53,16 +54,19 @@ export {
 } from "./github-access";
 export {
   checkMemberVmSize,
-  checkMemberVmValue,
+  checkVmSizeIn,
+  EXE_DEV_LIMITS,
+  fixedVmSizes,
   isMemberVmPool,
   MEMBER_VM_PROVIDERS,
   memberVmProvider,
-  memberVmSizeOnly,
-  parseMemberVmSettings,
-  renderMemberVmSettings,
-  writeMemberVmSize,
-} from "./member-vm";
-export type { MemberVmKey, MemberVmProviderName, MemberVmSize } from "./member-vm";
+  parseVmSizesSettings,
+  renderVmSizesSettings,
+  upgradeSettingSections,
+  vmSizeFor,
+  writeVmSizes,
+} from "./vm-sizes";
+export type { MemberVmProviderName, VmSize, VmSizeChoice, VmSizes } from "./vm-sizes";
 export { issueVmSettings, parseIssueVmSettings, writeIssueVmSettings } from "./issue-vm";
 export type { IssueVmSettings, StoredIssueVmSettings } from "./issue-vm";
 export { ensureLayout, pawsPaths } from "./paths";

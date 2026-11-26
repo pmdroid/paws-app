@@ -39,7 +39,8 @@ const WRITER_SECTIONS = [
   `skills.projects.${PROJECT}`,
   "github_access",
   "findings",
-  "member_vm",
+  "vm_sizes",
+  "vm_sizes.boat",
   "issue_vm",
   "linear_comments",
 ];

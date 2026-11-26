@@ -17,7 +17,7 @@ export const SETTINGS_SECTIONS = [
   "queue",
   "findings",
   "agents",
-  "member_vm",
+  "vm_sizes",
   "issue_vm",
   "brief",
   "linear_comments",
@@ -25,6 +25,10 @@ export const SETTINGS_SECTIONS = [
   "skills",
   "checkout",
 ] as const;
+
+const LEGACY_SECTIONS = ["member_vm"] as const;
+
+export const SAVED_SETTINGS_SECTIONS = [...SETTINGS_SECTIONS, ...LEGACY_SECTIONS];
 
 type SettingsSnapshot = {
   refresh(): Promise<void>;
@@ -153,9 +157,10 @@ async function saveSettings(
 
 export function knownConfigSection(section: string): boolean {
   return (
-    /^(github_access|closeout|merge|queue|findings|agents|member_vm|issue_vm|brief|linear_comments|time_limits|skills)$/.test(
+    /^(github_access|closeout|merge|queue|findings|agents|member_vm|vm_sizes|issue_vm|brief|linear_comments|time_limits|skills)$/.test(
       section,
     ) ||
+    /^vm_sizes\.(exe-dev|boat|instabox)$/.test(section) ||
     /^(closeout|merge|checkout|skills|brief|time_limits)\./.test(section) ||
     /^agents\.(defaults|projects|presets)(\.|$)/.test(section)
   );
@@ -181,7 +186,7 @@ export function settingsSectionsOf(text: string): SettingSections {
   const sections: SettingSections = {};
   for (const [key, value] of Object.entries(root)) {
     const name = key.toLowerCase();
-    if (!(SETTINGS_SECTIONS as readonly string[]).includes(name)) continue;
+    if (!(SAVED_SETTINGS_SECTIONS as readonly string[]).includes(name)) continue;
     if (typeof value === "object" && value !== null && !Array.isArray(value))
       sections[name] = { ...(sections[name] as object | undefined), ...value };
   }
@@ -245,6 +250,7 @@ function isSettingsSection(section: string): boolean {
     name === "github_access" ||
     name === "findings" ||
     name === "member_vm" ||
+    within("vm_sizes") ||
     name === "issue_vm" ||
     name === "linear_comments"
   );

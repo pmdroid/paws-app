@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import {
-  configSettingsSections,
+  SETTINGS_CONVERSION,
   loadConfigFile,
   parseBriefTemplates,
   parseConfigToml,
@@ -51,7 +51,7 @@ implementer = "codex"
 agent = "claude"
 model = "implement-model"
 
-[member_vm]
+[vm_sizes.exe-dev]
 cpu = 2
 image = "ubuntu:24.04"
 
@@ -88,9 +88,7 @@ async function database(): Promise<Db> {
 }
 
 function convert(db: Db) {
-  return db.transaction((q) =>
-    convertConfigSettingsSteps(q, SETTINGS_SECTIONS, configSettingsSections),
-  );
+  return db.transaction((q) => convertConfigSettingsSteps(q, SETTINGS_CONVERSION));
 }
 
 async function rows(db: Db) {
@@ -133,6 +131,26 @@ test("a blob that does not parse stops the conversion with its line and stays in
   await expect(convert(db)).rejects.toThrow("Saved settings line 8 is not a key");
   expect(await readSetting(db, CONFIG_SETTINGS_KEY)).toBe(broken);
   expect(Object.keys(await rows(db))).toEqual([CONFIG_SETTINGS_KEY]);
+});
+
+test("an old single VM size converts to the provider it names, from a blob or a row", async () => {
+  const db = await database();
+  const legacy =
+    '[member_vm]\nprovider = "boat"\ncpu = 8\nmemory_gb = 16\n\n[queue]\nstart_timeout_hours = 12\n';
+  await updateSetting(db, CONFIG_SETTINGS_KEY, () => legacy, 1);
+  expect(await convert(db)).toBe(true);
+  expect(Object.keys(await rows(db)).sort()).toEqual(["settings.queue", "settings.vm_sizes"]);
+  expect(loadConfigFile(await open(db)).vmSizes).toEqual({
+    provider: "boat",
+    sizes: { boat: { cpu: 8, memoryGb: 16 } },
+  });
+  const row = await database();
+  await updateSetting(row, "settings.member_vm", () => '{"cpu":4,"pool":"build"}', 1);
+  expect(await convert(row)).toBe(false);
+  expect(Object.keys(await rows(row))).toEqual(["settings.vm_sizes"]);
+  expect(loadConfigFile(await open(row)).vmSizes).toEqual({
+    sizes: { "exe-dev": { cpu: 4, pool: "build" } },
+  });
 });
 
 test("startup without a blob writes nothing", async () => {
