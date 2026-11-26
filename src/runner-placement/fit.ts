@@ -49,6 +49,7 @@ type SignInInput = {
   excludeBindingIds?: readonly string[];
   bindingId?: string;
   role?: "implementer" | "reviewer";
+  catalog?: boolean;
 };
 
 export function* repositoryRejectionSteps(
@@ -109,6 +110,7 @@ export function* signInFitSteps(
   if (
     bindings.length &&
     input.role !== "reviewer" &&
+    input.catalog !== false &&
     input.model &&
     !(yield* runnerOffersModelSteps(q, runner.id, input.agent, input.model))
   )

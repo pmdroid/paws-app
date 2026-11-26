@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { getWorkItem, listItemHolds, noRunnerOffersLine, type Db } from "../src/db";
 import { createRunnerPlacement, itemRunnerVerdictsSteps } from "../src/runner-placement";
 import { dispatch } from "../src/scheduler";
@@ -53,6 +54,11 @@ test("a turn goes only to the runner whose catalog lists the selected model", as
     profile: { agent: "claude", model: `${MODEL}[1m]` },
   });
   expect(wide).toEqual([]);
+  await seed(db, (q) =>
+    q.orm.update(q.t.workItem).set({ state: "verifying" }).where(eq(q.t.workItem.id, "item")),
+  );
+  const verifying = await createRunnerPlacement({ store: db, now: () => NOW }).candidates(request);
+  expect(verifying.map((runner) => runner.id).sort()).toEqual([current, empty, lagging].sort());
 });
 
 test("with no runner offering the model the item waits queued, then starts once a catalog lists it", async () => {

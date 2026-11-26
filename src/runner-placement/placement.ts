@@ -143,6 +143,11 @@ export function createRunnerPlacement(options: {
       input.profile,
     ]);
   }
+  function* catalogSteps(q: Q, itemId: string | null | undefined, role?: string) {
+    if (role === "reviewer") return false;
+    const item = itemId ? yield* getWorkItemSteps(q, itemId) : null;
+    return item?.state !== "verifying" && item?.state !== "merge_queue";
+  }
   function* policySteps(q: Q, id: string, agent?: string) {
     return JSON.stringify(yield* runnerPlacementPolicySteps(q, id, agent));
   }
@@ -329,6 +334,7 @@ export function createRunnerPlacement(options: {
         exceptCommandId: input.commandId,
         bindingId: account.bindingId,
         role: input.role,
+        catalog: yield* catalogSteps(q, input.itemId, input.role),
       },
       options,
     );
@@ -341,6 +347,7 @@ export function createRunnerPlacement(options: {
     input.signal?.throwIfAborted();
     if (!input.profile) throw new Error("Runner agent profile is required");
     const current = yield* scopeSteps(q, input);
+    const catalog = yield* catalogSteps(q, input.itemId, input.role);
     let admissionRunner: string | null | undefined = null;
     if (!preview && input.purpose === "work" && input.role === "implementer" && input.itemId)
       for (const row of yield* schedulerRunnerSlotsSteps(q, now()))
@@ -412,7 +419,7 @@ export function createRunnerPlacement(options: {
         : null;
     const pinnedOnline =
       pinnedReachable &&
-      (input.role === "reviewer" ||
+      (!catalog ||
         !input.profile.model ||
         (yield* runnerOffersModelSteps(q, pinnedRunnerId!, agent, input.profile.model))) &&
       !(
@@ -492,6 +499,7 @@ export function createRunnerPlacement(options: {
           purpose: input.purpose,
           excludeBindingIds: input.excludeRunnerIds,
           role: input.role,
+          catalog,
           at,
         },
         options,
@@ -709,7 +717,9 @@ export function createRunnerPlacement(options: {
     const result = input.result;
     if ((!result && !input.failure) || (result && result.commandId !== input.commandId))
       throw new Error("Runner result is not bound to its command");
-    const selected = usage.role === "reviewer" ? undefined : input.profile?.model;
+    const selected = (yield* catalogSteps(q, usage.itemId, usage.role))
+      ? input.profile?.model
+      : undefined;
     const missing = selected
       ? [selected, selected.replace(/\[1m\]$/i, "")].find((id) =>
           new RegExp(

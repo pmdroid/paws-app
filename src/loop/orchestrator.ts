@@ -2992,7 +2992,7 @@ export class Orchestrator {
 
   private async requeueForModel(item: WorkItemRecord, job: Job): Promise<boolean> {
     const now = this.now();
-    const handoff = job.queue === JOB_KIND.resume ? readString(job.payload, "handoff") : null;
+    const handoff = readString(job.payload, "handoff");
     const carried =
       handoff === null
         ? undefined
