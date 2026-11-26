@@ -1,5 +1,5 @@
 {
-  "id": "cd383c47-6e65-4727-b2a0-9a9babb7e7d0",
+  "id": "8d20eb4b-227a-4fef-93b6-2102615c7464",
   "prevId": "6dbddde3-c314-45de-8ce0-7ae721b19f08",
   "version": "7",
   "dialect": "postgresql",
@@ -21275,11 +21275,12 @@
           "primaryKey": false,
           "notNull": false
         },
-        "replaces": {
-          "name": "replaces",
-          "type": "text",
+        "generation": {
+          "name": "generation",
+          "type": "integer",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true,
+          "default": 0
         }
       },
       "indexes": {
@@ -21378,7 +21379,7 @@
         },
         "issue_vm_state": {
           "name": "issue_vm_state",
-          "value": "state IN ('creating','awake','sleeping','asleep','waking','deleting','deleted','failed')"
+          "value": "state IN ('creating','awake','sleeping','asleep','waking','unknown','deleting','deleted','failed')"
         },
         "issue_vm_want": {
           "name": "issue_vm_want",

@@ -24,6 +24,7 @@ export const ISSUE_VM_STATES = [
   "sleeping",
   "asleep",
   "waking",
+  "unknown",
   "deleting",
   "deleted",
   "failed",
@@ -49,7 +50,7 @@ export type IssueVm = {
   attempts: number;
   failure: string | null;
   providerRef: string | null;
-  replaces: string | null;
+  generation: number;
 };
 
 export type NewIssueVm = {
@@ -60,19 +61,17 @@ export type NewIssueVm = {
   provider: IssueVmProvider;
   hostRunnerId?: string | null;
   deadlineAt?: number;
-  replaces?: string;
   now: number;
 };
 
 export function* insertIssueVmSteps(q: Q, input: NewIssueVm) {
-  const { now, hostRunnerId, deadlineAt, replaces, id = ulid(now), ...row } = input;
+  const { now, hostRunnerId, deadlineAt, id = ulid(now), ...row } = input;
   yield* q.exec(
     q.orm.insert(q.t.issueVm).values({
       ...row,
       id,
       hostRunnerId: hostRunnerId ?? null,
       deadlineAt: deadlineAt ?? null,
-      replaces: replaces ?? null,
       state: "creating",
       createdAt: now,
       stateAt: now,
@@ -112,14 +111,6 @@ export function* lockIssueVmSteps(q: Q, id: string) {
   return (row ?? null) as IssueVm | null;
 }
 
-export function* lastIssueVmForItemSteps(q: Q, itemId: string) {
-  const { issueVm: v } = q.t;
-  const row = yield* q.one(
-    q.orm.select().from(v).where(eq(v.itemId, itemId)).orderBy(desc(v.createdAt), desc(v.id)),
-  );
-  return (row ?? null) as IssueVm | null;
-}
-
 export function* liveIssueVmForItemSteps(q: Q, itemId: string) {
   const { issueVm: v } = q.t;
   const row = yield* q.one(
@@ -132,23 +123,24 @@ export function* liveIssueVmForItemSteps(q: Q, itemId: string) {
 }
 
 export type IssueVmMove = Partial<
-  Pick<IssueVm, "want" | "deadlineAt" | "attempts" | "failure" | "providerRef" | "runnerId">
+  Pick<IssueVm, "deadlineAt" | "attempts" | "failure" | "providerRef" | "runnerId">
 > & { state?: IssueVmState };
 
 export function* moveIssueVmSteps(
   q: Q,
-  input: { id: string; from: Pick<IssueVm, "state" | "stateAt">; set: IssueVmMove; now: number },
+  input: { id: string; generation: number; set: IssueVmMove; now: number },
 ) {
   const { issueVm: v } = q.t;
   const { state, ...rest } = input.set;
-  const moved = state !== undefined && state !== input.from.state;
   const rows = yield* q.all(
     q.orm
       .update(v)
-      .set({ ...rest, ...(moved ? { state, stateAt: input.now } : {}) })
-      .where(
-        and(eq(v.id, input.id), eq(v.state, input.from.state), eq(v.stateAt, input.from.stateAt)),
-      )
+      .set({
+        ...rest,
+        ...(state === undefined ? {} : { state, stateAt: input.now }),
+        generation: input.generation + 1,
+      })
+      .where(and(eq(v.id, input.id), eq(v.generation, input.generation)))
       .returning({ id: v.id }),
   );
   return rows.length > 0;
