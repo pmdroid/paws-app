@@ -202,13 +202,9 @@ describePglite((connect) => {
     expect(await rows(w.db)).toMatchObject([
       { state: "unknown", providerRef: null, failure: "The VM did not start before its deadline" },
     ]);
-    w.clock.t += ISSUE_VM_FIND_MS + 1_000;
-    await reconcile(w);
-    expect(await rows(w.db)).toMatchObject([{ state: "awake", providerRef: "fake-1" }]);
-    expect(w.driver.vms.size).toBe(1);
   });
 
-  test("a create that never made a VM is reconciled as failed, and the next dispatch makes one", async () => {
+  test("a create the provider does not show yet stays unknown, and is fully slept when it appears", async () => {
     const w = await world(connect);
     const { vm } = (await awake(w)) as { vm: IssueVm };
     w.driver.aroundNext("create", async () => {
@@ -217,10 +213,14 @@ describePglite((connect) => {
     await drain(w);
     w.clock.t += ISSUE_VM_FIND_MS + 1_000;
     await reconcile(w);
-    expect(await rows(w.db)).toMatchObject([{ state: "failed" }]);
     await awake(w);
     await drain(w);
-    expect(await rows(w.db)).toMatchObject([{ state: "failed" }, { state: "awake" }]);
+    expect(await rows(w.db)).toMatchObject([{ state: "unknown" }]);
+    w.driver.vms.set(vm.id, { ref: "late", power: "on" });
+    await reconcile(w);
+    expect(await rows(w.db)).toMatchObject([{ state: "awake", providerRef: "late" }]);
+    expect(ops(w).slice(-3)).toEqual(["find", "sleep", "wake"]);
+    expect(w.driver.vms.size).toBe(1);
   });
 
   test("a wake result after its deadline is ignored and keeps the deadline", async () => {
@@ -235,6 +235,10 @@ describePglite((connect) => {
         failure: "The VM did not wake before its deadline",
       },
     ]);
+    w.clock.t += ISSUE_VM_FIND_MS + 1_000;
+    await reconcile(w);
+    expect(await rows(w.db)).toMatchObject([{ state: "awake" }]);
+    expect(ops(w).slice(-3)).toEqual(["find", "sleep", "wake"]);
   });
 
   test("a call that never answers is aborted at the deadline and reconciled from the provider", async () => {

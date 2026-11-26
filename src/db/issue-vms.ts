@@ -1,17 +1,4 @@
-import {
-  and,
-  count,
-  desc,
-  eq,
-  gt,
-  inArray,
-  isNull,
-  lt,
-  max,
-  notInArray,
-  or,
-  sql,
-} from "drizzle-orm";
+import { and, count, desc, eq, gt, inArray, isNull, lt, max, notInArray, or } from "drizzle-orm";
 import { type Q } from "./db";
 import { ulid } from "./ulid";
 
@@ -47,7 +34,6 @@ export type IssueVm = {
   deletedAt: number | null;
   want: "awake" | "asleep";
   deadlineAt: number | null;
-  attempts: number;
   failure: string | null;
   providerRef: string | null;
   generation: number;
@@ -123,7 +109,7 @@ export function* liveIssueVmForItemSteps(q: Q, itemId: string) {
 }
 
 export type IssueVmMove = Partial<
-  Pick<IssueVm, "deadlineAt" | "attempts" | "failure" | "providerRef" | "runnerId">
+  Pick<IssueVm, "deadlineAt" | "failure" | "providerRef" | "runnerId">
 > & { state?: IssueVmState };
 
 export function* moveIssueVmSteps(
@@ -149,16 +135,6 @@ export function* moveIssueVmSteps(
 export function* setIssueVmWantSteps(q: Q, input: { id: string; want: IssueVm["want"] }) {
   const { issueVm: v } = q.t;
   yield* q.exec(q.orm.update(v).set({ want: input.want }).where(eq(v.id, input.id)));
-}
-
-export function* noteIssueVmFailureSteps(q: Q, input: { id: string; failure: string }) {
-  const { issueVm: v } = q.t;
-  yield* q.exec(
-    q.orm
-      .update(v)
-      .set({ failure: input.failure, attempts: sql`${v.attempts} + 1` })
-      .where(eq(v.id, input.id)),
-  );
 }
 
 export function* unsettledIssueVmIdsSteps(q: Q) {

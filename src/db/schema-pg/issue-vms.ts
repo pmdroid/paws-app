@@ -35,7 +35,6 @@ export const issueVm = pgTable(
     deletedAt: bigint("deleted_at", { mode: "number" }),
     want: text().notNull().default("awake"),
     deadlineAt: bigint("deadline_at", { mode: "number" }),
-    attempts: integer().notNull().default(0),
     failure: text(),
     providerRef: text("provider_ref"),
     generation: integer().notNull().default(0),

@@ -1,5 +1,5 @@
 {
-  "id": "8d20eb4b-227a-4fef-93b6-2102615c7464",
+  "id": "1e86f9df-2189-438a-9565-35c67d7ec48f",
   "prevId": "6dbddde3-c314-45de-8ce0-7ae721b19f08",
   "version": "7",
   "dialect": "postgresql",
@@ -21255,13 +21255,6 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": false
-        },
-        "attempts": {
-          "name": "attempts",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
         },
         "failure": {
           "name": "failure",

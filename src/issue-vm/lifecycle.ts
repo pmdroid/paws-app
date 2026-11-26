@@ -6,8 +6,6 @@ import {
   liveIssueVmForItemSteps,
   lockIssueVmSteps,
   moveIssueVmSteps,
-  noteIssueVmFailureSteps,
-  parkLeasedJobSteps,
   reenqueueJobSteps,
   retryLeasedJobSteps,
   setIssueVmWantSteps,
@@ -141,6 +139,17 @@ export type IssueVmLifecycleOptions = {
 type Outcome = "again" | "settled";
 type Result = { ref: string; runnerId?: string | null } | void;
 
+function bounded<T>(vm: IssueVm, ms: number, run: (call: IssueVmCall) => Promise<T>) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  const aborted = new Promise<never>((_, reject) => {
+    controller.signal.onabort = () => reject(new Error("The provider did not answer in time"));
+  });
+  const running = run({ generation: vm.generation, signal: controller.signal });
+  const done = Promise.race([running, aborted]).finally(() => clearTimeout(timer));
+  return { running, done, signal: controller.signal };
+}
+
 export function createIssueVmLifecycleHandler(store: Db, options: IssueVmLifecycleOptions) {
   const now = options.now ?? Date.now;
   const retryMs = options.retryMs ?? RETRY_MS;
@@ -167,7 +176,7 @@ export function createIssueVmLifecycleHandler(store: Db, options: IssueVmLifecyc
             ? { state: "sleeping", deadlineAt: at + ISSUE_VM_SLEEP_MS }
             : { state: "awake", deadlineAt: null };
       const created = result ? { providerRef: result.ref, runnerId: result.runnerId ?? null } : {};
-      yield* moveSteps(q, current, { ...next, ...created, attempts: 0, failure: null }, at);
+      yield* moveSteps(q, current, { ...next, ...created, failure: null }, at);
       return "moved" as const;
     });
     if (outcome === "moved") return "again";
@@ -178,23 +187,18 @@ export function createIssueVmLifecycleHandler(store: Db, options: IssueVmLifecyc
   async function perform(vm: IssueVm & { state: InFlight }, driver: IssueVmDriver) {
     const deadline = vm.deadlineAt;
     if (deadline === null || now() >= deadline) return end(vm, "unknown", MISSED[vm.state]);
-    const controller = new AbortController();
-    const aborted = new Promise<never>((_, reject) => {
-      controller.signal.onabort = () => reject(new Error("deadline"));
-    });
-    const timer = setTimeout(() => controller.abort(), deadline - now());
-    const call = { generation: vm.generation, signal: controller.signal };
-    const running: Promise<Result> =
+    const { running, done, signal } = bounded(vm, deadline - now(), (call): Promise<Result> =>
       vm.state === "creating"
         ? driver.create(vm, call)
         : vm.state === "sleeping"
           ? driver.sleep(vm, call)
-          : driver.wake(vm, call);
+          : driver.wake(vm, call),
+    );
     let result: Result;
     try {
-      result = await Promise.race([running, aborted]);
+      result = await done;
     } catch (error) {
-      if (!controller.signal.aborted) {
+      if (!signal.aborted) {
         if (lost(error)) return end(vm, "failed", errorText(error).slice(0, MAX_FAILURE));
         throw error;
       }
@@ -203,30 +207,20 @@ export function createIssueVmLifecycleHandler(store: Db, options: IssueVmLifecyc
         () => undefined,
       );
       return end(vm, "unknown", MISSED[vm.state]);
-    } finally {
-      clearTimeout(timer);
     }
     return settle(vm, result);
   }
 
   async function reconcile(vm: IssueVm, driver: IssueVmDriver): Promise<Outcome> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), ISSUE_VM_FIND_MS);
-    const aborted = new Promise<never>((_, reject) => {
-      controller.signal.onabort = () => reject(new Error("The provider did not answer in time"));
-    });
-    let found: IssueVmFound;
-    try {
-      const call = { generation: vm.generation, signal: controller.signal };
-      found = await Promise.race([driver.find(vm, call), aborted]);
-    } finally {
-      clearTimeout(timer);
-    }
+    const found = await bounded(vm, ISSUE_VM_FIND_MS, (call) => driver.find(vm, call)).done;
+    if (found.state === "missing" && vm.providerRef === null) return "settled";
     const at = now();
     const set: IssueVmMove =
       found.state === "missing"
         ? { state: "failed", failure: "The provider no longer lists the VM" }
-        : { state: found.state, deadlineAt: null, attempts: 0, failure: null };
+        : found.state === "awake"
+          ? { state: "sleeping", deadlineAt: at + ISSUE_VM_SLEEP_MS }
+          : { state: "asleep", deadlineAt: null, failure: null };
     const ref = found.ref === undefined ? {} : { providerRef: found.ref };
     if (await store.transaction((q) => moveSteps(q, vm, { ...set, ...ref }, at)))
       journal(`issue_vm_reconciled vm=${vm.id} item=${vm.itemId} found=${found.state}`);
@@ -246,7 +240,7 @@ export function createIssueVmLifecycleHandler(store: Db, options: IssueVmLifecyc
     }
     const at = now();
     const begin = (state: InFlight, ms: number) =>
-      store.transaction((q) => moveSteps(q, vm, { state, deadlineAt: at + ms, attempts: 0 }, at));
+      store.transaction((q) => moveSteps(q, vm, { state, deadlineAt: at + ms }, at));
     if (vm.state === "awake" && vm.want === "asleep") await begin("sleeping", ISSUE_VM_SLEEP_MS);
     else if (vm.state === "asleep" && vm.want === "awake") await begin("waking", ISSUE_VM_WAKE_MS);
     else return "settled";
@@ -266,18 +260,11 @@ export function createIssueVmLifecycleHandler(store: Db, options: IssueVmLifecyc
         const text = errorText(error).slice(0, MAX_FAILURE);
         journal(`issue_vm_retry vm=${id} error=${JSON.stringify(text)}`);
         const at = now();
-        await store.transaction(function* (q) {
-          yield* noteIssueVmFailureSteps(q, { id, failure: text });
-          yield* retryLeasedJobSteps(q, job, at + retryMs, text, 0);
-        });
+        await store.run((q) => retryLeasedJobSteps(q, job, at + retryMs, text, 0));
         return;
       }
       if (outcome === "settled") return;
     }
-    const at = now();
-    await store.run((q) =>
-      parkLeasedJobSteps(q, job, { runAt: at, payload: job.payload, attempts: 0, now: at }),
-    );
   };
 }
 
