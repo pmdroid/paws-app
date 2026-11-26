@@ -15,7 +15,7 @@ import {
 } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, parsePlanResult, planDecision, type AgentLaunch } from "../src/loop";
-import { findOpenQuestion } from "../src/questions";
+import { findOpenQuestion, getQuestion } from "../src/questions";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
@@ -255,6 +255,12 @@ test("a planning request proposes sub-issues, takes an edit, and files them once
     expect(trace.fs[1]).toMatchObject({ op: "write", ok: false });
     expect(readFileSync(join(source, "app.txt"), "utf8")).toBe("Application source");
     expect(tracker.progress.filter((update) => update.kind === "response")).toEqual([]);
+    await outbox.idle();
+    expect(
+      (await listOutbox(db)).filter(
+        (row) => (row.payload as { plan?: unknown[] }).plan?.length === 0,
+      ),
+    ).toEqual([]);
 
     // A bare Edit asks what to change; the reply is the next planning turn.
     await reply("edit", "Edit");
@@ -274,8 +280,13 @@ test("a planning request proposes sub-issues, takes an edit, and files them once
     expect(tracker.subIssueRequests).toEqual([]);
 
     // Create files both under the parent in blocks order, with the repository label.
-    await reply("create", "Create 2 sub-issues");
+    await reply(
+      "create",
+      "create 2 SUB-ISSUES\n\n🐕 Written by Kyoto, an AI agent, on Pascal's behalf —",
+    );
     expect((await getWorkItem(db, itemId))?.state).toBe("completed");
+    expect((await getQuestion(db, second.id))?.answer).toBe("Create 2 sub-issues");
+    expect(purposes).toEqual(["classify", "plan", "plan"]);
     await outbox.idle();
     await outbox.idle();
     expect(tracker.subIssueRequests).toHaveLength(1);

@@ -199,12 +199,9 @@ export function* linearSessionProgressSteps(
         status: desired === "pending" && step.status === "inProgress" ? "inProgress" : desired,
       };
     });
-    yield* publish(
-      q,
-      "linear.session.plan",
-      { sessionId, plan: [...waits, ...agentSteps, ...milestones] },
-      final || phase === "completed",
-    );
+    const plan = [...waits, ...agentSteps, ...milestones];
+    if (plan.length === 0) return;
+    yield* publish(q, "linear.session.plan", { sessionId, plan }, final || phase === "completed");
   }
 
   return {
