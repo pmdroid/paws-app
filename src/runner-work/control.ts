@@ -393,7 +393,11 @@ export function createRunnerWork(options: {
       privateKey: options.privateKey,
       command,
     });
-    yield* q.transaction((savepoint) => recordCommandAccountSteps(savepoint, command, now()));
+    yield* q.transaction((savepoint) =>
+      recordCommandAccountSteps(savepoint, command, now(), {
+        placed: command.type === "run" || command.type === "review" || command.type === "task",
+      }),
+    );
     yield* insertRunnerCommandSteps(q, {
       id: command.id,
       runnerId: command.runnerId,

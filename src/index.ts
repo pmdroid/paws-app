@@ -1368,18 +1368,21 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           origin: runtime.publicUrl ?? "http://127.0.0.1:8787",
         })
       : null;
+  const signInChecks = {
+    requiresOAuthSteps: function* (q: Q, accountId: string) {
+      const stored = yield* readAgentCredentialSteps(q, paths.secretsDir, accountId);
+      return stored?.blob?.includes(".claude/paws-oauth.json") ?? false;
+    },
+    refreshableSteps: function* (q: Q, accountId: string) {
+      if ((yield* readAgentAuthSteps(q, accountId)) !== null) return false;
+      const stored = yield* readAgentCredentialSteps(q, paths.secretsDir, accountId);
+      return credentialRefreshable(stored?.blob);
+    },
+  };
   const placement = linear
     ? createRunnerPlacement({
         store,
-        requiresOAuthSteps: function* (q, accountId) {
-          const stored = yield* readAgentCredentialSteps(q, paths.secretsDir, accountId);
-          return stored?.blob?.includes(".claude/paws-oauth.json") ?? false;
-        },
-        refreshableSteps: function* (q, accountId) {
-          if ((yield* readAgentAuthSteps(q, accountId)) !== null) return false;
-          const stored = yield* readAgentCredentialSteps(q, paths.secretsDir, accountId);
-          return credentialRefreshable(stored?.blob);
-        },
+        ...signInChecks,
         ...(parents ? { sessionActorSteps: parents.actorSteps } : {}),
       })
     : undefined;
@@ -2030,7 +2033,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                 itemId: string,
                 profile: { agent: string; model?: string | null },
                 now: number,
-              ) => itemRunnerVerdictsSteps(q, store, { itemId, ...profile, now }),
+              ) => itemRunnerVerdictsSteps(q, store, { itemId, ...profile, now }, signInChecks),
               onRunnerHostRefusals: runnerHostRefusals.report,
               runnerSetupNeed: (itemId: string, agent: string, now: number) =>
                 store.run((q) => itemOwnerRunnerSetupNeedSteps(q, { itemId, agent, now })),

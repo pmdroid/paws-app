@@ -359,7 +359,9 @@ export function createRunnerHelpers(options: {
       command,
     });
     // Validate and sign first. Fencing and admission commit together, only on this runner.
-    yield* recordCommandAccountSteps(q, command, at);
+    yield* recordCommandAccountSteps(q, command, at, {
+      placed: !conversation && input.purpose !== "repository_summary",
+    });
     if (input.purpose !== "finding_groups" && !conversation)
       yield* yieldFindingGroupHelpersSteps(q, input.runnerId, at);
     yield* insertRunnerHelperSteps(q, {

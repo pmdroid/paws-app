@@ -715,6 +715,7 @@ export function* recordCommandAccountSteps(
   q: Q,
   command: RunnerCommand | RunnerRetroCommand,
   at: number,
+  options: { placed?: boolean } = {},
 ) {
   const agent = commandAgent(command);
   if (!agent) return null;
@@ -734,6 +735,7 @@ export function* recordCommandAccountSteps(
     q.orm.select({ isolation: r.isolation }).from(r).where(eq(r.id, command.runnerId)),
   );
   if (
+    !options.placed &&
     (yield* accountSlotsInUseSteps(
       q,
       row.accountId,
@@ -769,8 +771,9 @@ export async function recordCommandAccount(
   store: Db,
   command: RunnerCommand | RunnerRetroCommand,
   at: number,
+  options: { placed?: boolean } = {},
 ): Promise<CommandAccount | null> {
-  return store.transaction((q) => recordCommandAccountSteps(q, command, at));
+  return store.transaction((q) => recordCommandAccountSteps(q, command, at, options));
 }
 
 export function* commandAccountSteps(q: Q, commandId: string) {

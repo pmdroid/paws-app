@@ -830,7 +830,7 @@ test("an account command on a second issue VM waits while the account is in use"
   await write(db, (q) =>
     q.orm.update(q.t.runner).set({ isolation: "issue_vm" }).where(eq(q.t.runner.id, "R2")),
   );
-  const check = (id: string) =>
+  const check = (id: string, placed?: boolean) =>
     recordCommandAccount(
       db,
       {
@@ -844,9 +844,11 @@ test("an account command on a second issue VM waits while the account is in use"
         account: { accountId: accounts.a, bindingId: bindings.a2 },
       } as RunnerCommand,
       NOW + 1,
+      placed === undefined ? {} : { placed },
     );
   await attempt(db, "cmd-vm-1", bindings.a1, NOW);
   expect(await rejection(check("check-busy"))).toMatchObject({ code: "busy" });
+  expect((await check("check-placed", true))?.accountId).toBe(accounts.a);
   await write(db, (q) =>
     q.orm
       .update(q.t.runnerExecutionUsage)
