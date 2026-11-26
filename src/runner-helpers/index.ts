@@ -61,7 +61,6 @@ type HelperDispatch = {
   conversation?: HelperCommand["conversation"];
   slack?: RunnerSlackReplyScope;
   summary?: HelperCommand["summary"];
-  probe?: HelperCommand["probe"];
   tools?: HostToolDefinitions;
   repositories?: HelperCommand["repositories"];
 };
@@ -99,13 +98,7 @@ type RepositorySummaryAuthority = (
   input: { workspaceId: string; userId: string; repository: string },
 ) => Steps<boolean>;
 
-type ProbeAuthority = (
-  q: Q,
-  input: { workspaceId: string; userId: string; repository: string | null },
-) => Steps<boolean>;
-
-const probePurpose = (purpose: HelperCommand["purpose"] | undefined) =>
-  purpose === "probe_distill" || purpose === "probe_write";
+type ProbeAuthority = (q: Q, input: { workspaceId: string; userId: string }) => Steps<boolean>;
 
 export class HelperFencedError extends Error {
   override readonly name = "HelperFencedError";
@@ -159,8 +152,7 @@ export function createRunnerHelpers(options: {
     const entry = handlers.get(id);
     const access = options.repositoryAccess;
     const handler = entry?.repositories;
-    const allowed = command.purpose === "slack_reply" || command.probe?.repository === repository;
-    if (!allowed || !entry || !handler || !access)
+    if (command.purpose !== "slack_reply" || !entry || !handler || !access)
       throw new HelperForbiddenError("Runner helper repository is unavailable");
     const repeated = entry.granted.has(repository);
     if (!repeated && entry.granted.size >= HELPER_REPOSITORIES)
@@ -232,13 +224,13 @@ export function createRunnerHelpers(options: {
     slack: RunnerSlackReplyScope | undefined,
     issuedAt: number,
     summary?: HelperCommand["summary"],
-    probe?: HelperCommand["probe"],
   ) {
     const runner = yield* identitySteps(q, runnerId);
-    if (probePurpose(purpose)) {
-      const { workspaceId, userId } = runner;
-      const repository = probe?.repository ?? null;
-      if (!options.probes || !(yield* options.probes(q, { workspaceId, userId, repository })))
+    if (purpose === "probe_distill") {
+      if (
+        !options.probes ||
+        !(yield* options.probes(q, { workspaceId: runner.workspaceId, userId: runner.userId }))
+      )
         throw new HelperFencedError("Probe collector authority changed");
       return runner;
     }
@@ -294,7 +286,6 @@ export function createRunnerHelpers(options: {
       command.slack,
       command.issuedAt,
       command.summary,
-      command.probe,
     );
     return { row: unchangedIdentity(runner, row), command, envelope };
   }
@@ -330,7 +321,7 @@ export function createRunnerHelpers(options: {
   function* dispatchSteps(q: Q, input: HelperDispatch) {
     const slack = input.purpose === "slack_reply";
     const sessionless =
-      slack || input.purpose === "repository_summary" || probePurpose(input.purpose);
+      slack || input.purpose === "repository_summary" || input.purpose === "probe_distill";
     const session = sessionless ? null : yield* getLinearSessionSteps(q, input.sessionId);
     if (!sessionless && !session)
       throw new HelperFencedError("Linear helper session is unavailable");
@@ -348,7 +339,6 @@ export function createRunnerHelpers(options: {
       input.slack,
       now(),
       input.summary,
-      input.probe,
     );
     if (runner.status !== "active") throw new Error("Runner is not accepting helper work");
     const conversation = input.purpose === "conversation" || slack;

@@ -39,7 +39,7 @@ const workPurposeSql = (helper: string) =>
 export const workHelperSql = (q: Q, helper: string): SQL => sql.raw(workPurposeSql(helper));
 
 const helperIssuedSql = (helper: string) =>
-  `${helper}.expires_at - CASE WHEN ${helper}.purpose='finding_groups' THEN ${runnerHelperLifetime("finding_groups")} WHEN ${helper}.purpose='repository_summary' THEN ${runnerHelperLifetime("repository_summary")} WHEN ${helper}.purpose IN ('probe_distill','probe_write') THEN ${runnerHelperLifetime("probe_write")} ELSE ${runnerHelperLifetime("classify")} END`;
+  `${helper}.expires_at - CASE WHEN ${helper}.purpose='finding_groups' THEN ${runnerHelperLifetime("finding_groups")} WHEN ${helper}.purpose='repository_summary' THEN ${runnerHelperLifetime("repository_summary")} WHEN ${helper}.purpose='probe_distill' THEN ${runnerHelperLifetime("probe_distill")} ELSE ${runnerHelperLifetime("classify")} END`;
 
 /** Work helpers in the lane: acknowledged, or issued within the runner acknowledgement window. */
 export const laneHelperSql = (q: Q, helper: string, now: number): SQL =>

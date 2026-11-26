@@ -147,7 +147,6 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     worktree: options.worktreePath,
     home,
     pawsRoot: options.pawsRoot,
-    ...(options.writableRoot ? { writableRoot: options.writableRoot } : {}),
     ...(options.hostTools?.definitions.length || options.addRepository
       ? {
           definedTools: [
@@ -355,8 +354,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     })
     .onRequest(methods.client.fs.writeTextFile, (ctx) => {
       assertRunning();
-      if (options.readOnly && !guard.writableRoot)
-        throw new Error("This agent session is read-only");
+      if (options.readOnly) throw new Error("This agent session is read-only");
       return writeGuarded(ctx.params, guard);
     })
     .onRequest(methods.client.terminal.create, (ctx) => {
