@@ -173,12 +173,8 @@ test.skipIf(process.getuid!() === 0)(
       expect(web).toEqual([
         { repository: "acme/web", commit: origins["acme/web"]!.commit, path: expect.any(String) },
       ]);
-      expect(
-        execFileSync("git", ["--git-dir", web[0]!.path, "show", "main:README.md"], {
-          encoding: "utf8",
-          env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
-        }),
-      ).toBe("web\n");
+      const readme = ["--git-dir", web[0]!.path, "show", "main:README.md"];
+      expect(execFileSync("git", readme, { encoding: "utf8" })).toBe("web\n");
 
       const events = join(createRunnerResultDirectory(results, executionId), "events.jsonl");
       writeFileSync(events, "", { mode: 0o640 });

@@ -1,5 +1,5 @@
 import { journalCaught } from "../journal";
-import { spawnSync } from "node:child_process";
+import { git } from "../acp";
 import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -25,37 +25,23 @@ function probeTree(root: string, relative = "", tree = new Map<string, string>()
   return tree;
 }
 
-const gitEnv = {
-  PATH: "/usr/bin:/bin",
-  LANG: "C",
-  GIT_CONFIG_NOSYSTEM: "1",
-  GIT_CONFIG_GLOBAL: "/dev/null",
-  GIT_TERMINAL_PROMPT: "0",
-};
+const env = { PATH: "/usr/bin:/bin", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
 
-function gitOut(args: string[]): string {
-  const run = spawnSync("git", args, { env: gitEnv, encoding: "utf8", timeout: 300_000 });
-  if (run.status !== 0) throw new Error(`git ${args[0] === "-C" ? args[2] : args[0]} failed`);
-  return run.stdout.trim();
-}
-
-export function checkoutProbe(mirror: { path: string; commit: string }, target: string) {
+export async function checkoutProbe(
+  mirror: { path: string; commit: string } | undefined,
+  target: string,
+) {
+  if (!mirror) throw new Error("The probe's repository checkout is not on this runner");
   mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-  gitOut([
-    "-c",
-    `safe.directory=${mirror.path}`,
-    "clone",
-    "--quiet",
-    "--no-hardlinks",
-    "--",
-    mirror.path,
-    target,
-  ]);
-  const head = gitOut(["-C", target, "rev-parse", "--verify", "HEAD^{commit}"]);
-  const main = gitOut(["-C", target, "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"]);
+  const safe = `safe.directory=${mirror.path}`;
+  await git(["-c", safe, "clone", "-q", "--no-hardlinks", "--", mirror.path, target], { env });
+  const commit = (ref: string) =>
+    git(["-C", target, "rev-parse", "--verify", `${ref}^{commit}`], { env }).then((out) =>
+      out.trim(),
+    );
+  const [head, main] = await Promise.all([commit("HEAD"), commit("refs/remotes/origin/main")]);
   if (head !== main || main !== mirror.commit)
     throw new Error("The probe's checkout is not at the fetched origin/main commit");
-  mkdirSync(join(target, PROBES), { recursive: true, mode: 0o700 });
   return target;
 }
 
@@ -73,18 +59,12 @@ export function probeEntry(text: string) {
   return entry.success ? entry.data : undefined;
 }
 
-export function probeSnapshot(root: string, path: string) {
-  const info = lstatSync(join(root, path), { throwIfNoEntry: false });
-  return {
-    tree: probeTree(root),
-    text: info?.isFile() ? readFileSync(join(root, path), "utf8") : "",
-  };
-}
+export const probeSnapshot = (root: string) => probeTree(root);
 
 export function collectProbe(
   root: string,
   path: string,
-  { tree: before, text: previous }: ReturnType<typeof probeSnapshot>,
+  before: ReturnType<typeof probeTree>,
   reply: string,
 ): { probe?: NonNullable<RunnerHelperResult["probe"]>; error?: string } {
   const after = probeTree(root);
@@ -103,7 +83,7 @@ export function collectProbe(
   if (info.size > RUNNER_PROBE_BYTES)
     return { error: `${path} is larger than ${RUNNER_PROBE_BYTES} bytes` };
   const text = readFileSync(file, "utf8");
-  if (!text || text === previous) return { error: `The agent left ${path} empty or unchanged` };
+  if (!text) return { error: `The agent left ${path} empty` };
   const entry = probeEntry(reply);
   if (!entry) return { error: "The agent did not propose a valid rules entry" };
   return { probe: { path, text, entry } };

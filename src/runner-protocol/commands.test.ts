@@ -559,10 +559,8 @@ test("probe helpers run under an account; probe_write names one repository and a
   for (const refused of [
     { ...distill, account: undefined },
     { ...distill, repositories: ["acme/web"] },
-    { ...distill, probe: write.probe },
     { ...write, probe: undefined },
     { ...write, repositories: ["acme/api"] },
-    { ...write, probe: { ...write.probe, path: "src/index.ts" } },
     { ...write, probe: { ...write.probe, path: ".agents/probes/../index.ts" } },
     { ...write, tools: [{ name: "linear_issue", description: "Read.", inputSchema: {} }] },
   ])

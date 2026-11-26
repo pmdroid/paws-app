@@ -168,7 +168,6 @@ import {
   type RunnerCodingAgent,
   type RunnerCommand,
   type RunnerHelperResult,
-  runnerHelperLifetime,
   type RunnerEvent,
   type RunnerHandoverFailure,
   type RunnerInstalledRuntime,
@@ -230,7 +229,7 @@ export interface RunnerWorkerOptions {
   signal?: AbortSignal;
   /** Agent execution adapter; defaults to the ACP runner. */
   runAgent?: (options: RunAgentOptions) => Promise<RunAgentResult>;
-  launch?: Pick<RunAgentOptions, "command" | "args" | "env"> & { sandboxLauncher?: string };
+  launch?: Pick<RunAgentOptions, "command" | "args" | "env">;
   answer?: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>;
   helperRepositories?: () => readonly HelperRepository[];
   followUp?: (sequence: number, signal: AbortSignal) => Promise<string>;
@@ -1455,19 +1454,15 @@ export async function executeRunnerCommand(
       journalCaught(error, "runner-worker.preload", null);
     }
     const probe = command.type === "helper" ? command.probe : undefined;
-    const probeMirror =
-      probe &&
-      options.helperRepositories?.().find((added) => added.repository === probe.repository);
-    if (probe && !probeMirror)
-      throw new Error("The probe's repository checkout is not on this runner");
+    const mirror = options
+      .helperRepositories?.()
+      .find((added) => added.repository === probe?.repository);
     const probeRoot =
-      probe && probeMirror
-        ? checkoutProbe(probeMirror, join(worktree, "repositories", probe.repository))
-        : undefined;
+      probe && (await checkoutProbe(mirror, join(worktree, "repositories", probe.repository)));
     const probeHelper =
       command.type === "helper" &&
       (command.purpose === "probe_distill" || command.purpose === "probe_write");
-    const probeBefore = probe && probeRoot ? probeSnapshot(probeRoot, probe.path) : undefined;
+    const probeBefore = probeRoot ? probeSnapshot(probeRoot) : undefined;
     let inputFiles = options.inputs?.inputFiles ?? [];
     if (command.type === "run" || command.type === "review" || command.type === "task") {
       const descriptors = command.inputFiles ?? [];
@@ -1760,11 +1755,7 @@ export async function executeRunnerCommand(
       ...(probeHelper
         ? {
             sandbox: {
-              writable: probeRoot ? [join(probeRoot, ".agents", "probes")] : [],
-              maxSeconds: runnerHelperLifetime("probe_write") / 1000,
-              ...(options.launch?.sandboxLauncher
-                ? { launcher: options.launch.sandboxLauncher }
-                : {}),
+              writable: probeRoot ? [{ root: probeRoot, relative: ".agents/probes" }] : [],
             },
           }
         : {}),

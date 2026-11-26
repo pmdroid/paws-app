@@ -1,16 +1,21 @@
-import { execFile } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { isInside } from "./permissions";
+import { lstatSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import type { AgentProfile } from "../config";
+
+type AgentName = AgentProfile["agent"];
 
 export interface AgentSandbox {
-  writable: readonly string[];
-  maxSeconds?: number;
-  launcher?: string;
+  writable: readonly { root: string; relative: string }[];
 }
 
-export const SYSTEMD_RUN = "/usr/bin/systemd-run";
+const SESSION_DIRECTORIES: Record<AgentName, string> = {
+  claude: ".claude/projects",
+  codex: ".codex/sessions",
+  grok: ".grok/sessions",
+  opencode: ".local/share/opencode",
+};
 
 const userEnv = () => ({
   PATH: "/usr/bin:/bin",
@@ -18,27 +23,36 @@ const userEnv = () => ({
   XDG_RUNTIME_DIR: `/run/user/${process.getuid?.() ?? 0}`,
 });
 
-const safePath = (path: string) => {
+function plainDirectory(root: string, relative: string): string {
+  let path = realpathSync(root);
+  for (const part of relative.split("/").filter(Boolean)) {
+    path = join(path, part);
+    const info = lstatSync(path, { throwIfNoEntry: false });
+    if (!info) mkdirSync(path, { mode: 0o700 });
+    else if (!info.isDirectory())
+      throw new Error("A sandbox writable path is not a plain directory");
+  }
   if (!/^\/[A-Za-z0-9._/@+-]*$/.test(path)) throw new Error("Unsafe sandbox path");
-  return resolve(path);
-};
+  return path;
+}
 
 export function sandboxedLaunch(input: {
+  agent: AgentName;
   command: string;
   args: readonly string[];
   env: Record<string, string>;
   cwd: string;
   scratch: string;
-  readOnly: string;
+  home: string;
   sandbox: AgentSandbox;
 }) {
-  const readOnly = safePath(input.readOnly);
-  const scratch = safePath(input.scratch);
-  const granted = input.sandbox.writable.map(safePath);
-  for (const path of [scratch, ...granted.filter((grant) => !isInside(readOnly, grant))])
-    if (isInside(path, readOnly)) throw new Error("A sandbox writable path holds the worktree");
+  const writable = [
+    { root: input.scratch, relative: "" },
+    { root: input.home, relative: SESSION_DIRECTORIES[input.agent] },
+    ...input.sandbox.writable,
+  ].map(({ root, relative }) => plainDirectory(root, relative));
   const unit = `paws-helper-${randomUUID()}.service`;
-  const envFile = join(scratch, `${unit}.env`);
+  const envFile = join(writable[0]!, `${unit}.env`);
   const lines = Object.entries(input.env).map(([key, value]) => {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || /[\0\n\r]/.test(value))
       throw new Error("Agent environment is not safe for a sandbox");
@@ -50,37 +64,28 @@ export function sandboxedLaunch(input: {
     "ProtectHome=read-only",
     "PrivateTmp=yes",
     "NoNewPrivileges=yes",
-    `RuntimeMaxSec=${input.sandbox.maxSeconds ?? 900}`,
+    "InaccessiblePaths=/run/user",
+    "RuntimeMaxSec=900",
     `EnvironmentFile=${envFile}`,
-    ...[scratch, ...granted].map((path) => `ReadWritePaths=${path}`),
+    ...writable.map((path) => `ReadWritePaths=${path}`),
   ];
   return {
-    unit,
-    command: input.sandbox.launcher ?? SYSTEMD_RUN,
+    command: "/usr/bin/systemd-run",
     args: [
-      "--user",
-      "--quiet",
-      "--pipe",
-      "--wait",
-      "--collect",
-      "--service-type=exec",
+      ...["--user", "--quiet", "--pipe", "--wait", "--collect", "--service-type=exec"],
       `--unit=${unit}`,
-      `--working-directory=${safePath(input.cwd)}`,
+      `--working-directory=${input.cwd}`,
       ...properties.flatMap((property) => ["-p", property]),
       "--",
       input.command,
       ...input.args,
     ],
     env: userEnv(),
-    async cleanup() {
+    cleanup() {
       rmSync(envFile, { force: true });
-      await new Promise<void>((done) => {
-        execFile(
-          "/usr/bin/systemctl",
-          ["--user", "--no-ask-password", "stop", unit],
-          { env: userEnv(), timeout: 30_000 },
-          () => done(),
-        );
+      spawnSync("/usr/bin/systemctl", ["--user", "stop", unit], {
+        env: userEnv(),
+        timeout: 30_000,
       });
     },
   };

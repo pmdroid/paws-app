@@ -243,13 +243,14 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   };
   const sandboxed = options.sandbox
     ? sandboxedLaunch({
+        agent: profile.agent,
         command: adapter.command,
         args: adapter.args,
         env: agentEnv,
         cwd: options.worktreePath,
         scratch: directory,
-        readOnly: options.worktreePath,
-        sandbox: { ...options.sandbox, writable: [home, ...options.sandbox.writable] },
+        home,
+        sandbox: options.sandbox,
       })
     : undefined;
   const child = sandboxed
@@ -678,7 +679,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     const exitCode = child.exitCode;
     const exitSignal = child.signalCode;
     result.agentExited = await stopChild(child, graceMs);
-    await sandboxed?.cleanup();
+    sandboxed?.cleanup();
     stopWatchingHooks?.();
     result.pid = child.pid;
     result.transcriptPath = transcript;

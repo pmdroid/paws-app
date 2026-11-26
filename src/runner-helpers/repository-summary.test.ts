@@ -54,16 +54,6 @@ async function fixture(withAuthority: boolean) {
     store: db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
-    repositoryAccess: {
-      github: {
-        mintInstallationToken: async (input) => ({
-          token: "t",
-          expiresAt: Date.now() + 9e5,
-          ...input,
-        }),
-      },
-      installationForRepository: async () => "installation-1",
-    },
     ...(withAuthority ? { summary: allow, probes: allow } : {}),
   });
   const binding = (await listAgentBindings(db, workspace.id)).find(
@@ -85,15 +75,6 @@ async function fixture(withAuthority: boolean) {
           }
         : {}),
     });
-  const credential = async (id: string, repository: string) =>
-    (await helpers.fetch(
-      new Request(`http://paws/v1/helper-commands/${id}/repository-credential`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ repository }),
-      }),
-      "runner",
-    ))!;
   const dispatch = () =>
     helpers.dispatch({
       runnerId: "runner",
@@ -103,8 +84,7 @@ async function fixture(withAuthority: boolean) {
       prompt: "Summarise this README.",
       summary: { repository: "acme/web" },
     });
-  const probes = { account, probe, credential };
-  return { db, now, userId, workspace, authority, helpers, dispatch, ...probes };
+  return { db, now, userId, workspace, authority, helpers, dispatch, account, probe };
 }
 
 test("a repository summary is delivered only while its authority allows the runner's owner", async () => {
@@ -138,21 +118,15 @@ test("a repository summary and probe helpers are fenced when no authority is con
   expect(await helpers.commands("runner")).toEqual([]);
 });
 
-test("probe helpers run under the bound account, and only probe_write reads its own repository", async () => {
-  const { userId, workspace, authority, helpers, account, probe, credential } = await fixture(true);
-  const commit = "a".repeat(40);
+test("probe helpers run under the bound account while their authority allows", async () => {
+  const { userId, workspace, authority, helpers, account, probe } = await fixture(true);
   const distilled = (await probe("probe_distill")).command;
   expect(distilled.expiresAt - distilled.issuedAt).toBe(900_000);
   expect(distilled.account).toEqual(account);
   expect(authority.asked[0]).toEqual({ workspaceId: workspace.id, userId, repository: null });
-  helpers.handle(distilled.id, undefined, async () => ({ commit }));
-  expect((await credential(distilled.id, "acme/web")).status).toBe(403);
   await helpers.finish(distilled.id);
-  const written = (await probe("probe_write")).command;
+  expect((await probe("probe_write")).command.probe?.repository).toBe("acme/web");
   expect(authority.asked.at(-1)).toMatchObject({ repository: "acme/web" });
-  helpers.handle(written.id, undefined, async () => ({ commit }));
-  expect((await credential(written.id, "acme/api")).status).toBe(403);
-  expect((await credential(written.id, "acme/web")).status).toBe(200);
   authority.allowed = false;
   expect(await helpers.commands("runner")).toEqual([]);
   await expect(probe("probe_distill")).rejects.toBeInstanceOf(HelperFencedError);
