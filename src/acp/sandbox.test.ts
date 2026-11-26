@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { helperSandboxStarts } from "../../test/helper-sandbox";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -10,14 +10,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-const sandbox =
-  spawnSync(
-    "/usr/bin/systemd-run",
-    ["--user", "-q", "--pipe", "--wait", "-p", "PrivateTmp=yes", "true"],
-    {
-      env: { PATH: "/usr/bin:/bin", XDG_RUNTIME_DIR: `/run/user/${process.getuid!()}` },
-    },
-  ).status === 0;
+const sandbox = helperSandboxStarts;
 
 type Paths = { home: string; worktree: string; scratch: string; socket: string };
 

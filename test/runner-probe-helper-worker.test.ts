@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
+import { helperSandboxStarts } from "./helper-sandbox";
 import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -15,14 +15,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-const sandbox =
-  spawnSync(
-    "/usr/bin/systemd-run",
-    ["--user", "-q", "--pipe", "--wait", "-p", "PrivateTmp=yes", "true"],
-    {
-      env: { PATH: "/usr/bin:/bin", XDG_RUNTIME_DIR: `/run/user/${process.getuid!()}` },
-    },
-  ).status === 0;
+const sandbox = helperSandboxStarts;
 const account = {
   accountId: "01JACCOUNTA000000000000000",
   bindingId: "01JBINDINGA000000000000000",
