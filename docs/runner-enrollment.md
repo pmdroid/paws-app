@@ -70,12 +70,16 @@ On a grant, package configuration:
 1. Checks for `rootlesskit`, `newuidmap`, `newgidmap` and `slirp4netns`, and for `paws-agent`'s daemon also `dbus-user-session`, which gives its user manager the D-Bus the systemd cgroup driver talks to. If any is missing, it names the package, sets nothing up and finishes the install.
 2. Adds a 65536-id range for the account to `/etc/subuid` and `/etc/subgid` where it has none, after the highest existing range.
 3. Creates the data directory (owned by the account, mode 0700) for images and containers.
-4. Writes the daemon's unit, which runs the `dockerd-rootless.sh` launcher the package ships: `paws-docker.service` in `/etc/systemd/system`, or `paws-agent-docker.service` in `/etc/systemd/user`. For the user unit it also writes `/etc/systemd/system/user@.service.d/delegate.conf` (`Delegate=cpu cpuset io memory pids`) and `/etc/tmpfiles.d/paws-agent-docker.conf`, which keeps `/run/paws-agent-docker` owned by `paws-agent`, mode 0700, and runs `loginctl enable-linger paws-agent` so the user manager starts at boot.
+4. Writes the daemon's unit, which runs the `dockerd-rootless.sh` launcher the package ships: `paws-docker.service` in `/etc/systemd/system`, or `paws-agent-docker.service` in `/etc/systemd/user`. For the user unit it also writes `/etc/systemd/system/user@.service.d/delegate.conf` (`Delegate=cpu cpuset io memory pids`) and `/etc/tmpfiles.d/paws-agent-docker.conf`, which keeps `/run/paws-agent-docker` owned by `paws-agent`, mode 0700.
 5. Enables and starts the daemon, and reports whether its account can reach it and the other account can't. It reports `no-cgroups` when the daemon answers with `CgroupDriver: none`.
 
 An upgrade from a release that ran `paws-agent-docker.service` as a system unit stops, disables and removes that unit, then starts the user unit on the same data directory, so images and volumes stay.
 
-`deny`, or a host without Docker Engine, stops both daemons, removes their units and turns off linger for `paws-agent`. The data directories and the subordinate ids stay, so a later grant finds its images. Removing the package does the same; purging it also deletes both data directories and the `paws-runner` and `paws-agent` lines in `/etc/subuid` and `/etc/subgid`.
+`deny`, or a host without Docker Engine, stops both daemons and removes their units. The data directories and the subordinate ids stay, so a later grant finds its images. Removing the package does the same; purging it also deletes both data directories and the `paws-runner` and `paws-agent` lines in `/etc/subuid` and `/etc/subgid`.
+
+Whether or not Docker access is granted, package configuration runs `loginctl enable-linger` for the account agents run as (`paws-agent`, or `paws-runner` with `agentUser = "runner"`), so its systemd user manager starts at boot, and turns linger off for the other account. Sandboxed helper turns start with `systemd-run --user` and need that manager. Removing the package turns linger off for both accounts.
+
+The runner checks on every heartbeat that this user manager runs and that the kernel allows unprivileged user namespaces (`user.max_user_namespaces` above 0, `kernel.unprivileged_userns_clone` not 0, `kernel.apparmor_restrict_unprivileged_userns` not 1). When either fails, the Runners page shows the runner as unhealthy with the reason, because sandboxed helper turns can't start there.
 
 An earlier release added `paws-runner` to the `docker` group instead. An upgrade removes that membership when the install state in `/var/lib/paws-runner-install/docker-group.json` records that Paws added it. A membership Paws did not record adding stays, and the install prints a warning.
 

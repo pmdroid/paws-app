@@ -17,6 +17,7 @@ import {
   runnerAgentCredentials,
 } from "../runner-execution";
 import { runRunnerWorker } from "../runner-worker";
+import { heartbeatHealthFailure, helperSandboxFailure } from "../runner-health-runtime";
 import { describeRunnerFailure, RunnerCliFailure, journalRunnerFailure } from "../runner-failure";
 import { RUNNER_WORK_ROOT, runPairedDaemon } from "./daemon";
 import { hostResources, runnerConcurrency } from "./slots";
@@ -375,12 +376,13 @@ export async function runRunnerCli(
       ...config,
       concurrency: runnerConcurrency(config.concurrency, hostResources, error),
       log: error,
-      sampleHost: () => ({
-        ...sampleHost(),
-        ...(healthFailure === undefined
-          ? {}
-          : { healthFailure: healthFailure?.slice(0, 500) ?? null }),
-      }),
+      sampleHost: () => {
+        const sandbox = helperSandboxFailure({
+          name: config.agentUser === "paws-agent" ? "paws-agent" : "paws-runner",
+          uid: daemonIds.agentUid,
+        });
+        return { ...sampleHost(), healthFailure: heartbeatHealthFailure(sandbox, healthFailure) };
+      },
       accountBindings: () =>
         runnerAccountBindings("/var/lib/paws-agent", {
           runnerUid: ids.runnerUid,

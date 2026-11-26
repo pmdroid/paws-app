@@ -84,6 +84,7 @@ def configure():
         installed["agents"] = installer.finish_agents(agents)
         # Before the runner starts again, so it comes back without a docker group membership Paws removed.
         installed["docker"] = installer.configure_docker_access(docker)
+        installed["linger"] = installer.configure_agent_linger()
     restore()
     installer.pending_configure().unlink(missing_ok=True)
     journal.end("stop-to-start")

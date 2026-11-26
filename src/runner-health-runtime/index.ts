@@ -35,6 +35,8 @@ import {
   type RunnerHelperResult,
 } from "../runner-protocol";
 
+export { heartbeatHealthFailure, helperSandboxFailure } from "./sandbox-readiness";
+
 type Command = Extract<RunnerCommand, { type: "probe" | "login_check" | "helper" }>;
 type Entry = {
   unreachable?: boolean;
