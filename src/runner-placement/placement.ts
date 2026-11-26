@@ -412,7 +412,8 @@ export function createRunnerPlacement(options: {
         : null;
     const pinnedOnline =
       pinnedReachable &&
-      (!input.profile.model ||
+      (input.role === "reviewer" ||
+        !input.profile.model ||
         (yield* runnerOffersModelSteps(q, pinnedRunnerId!, agent, input.profile.model))) &&
       !(
         pinnedFit &&
@@ -708,7 +709,7 @@ export function createRunnerPlacement(options: {
     const result = input.result;
     if ((!result && !input.failure) || (result && result.commandId !== input.commandId))
       throw new Error("Runner result is not bound to its command");
-    const selected = input.profile?.model;
+    const selected = usage.role === "reviewer" ? undefined : input.profile?.model;
     const missing = selected
       ? [selected, selected.replace(/\[1m\]$/i, "")].find((id) =>
           new RegExp(

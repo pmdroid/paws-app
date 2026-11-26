@@ -2227,11 +2227,6 @@ export class Orchestrator {
           await clearWait();
           const waitingId = readString(job.payload, "itemId");
           if (waitingId) await this.settleItemAwake(waitingId);
-          const waitingRun = waitingId
-            ? (await this.store.run((q) => getWorkItemSteps(q, waitingId)))?.currentRunId
-            : null;
-          if (wait.untimed && waitingRun)
-            await this.store.run((q) => closeActiveRunSteps(q, waitingRun, this.now(), "lost"));
           await waitForRunnerSlot(this.store, job, this.now(), this.runnerWaitMs(wait), wait);
         }
       });
@@ -2794,7 +2789,7 @@ export class Orchestrator {
         );
         return;
       }
-      if (capacityWaitIn(error)?.untimed && (await this.requeueForModel(item, job))) {
+      if (capacityWaitIn(error)?.modelWait && (await this.requeueForModel(item, job))) {
         journalCaught(
           error,
           "orchestrator.executeRetried.executeQueued",
@@ -2873,7 +2868,7 @@ export class Orchestrator {
           )) === "lost"
         )
           throw error;
-        capacityParked = !wait.untimed;
+        capacityParked = true;
         journalCaught(
           error,
           "orchestrator.executeRetried.executeQueued",
@@ -3002,7 +2997,7 @@ export class Orchestrator {
       handoff === null
         ? undefined
         : Object.fromEntries(
-            ["reason", "limit", "fixRound", "fixRounds", "fixRoundsAfter"].flatMap((key) =>
+            ["reason", "limit", "fixRound", "fixRoundsAfter"].flatMap((key) =>
               key in (job.payload as object)
                 ? [[key, (job.payload as Record<string, unknown>)[key]]]
                 : [],
@@ -3268,15 +3263,13 @@ export class Orchestrator {
     // A busy runner is waited for without limit. Only a wait with no runner offered runs out, and
     // its clock starts when the runners stop being offered.
     const waited = previous && previous.runnerIds.length > 0 === busy ? previous : null;
-    if (!busy && !error.untimed && waited && this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS)
-      return null;
+    if (!busy && waited && this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS) return null;
     return {
       since: waited?.since ?? this.now(),
       attempt: waited ? waited.attempt + 1 : 0,
       runnerIds: error.runnerIds,
       online: waited?.online ?? (await this.store.run((q) => activeRunnerIdsSteps(q, this.now()))),
       ...(error.holdMs === undefined ? {} : { holdMs: error.holdMs }),
-      ...(error.untimed ? { untimed: true as const } : {}),
     };
   }
 
@@ -3307,9 +3300,7 @@ export class Orchestrator {
       item.cancelRequested ||
       !["running", "recovering", "verifying", "merge_queue"].includes(item.state) ||
       this.shuttingDown ||
-      (waited.runnerIds.length === 0 &&
-        !waited.untimed &&
-        this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS) ||
+      (waited.runnerIds.length === 0 && this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS) ||
       this.now() - waited.since >= (waited.holdMs ?? Infinity)
     )
       return false;

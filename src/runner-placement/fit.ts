@@ -108,6 +108,7 @@ export function* signInFitSteps(
   );
   if (
     bindings.length &&
+    input.role !== "reviewer" &&
     input.model &&
     !(yield* runnerOffersModelSteps(q, runner.id, input.agent, input.model))
   )

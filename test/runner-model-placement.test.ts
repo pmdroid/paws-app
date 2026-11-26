@@ -129,32 +129,17 @@ test("a turn whose agent does not advertise the model drops it from that runner'
   expect(again.map((runner) => runner.id).sort()).toEqual([other, stale].sort());
 });
 
-test("the model wait reason shows while another runner is offline", () => {
-  const runner = { hostConfig: null } as const;
-  expect(
+test("the model wait reason shows past an offline runner but not past an eligible one", () => {
+  const line = (rejection: string | null) =>
     noRunnerOffersLine({
       repository: null,
       agent: "claude",
       model: MODEL,
       runners: [
-        { ...runner, id: "a", name: "a", rejection: "offline" },
-        { ...runner, id: "b", name: "b", rejection: `claude does not offer ${MODEL}` },
+        { hostConfig: null, id: "a", name: "a", rejection: `claude does not offer ${MODEL}` },
+        { hostConfig: null, id: "b", name: "b", rejection },
       ],
-    }),
-  ).toBe(`No runner offers claude ${MODEL}`);
-});
-
-test("an eligible runner without a free slot shows the slot wait, not the model", () => {
-  const runner = { hostConfig: null } as const;
-  expect(
-    noRunnerOffersLine({
-      repository: null,
-      agent: "claude",
-      model: MODEL,
-      runners: [
-        { ...runner, id: "a", name: "a", rejection: `claude does not offer ${MODEL}` },
-        { ...runner, id: "b", name: "b", rejection: null },
-      ],
-    }),
-  ).toBeNull();
+    });
+  expect(line("offline")).toBe(`No runner offers claude ${MODEL}`);
+  expect(line(null)).toBeNull();
 });

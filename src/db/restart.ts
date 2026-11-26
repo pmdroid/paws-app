@@ -73,7 +73,7 @@ export function* restartSteps(
     reason: handoff.reason,
     ...(handoff.limit !== undefined ? { limit: handoff.limit } : {}),
     ...(handoff.fixRound ? { fixRound: true } : {}),
-    ...handoff.carried,
+    ...(handoff.carried ? { ...handoff.carried, fixRounds: 0 } : {}),
   };
   const job = yield* reenqueueJobSteps(
     q,
