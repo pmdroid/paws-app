@@ -1301,36 +1301,6 @@ export function* lastSuccessfulImplementationSteps(q: Q, itemId: string) {
   return row ?? null;
 }
 
-export function* workspaceAgentModelsSteps(q: Q, runnerIds: readonly string[]) {
-  const { runner: r, runnerAgentPolicy: p } = q.t;
-  if (runnerIds.length === 0) return [];
-  const workspaces = yield* q.all(
-    q.orm
-      .selectDistinct({ id: r.workspaceId })
-      .from(r)
-      .where(inArray(r.id, [...runnerIds])),
-  );
-  if (workspaces.length === 0) return [];
-  const rows = yield* q.all(
-    q.orm
-      .selectDistinct({ agent: p.agent, model: p.resolvedModel })
-      .from(p)
-      .innerJoin(r, eq(r.id, p.runnerId))
-      .where(
-        and(
-          inArray(
-            r.workspaceId,
-            workspaces.map((row) => row.id),
-          ),
-          ne(r.status, "revoked"),
-          isNull(r.revokedAt),
-        ),
-      )
-      .orderBy(asc(p.agent), asc(p.resolvedModel)),
-  );
-  return rows.flatMap((row) => (row.model ? [{ agent: row.agent, model: row.model }] : []));
-}
-
 export async function lastSuccessfulImplementation(
   store: Db,
   itemId: string,

@@ -1,19 +1,18 @@
 import { expect, test } from "bun:test";
-import { reviewerModelDeadEnd } from "./index";
+import { catalogModels, reviewerModelDeadEnd } from "./index";
 
-const matches = "reviewer model matches implementation model";
+const matches = "a: reviewer model matches implementation model";
 
-test("every runner refusing the implementation model is a dead end", () => {
-  expect(reviewerModelDeadEnd([`agentbox: ${matches}`, `boat: ${matches}`])).toBe(true);
-  expect(
-    reviewerModelDeadEnd([`agentbox: ${matches}`, "boat: run pinned to another online runner"]),
-  ).toBe(true);
+test("only a reviewer model match on every usable runner is a dead end", () => {
+  expect(reviewerModelDeadEnd([matches, "b: not-yours", "c: revoked"])).toBe(true);
+  expect(reviewerModelDeadEnd([matches, "b: run pinned to another online runner"])).toBe(true);
+  for (const waits of ["b: offline", "b: paused", "b: no free capacity (work 1 of 1)"])
+    expect(reviewerModelDeadEnd([matches, waits])).toBe(false);
+  expect(reviewerModelDeadEnd([])).toBe(false);
 });
 
-test("a busy, offline or empty runner set still waits", () => {
-  expect(reviewerModelDeadEnd([])).toBe(false);
-  expect(reviewerModelDeadEnd([`agentbox: ${matches}`, "boat: offline"])).toBe(false);
-  expect(
-    reviewerModelDeadEnd([`agentbox: ${matches}`, "boat: no free capacity (work 1 of 1)"]),
-  ).toBe(false);
+test("a runner offers its catalog's concrete models", () => {
+  const catalog = { identity: { model: "a" }, models: [{ id: "default" }, { id: "b" }] };
+  expect(catalogModels(JSON.stringify(catalog))).toEqual(["a", "b"]);
+  expect(catalogModels(undefined)).toEqual([]);
 });

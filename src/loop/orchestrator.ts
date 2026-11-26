@@ -767,8 +767,6 @@ import {
   KEEP_WAITING,
   MOVE_TO_ANOTHER_RUNNER,
   REVIEWER_MODEL_REASON,
-  REVIEWER_MODEL_STOP,
-  reviewerModelChoice,
   waitForRunner,
   type RunnerWaitQuestion,
 } from "./runner-wait";
@@ -5401,10 +5399,7 @@ export class Orchestrator {
     if (!(conflict instanceof ReviewerModelConflict) || sessionId === null || !runId) return false;
     const { reviewer } = await this.profileSnapshot(runId);
     const configured = `${reviewer.agent} ${reviewer.model ?? conflict.implementation}`;
-    const cause = `${item.linearIdentifier} was implemented with ${conflict.implementation}, and its reviewer model is ${configured}. The reviewer must be a different model, so no runner can review it.`;
-    const body = conflict.alternatives.length
-      ? `${cause} Pick another reviewer model for this item, or stop.`
-      : `${cause} No runner offers another model: reply with an agent and model, for example \`codex gpt-6.2-sol\`, or stop.`;
+    const body = `${item.linearIdentifier} was implemented with ${conflict.implementation}, and its reviewer model is ${configured}. The reviewer must be a different model, so no runner can review it. Pick another reviewer model for this item (or reply with an agent and model), or stop.`;
     const now = this.now();
     await this.store.transaction(function* (q) {
       const current = yield* getWorkItemSteps(q, item.id);
@@ -5414,11 +5409,7 @@ export class Orchestrator {
         { itemId: item.id, runId, sessionId, version: current.version },
         "runner-wait",
         body,
-        {
-          options: [...conflict.alternatives, REVIEWER_MODEL_STOP],
-          reason: REVIEWER_MODEL_REASON,
-          now,
-        },
+        { options: [...conflict.alternatives, "Stop"], reason: REVIEWER_MODEL_REASON, now },
       );
     });
     await this.flush();
@@ -11440,15 +11431,18 @@ export class Orchestrator {
 
   private async profileSnapshot(runId: string): Promise<AgentProfiles> {
     const profiles = await this.storedProfiles(runId);
-    const choice = reviewerModelChoice(
-      await this.store.run(function* (q) {
-        const itemId = (yield* getRunSteps(q, runId))?.itemId;
-        return itemId ? yield* answeredItemQuestionSteps(q, itemId, REVIEWER_MODEL_REASON) : null;
-      }),
-    );
+    const answer = await this.store.run(function* (q) {
+      const itemId = (yield* getRunSteps(q, runId))?.itemId;
+      return itemId ? yield* answeredItemQuestionSteps(q, itemId, REVIEWER_MODEL_REASON) : null;
+    });
+    const choice = /^\s*(claude|codex|grok|opencode)\s+(\S+)\s*$/i.exec(answer ?? "");
     if (!choice) return profiles;
-    const same = choice.agent === profiles.reviewer.agent;
-    return { ...profiles, reviewer: { ...(same ? profiles.reviewer : {}), ...choice } };
+    const agent = choice[1]!.toLowerCase() as AgentProfile["agent"];
+    const same = agent === profiles.reviewer.agent;
+    return {
+      ...profiles,
+      reviewer: { ...(same ? profiles.reviewer : {}), agent, model: choice[2]! },
+    };
   }
 
   private async storedProfiles(runId: string): Promise<AgentProfiles> {

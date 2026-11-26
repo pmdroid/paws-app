@@ -45,7 +45,8 @@ import {
   fallbackHistorySteps,
   getWorkItemSteps,
   lastSuccessfulImplementationSteps,
-  workspaceAgentModelsSteps,
+  agentModelSourcesSteps,
+  cachedAgentModelsSteps,
   refundLostTurnAsync,
   listHooks,
   startAgentWait,
@@ -179,11 +180,32 @@ import {
   type RunnerPlacement,
 } from "../runner-placement";
 
+const UNUSABLE_FOR_ITEM = [
+  PINNED_ELSEWHERE,
+  "not-yours",
+  "revoked",
+  "owner-not-in-team",
+  "owner-inactive",
+];
+
 export function reviewerModelDeadEnd(rejected: readonly string[]): boolean {
   const reason = (entry: string) => entry.slice(entry.indexOf(":") + 2);
   return (
     rejected.some((entry) => reason(entry) === REVIEWER_MODEL_MATCHES) &&
-    rejected.every((entry) => [REVIEWER_MODEL_MATCHES, PINNED_ELSEWHERE].includes(reason(entry)))
+    rejected.every((entry) =>
+      [REVIEWER_MODEL_MATCHES, ...UNUSABLE_FOR_ITEM].includes(reason(entry)),
+    )
+  );
+}
+
+export function catalogModels(resultJson: string | undefined): string[] {
+  const result = JSON.parse(resultJson ?? "{}") as {
+    models?: { id: string }[];
+    identity?: { model?: string };
+  };
+  return [result.identity?.model, ...(result.models ?? []).map((model) => model.id)].filter(
+    (id): id is string =>
+      !!id && !["default", "auto", "claude", "codex", "grok", "opencode"].includes(id),
   );
 }
 
@@ -378,10 +400,16 @@ export function createRemoteAgentRunner(options: {
     return store.run(function* (q) {
       const implementation = (yield* lastSuccessfulImplementationSteps(q, itemId))?.model;
       if (!implementation) return null;
-      const runnerIds = rejected.map((entry) => entry.slice(0, entry.indexOf(":")));
-      const alternatives = (yield* workspaceAgentModelsSteps(q, runnerIds))
-        .filter((entry) => entry.model !== implementation)
-        .map((entry) => `${entry.agent} ${entry.model}`);
+      const inScope = rejected
+        .filter((entry) => entry.endsWith(`: ${REVIEWER_MODEL_MATCHES}`))
+        .map((entry) => entry.slice(0, entry.indexOf(":")));
+      const alternatives: string[] = [];
+      for (const source of yield* agentModelSourcesSteps(q, now()))
+        if (inScope.includes(source.runnerId)) {
+          const header = (yield* cachedAgentModelsSteps(q, source)).find((row) => !row.model);
+          for (const model of catalogModels(header?.resultJson))
+            if (model !== implementation) alternatives.push(`${source.agent} ${model}`);
+        }
       return new ReviewerModelConflict(implementation, [...new Set(alternatives)], details);
     });
   }

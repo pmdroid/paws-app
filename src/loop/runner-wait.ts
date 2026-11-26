@@ -10,19 +10,6 @@ export const AGENT_HUNG_REASON = "agent_hung";
 export const AGENT_HUNG_RETRY = "Retry";
 export const AGENT_HUNG_STOP = "Stop";
 export const REVIEWER_MODEL_REASON = "reviewer_model_conflict";
-export const REVIEWER_MODEL_STOP = "Stop";
-
-export function reviewerModelChoice(
-  answer: string | null,
-): { agent: "claude" | "codex" | "grok" | "opencode"; model: string } | null {
-  const match = /^\s*(claude|codex|grok|opencode)\s+(\S+)\s*$/i.exec(answer ?? "");
-  return match
-    ? {
-        agent: match[1]!.toLowerCase() as "claude" | "codex" | "grok" | "opencode",
-        model: match[2]!,
-      }
-    : null;
-}
 
 export function runnerWaitReason(runner: RunnerAvailability | null, now: number): string | null {
   if (runner === null) return null;
