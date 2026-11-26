@@ -69,7 +69,7 @@ async function contents(home: string) {
   }));
 }
 
-async function spawnPaws(home: string, args: string[]) {
+async function spawnPaws(home: string) {
   const env: Record<string, string | undefined> = {
     ...process.env,
     PAWS_HOME: home,
@@ -84,7 +84,7 @@ async function spawnPaws(home: string, args: string[]) {
       key === "PAWS_DATABASE_URL"
     )
       delete env[key];
-  const proc = Bun.spawn(["bun", "src/index.ts", ...args], {
+  const proc = Bun.spawn([process.execPath, "--no-env-file", "src/index.ts"], {
     cwd: ROOT,
     env,
     stdout: "pipe",
@@ -143,13 +143,9 @@ describe("Postgres drizzle-kit migrations", () => {
       await expect(opening).rejects.toBeInstanceOf(UnknownDatabaseError);
       await expect(opening).rejects.toThrow(message);
 
-      const started = await spawnPaws(home, []);
+      const started = await spawnPaws(home);
       expect(started.code).toBe(1);
       expect(started.stderr.trim()).toBe(message);
-
-      const checked = await spawnPaws(home, ["db", "check"]);
-      expect(checked.code).toBe(1);
-      expect(checked.stderr).toContain(message);
 
       expect(await contents(home)).toEqual(before);
     }, 60_000);

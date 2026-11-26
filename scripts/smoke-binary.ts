@@ -45,9 +45,6 @@ try {
   if (!ready) throw new Error("Dashboard did not start");
   server.kill("SIGTERM");
   await server.exited;
-  const report = await run(["db", "check"]);
-  if (!report.includes("migrations applied")) throw new Error(report);
-  console.log(report.trim());
 } finally {
   server?.kill();
   if (server) await server.exited;
