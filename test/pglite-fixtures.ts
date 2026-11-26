@@ -4,6 +4,7 @@ import {
   bindAgentAccount,
   createAgentAccount,
   listAgentBindings,
+  latestModelCatalogSteps,
   recordRunnerAccountCapability,
   saveAgentModelCatalog,
   type Db,
@@ -246,6 +247,10 @@ export async function offerFixtureModels(
         .where(eq(q.t.runner.id, runnerId)),
     ),
   );
+  const current = await db.run((q) => latestModelCatalogSteps(q, runnerId, agent));
+  const offered = current
+    ? (JSON.parse(current) as { models: { id: string }[] }).models.map((entry) => entry.id)
+    : [];
   await saveAgentModelCatalog(db, {
     runnerId,
     userId: owner!.userId,
@@ -260,7 +265,7 @@ export async function offerFixtureModels(
       cancelled: false,
       authRequired: false,
       agentExited: true,
-      models: models.map((id) => ({ id, name: id })),
+      models: [...new Set([...offered, ...models])].map((id) => ({ id, name: id })),
     }),
     updatedAt,
   });
