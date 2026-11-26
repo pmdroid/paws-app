@@ -1094,6 +1094,7 @@ WantedBy=default.target
             mock.patch.object(installer, "AGENT_DOCKER_TMPFILES", self.path("/etc/tmpfiles.d/paws-agent-docker.conf")),
             mock.patch.object(installer, "USER_DELEGATE", self.path("/etc/systemd/system/user@.service.d/delegate.conf")),
             mock.patch.object(installer, "LOGINCTL", str(self.bin / "loginctl")),
+            mock.patch.object(installer, "LINGER", self.path("/var/lib/systemd/linger")),
             mock.patch.object(installer, "DOCKER_USER_BUS", self.path("/usr/lib/systemd/user/dbus.socket")),
             mock.patch.object(installer, "TMPFILES", str(self.bin / "systemd-tmpfiles")),
             mock.patch.object(installer, "AGENT_DOCKER_DATA", self.path("/var/lib/paws-agent-docker")),
@@ -1203,12 +1204,57 @@ class DockerAccess(unittest.TestCase):
         self.host.log.write_text("")
         report = self.configure(None)
         self.assertEqual((report["status"], report["agentJobs"]["user"]), ("granted", "paws-runner"))
-        self.assertEqual(self.host.commands()[:3], ["systemctl --user --machine=paws-agent@ stop -- paws-agent-docker.service", "systemctl --global disable -- paws-agent-docker.service", "loginctl disable-linger paws-agent"])
+        self.assertEqual(self.host.commands()[:2], ["systemctl --user --machine=paws-agent@ stop -- paws-agent-docker.service", "systemctl --global disable -- paws-agent-docker.service"])
+        self.assertNotIn("loginctl disable-linger paws-agent", self.host.commands())
         self.assertFalse(self.host.path("/etc/systemd/user/paws-agent-docker.service").exists())
         self.assertFalse(self.host.path("/etc/tmpfiles.d/paws-agent-docker.conf").exists())
         self.assertEqual(sorted(path.name for path in self.host.path("/etc/systemd/system").iterdir()), ["paws-docker.service", "user@.service.d"])
         self.assertEqual(self.configure("deny")["status"], "declined")
         self.assertEqual(sorted(path.name for path in self.host.path("/etc/systemd/system").iterdir()), ["user@.service.d"])
+
+    def linger(self, host=None):
+        host = host or self.host
+        with contextlib.ExitStack() as stack:
+            for patch in host.patches():
+                stack.enter_context(patch)
+            stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+            return self.installer.configure_agent_linger()
+
+    def test_the_agent_account_gets_linger_whether_or_not_docker_is_granted(self):
+        for agent_user, account in (("paws-agent", "paws-agent"), ("runner", "paws-runner")):
+            host = FakeDockerHost(self.installer, pathlib.Path(self.temporary.name) / agent_user, agent_user=agent_user)
+            self.assertEqual(self.configure("deny", host)["status"], "declined")
+            report = self.linger(host)
+            self.assertEqual((report["status"], report["changed"]), ("enabled", True), report)
+            self.assertEqual(host.commands(), [f"loginctl enable-linger {account}"])
+            self.assertIn(account, report["message"])
+
+    def test_declining_docker_keeps_the_agent_accounts_linger(self):
+        host = FakeDockerHost(self.installer, pathlib.Path(self.temporary.name) / "kept", agent_user="paws-agent")
+        host.accounts["paws-agent"] = SimpleNamespace(pw_name="paws-agent", pw_uid=host.accounts["paws-runner"].pw_uid, pw_gid=host.accounts["paws-runner"].pw_gid)
+        self.configure("grant", host)
+        host.path("/var/lib/systemd/linger").mkdir(parents=True)
+        host.path("/var/lib/systemd/linger/paws-agent").touch()
+        host.log.write_text("")
+        self.assertEqual(self.configure("deny", host)["status"], "declined")
+        report = self.linger(host)
+        self.assertEqual((report["status"], report["changed"]), ("enabled", False), report)
+        self.assertNotIn("loginctl disable-linger paws-agent", host.commands())
+        self.assertFalse(any(command.startswith("loginctl") for command in host.commands()), host.commands())
+
+    def test_switching_agent_user_moves_linger_to_the_new_account(self):
+        self.host.path("/var/lib/systemd/linger").mkdir(parents=True)
+        self.host.path("/var/lib/systemd/linger/paws-agent").touch()
+        report = self.linger()
+        self.assertEqual((report["status"], report["changed"]), ("enabled", True), report)
+        self.assertEqual(self.host.commands(), ["loginctl disable-linger paws-agent", "loginctl enable-linger paws-runner"])
+
+    def test_a_failed_linger_is_reported_with_what_it_blocks(self):
+        self.host.tool("loginctl", "echo 'Could not enable linger: Access denied' >&2\nexit 1\n")
+        report = self.linger()
+        self.assertEqual(report["status"], "enable-failed")
+        self.assertIn("Access denied", report["message"])
+        self.assertIn("Sandboxed helper turns cannot start", report["message"])
 
     def test_paws_agent_docker_needs_dbus_user_session(self):
         host = FakeDockerHost(self.installer, pathlib.Path(self.temporary.name) / "nobus", agent_user="paws-agent")
@@ -1396,7 +1442,7 @@ class DockerAccess(unittest.TestCase):
             (root / "bin/systemctl").chmod(0o755)
             (root / "bin/loginctl").write_text(f'#!/bin/sh\nprintf "loginctl %s\\n" "$*" >> {shlex.quote(str(log))}\n')
             (root / "bin/loginctl").chmod(0o755)
-            for name in ("etc/systemd/system/paws-docker.service", "etc/systemd/system/paws-agent-docker.service", "etc/systemd/user/paws-agent-docker.service", "etc/systemd/system/user@.service.d/delegate.conf", "etc/tmpfiles.d/paws-agent-docker.conf", "var/lib/paws-runner-docker/data/image", "var/lib/paws-agent-docker/data/image"):
+            for name in ("etc/systemd/system/paws-docker.service", "etc/systemd/system/paws-agent-docker.service", "etc/systemd/user/paws-agent-docker.service", "etc/systemd/system/user@.service.d/delegate.conf", "etc/tmpfiles.d/paws-agent-docker.conf", "var/lib/paws-runner-docker/data/image", "var/lib/paws-agent-docker/data/image", "var/lib/systemd/linger/paws-agent"):
                 (root / name).parent.mkdir(parents=True, exist_ok=True)
                 (root / name).write_text("x")
             (root / "etc/subuid").write_text("pascal:100000:65536\npaws-runner:165536:65536\npaws-agent:262144:65536\n")
@@ -1496,6 +1542,7 @@ class DockerAccess(unittest.TestCase):
             mock.patch.object(installer, "finish_agents", lambda agents: order.append(("finish_agents",)) or {}),
             mock.patch.object(installer, "prune", lambda: {"removed": []}),
             mock.patch.object(installer, "configure_docker_access", configure_docker_access),
+            mock.patch.object(installer, "configure_agent_linger", lambda: order.append(("linger",)) or {"status": "enabled"}),
             mock.patch.dict(os.environ, {"PAWS_RUNNER_DOCKER_ACCESS": "grant"}),
         ]
         with contextlib.ExitStack() as stack:
@@ -1505,7 +1552,7 @@ class DockerAccess(unittest.TestCase):
             stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
             deb.configure()
         self.assertEqual(order[0][1], "list-units")
-        self.assertEqual(order[1:6], [("prepare_agents",), ("install",), ("finish_agents",), ("docker", "grant"), ("systemctl", "start", "--", "paws-runner.service")])
+        self.assertEqual(order[1:7], [("prepare_agents",), ("install",), ("finish_agents",), ("docker", "grant"), ("linger",), ("systemctl", "start", "--", "paws-runner.service")])
         with mock.patch.dict(os.environ, {"PAWS_RUNNER_DOCKER_ACCESS": "maybe"}), mock.patch.object(installer.release, "verify_release", lambda arguments, root: self.fail("configured with an invalid choice")):
             with self.assertRaisesRegex(ValueError, "grant or deny"):
                 deb.configure()
@@ -1836,6 +1883,7 @@ class RunnerUpgrade(unittest.TestCase):
             mock.patch.object(installer, "switch_release", self.switch),
             mock.patch.object(installer, "finish_agents", self.record("finish_agents", {})),
             mock.patch.object(installer, "configure_docker_access", self.record("docker", {"status": "absent"})),
+            mock.patch.object(installer, "configure_agent_linger", self.record("linger", {"status": "enabled"})),
             mock.patch.object(installer.shutil, "rmtree", self.contained(installer.shutil.rmtree)),
             # Python 3.14 cleans temporary directories through shutil.rmtree, so configure's own
             # temporary directory must live under the test root too.
@@ -1874,7 +1922,7 @@ class RunnerUpgrade(unittest.TestCase):
             self.order.append("prepare_agents")
             return {"agents": {}}
         installed = self.configure(prepare_agents)
-        self.assertEqual(self.order, ["sync", "prepare_agents", "stop", "switch", "finish_agents", "docker"])
+        self.assertEqual(self.order, ["sync", "prepare_agents", "stop", "switch", "finish_agents", "docker", "linger"])
         self.assertEqual(self.syncs, [self.base / "releases/1.2.3"])
         self.assertEqual(os.readlink(self.base / "current"), str(self.base / "releases/1.2.3"))
         verbs = self.systemctl.verbs()

@@ -259,6 +259,7 @@ AGENT_DOCKER_TMPFILES = pathlib.Path("/etc/tmpfiles.d/paws-agent-docker.conf")
 USER_DELEGATE = pathlib.Path("/etc/systemd/system/user@.service.d/delegate.conf")
 USER_DELEGATE_CONTENT = "[Service]\nDelegate=cpu cpuset io memory pids\n"
 LOGINCTL = "/usr/bin/loginctl"
+LINGER = pathlib.Path("/var/lib/systemd/linger")
 DOCKER_USER_BUS = pathlib.Path("/usr/lib/systemd/user/dbus.socket")
 TMPFILES = "/usr/bin/systemd-tmpfiles"
 # PAS-1024 recorded here that it added paws-runner to the docker group; only that membership is removed.
@@ -477,7 +478,6 @@ def remove_rootless_docker(*names):
         run_tool([SYSTEMCTL, "--global", "disable", "--", daemon["unit"].name])
         daemon["unit"].unlink()
         AGENT_DOCKER_TMPFILES.unlink(missing_ok=True)
-        run_tool([LOGINCTL, "disable-linger", daemon["account"]])
     return bool(present or users)
 
 
@@ -582,6 +582,41 @@ def docker_check():
     if probe == "ready":
         return docker_report(probe, f"{daemon['account']} reaches {daemon['unit'].name} at {docker_socket(daemon)}, and its containers get cgroups.", daemon=daemon, reachable=True)
     return docker_report(probe, f"{daemon['account']} could not use the daemon at {docker_socket(daemon)} ({probe}).", daemon=daemon, reachable=False)
+
+
+def agent_linger(agent_user=None):
+    """Keep a systemd user manager for the account agents run as (agentUser), whether or not it has Docker.
+
+    Sandboxed helper turns start with systemd-run --user, which needs that manager. Linger starts it at
+    boot without a login. The other Paws account loses the linger an earlier configuration gave it.
+    """
+    served, unserved = ("paws-runner", "paws-agent") if (agent_user or configured_agent_user(RUNNER_CONFIG)) == "runner" else ("paws-agent", "paws-runner")
+    try:
+        pwd.getpwnam(served)
+    except KeyError:
+        return docker_report("missing-account", f"The {served} service account does not exist; install the runner package first.")
+    changed = False
+    if (LINGER / unserved).exists():
+        failure = run_tool([LOGINCTL, "disable-linger", unserved])
+        if failure is not None:
+            return docker_report("disable-failed", f"Could not turn off linger for {unserved}: {failure}. Turn it off with loginctl disable-linger {unserved}.")
+        changed = True
+    if not (LINGER / served).exists():
+        failure = run_tool([LOGINCTL, "enable-linger", served], timeout=120)
+        if failure is not None:
+            return docker_report("enable-failed", f"Could not turn on linger for {served}: {failure}. Sandboxed helper turns cannot start until {served} has a systemd user manager: run loginctl enable-linger {served}.", changed)
+        changed = True
+    return docker_report("enabled", ("Turned on" if changed else "Kept") + f" linger for {served}, so its systemd user manager runs and sandboxed helper turns can start.", changed)
+
+
+def configure_agent_linger():
+    """`agent_linger` for an installer: a failed step is reported, not raised."""
+    try:
+        report = agent_linger()
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        report = docker_report("check-failed", f"Could not set up linger for the agent account: {' '.join(str(error).split())[:300]}. Sandboxed helper turns may not start; reconfigure the runner to try again.")
+    print("Agent user manager: " + report["message"], file=sys.stderr)
+    return report
 
 
 def docker_group_membership():
@@ -1602,6 +1637,7 @@ def main():
         installed["agents"] = finish_agents(agents)
         # The installer leaves the runner service stopped, so it starts without a removed docker group.
         installed["docker"] = configure_docker_access(docker)
+        installed["linger"] = configure_agent_linger()
         print(json.dumps(installed))
 
 

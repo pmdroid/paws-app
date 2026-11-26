@@ -76,8 +76,12 @@ case "$1" in
       if [ -e {root}/etc/systemd/user/paws-agent-docker.service ]; then
         systemctl --user --machine=paws-agent@ stop -- paws-agent-docker.service || true
         systemctl --global disable -- paws-agent-docker.service || true
-        loginctl disable-linger paws-agent || true
       fi
+      for account in paws-agent paws-runner; do
+        if [ -e {root}/var/lib/systemd/linger/$account ]; then
+          loginctl disable-linger "$account" || true
+        fi
+      done
     fi
     rm -rf -- {root}/opt/paws-runner
     rm -f -- {" ".join(paths)} {root}/var/lib/paws-runner-install/debian-services.json
