@@ -8,6 +8,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:https";
@@ -17,7 +18,7 @@ import { accountHomeEnv } from "../src/acp";
 import { setJournalSink } from "../src/journal";
 import { Database } from "bun:sqlite";
 import { runnerSleepLeftovers } from "../src/runner-cli";
-import { openRunnerDaemon } from "../src/runner-daemon";
+import { heldCredentialsLeft, openRunnerDaemon } from "../src/runner-daemon";
 import {
   onTmpfs,
   openRunnerAccountHome,
@@ -525,15 +526,6 @@ test("Claude OAuth accounts use the token environment and never return refreshed
   }
 });
 
-function heldCopies(store: string): number {
-  const db = new Database(join(store, "credentials.db"), { readonly: true });
-  try {
-    return (db.query("SELECT count(*) AS n FROM agent_credential").get() as { n: number }).n;
-  } finally {
-    db.close();
-  }
-}
-
 test.skipIf(!shmTmpfs)(
   "on an issue VM the sign-in stays in the tmpfs, its refresh reaches Paws and nothing is left after the turn",
   async () => {
@@ -545,16 +537,11 @@ test.skipIf(!shmTmpfs)(
         ".claude/.credentials.json",
       );
       expect(readFileSync(credentials, "utf8")).toContain("r1");
-      expect(heldCopies(store!)).toBe(1);
+      expect(heldCredentialsLeft(store!)).toBe(1);
       expect(runnerSleepLeftovers(home, store!)).toEqual([
         "binding-1/.claude/.credentials.json",
         "1 held or pending sign-in uploads",
       ]);
-      const disk = new Database(join(root, "daemon", "commands.db"), { readonly: true });
-      expect(
-        disk.query("SELECT name FROM sqlite_master WHERE name = 'agent_credential'").all(),
-      ).toEqual([]);
-      disk.close();
 
       rmSync(credentials);
       writeFileSync(credentials, '{"claudeAiOauth":{"refreshToken":"r2"}}', { mode: 0o600 });
@@ -590,8 +577,7 @@ test.skipIf(!shmTmpfs)(
       await sync(daemon);
       expect(sent(uploads)).toEqual([[4, token("r2")]]);
       await sync(daemon);
-      expect(heldCopies(store!)).toBe(0);
-      expect(existsSync(credentials)).toBe(false);
+      expect(heldCredentialsLeft(store!)).toBe(0);
       expect(runnerSleepLeftovers(home, store!)).toEqual([]);
       expect(plane.protocols).toContain(2);
       expect(plane.protocols).not.toContain(1);
@@ -621,26 +607,57 @@ test.skipIf(onTmpfs(tmpdir()))(
   },
 );
 
-test.skipIf(!shmTmpfs)("switching to an issue VM store scrubs sign-ins kept in commands.db", () => {
-  const root = mkdtempSync(join(tmpdir(), "paws-runner-scrub-"));
-  const store = mkdtempSync("/dev/shm/paws-issue-vm-store-");
-  const options = { root: join(root, "daemon"), ...urls };
+test.skipIf(!shmTmpfs)(
+  "an issue VM store scrubs sign-ins commands.db kept, even after an interrupted switch",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "paws-runner-scrub-"));
+    const store = mkdtempSync("/dev/shm/paws-issue-vm-store-");
+    const options = { root: join(root, "daemon"), ...urls };
+    try {
+      chmodSync(store, 0o700);
+      openRunnerDaemon(options).close();
+      const path = join(options.root, "commands.db");
+      const disk = new Database(path);
+      disk.run(
+        "INSERT INTO agent_credential (binding_id, account_id, agent, version, digest, commands, files) VALUES ('b', 'a', 'claude', 1, 'd', '[]', ?)",
+        ["sealed-held-sign-in".repeat(20)],
+      );
+      disk.run("DROP TABLE agent_credential");
+      disk.close();
+      openRunnerDaemon({ ...options, credentialStore: store }).close();
+      for (const suffix of ["", "-wal"])
+        if (existsSync(`${path}${suffix}`))
+          expect(readFileSync(`${path}${suffix}`, "latin1")).not.toContain("sealed-held-sign-in");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(store, { recursive: true, force: true });
+    }
+  },
+);
+
+test("sleep-check retries an unfinished OpenCode purge and sweeps stale staged sign-ins on an idle VM", () => {
+  const agentHome = mkdtempSync(join(tmpdir(), "paws-sleep-check-"));
   try {
-    chmodSync(store, 0o700);
-    openRunnerDaemon(options).close();
-    const path = join(options.root, "commands.db");
-    const disk = new Database(path);
-    disk.run(
-      "INSERT INTO agent_credential (binding_id, account_id, agent, version, digest, commands, files) VALUES ('b', 'a', 'claude', 1, 'd', '[]', ?)",
-      ["sealed-held-sign-in".repeat(20)],
+    const home = join(agentHome, ".paws-accounts", "binding-1");
+    mkdirSync(join(home, ".local/share/opencode"), { recursive: true });
+    const db = new Database(join(home, ".local/share/opencode/opencode.db"));
+    db.run(
+      "CREATE TABLE credential (id TEXT, integration_id TEXT, value TEXT, active INTEGER, time_created INTEGER)",
     );
-    disk.close();
-    openRunnerDaemon({ ...options, credentialStore: store }).close();
-    for (const suffix of ["", "-wal"])
-      if (existsSync(`${path}${suffix}`))
-        expect(readFileSync(`${path}${suffix}`, "latin1")).not.toContain("sealed-held-sign-in");
+    db.run("INSERT INTO credential VALUES ('c', 'opencode', 'token', 1, 1)");
+    db.close();
+    const staged = join(home, ".claude/.credentials.json.1.tmp");
+    mkdirSync(join(home, ".claude"));
+    writeFileSync(staged, "token");
+    const store = join(agentHome, "store");
+    expect(runnerSleepLeftovers(agentHome, store)).toEqual([
+      "binding-1/.claude/.credentials.json.1.tmp",
+      "binding-1/opencode.db",
+    ]);
+    utimesSync(staged, 0, 0);
+    expect(runnerSleepLeftovers(agentHome, store, true)).toEqual([]);
+    expect(existsSync(staged)).toBe(false);
   } finally {
-    rmSync(root, { recursive: true, force: true });
-    rmSync(store, { recursive: true, force: true });
+    rmSync(agentHome, { recursive: true, force: true });
   }
 });

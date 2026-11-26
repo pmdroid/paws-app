@@ -99,7 +99,8 @@ function nonEmpty(path: string): boolean {
 }
 
 export function purgeOpenCodeCredential(home: string): void {
-  if (!existsSync(join(home, OPENCODE_DATABASE))) return;
+  if (!existsSync(join(home, OPENCODE_DATABASE)))
+    return rmSync(join(home, PURGING), { force: true });
   mkdirSync(dirname(join(home, PURGING)), { recursive: true, mode: 0o770 });
   writeFileSync(join(home, PURGING), "");
   const db = open(home, false);

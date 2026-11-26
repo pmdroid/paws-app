@@ -348,7 +348,11 @@ export async function runRunnerCli(
       if (args.length !== 0) throw new RunnerCliFailure("usage", "Invalid sleep check command.");
       if (process.getuid?.() !== ids.runnerUid)
         throw new RunnerCliFailure("identity", "Runner service identity is invalid.");
-      const left = runnerSleepLeftovers("/var/lib/paws-agent", ISSUE_VM_CREDENTIALS);
+      const left = runnerSleepLeftovers(
+        "/var/lib/paws-agent",
+        ISSUE_VM_CREDENTIALS,
+        existsSync(ISSUE_VM_MARKER),
+      );
       if (left.length === 0) {
         write("No agent sign-ins remain.");
         return 0;

@@ -99,6 +99,8 @@ import {
   openRunnerAccountHome,
   returnRunnerAgentCredentials,
   runnerAccountCache,
+  ISSUE_VM_MARKER,
+  activeExecutions,
   onTmpfs,
   writeReturnedCredentials,
   openRunnerCheckoutToGroup,
@@ -211,7 +213,7 @@ export {
   restoreCodexSessionBundle,
   restoreGrokSessionBundle,
 };
-export { openCodeCredentialLeft } from "./opencode-credential";
+export { openCodeCredentialLeft, purgeOpenCodeCredential } from "./opencode-credential";
 
 export interface RunnerWorkerOptions {
   job: RunnerJob;
@@ -1146,26 +1148,20 @@ export async function executeRunnerCommand(
     credentialsReturned = true;
     try {
       if (placedOpenCode !== null) collectOpenCodeCredential(home, placedOpenCode);
-      returnRunnerAgentCredentials(
-        home,
-        binding.agent,
-        job.executionId,
-        (files) =>
-          returnSealed(
-            options,
-            home,
-            job.executionId,
-            sealForRunner(
-              recipient,
-              JSON.stringify(files),
-              agentCredentialReturnContext(job.executionId),
-            ),
+      returnRunnerAgentCredentials(home, binding.agent, job.executionId, (files) =>
+        returnSealed(
+          options,
+          home,
+          job.executionId,
+          sealForRunner(
+            recipient,
+            JSON.stringify(files),
+            agentCredentialReturnContext(job.executionId),
           ),
-        false,
-        binding.agent === "opencode" && onTmpfs(home)
-          ? () => purgeOpenCodeCredential(home)
-          : undefined,
+        ),
       );
+      if (binding.agent === "opencode" && existsSync(ISSUE_VM_MARKER) && onTmpfs(home))
+        if (!activeExecutions(home, job.executionId).length) purgeOpenCodeCredential(home);
     } catch (error) {
       journalCaught(
         error,

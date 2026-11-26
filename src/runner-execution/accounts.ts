@@ -50,6 +50,7 @@ export const ISSUE_VM_MARKER = "/etc/paws-runner/issue-vm";
 const ACCOUNT_CACHES = ".paws-account-caches";
 const RETURNED = ".paws-returned";
 const RETURN_LIMIT = 2_097_152;
+const STAGED_MS = 60_000;
 const TMPFS_MAGIC = 0x01021994;
 const SHARED_ELSEWHERE = new Set([
   "work",
@@ -210,8 +211,17 @@ export function runnerSignInsLeft(agentHome: string, inDatabase: (home: string) 
       continue;
     }
     const home = join(root, entry.name);
-    for (const path of SIGN_IN_FILES)
+    for (const path of SIGN_IN_FILES) {
       if (present(join(home, path))) left.push(`${entry.name}/${path}`);
+      for (const staged of entries(dirname(join(home, path)))) {
+        if (!staged.name.startsWith(`${basename(path)}.`) || !staged.name.endsWith(".tmp"))
+          continue;
+        const file = join(dirname(join(home, path)), staged.name);
+        if (Date.now() - lstatSync(file).mtimeMs > STAGED_MS && !activeExecutions(home).length)
+          rmSync(file, { force: true });
+        else left.push(`${entry.name}/${dirname(path)}/${staged.name}`);
+      }
+    }
     for (const returned of entries(join(home, RETURNED)))
       left.push(`${entry.name}/${RETURNED}/${returned.name}`);
     if (inDatabase(home)) left.push(`${entry.name}/opencode.db`);
@@ -278,7 +288,6 @@ export function returnRunnerAgentCredentials(
   executionId: string,
   publish: (files: RunnerAgentCredentialFiles) => void,
   signingIn = false,
-  purge?: () => void,
 ): void {
   const oauth = agent === "claude" && present(join(home, ".claude/paws-oauth.json"));
   if (!signingIn && oauth) return;
@@ -297,10 +306,7 @@ export function returnRunnerAgentCredentials(
   publish(read);
   if (activeExecutions(home, executionId).length > 0) return;
   for (const path of raw.keys()) rmSync(join(home, path), { force: true });
-  if (activeExecutions(home, executionId).length === 0) {
-    purge?.();
-    return;
-  }
+  if (activeExecutions(home, executionId).length === 0) return;
   for (const [path, data] of raw)
     if (!present(join(home, path))) {
       const temporary = `${join(home, path)}.${randomUUID()}.tmp`;

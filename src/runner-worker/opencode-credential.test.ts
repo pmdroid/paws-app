@@ -147,16 +147,10 @@ test("after collection the token is gone from opencode.db, its journal and the a
   expect(openCodeCredentialLeft(root)).toBe(true);
   expect(collectOpenCodeCredential(root, placed!)).toBe(true);
   let files: RunnerAgentCredentialFiles = [];
-  returnRunnerAgentCredentials(
-    root,
-    "opencode",
-    "01JEXECUTION00000000000000",
-    (read) => {
-      files = read;
-    },
-    false,
-    () => purgeOpenCodeCredential(root),
-  );
+  returnRunnerAgentCredentials(root, "opencode", "01JEXECUTION00000000000000", (read) => {
+    files = read;
+  });
+  purgeOpenCodeCredential(root);
   expect(files.map((file) => file.path)).toContain(OPENCODE_CREDENTIAL_FILE);
   expect(openCodeCredentialLeft(root)).toBe(false);
   expect(existsSync(join(root, OPENCODE_CREDENTIAL_FILE))).toBe(false);
