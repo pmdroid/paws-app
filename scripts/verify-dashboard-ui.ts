@@ -1,4 +1,4 @@
-import { chromium, expect, type Page } from "@playwright/test";
+import { chromium, expect, type Page, type Route } from "@playwright/test";
 import { eq } from "drizzle-orm";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -334,6 +334,85 @@ try {
     await expect(admin.getByRole("alert")).toContainText("CPUs must be a positive integer.");
     await expect(admin.locator("#vm-size-cpu")).toHaveValue("-1");
     await admin.screenshot({ path: join(out, `member-vm-${width}.png`), fullPage: true });
+    const vmRunner = "01JRRNNER0000000000000000A";
+    let issueVmLimits = { perMember: 2, workspaceMax: 10, deleteAfterDays: 7 };
+    let vmGrant: Record<string, unknown> | null = null;
+    let vmHost = {
+      runnerId: vmRunner,
+      vmHost: true,
+      settings: { vmVcpus: 2, vmMemoryGb: 4, vmDiskGb: 30, reserveVcpus: 4, reserveMemoryGb: 8 },
+      slots: { slots: 6, reason: "cpu" },
+    };
+    const vmRunners = (route: Route) =>
+      route.fulfill({ json: { runners: [{ id: vmRunner, name: "goldbox" }] } });
+    await admin.route("**/api/runners", vmRunners);
+    await admin.route("**/api/settings/issue-vm", async (route) => {
+      const body = route.request().method() === "PUT" ? route.request().postDataJSON() : null;
+      if (body && body.workspaceMax > 500) {
+        const error = "issue_vm.workspace_max must be a whole number from 1 to 500";
+        await route.fulfill({ status: 400, json: { error } });
+        return;
+      }
+      if (body) issueVmLimits = body;
+      await route.fulfill({ json: issueVmLimits });
+    });
+    await admin.route("**/api/settings/issue-vm/members", (route) =>
+      route.fulfill({
+        json: {
+          defaultLimit: issueVmLimits.perMember,
+          members: [
+            {
+              ...{ userId: "user-2", name: "Robin Example", role: "member" },
+              inUse: { creating: 0, awake: 1, asleep: 1, total: 2 },
+              limit: (vmGrant?.limit as number | undefined) ?? issueVmLimits.perMember,
+              grant: vmGrant,
+            },
+          ],
+        },
+      }),
+    );
+    await admin.route("**/api/settings/issue-vm/grants**", async (route) => {
+      const body = route.request().method() === "POST" ? route.request().postDataJSON() : null;
+      vmGrant = body && { id: "01GRANT", ...body, endsAt: Date.parse(body.endsAt) };
+      await route.fulfill({ status: body ? 201 : 200, json: { grant: vmGrant } });
+    });
+    await admin.route(`**/api/runners/${vmRunner}/vm-host`, async (route) => {
+      if (route.request().method() === "PUT") {
+        const settings = route.request().postDataJSON();
+        const slots = { slots: Math.floor(12 / settings.vmVcpus), reason: "cpu" };
+        vmHost = { ...vmHost, settings, slots };
+      }
+      await route.fulfill({ json: vmHost });
+    });
+    await visit(admin, width, "issue-vms", "/dashboard/workspace/issue-vms", "Issue VMs");
+    await admin.locator("#issue-vm-workspaceMax").fill("900");
+    await admin.getByRole("button", { name: "Save limits", exact: true }).click();
+    await expect(admin.getByRole("alert")).toContainText("from 1 to 500");
+    for (const [key, value] of [
+      ["perMember", "3"],
+      ["workspaceMax", "20"],
+      ["deleteAfterDays", "14"],
+    ])
+      await admin.locator(`#issue-vm-${key}`).fill(value);
+    await admin.getByRole("button", { name: "Save limits", exact: true }).click();
+    await expect(admin.locator("#content")).toContainText("Limits saved.");
+    expect(issueVmLimits).toEqual({ perMember: 3, workspaceMax: 20, deleteAfterDays: 14 });
+    await admin.locator("#issue-vm-grant-limit").fill("5");
+    await admin
+      .locator("#issue-vm-grant-ends")
+      .fill(new Date(Date.now() + 14 * 86_400_000).toISOString().slice(0, 10));
+    await admin.getByRole("button", { name: "Add grant", exact: true }).click();
+    await expect(admin.locator("#content")).toContainText("Grant added.");
+    await admin.locator(`#vm-host-${vmRunner}-vmVcpus`).fill("4");
+    await admin.getByRole("button", { name: "Save VM size", exact: true }).click();
+    await expect(admin.locator(`[data-slots="${vmRunner}"]`)).toHaveText(
+      "3 slots, limited by vCPUs",
+    );
+    await admin.screenshot({ path: join(out, `issue-vms-${width}.png`), fullPage: true });
+    await admin.getByRole("button", { name: "Revoke", exact: true }).click();
+    await expect(admin.locator("#content")).toContainText("Grant revoked.");
+    await expect(admin.getByRole("button", { name: "Revoke", exact: true })).toHaveCount(0);
+    await admin.unroute("**/api/runners", vmRunners);
     const fact = (name: string, text: string, level = "ok") => ({ name, text, level });
     const checked = (state: string, message: string, facts: unknown[]) => ({
       ...{ state, message, facts, checkedAt: Date.now() - 600_000, lastWorkingAt: null },

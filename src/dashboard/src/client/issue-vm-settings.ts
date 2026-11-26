@@ -106,7 +106,7 @@ export function createIssueVmSettings() {
       "Limits",
       `${
         limits
-          ? `<form data-limits class="col">${LIMITS.map(([key, label, min, max]) => field(`issue-vm-${key}`, key, label, String(limits![key]), min, max)).join("")}<div class="row"><button class="btn" type="submit"${off()}>Save limits</button></div></form>`
+          ? `<form data-limits class="col" novalidate>${LIMITS.map(([key, label, min, max]) => field(`issue-vm-${key}`, key, label, String(limits![key]), min, max)).join("")}<div class="row"><button class="btn" type="submit"${off()}>Save limits</button></div></form>`
           : ""
       }${note("limits")}`,
     );
@@ -128,7 +128,7 @@ export function createIssueVmSettings() {
     const now = Date.now();
     const form =
       admin() && members.length
-        ? `<form data-grant class="col"><div class="settings-field"><label for="issue-vm-grant-member">Member</label><select id="issue-vm-grant-member" name="memberUserId">${members.map((member) => `<option value="${esc(member.userId)}">${esc(member.name ?? member.userId)}</option>`).join("")}</select></div>${field("issue-vm-grant-limit", "limit", "Issues at once", "", 1, 50)}<div class="settings-field"><label for="issue-vm-grant-ends">Ends on</label><input id="issue-vm-grant-ends" name="endsAt" type="date" min="${day(now + DAY)}" max="${day(now + 89 * DAY)}"><p class="sub">At most 90 days ahead</p></div><div class="row"><button class="btn" type="submit"${off()}>Add grant</button></div></form>`
+        ? `<form data-grant class="col" novalidate><div class="settings-field"><label for="issue-vm-grant-member">Member</label><select id="issue-vm-grant-member" name="memberUserId">${members.map((member) => `<option value="${esc(member.userId)}">${esc(member.name ?? member.userId)}</option>`).join("")}</select></div>${field("issue-vm-grant-limit", "limit", "Issues at once", "", 1, 50)}<div class="settings-field"><label for="issue-vm-grant-ends">Ends on</label><input id="issue-vm-grant-ends" name="endsAt" type="date" min="${day(now + DAY)}" max="${day(now + 89 * DAY)}"><p class="sub">At most 90 days ahead</p></div><div class="row"><button class="btn" type="submit"${off()}>Add grant</button></div></form>`
         : "";
     return section(
       "Extra usage",
@@ -138,7 +138,7 @@ export function createIssueVmSettings() {
   const hostForm = (host: Host) => {
     const name = runners.find((runner) => runner.id === host.runnerId)?.name ?? host.runnerId;
     const slots = `<p data-slots="${host.runnerId}"><strong>${host.slots.slots} slots</strong>, ${REASON[host.slots.reason] ?? host.slots.reason}</p>`;
-    return `<form data-host="${host.runnerId}" class="col"><h3>${esc(name)}</h3>${slots}${SIZE.map(([key, label, min, max]) => field(`vm-host-${host.runnerId}-${key}`, key, label, host.settings[key] === null ? "" : String(host.settings[key]), min, max)).join("")}<div class="row"><button class="btn" type="submit"${off()}>Save VM size</button><button class="btn secondary" type="button" data-unhost="${host.runnerId}"${off()}>Stop hosting VMs</button></div></form>`;
+    return `<form data-host="${host.runnerId}" class="col" novalidate><h3>${esc(name)}</h3>${slots}${SIZE.map(([key, label, min, max]) => field(`vm-host-${host.runnerId}-${key}`, key, label, host.settings[key] === null ? "" : String(host.settings[key]), min, max)).join("")}<div class="row"><button class="btn" type="submit"${off()}>Save VM size</button><button class="btn secondary" type="button" data-unhost="${host.runnerId}"${off()}>Stop hosting VMs</button></div></form>`;
   };
   const hostsSection = () => {
     const shown = [...hosts.values()].filter((host) => host.vmHost);
