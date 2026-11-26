@@ -189,6 +189,48 @@ describePglite((connect) => {
     expect(w.driver.vms.size).toBe(1);
   });
 
+  test("a wake that answers or hangs past its deadline is lost, never awake", async () => {
+    for (const hang of [false, true]) {
+      const w = await world(connect);
+      await awake(w);
+      await drain(w);
+      await asleep(w);
+      await drain(w);
+      await awake(w);
+      w.driver.failNext("wake", "before");
+      await drain(w, 1);
+      const [waking] = await live(w.db);
+      expect(waking).toMatchObject({ state: "waking" });
+      if (hang) {
+        w.clock.t = waking!.deadlineAt! - 20;
+        w.driver.holdNext("wake", () => new Promise<void>(() => undefined));
+      } else
+        w.driver.holdNext("wake", async () => {
+          w.clock.t = waking!.deadlineAt! + 1;
+        });
+      await drain(w);
+      const [old, next] = await rows(w.db);
+      expect(old).toMatchObject({
+        state: "failed",
+        failure: "The VM did not wake before its deadline",
+      });
+      expect(next).toMatchObject({ state: "awake", replaces: old!.id });
+      expect(w.driver.vms.size).toBe(1);
+    }
+  });
+
+  test("an awake request right after a sleep request still sleeps the VM fully first", async () => {
+    const w = await world(connect);
+    await awake(w);
+    await drain(w);
+    await asleep(w);
+    expect(await live(w.db)).toMatchObject([{ state: "sleeping", want: "asleep" }]);
+    expect(await awake(w)).toMatchObject({ ok: true, ready: false });
+    await drain(w);
+    expect(await live(w.db)).toMatchObject([{ state: "awake", want: "awake" }]);
+    expect(w.driver.calls.map((call) => call.op)).toEqual(["create", "sleep", "wake"]);
+  });
+
   test("a VM gone after sleeping is lost and replaced on the next dispatch", async () => {
     const w = await world(connect);
     await awake(w);

@@ -123,6 +123,14 @@ export function* requestIssueVmAsleepSteps(q: Q, input: { itemId: string; now: n
   const live = yield* liveIssueVmForItemSteps(q, input.itemId);
   if (live === null || live.want === "asleep" || live.state === "deleting") return false;
   yield* setIssueVmWantSteps(q, { id: live.id, want: "asleep" });
+  if (live.state === "awake") {
+    const set = {
+      state: "sleeping",
+      deadlineAt: input.now + ISSUE_VM_SLEEP_MS,
+      attempts: 0,
+    } as const;
+    yield* moveIssueVmSteps(q, { id: live.id, from: live, set, now: input.now });
+  }
   yield* armSteps(q, live.id, input.now);
   return true;
 }
@@ -134,6 +142,14 @@ export type IssueVmLifecycleOptions = {
 };
 
 type Outcome = "again" | "settled";
+
+class PastDeadline extends Error {}
+
+const DEADLINE_MISSED: Partial<Record<IssueVm["state"], string>> = {
+  creating: "The VM did not start before its deadline",
+  sleeping: "The VM did not sleep before its deadline",
+  waking: "The VM did not wake before its deadline",
+};
 
 export function createIssueVmLifecycleHandler(store: Db, options: IssueVmLifecycleOptions) {
   const now = options.now ?? Date.now;
@@ -167,17 +183,32 @@ export function createIssueVmLifecycleHandler(store: Db, options: IssueVmLifecyc
     return "settled";
   }
 
+  async function within<T>(vm: IssueVm, call: () => Promise<T>): Promise<T> {
+    const deadline = vm.deadlineAt;
+    if (deadline === null) return call();
+    if (now() > deadline) throw new PastDeadline();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new PastDeadline()), Math.max(0, deadline - now()));
+    });
+    try {
+      const result = await Promise.race([call(), late]);
+      if (now() > deadline) throw new PastDeadline();
+      return result;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async function step(id: string): Promise<Outcome> {
     const vm = await store.run((q) => issueVmByIdSteps(q, id));
     if (vm === null || ["deleting", "deleted", "failed"].includes(vm.state)) return "settled";
     const driver = options.drivers[vm.provider];
     if (driver === undefined) throw new Error(`No issue VM driver for ${vm.provider}`);
-    const late = vm.deadlineAt !== null && now() > vm.deadlineAt;
     try {
       switch (vm.state) {
         case "creating": {
-          if (late) return await replace(vm, driver, "The VM did not start before its deadline");
-          const created = await driver.create(vm);
+          const created = await within(vm, () => driver.create(vm));
           const asleep = vm.want === "asleep";
           return await move(vm, {
             state: asleep ? "sleeping" : "awake",
@@ -196,8 +227,7 @@ export function createIssueVmLifecycleHandler(store: Db, options: IssueVmLifecyc
             attempts: 0,
           });
         case "sleeping":
-          if (late) return await replace(vm, driver, "The VM did not sleep before its deadline");
-          await driver.sleep(vm);
+          await within(vm, () => driver.sleep(vm));
           return await move(vm, { state: "asleep", deadlineAt: null, attempts: 0, failure: null });
         case "asleep":
           if (vm.want === "asleep") return "settled";
@@ -207,12 +237,13 @@ export function createIssueVmLifecycleHandler(store: Db, options: IssueVmLifecyc
             attempts: 0,
           });
         case "waking":
-          if (late) return await replace(vm, driver, "The VM did not wake before its deadline");
-          await driver.wake(vm);
+          await within(vm, () => driver.wake(vm));
           return await move(vm, { state: "awake", deadlineAt: null, attempts: 0, failure: null });
       }
       return "settled";
     } catch (error) {
+      if (error instanceof PastDeadline)
+        return replace(vm, driver, DEADLINE_MISSED[vm.state] ?? "The VM missed its deadline");
       if (lost(error)) return replace(vm, driver, errorText(error).slice(0, MAX_FAILURE));
       throw error;
     }
@@ -282,16 +313,21 @@ export type FakeIssueVmDriver = IssueVmDriver & {
     when: "before" | "after",
     error?: Error,
   ): void;
+  holdNext(op: "create" | "sleep" | "wake" | "remove", hold: () => Promise<void>): void;
 };
 
 export function createFakeIssueVmDriver(): FakeIssueVmDriver {
   const calls: FakeIssueVmDriver["calls"] = [];
   const vms = new Map<string, FakeIssueVm>();
   let failure: { op: string; when: "before" | "after"; error: Error } | null = null;
+  let held: { op: string; hold: () => Promise<void> } | null = null;
   let made = 0;
 
   async function call<T>(op: FakeIssueVmDriver["calls"][number]["op"], id: string, run: () => T) {
     calls.push({ op, id });
+    const holding = held?.op === op ? held : null;
+    if (holding) held = null;
+    await holding?.hold();
     const planned = failure?.op === op ? failure : null;
     if (planned) failure = null;
     if (planned?.when === "before") throw planned.error;
@@ -311,6 +347,9 @@ export function createFakeIssueVmDriver(): FakeIssueVmDriver {
     vms,
     failNext(op, when, error = new Error(`fake ${op} crashed ${when} its effect`)) {
       failure = { op, when, error };
+    },
+    holdNext(op, hold) {
+      held = { op, hold };
     },
     create: (vm) =>
       call("create", vm.id, () => {
