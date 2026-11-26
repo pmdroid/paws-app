@@ -15,16 +15,16 @@ export type ReviewerRunner = { agent: string; catalog: string | null };
 
 export function reviewerModelAlternatives(
   implementation: string,
-  reviewer: { agent: string; model?: string | null },
   runners: readonly ReviewerRunner[],
-): string[] | null {
-  if (reviewer.model !== implementation) return null;
+  unsupported: readonly { agent: string; model: string }[],
+): string[] {
+  const refused = new Set(unsupported.map(({ agent, model }) => `${agent} ${model}`));
   const choices = new Set<string>();
   for (const { agent, catalog } of runners)
     for (const { id } of (JSON.parse(catalog ?? "{}") as { models?: { id: string }[] }).models ??
       [])
       if (![implementation, "default", "auto"].includes(id)) choices.add(`${agent} ${id}`);
-  return [...choices];
+  return [...choices].filter((choice) => !refused.has(choice));
 }
 
 export function runnerWaitReason(runner: RunnerAvailability | null, now: number): string | null {

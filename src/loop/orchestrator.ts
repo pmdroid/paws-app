@@ -117,7 +117,7 @@ import {
   lastSuccessfulImplementationSteps,
   workspaceAgentRunnersSteps,
   latestModelCatalogSteps,
-  runnerRepositoryRefusalSteps,
+  unsupportedModelsSteps,
   bindLinearSessionTaskSteps,
   configureWorkItemSteps,
   discardLinearTurnsSteps,
@@ -2208,7 +2208,7 @@ export class Orchestrator {
             if (held) await this.waitForVerification(job, context, held);
             return;
           }
-          if ((await context.isCurrent()) && (await this.askReviewerModel(item, error))) return;
+          if ((await context.isCurrent()) && (await this.askReviewerModel(item.id, error))) return;
           const wait = await this.nextRunnerWait(job, error);
           if (!wait || !(await context.isCurrent())) throw error;
           journalCaught(
@@ -2836,7 +2836,7 @@ export class Orchestrator {
         );
         return;
       }
-      if (await this.askReviewerModel(item, error)) return;
+      if (await this.askReviewerModel(item.id, error)) return;
       const wait = await this.nextRunnerWait(job, error);
       if (wait) {
         // Settle the attempt before the park. The parked interval is waiting, not a lease expiry,
@@ -5396,40 +5396,41 @@ export class Orchestrator {
   }
 
   private async checkReviewerModel(item: WorkItemRecord, runId: string): Promise<void> {
-    const { reviewer } = await this.profileSnapshot(runId);
-    const repository = await this.repositoryForItem(item);
-    const repo = repository && `${repository.owner}/${repository.repo}`;
+    const { reviewer, reviewerFallback } = await this.profileSnapshot(runId);
+    const explicit = [reviewer.model, reviewerFallback?.model];
     const found = await this.store.run(function* (q) {
       const implementation = (yield* lastSuccessfulImplementationSteps(q, item.id))?.model;
-      if (!implementation) return null;
+      if (!implementation || !explicit.includes(implementation)) return null;
       const session = item.sessionKey ? yield* getLinearSessionSteps(q, item.sessionKey) : null;
       const workspace = session?.organizationId
         ? yield* workspaceForOrganizationSteps(q, session.organizationId)
         : null;
       const runners: ReviewerRunner[] = [];
       for (const runner of workspace ? yield* workspaceAgentRunnersSteps(q, workspace.id) : [])
-        if (!repo || !(yield* runnerRepositoryRefusalSteps(q, runner.runnerId, repo)))
-          runners.push({
-            ...runner,
-            catalog: yield* latestModelCatalogSteps(q, runner.runnerId, runner.agent),
-          });
-      const alternatives = reviewerModelAlternatives(implementation, reviewer, runners);
-      return alternatives && { implementation, alternatives };
+        runners.push({
+          ...runner,
+          catalog: yield* latestModelCatalogSteps(q, runner.runnerId, runner.agent),
+        });
+      const unsupported = workspace ? yield* unsupportedModelsSteps(q, workspace.id) : [];
+      const alternatives = reviewerModelAlternatives(implementation, runners, unsupported);
+      return { implementation, alternatives };
     });
     if (found) throw new ReviewerModelConflict(found.implementation, found.alternatives);
   }
 
-  private async askReviewerModel(item: WorkItemRecord, error: unknown): Promise<boolean> {
+  private async askReviewerModel(itemId: string, error: unknown): Promise<boolean> {
     const conflict = capacityWaitIn(error);
-    const sessionId = this.activitySession(item);
-    const runId = item.currentRunId;
-    if (!(conflict instanceof ReviewerModelConflict) || sessionId === null || !runId) return false;
+    if (!(conflict instanceof ReviewerModelConflict)) return false;
+    const item = await this.store.run((q) => getWorkItemSteps(q, itemId));
+    const sessionId = item && this.activitySession(item);
+    const runId = item?.currentRunId;
+    if (!item || !sessionId || !runId) return false;
     const choices = conflict.alternatives.length ? conflict.alternatives : ["Retry"];
     const body = `${item.linearIdentifier} was implemented with ${conflict.implementation}, and its reviewer is set to the same model. The reviewer must be a different model, so no runner can review it. ${conflict.alternatives.length ? "Pick another reviewer model for this item, or stop." : "No runner offers another model: change the reviewer in Settings and choose Retry, or stop."}`;
     const now = this.now();
     await this.store.transaction(function* (q) {
       const current = yield* getWorkItemSteps(q, item.id);
-      if (!current || current.state === "awaiting_input") return;
+      if (current?.currentRunId !== runId || current.state === "awaiting_input") return;
       yield* askSteps(
         q,
         { itemId: item.id, runId, sessionId, version: current.version },
@@ -11467,10 +11468,10 @@ export class Orchestrator {
         implemented: (yield* lastSuccessfulImplementationSteps(q, itemId))?.model,
       };
     });
+    const [agent, model] = (answer ?? "").split(" ") as [AgentProfile["agent"], string?];
+    if (!model) return profiles;
     const { reviewerFallback, ...rest } = profiles;
     const kept = implemented && reviewerFallback?.model === implemented ? rest : profiles;
-    const [agent, model] = (answer ?? "").split(" ") as [AgentProfile["agent"], string?];
-    if (!model) return kept;
     const same = agent === profiles.reviewer.agent ? profiles.reviewer : {};
     return { ...kept, reviewer: { ...same, agent, model } };
   }
