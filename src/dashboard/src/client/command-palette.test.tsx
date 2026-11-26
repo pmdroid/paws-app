@@ -100,7 +100,7 @@ test("settings pages open in Settings and workspace pages in Workspace, for admi
   expect(pages()).toContainEqual(["Settings · Your account", "/settings/account"]);
   expect(pages()).toContainEqual(["Settings · Agent accounts", "/settings/agent-accounts"]);
   expect(pages()).toContainEqual(["Workspace · Merging", "/workspace/merging"]);
-  expect(pages()).toContainEqual(["Workspace · Member VMs", "/workspace/member-vm"]);
+  expect(pages()).toContainEqual(["Workspace · Issue VMs", "/workspace/issue-vms"]);
   for (const [title, path] of pages())
     expect(path!.startsWith(title!.startsWith("Workspace") ? "/workspace/" : "/settings/")).toBe(
       true,

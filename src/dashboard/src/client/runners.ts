@@ -203,7 +203,7 @@ export function memberVmSizeMarkup(size: MemberVmSize | undefined): string {
     pool === undefined
       ? esc("the exe.dev team's default placement")
       : `exe.dev pool <b class="mono">${esc(pool)}</b>`;
-  return `<p class="muted" id="vm-create-size">Create VM uses ${esc(text)}, in ${placed}. Admins change the defaults in <a href="${routeHref({ view: "workspace", page: "member-vm" })}">Workspace › Member VMs</a>.</p>`;
+  return `<p class="muted" id="vm-create-size">Create VM uses ${esc(text)}, in ${placed}. Admins change the defaults in <a href="${routeHref({ view: "workspace", page: "issue-vms" })}#vm-sizes">Workspace › Issue VMs</a>.</p>`;
 }
 
 function poolLabel(pool: ExeDevPool): string {

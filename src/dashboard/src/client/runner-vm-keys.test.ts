@@ -203,7 +203,7 @@ test("connecting a provider saves the key, shows the check result and offers the
   expect(result.textContent).toContain("Working");
   expect(result.textContent).toContain("boat accepted the key.");
   expect(card("boat").querySelector('[data-provider-on="boat"]')).not.toBeNull();
-  expect(card("boat").querySelector('a[href$="member-vm"]')).not.toBeNull();
+  expect(card("boat").querySelector('a[href$="issue-vms#vm-sizes"]')).not.toBeNull();
   expect(root.textContent).not.toContain("boat_secret");
   await click("[data-cancel]");
   expect(card("boat").querySelector('[data-check="boat"]')).not.toBeNull();

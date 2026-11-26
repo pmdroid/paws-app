@@ -2,7 +2,6 @@ import { mountRepositorySettings } from "./repository-settings";
 import { createStorageSettings } from "./storage-settings";
 import { createStorageDisk } from "./storage-disk";
 import { createIssueVmSettings } from "./issue-vm-settings";
-import { createMemberVmSettings } from "./member-vm-settings";
 import { createCloseoutSettings } from "./closeout-settings";
 import { createRunnerVmKeys } from "./runner-vm-keys";
 import { journalCaught } from "../journal";
@@ -99,7 +98,6 @@ const briefSettings = createBriefSettings();
 const storageSettings = createStorageSettings();
 const storageDisk = createStorageDisk();
 const performancePage = createPerformance();
-const memberVmSettings = createMemberVmSettings();
 const issueVmSettings = createIssueVmSettings();
 const closeoutSettings = createCloseoutSettings();
 const runnerVmKeys = createRunnerVmKeys();
@@ -364,7 +362,7 @@ function followIssueRedirect(): boolean {
   const settingsPath = settingsRedirect(path);
   const retro =
     retroRedirect(path) ??
-    (settingsPath === null ? null : `${settingsPath}${router.state.location.search}`);
+    (settingsPath === null ? null : settingsPath.replace(/(?=#|$)/, router.state.location.search));
   if (retro !== null) {
     void router.navigate(retro, { replace: true });
     return true;
@@ -533,8 +531,6 @@ function paint(): void {
   if (storageDiskRoot) storageDisk.mount(storageDiskRoot, currentEngine());
   const performanceRoot = document.querySelector<HTMLElement>("#performance-settings");
   if (performanceRoot) performancePage.mount(performanceRoot, currentEngine());
-  const memberVmRoot = document.querySelector<HTMLElement>("#member-vm-settings");
-  if (memberVmRoot) memberVmSettings.mount(memberVmRoot, currentEngine());
   const issueVmRoot = document.querySelector<HTMLElement>("#issue-vm-settings");
   if (issueVmRoot) issueVmSettings.mount(issueVmRoot, currentEngine());
   const closeoutRoot = document.querySelector<HTMLElement>("#closeout-settings");

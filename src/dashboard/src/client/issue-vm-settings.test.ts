@@ -22,6 +22,9 @@ let spend: Record<string, unknown>;
 let host: Record<string, unknown>;
 let failing: Set<string>;
 let others: Record<string, unknown>[];
+let sizes: Record<string, Record<string, unknown>>;
+let offProviders: string[];
+let instaBoxKey: boolean;
 
 const member = () => ({
   userId: "user-2",
@@ -51,6 +54,9 @@ beforeEach(() => {
   };
   failing = new Set();
   others = [];
+  sizes = { "exe-dev": {}, boat: {}, instabox: {} };
+  offProviders = [];
+  instaBoxKey = true;
   host = {
     runnerId: RUNNER,
     vmHost: true,
@@ -106,6 +112,32 @@ beforeEach(() => {
     if (path === "/api/settings/issue-vm/grants/grant1") {
       grant = null;
       return Response.json({});
+    }
+    if (path === "/api/settings/vm-sizes") {
+      if (body?.sizes?.["exe-dev"]?.cpu < 1)
+        return Response.json({ error: "cpu must be a positive integer" }, { status: 400 });
+      if (body?.sizes) sizes = { ...sizes, ...body.sizes };
+      if (body?.offProviders) offProviders = body.offProviders;
+      const pairs = [
+        [2, 4],
+        [4, 8],
+      ];
+      const instabox = instaBoxKey
+        ? {
+            allowed: [
+              [1, 2],
+              [2, 4],
+            ],
+          }
+        : { note: "Save an InstaBox key to list sizes" };
+      return Response.json({
+        offProviders,
+        providers: {
+          "exe-dev": { size: sizes["exe-dev"] },
+          boat: { size: sizes.boat, allowed: pairs },
+          instabox: { size: sizes.instabox, ...instabox },
+        },
+      });
     }
     if (path === "/api/runners")
       return Response.json({ runners: [{ id: RUNNER, name: "goldbox" }] });
@@ -333,4 +365,64 @@ test("a blank limit is refused before it can reset the saved value", async () =>
     "Enter a whole number for each limit.",
   );
   expect(calls.some((call) => call.method === "PUT")).toBe(false);
+});
+
+function choose(root: HTMLElement, selector: string, value: string) {
+  root.querySelector<HTMLSelectElement>(selector)!.value = value;
+}
+
+test("an admin saves a boat size, an InstaBox size and exe.dev CPU and memory", async () => {
+  const root = await mount();
+  choose(root, "#vm-size-boat", "4/8");
+  await submit(root, '[data-vm-size="boat"]');
+  expect(root.textContent).toContain("boat size saved.");
+  choose(root, "#vm-size-instabox", "2/4");
+  await submit(root, '[data-vm-size="instabox"]');
+  type(root, "#vm-size-cpu", "6");
+  type(root, "#vm-size-memoryGb", "12");
+  await submit(root, '[data-vm-size="exe-dev"]');
+  expect(sizes).toEqual({
+    "exe-dev": { cpu: 6, memoryGb: 12 },
+    boat: { cpu: 4, memoryGb: 8 },
+    instabox: { cpu: 2, memoryGb: 4 },
+  });
+  expect(root.querySelector<HTMLSelectElement>("#vm-size-boat")!.value).toBe("4/8");
+  expect(root.querySelector<HTMLInputElement>("#vm-size-cpu")!.value).toBe("6");
+  type(root, "#vm-size-cpu", "-1");
+  await submit(root, '[data-vm-size="exe-dev"]');
+  expect(root.querySelector('[role="alert"]')?.textContent).toBe("cpu must be a positive integer");
+});
+
+test("an admin turns a provider off, and InstaBox without a key shows the route's message", async () => {
+  instaBoxKey = false;
+  const root = await mount();
+  expect(root.querySelector('[data-vm-note="instabox"]')?.textContent).toBe(
+    "Save an InstaBox key to list sizes",
+  );
+  const toggle = root.querySelector<HTMLInputElement>('[data-vm-on="boat"]')!;
+  toggle.checked = false;
+  toggle.dispatchEvent(new window.Event("change", { bubbles: true }) as never);
+  await settle();
+  expect(offProviders).toEqual(["boat"]);
+  expect(root.querySelector<HTMLInputElement>('[data-vm-on="boat"]')!.checked).toBe(false);
+  expect(root.textContent).toContain("boat is off for new VMs.");
+});
+
+test("a member sees each provider's VM size without a form", async () => {
+  sizes = { "exe-dev": { cpu: 6, memoryGb: 12, pool: "main" }, boat: {}, instabox: {} };
+  offProviders = ["instabox"];
+  const root = await mount(false);
+  expect([...root.querySelectorAll("[data-vm-row]")].map((row) => row.textContent)).toEqual([
+    "exe.dev: 6 vCPUs · 12 GB · Default pool main, on",
+    "boat: Provider default, on",
+    "InstaBox: Provider default, off",
+  ]);
+});
+
+test("the old Member VMs page opens the VM sizes section", () => {
+  for (const admin of [true, false]) {
+    setSettingsAdmin(admin);
+    expect(settingsRedirect("/workspace/member-vm")).toBe("/workspace/issue-vms#vm-sizes");
+    expect(settingsRedirect("/settings/member-vm")).toBe("/workspace/issue-vms#vm-sizes");
+  }
 });
