@@ -142,7 +142,7 @@ export function createIssueVmSettings() {
   };
   const hostsSection = () => {
     const shown = [...hosts.values()].filter((host) => host.vmHost);
-    const others = runners.filter((runner) => !hosts.get(runner.id)?.vmHost);
+    const others = runners.filter((runner) => hosts.get(runner.id)?.vmHost === false);
     const add = others.length
       ? `<form data-add-host class="row"><label class="sr-only" for="vm-host-add">Runner</label><select id="vm-host-add" name="runnerId">${others.map((runner) => `<option value="${runner.id}">${esc(runner.name)}</option>`).join("")}</select><button class="btn secondary" type="submit"${off()}>Host microVMs</button></form>`
       : "";
@@ -169,11 +169,20 @@ export function createIssueVmSettings() {
       return null;
     }
   };
-  const loadMembers = async () => {
-    const listed = await attempt("grants", () =>
-      request<{ members: Member[] }>(engine!, "/api/settings/issue-vm/members"),
-    );
-    if (listed) members = listed.members;
+  const fetchMembers = async () => {
+    members = (await request<{ members: Member[] }>(engine!, "/api/settings/issue-vm/members"))
+      .members;
+  };
+  const loadMembers = () => attempt("grants", fetchMembers);
+  const refreshMembers = async (done: string) => {
+    try {
+      await fetchMembers();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Try again.";
+      throw new Error(`${done} The member list could not be reloaded: ${reason}`, {
+        cause: error,
+      });
+    }
   };
   const loadHosts = async () => {
     const listed = await attempt("hosts", () =>
@@ -231,6 +240,7 @@ export function createIssueVmSettings() {
     if (form.matches("[data-limits]"))
       void run("limits", "Limits saved.", async () => {
         limits = await request<Limits>(engine!, "/api/settings/issue-vm", "PUT", numbers(form));
+        await refreshMembers("Limits saved.");
       });
     else if (form.matches("[data-grant]")) {
       const member = form.querySelector<HTMLSelectElement>("select")!.value;
@@ -242,7 +252,7 @@ export function createIssueVmSettings() {
           limit: limit.trim() === "" ? null : Number(limit),
           endsAt: ends === "" ? null : `${ends}T23:59:59Z`,
         });
-        await loadMembers();
+        await refreshMembers("Grant added.");
       });
     } else if (form.matches("[data-host]")) {
       const id = form.dataset.host!;
@@ -268,7 +278,7 @@ export function createIssueVmSettings() {
     if (revoke)
       void run("grants", "Grant revoked.", async () => {
         await request(engine!, `/api/settings/issue-vm/grants/${revoke}`, "DELETE");
-        await loadMembers();
+        await refreshMembers("Grant revoked.");
       });
     else if (unhost)
       void run("hosts", "Runner no longer hosts microVMs.", async () => {

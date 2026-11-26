@@ -14,6 +14,7 @@ let calls: { method: string; path: string; body: unknown }[];
 let limits: Record<string, number>;
 let grant: Record<string, unknown> | null;
 let host: Record<string, unknown>;
+let failing: Set<string>;
 
 const member = () => ({
   userId: "user-2",
@@ -35,6 +36,7 @@ beforeEach(() => {
   calls = [];
   limits = { perMember: 2, workspaceMax: 10, deleteAfterDays: 7 };
   grant = null;
+  failing = new Set();
   host = {
     runnerId: RUNNER,
     vmHost: true,
@@ -53,6 +55,8 @@ beforeEach(() => {
     const method = init?.method ?? "GET";
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     calls.push({ method, path, body });
+    if (failing.has(`${method} ${path}`))
+      return Response.json({ error: "Paws is restarting." }, { status: 503 });
     if (path === "/api/auth/session") return Response.json({ userId: "user-2" });
     if (path === "/api/settings/issue-vm") {
       if (method === "PUT") {
@@ -179,4 +183,29 @@ test("a member sees only their own limit and grant, read-only", async () => {
   expect(root.textContent).toContain("4 until 2099-02-01");
   expect(root.querySelectorAll("input, select, button").length).toBe(0);
   expect(calls.every((call) => call.method === "GET")).toBe(true);
+});
+
+test("saving the default limit refreshes an ungranted member's limit", async () => {
+  const root = await mount();
+  type(root, "#issue-vm-perMember", "4");
+  await submit(root, "[data-limits]");
+  expect(root.querySelector("tbody td:nth-child(3)")?.textContent).toBe("4");
+});
+
+test("a failed member reload after a grant shows an error, not success", async () => {
+  const root = await mount();
+  failing.add("GET /api/settings/issue-vm/members");
+  type(root, "#issue-vm-grant-limit", "5");
+  type(root, "#issue-vm-grant-ends", "2099-01-31");
+  await submit(root, "[data-grant]");
+  expect(root.querySelector('[role="alert"]')?.textContent).toBe(
+    "Grant added. The member list could not be reloaded: Paws is restarting.",
+  );
+});
+
+test("a runner whose VM host lookup failed is not offered as a new host", async () => {
+  failing.add(`GET /api/runners/${RUNNER}/vm-host`);
+  const root = await mount();
+  expect(root.querySelector("[data-add-host]")).toBeNull();
+  expect(root.querySelector('[role="alert"]')?.textContent).toContain("Paws is restarting.");
 });
