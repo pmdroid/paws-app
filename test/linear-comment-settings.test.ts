@@ -8,7 +8,7 @@ import {
   useMemorySettings,
   useSettingsStore,
 } from "../src/config";
-import { CONFIG_SETTINGS_KEY, readSettingSteps, updateSettingSteps } from "../src/db";
+import { sectionSettings } from "./saved-settings";
 import { handleLinearCommentSettingsRequest } from "../src/settings";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
@@ -28,10 +28,7 @@ async function instance(withStore: boolean) {
     cleanups.push(() => settings.release());
   } else {
     const { db, close } = await tempStore();
-    const settings = await useSettingsStore(configPath, {
-      read: () => db.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
-      update: (change) => db.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, change)),
-    });
+    const settings = await useSettingsStore(configPath, sectionSettings(db));
     cleanups.push(close, () => settings.release());
   }
   return configPath;

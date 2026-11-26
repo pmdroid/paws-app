@@ -1,12 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import {
-  CONFIG_SETTINGS_KEY,
-  insertIssueVmGrantSteps,
-  issueVmByIdSteps,
-  updateSettingSteps,
-  type Db,
-  type IssueVmState,
-} from "../src/db";
+import { insertIssueVmGrantSteps, issueVmByIdSteps, type Db, type IssueVmState } from "../src/db";
+import { seedSettings } from "./saved-settings";
 import { issueVmAdmissionSteps, recordIssueVmSteps, setIssueVmStateSteps } from "../src/issue-vm";
 import { describePglite, withoutForeignKeys, type PgliteTestDb } from "./pglite-fixtures";
 
@@ -93,9 +87,7 @@ describePglite((connect) => {
 
   test("the workspace ceiling refuses a member under their own limit", async () => {
     const db = await connected(connect);
-    await db.transaction((q) =>
-      updateSettingSteps(q, CONFIG_SETTINGS_KEY, () => "[issue_vm]\nworkspace_max = 3\n"),
-    );
+    await seedSettings(db, "[issue_vm]\nworkspace_max = 3\n");
     await record(db, "a", "ada");
     await record(db, "b", "grace");
     await record(db, "c", "linus");

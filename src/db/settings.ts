@@ -77,12 +77,10 @@ export function* updateSettingSectionsSteps(
   const stored = yield* readSettingSectionsSteps(q, names);
   const next = change(stored);
   for (const name of names) {
-    const before = sectionJson(stored[name]);
-    const after = sectionJson(next[name]);
-    if (before === after) continue;
+    if (sectionJson(stored[name]) === sectionJson(next[name])) continue;
     const key = SETTINGS_SECTION_PREFIX + name;
-    if (after === null) yield* deleteSettingSteps(q, key);
-    else yield* updateSettingSteps(q, key, () => after, now);
+    if (next[name] === undefined) yield* deleteSettingSteps(q, key);
+    else yield* updateSettingSteps(q, key, () => JSON.stringify(next[name]), now);
   }
 }
 
