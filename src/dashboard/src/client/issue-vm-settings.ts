@@ -121,7 +121,7 @@ export function createIssueVmSettings() {
       : "";
   };
   const section = (title: string, body: string, id = "") =>
-    `<section class="settings-section"${id ? ` id="${id}"` : ""}><div class="settings-label"><h2>${title}</h2></div><div class="col min-w-0">${body}</div></section>`;
+    `<section class="settings-section${id ? ` scroll-mt-28" id="${id}` : ""}"><div class="settings-label"><h2>${title}</h2></div><div class="col min-w-0">${body}</div></section>`;
   const off = () => (busy ? " disabled" : "");
   const limitsSection = () =>
     section(
