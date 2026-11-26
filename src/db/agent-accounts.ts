@@ -18,6 +18,7 @@ import {
 } from "drizzle-orm";
 import {
   RUNNER_ACCOUNT_PROTOCOL,
+  RUNNER_MEMORY_ACCOUNT_PROTOCOL,
   RunnerAccountCapabilitySchema,
   runnerAccountAgentUnsupported,
   type RunnerAccountCapability,
@@ -642,6 +643,23 @@ export function* agentAccountSignedInSteps(q: Q, accountId: string) {
   return stored !== undefined && stored.ciphertext !== "";
 }
 
+export function* lockAgentAccountSteps(q: Q, accountId: string) {
+  const a = q.t.agentAccount;
+  yield* q.one(q.orm.select({ id: a.id }).from(a).where(eq(a.id, accountId)).for("update"));
+}
+
+export function* runnerSignInsOnDiskSteps(q: Q, runnerId: string) {
+  const { runner: r, runnerAccountCapability: c } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ isolation: r.isolation, protocol: c.protocol })
+      .from(r)
+      .leftJoin(c, eq(c.runnerId, r.id))
+      .where(eq(r.id, runnerId)),
+  );
+  return row?.isolation === "issue_vm" && (row.protocol ?? 0) < RUNNER_MEMORY_ACCOUNT_PROTOCOL;
+}
+
 export function* runnerAccountUnsupportedSteps(
   q: Q,
   runnerId: string,
@@ -658,6 +676,8 @@ export function* runnerAccountUnsupportedSteps(
   );
   if (!row || row.protocol < RUNNER_ACCOUNT_PROTOCOL)
     return "The runner has not reported agent account support";
+  if (yield* runnerSignInsOnDiskSteps(q, runnerId))
+    return "The issue VM runner can't keep agent sign-ins in memory only";
   const agentUnsupported = runnerAccountAgentUnsupported(agent);
   if (agentUnsupported) return agentUnsupported;
   if (!options.reported && (yield* bindingHasControlPlaneAuthSteps(q, bindingId))) return null;

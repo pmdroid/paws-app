@@ -72,6 +72,7 @@ import {
   type RunnerHostSample,
   currentRunnerCertificatePemSteps,
   getAgentAccountSteps,
+  runnerSignInsOnDiskSteps,
 } from "../db";
 import { readAgentCredentialSteps, writeAgentCredentialSteps } from "../credentials";
 import { journalCaught } from "../journal";
@@ -640,6 +641,7 @@ export function createRunnerWork(options: {
       if (!secretsDir || envelopes.length === 0) return Promise.resolve(envelopes);
       return store.transaction(function* (q) {
         const pem = yield* currentRunnerCertificatePemSteps(q, runnerId, now());
+        const onDisk = yield* runnerSignInsOnDiskSteps(q, runnerId);
         const sent: SignedRunnerCommand[] = [];
         for (const envelope of envelopes) {
           const command = JSON.parse(
@@ -651,7 +653,7 @@ export function createRunnerWork(options: {
             : null;
           const central = named && (yield* readAgentAuthSteps(q, named.account.accountId));
           if (central && !pem) throw new RunnerWorkFencedError();
-          if (!named || !pem || stored?.agent !== named.agent || stored.blob === null) {
+          if (!named || !pem || onDisk || stored?.agent !== named.agent || stored.blob === null) {
             sent.push(envelope);
             continue;
           }

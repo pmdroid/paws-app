@@ -41,6 +41,7 @@ import {
   type Db,
   type Q,
   type Steps,
+  lockAgentAccountSteps,
 } from "../db";
 import { REVIEW_COMMAND_OAUTH_RUNNER_VERSION, type RunnerCodingAgent } from "../runner-protocol";
 import type {
@@ -314,6 +315,7 @@ export function createRunnerPlacement(options: {
       (recorded.bindingId !== account.bindingId || recorded.accountId !== account.accountId)
     )
       throw new PlacementRaceError("The command does not carry the sign-in placement chose");
+    yield* lockAgentAccountSteps(q, account.accountId);
     const fit = yield* signInFitSteps(
       q,
       { id: input.runnerId },

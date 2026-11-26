@@ -17,6 +17,7 @@ import {
   listJobs,
   recordAccountObservation,
   recordRunnerAccountCapability,
+  runnerAccountUnsupportedSteps,
   removeAgentBinding,
   resumeAccountHealthNow,
   setAgentAccountConcurrency,
@@ -748,6 +749,27 @@ test("an issue VM runner gets account work only while it keeps sign-ins in memor
   expect(await reason(bindings.a2)).toBe("ready");
   await issueVm(db, "R1", RUNNER_MEMORY_ACCOUNT_PROTOCOL);
   expect(await reason(bindings.a1)).toBe("ready");
+});
+
+test("an account command on an issue VM runner that keeps sign-ins on disk is refused", async () => {
+  const { db, bindings } = await fixture();
+  const unsupported = () =>
+    db.run((q) =>
+      runnerAccountUnsupportedSteps(q, "R1", bindings.a1, "claude", { reported: true }),
+    );
+  const report = (protocol: number) =>
+    recordRunnerAccountCapability(
+      db,
+      "R1",
+      { protocol, bindings: [{ bindingId: bindings.a1, agent: "claude" }] },
+      NOW,
+    );
+  await report(RUNNER_MEMORY_ACCOUNT_PROTOCOL - 1);
+  expect(await unsupported()).toBeNull();
+  await issueVm(db, "R1", null);
+  expect(await unsupported()).toContain("memory only");
+  await report(RUNNER_MEMORY_ACCOUNT_PROTOCOL);
+  expect(await unsupported()).toBeNull();
 });
 
 test("a refreshable account runs in one issue VM at a time; a second issue waits", async () => {
