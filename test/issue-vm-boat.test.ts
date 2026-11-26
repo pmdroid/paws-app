@@ -4,6 +4,7 @@ import {
   BoatIssueVmError,
   createBoatIssueVms,
   createStartQueue,
+  ISSUE_VM_SLEEP_CHECK,
 } from "../src/issue-vm";
 import {
   createFakeBoat,
@@ -196,4 +197,30 @@ describe("boat issue VMs", () => {
     const error = await rejection(vms.wake("pas-1-vm"));
     expect((error as BoatIssueVmError).code).toBe("timeout");
   });
+});
+
+test("a boat VM sleeps only after its sign-in check passes", async () => {
+  const { boat, vms, create } = setup();
+  await create("pas-1-vm");
+  const execVm = boat.execVm;
+  boat.execVm = async () => ({
+    exitCode: 1,
+    stdout: "",
+    stderr: "Agent sign-ins remain: binding-1",
+  });
+  const refused = await rejection(vms.sleep("pas-1-vm"));
+  expect(refused).toBeInstanceOf(BoatIssueVmError);
+  expect(String(refused)).toContain("Agent sign-ins remain: binding-1");
+  expect(boat.sandboxes.get("pas-1-vm")?.state).toBe("ready");
+  boat.execVm = async () => {
+    throw new ProvisioningError("execVm", "timeout", "exec timed out");
+  };
+  expect(await rejection(vms.sleep("pas-1-vm"))).toBeInstanceOf(ProvisioningError);
+  expect(boat.sandboxes.get("pas-1-vm")?.state).toBe("ready");
+  boat.execVm = execVm;
+  await vms.sleep("pas-1-vm");
+  expect(boat.calls.filter((call) => call.operation === "execVm").at(-1)?.command).toBe(
+    ISSUE_VM_SLEEP_CHECK,
+  );
+  expect(boat.sandboxes.get("pas-1-vm")?.state).not.toBe("ready");
 });
