@@ -934,7 +934,7 @@ export function createRetroDispatcher(options: {
           journalCaught(error, "retros.dispatch.commands", null);
         }
       }
-      return envelopes;
+      return options.credentials ? await options.credentials(runnerId, envelopes) : envelopes;
     },
     async acknowledge(runnerId: string, commandId: string) {
       await store.transaction(function* (q) {

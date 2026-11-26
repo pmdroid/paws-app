@@ -19,6 +19,7 @@ import {
   signRunnerRetroCommand,
   takeRejectedFields,
   type RunnerRetroCommand,
+  type SignedRunnerCommand,
 } from "../runner-protocol";
 import { createRunnerHealth } from "../runner-health";
 import type { WorkspacePrincipal } from "../workspace";
@@ -330,6 +331,8 @@ export async function openRunnerCoordinator(options: {
     agentSessions,
     agentRead,
     runnerFiles,
+    attachCredentials: (runnerId: string, envelopes: SignedRunnerCommand[]) =>
+      work.attachCredentials(runnerId, envelopes),
     signRetroCommand: (command: RunnerRetroCommand) =>
       signRunnerRetroCommand({
         keyId: signing.signingKeys[0].keyId,
