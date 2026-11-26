@@ -40,6 +40,8 @@ export {
   RunnerRepositoryCommandResultSchema,
   RunnerRepositoryNameSchema,
   RUNNER_HELPER_REPOSITORIES,
+  RUNNER_PROBE_BYTES,
+  RunnerProbeEntrySchema,
   type RunnerRepositoryCommand,
   type RunnerRepositoryCommandResult,
   type RunnerCommand,

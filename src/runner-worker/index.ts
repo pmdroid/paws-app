@@ -49,6 +49,7 @@ import { dirname, join, isAbsolute } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { executeRetroCommand, type RetroWorkerResult } from "./retro";
 import { missingToolchainQuestion } from "./toolchain";
+import { checkoutProbe, collectProbe, probeSnapshot } from "./probe-write";
 import {
   collectOpenCodeCredential,
   migrateOpenCodeDatabase,
@@ -166,6 +167,8 @@ import {
   type RunnerArtifact,
   type RunnerCodingAgent,
   type RunnerCommand,
+  type RunnerHelperResult,
+  runnerHelperLifetime,
   type RunnerEvent,
   type RunnerHandoverFailure,
   type RunnerInstalledRuntime,
@@ -227,7 +230,7 @@ export interface RunnerWorkerOptions {
   signal?: AbortSignal;
   /** Agent execution adapter; defaults to the ACP runner. */
   runAgent?: (options: RunAgentOptions) => Promise<RunAgentResult>;
-  launch?: Pick<RunAgentOptions, "command" | "args" | "env">;
+  launch?: Pick<RunAgentOptions, "command" | "args" | "env"> & { sandboxLauncher?: string };
   answer?: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>;
   helperRepositories?: () => readonly HelperRepository[];
   followUp?: (sequence: number, signal: AbortSignal) => Promise<string>;
@@ -674,6 +677,7 @@ export interface RunnerWorkerResult {
   text?: string;
   replies?: string[];
   startWork?: string;
+  probe?: NonNullable<RunnerHelperResult["probe"]>;
   login?: {
     agent: "claude" | "codex" | "grok" | "opencode";
     authenticated: boolean;
@@ -1450,6 +1454,20 @@ export async function executeRunnerCommand(
     } catch (error) {
       journalCaught(error, "runner-worker.preload", null);
     }
+    const probe = command.type === "helper" ? command.probe : undefined;
+    const probeMirror =
+      probe &&
+      options.helperRepositories?.().find((added) => added.repository === probe.repository);
+    if (probe && !probeMirror)
+      throw new Error("The probe's repository checkout is not on this runner");
+    const probeRoot =
+      probe && probeMirror
+        ? checkoutProbe(probeMirror, join(worktree, "repositories", probe.repository))
+        : undefined;
+    const probeHelper =
+      command.type === "helper" &&
+      (command.purpose === "probe_distill" || command.purpose === "probe_write");
+    const probeBefore = probe && probeRoot ? probeSnapshot(probeRoot, probe.path) : undefined;
     let inputFiles = options.inputs?.inputFiles ?? [];
     if (command.type === "run" || command.type === "review" || command.type === "task") {
       const descriptors = command.inputFiles ?? [];
@@ -1702,7 +1720,9 @@ export async function executeRunnerCommand(
       ...options.launch,
       hostAccess: !(
         command.type === "helper" &&
-        (command.purpose === "slack_reply" || command.purpose === "repository_summary")
+        ["slack_reply", "repository_summary", "probe_distill", "probe_write"].includes(
+          command.purpose,
+        )
       ),
       skillsRoot,
       ...(options.skills && (repository || task)
@@ -1736,6 +1756,18 @@ export async function executeRunnerCommand(
         command.type === "login_check" ? { agent: command.agent, model: null } : command.profile,
       role: command.type === "review" ? "reviewer" : "implementer",
       readOnly: command.type === "task" ? command.purpose !== "artifact" : command.type !== "run",
+      ...(probeRoot ? { writableRoot: join(probeRoot, ".agents", "probes") } : {}),
+      ...(probeHelper
+        ? {
+            sandbox: {
+              writable: probeRoot ? [join(probeRoot, ".agents", "probes")] : [],
+              maxSeconds: runnerHelperLifetime("probe_write") / 1000,
+              ...(options.launch?.sandboxLauncher
+                ? { launcher: options.launch.sandboxLauncher }
+                : {}),
+            },
+          }
+        : {}),
       checkpoint: command.type === "run" && command.checkpoint !== false,
       ...(command.type === "run" && command.closeoutRulesFirst ? { closeoutRulesFirst: true } : {}),
       ...(command.type === "run" && command.closeoutFocus
@@ -1803,7 +1835,7 @@ export async function executeRunnerCommand(
           }
         : {}),
       inputFiles: inputFiles.map((file) => ({ ...file, path: join(worktree, file.path) })),
-      worktreePath: worktree,
+      worktreePath: probeRoot ?? worktree,
       pawsRoot: join(task ? worktree : options.workRoot, ".paws"),
       home,
       signal: options.signal,
@@ -2597,6 +2629,15 @@ export async function executeRunnerCommand(
     enterPhase("verify");
     const result: RunnerWorkerResult = { executionId: job.executionId, commandId: command.id, run };
     if (command.type === "helper") result.text = reviewText;
+    const collected =
+      probe && probeRoot && probeBefore && run.stopReason !== "error"
+        ? collectProbe(probeRoot, probe.path, probeBefore, reviewText ?? "")
+        : {};
+    if (collected.probe) result.probe = collected.probe;
+    if (collected.error) {
+      run.stopReason = "error";
+      run.errorMessage = collected.error;
+    }
     if (sentReplies.length) result.replies = sentReplies;
     if (startWorkPlan) result.startWork = startWorkPlan;
     if (command.type === "login_check") {
@@ -2785,6 +2826,7 @@ export async function executeRunnerCommand(
               text: true,
               replies: true,
               startWork: true,
+              probe: true,
             })
               .strip()
               .parse(run),

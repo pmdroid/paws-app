@@ -56,6 +56,7 @@ test.skipIf(process.getuid!() === 0)(
     const origins = {
       "acme/app": repository(root, "app"),
       "acme/lib": repository(root, "lib"),
+      "acme/web": repository(root, "web"),
     } as Record<string, { path: string; commit: string }>;
     const now = Date.now();
     const command: Extract<RunnerCommand, { type: "helper" }> = {
@@ -80,6 +81,16 @@ test.skipIf(process.getuid!() === 0)(
       },
       repositories: ["acme/app", "acme/refused"],
     };
+    const probe: Extract<RunnerCommand, { type: "helper" }> = {
+      ...command,
+      id: randomUUID(),
+      sessionId: "probes-write",
+      purpose: "probe_write",
+      slack: undefined,
+      account: { accountId: "account-ada", bindingId: "binding-ada" },
+      probe: { repository: "acme/web", path: ".agents/probes/no-raw-sql.ts" },
+      repositories: ["acme/web"],
+    };
     const credentials: string[] = [];
     const spool = {
       root: join(root, "spool"),
@@ -102,12 +113,12 @@ test.skipIf(process.getuid!() === 0)(
           fingerprint: "fixture",
           expiresAt: now + 3_600_000,
         }),
-        pendingCommands: () => [command],
+        pendingCommands: () => [command, probe],
         async pollCommands() {
           return { commands: [], rejected: [], deniedRepositories: [] };
         },
         async pollHelperCommands() {
-          return { commands: [command], rejected: [], deniedRepositories: [] };
+          return { commands: [command, probe], rejected: [], deniedRepositories: [] };
         },
         async helperLease() {
           return { expiresAt: command.expiresAt };
@@ -138,7 +149,7 @@ test.skipIf(process.getuid!() === 0)(
         expect(input.token).toBe(TOKEN);
         const origin = origins[input.remoteUrl.slice(19, -4)];
         if (!origin) throw new Error(`clone of https://x:${input.token}@github.com failed`);
-        execFileSync("git", ["clone", "-q", "--bare", origin.path, input.dest!]);
+        execFileSync("git", ["clone", "-q", "--bare", "--no-hardlinks", origin.path, input.dest!]);
       },
       spool,
       results,
@@ -157,6 +168,17 @@ test.skipIf(process.getuid!() === 0)(
         { repository: "acme/app", commit: origins["acme/app"]!.commit, path: expect.any(String) },
       ]);
       expect(readFileSync(join(app[0]!.path, "README.md"), "utf8")).toBe("app\n");
+      await runtime.tick();
+      const web = runnerHelperRepositories(spool, runtime.status().active!.executionId);
+      expect(web).toEqual([
+        { repository: "acme/web", commit: origins["acme/web"]!.commit, path: expect.any(String) },
+      ]);
+      expect(
+        execFileSync("git", ["--git-dir", web[0]!.path, "show", "main:README.md"], {
+          encoding: "utf8",
+          env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+        }),
+      ).toBe("web\n");
 
       const events = join(createRunnerResultDirectory(results, executionId), "events.jsonl");
       writeFileSync(events, "", { mode: 0o640 });
@@ -193,6 +215,7 @@ test.skipIf(process.getuid!() === 0)(
       expect(credentials).toEqual([
         "acme/app",
         "acme/refused",
+        "acme/web",
         "acme/lib",
         "acme/refused",
         "acme/missing",

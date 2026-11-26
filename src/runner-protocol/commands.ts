@@ -45,6 +45,14 @@ export const RunnerRepositoryNameSchema = z.string().refine((name) => {
   return rest.length === 0 && owner.safeParse(first).success && repo.safeParse(second).success;
 });
 const ownerRepository = RunnerRepositoryNameSchema;
+export const RUNNER_PROBE_PATH = /^\.agents\/probes\/[a-z0-9][a-z0-9-]{0,63}\.ts$/;
+export const RUNNER_PROBE_BYTES = 65_536;
+export const RunnerProbeEntrySchema = z.object({
+  exec: z.array(z.string().min(1).max(4096)).min(1).max(32).optional(),
+  paths: z.array(z.string().min(1).max(256)).min(1).max(100).optional(),
+  failOn: z.enum(["P0", "P1", "P2", "P3"]),
+  onFail: z.enum(["fix", "approve"]).optional(),
+});
 
 export const RunnerCheckoutExclusionsSchema = z
   .array(
@@ -360,6 +368,8 @@ export const RunnerCommandSchema = z
         "conversation",
         "slack_reply",
         "repository_summary",
+        "probe_distill",
+        "probe_write",
       ]),
       profile: RunnerProfileSchema,
       prompt: z.string().min(1).max(393_216),
@@ -368,6 +378,9 @@ export const RunnerCommandSchema = z
       conversation: z.strictObject({ itemId: id, runId: id, resumeSessionId: id }).optional(),
       slack: RunnerSlackReplyScopeSchema.optional(),
       summary: z.strictObject({ repository: ownerRepository }).optional(),
+      probe: z
+        .strictObject({ repository: ownerRepository, path: z.string().regex(RUNNER_PROBE_PATH) })
+        .optional(),
       repositories: z
         .array(ownerRepository)
         .max(RUNNER_HELPER_REPOSITORIES)
@@ -465,7 +478,7 @@ export const RunnerCommandSchema = z
   .refine(
     (command) =>
       command.type !== "helper" ||
-      (command.purpose === "slack_reply"
+      (["slack_reply", "probe_distill", "probe_write"].includes(command.purpose)
         ? Buffer.byteLength(command.prompt) <= RUNNER_SLACK_REPLY_ACCEPTED_PROMPT_BYTES
         : command.prompt.length <= 65_536),
     { path: ["prompt"], message: "prompt is too long" },
@@ -494,9 +507,19 @@ export const RunnerCommandSchema = z
   .refine(
     (command) =>
       command.type !== "helper" ||
+      ((command.purpose === "probe_write") === (command.probe !== undefined) &&
+        (!command.purpose.startsWith("probe_") || command.account !== undefined)),
+    { path: ["probe"], message: "only probe_write carries probe; probes need an account" },
+  )
+  .refine(
+    (command) =>
+      command.type !== "helper" ||
       command.purpose === "slack_reply" ||
-      command.repositories === undefined,
-    { path: ["repositories"], message: "only slack_reply carries repositories" },
+      (command.purpose === "probe_write"
+        ? command.repositories?.length === 1 &&
+          command.repositories[0] === command.probe?.repository
+        : command.repositories === undefined),
+    { path: ["repositories"], message: "only slack_reply and probe_write carry repositories" },
   );
 
 type HelperPurpose =
@@ -505,12 +528,15 @@ type HelperPurpose =
   | "finding_groups"
   | "conversation"
   | "slack_reply"
-  | "repository_summary";
+  | "repository_summary"
+  | "probe_distill"
+  | "probe_write";
 
 export function runnerHelperLifetime(purpose: HelperPurpose): number {
   if (purpose === "conversation") return RUNNER_CONVERSATION_MS;
   if (purpose === "slack_reply") return RUNNER_SLACK_REPLY_MS;
   if (purpose === "repository_summary") return 120_000;
+  if (purpose === "probe_distill" || purpose === "probe_write") return 900_000;
   return purpose === "finding_groups" ? 600_000 : 60_000;
 }
 

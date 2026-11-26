@@ -33,6 +33,7 @@ import {
 } from "../core";
 import { git } from "./git";
 import { assertSafeSegment, runDir } from "./paths";
+import { sandboxedLaunch } from "./sandbox";
 import {
   GROK_LOGIN_MESSAGE,
   rejectAutoApprove,
@@ -147,6 +148,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     worktree: options.worktreePath,
     home,
     pawsRoot: options.pawsRoot,
+    ...(options.writableRoot ? { writableRoot: options.writableRoot } : {}),
     ...(options.hostTools?.definitions.length || options.addRepository
       ? {
           definedTools: [
@@ -231,21 +233,30 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     profile.agent === "claude" && options.agentSkills
       ? claudeSkillsMeta(stopHook?.sessionMeta, options.agentSkills.claude)
       : stopHook?.sessionMeta;
-  const child = spawnAgent(
-    adapter.command,
-    adapter.args,
-    {
-      ...minimalAgentEnv(sourceEnv),
-      ...(sourceEnv.HOME ? accountAgentEnv(profile.agent, sourceEnv.HOME) : {}),
-      ...(options.ghConfigDir ? { GH_CONFIG_DIR: options.ghConfigDir } : {}),
-      ...attributionEnv,
-      ...stopHook?.env,
-      ...codexSkillsHome,
-    },
-    {
-      ...(grok ? { cwd: options.worktreePath } : {}),
-    },
-  );
+  const agentEnv = {
+    ...minimalAgentEnv(sourceEnv),
+    ...(sourceEnv.HOME ? accountAgentEnv(profile.agent, sourceEnv.HOME) : {}),
+    ...(options.ghConfigDir ? { GH_CONFIG_DIR: options.ghConfigDir } : {}),
+    ...attributionEnv,
+    ...stopHook?.env,
+    ...codexSkillsHome,
+  };
+  const sandboxed = options.sandbox
+    ? sandboxedLaunch({
+        command: adapter.command,
+        args: adapter.args,
+        env: agentEnv,
+        cwd: options.worktreePath,
+        scratch: directory,
+        readOnly: options.worktreePath,
+        sandbox: { ...options.sandbox, writable: [home, ...options.sandbox.writable] },
+      })
+    : undefined;
+  const child = sandboxed
+    ? spawnAgent(sandboxed.command, sandboxed.args, sandboxed.env)
+    : spawnAgent(adapter.command, adapter.args, agentEnv, {
+        ...(grok ? { cwd: options.worktreePath } : {}),
+      });
   const stderr = captureStderr(child);
 
   const state = {
@@ -354,7 +365,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     })
     .onRequest(methods.client.fs.writeTextFile, (ctx) => {
       assertRunning();
-      if (options.readOnly) throw new Error("This agent session is read-only");
+      if (options.readOnly && !guard.writableRoot)
+        throw new Error("This agent session is read-only");
       return writeGuarded(ctx.params, guard);
     })
     .onRequest(methods.client.terminal.create, (ctx) => {
@@ -666,6 +678,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     const exitCode = child.exitCode;
     const exitSignal = child.signalCode;
     result.agentExited = await stopChild(child, graceMs);
+    await sandboxed?.cleanup();
     stopWatchingHooks?.();
     result.pid = child.pid;
     result.transcriptPath = transcript;

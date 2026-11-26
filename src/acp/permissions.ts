@@ -9,6 +9,7 @@ export interface GuardContext {
   pawsRoot: string;
   skillRoots?: readonly string[];
   definedTools?: readonly string[];
+  writableRoot?: string;
 }
 
 export interface PermissionSubject {
@@ -79,6 +80,11 @@ export function decideReadOnlyPermission(
   if (!decision.allow) return decision;
   if (hookTool(subject, ctx)) return decision;
   if (subject.kind && READ_ONLY_KINDS.has(subject.kind)) return decision;
+  const root = ctx.writableRoot;
+  const edits = (subject.locations ?? []).map((at) => at && lexicalPath(at.path, ctx));
+  if (subject.kind === "edit" && root && edits.length)
+    if (edits.every((path) => path && isInside(root, path) && !escapesWorktree(path, root)))
+      return decision;
   return { allow: false, reason: "this session is read-only" };
 }
 

@@ -17,6 +17,7 @@ export async function prepareRepositorySnapshot(options: {
   commit?: string;
   env?: NodeJS.ProcessEnv;
   maxArchiveBytes?: number;
+  bare?: boolean;
   onCleanupFailure?: () => void | Promise<void>;
   networkGit?: (args: string[]) => Promise<string>;
 }): Promise<{ path: string; commit: string }> {
@@ -38,11 +39,13 @@ export async function prepareRepositorySnapshot(options: {
       repo: string;
       commit: string;
       checkoutExclusions?: string[];
+      bare?: boolean;
     };
     if (
       saved.owner !== options.owner ||
       saved.repo !== options.repo ||
       JSON.stringify(saved.checkoutExclusions ?? []) !== JSON.stringify(checkoutExclusions) ||
+      (saved.bare ?? false) !== (options.bare ?? false) ||
       (options.commit !== undefined && saved.commit !== options.commit)
     )
       throw new Error("Repository snapshot ownership changed");
@@ -78,6 +81,16 @@ export async function prepareRepositorySnapshot(options: {
     ).trim();
     if (options.commit !== undefined && commit !== options.commit)
       throw new Error("Snapshot commit is unavailable");
+    if (options.bare) {
+      await rm(join(mirror, "hooks"), { recursive: true, force: true });
+      await writeFile(
+        metadataPath,
+        JSON.stringify({ owner: options.owner, repo: options.repo, commit, bare: true }),
+        { mode: 0o600 },
+      );
+      await rename(mirror, path);
+      return { path, commit };
+    }
     const archive = join(staging, "source.tar");
     await git(
       [
