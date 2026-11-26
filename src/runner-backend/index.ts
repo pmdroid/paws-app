@@ -429,6 +429,7 @@ export function createRemoteAgentRunner(options: {
           : Math.min(heldForSession ? SESSION_GRACE_MS : Infinity, Math.max(0, resetsAt - now())),
         details,
         Boolean(
+          busy.length === 0 &&
           agent &&
           placement.profile?.model &&
           rejected.some((reason) =>

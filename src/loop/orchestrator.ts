@@ -2789,7 +2789,7 @@ export class Orchestrator {
         );
         return;
       }
-      if (capacityWaitIn(error)?.untimed && (await this.requeueForModel(item))) {
+      if (capacityWaitIn(error)?.untimed && (await this.requeueForModel(item, job))) {
         journalCaught(
           error,
           "orchestrator.executeRetried.executeQueued",
@@ -2990,8 +2990,19 @@ export class Orchestrator {
     return held;
   }
 
-  private async requeueForModel(item: WorkItemRecord): Promise<boolean> {
+  private async requeueForModel(item: WorkItemRecord, job: Job): Promise<boolean> {
     const now = this.now();
+    const handoff = job.queue === JOB_KIND.resume ? readString(job.payload, "handoff") : null;
+    const carried =
+      handoff === null
+        ? undefined
+        : Object.fromEntries(
+            ["reason", "limit", "fixRound", "fixRounds", "fixRoundsAfter"].flatMap((key) =>
+              key in (job.payload as object)
+                ? [[key, (job.payload as Record<string, unknown>)[key]]]
+                : [],
+            ),
+          );
     const queued = await this.store.transaction(function* (q) {
       const current = yield* getWorkItemSteps(q, item.id);
       if (
@@ -3008,8 +3019,9 @@ export class Orchestrator {
       return (
         (yield* restartSteps(q, current, {
           reason: "follow_up",
-          body: "Retry once a runner offers the selected model.",
+          body: handoff ?? "Retry once a runner offers the selected model.",
           now,
+          ...(carried ? { carried } : {}),
         })) !== null
       );
     });
