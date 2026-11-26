@@ -6,6 +6,7 @@ import {
   markRunnerAccountSignedIn,
   openRunnerAccountHome,
   publishRunnerAccountHome,
+  runnerAccountCache,
   type RunnerJob,
 } from "../src/runner-execution";
 import type { RunnerAccount } from "../src/runner-protocol";
@@ -112,7 +113,7 @@ test("checks run with their binding's home and never see another account's secre
   expect(env.XDG_DATA_HOME).toBe(join(home, ".local", "share"));
   expect(env.XDG_CONFIG_HOME).toBe(join(home, ".config"));
   expect(env.XDG_STATE_HOME).toBe(join(home, ".local", "state"));
-  expect(env.XDG_CACHE_HOME).toBe(join(home, ".cache"));
+  expect(env.XDG_CACHE_HOME).toBe(runnerAccountCache(root, home) ?? join(home, ".cache"));
   expect(env.MISE_DATA_DIR).toBe(join(root, ".local", "share", "mise"));
   expect(env.XAI_API_KEY).toBeUndefined();
   const persisted = JSON.stringify([named.result, ...named.files]);

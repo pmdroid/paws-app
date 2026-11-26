@@ -8,6 +8,8 @@ import {
   loadConfigFile,
   useActiveGitHubMirrors,
   useSettingsStore,
+  renderSettingsToml,
+  settingsSectionsOf,
 } from "../src/config";
 import { setJournalSink } from "../src/journal";
 import {
@@ -27,9 +29,9 @@ beforeEach(async () => {
   audits = [];
   stored = null;
   const snapshot = await useSettingsStore(configPath, {
-    read: async () => stored,
+    read: async () => settingsSectionsOf(stored ?? ""),
     update: async (change) => {
-      stored = change(stored);
+      stored = renderSettingsToml(change(settingsSectionsOf(stored ?? "")));
     },
   });
   release = () => snapshot.release();

@@ -2,7 +2,13 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeoutPolicyRoot, loadConfigFile, useSettingsStore } from "../src/config";
+import {
+  closeoutPolicyRoot,
+  loadConfigFile,
+  useSettingsStore,
+  renderSettingsToml,
+  settingsSectionsOf,
+} from "../src/config";
 import { handleCloseoutSettingsRequest, type CloseoutSettingsOptions } from "../src/settings";
 
 let dir: string;
@@ -23,9 +29,9 @@ beforeEach(async () => {
   audits = [];
   stored = FILE;
   const snapshot = await useSettingsStore(configPath, {
-    read: async () => stored,
+    read: async () => settingsSectionsOf(stored ?? ""),
     update: async (change) => {
-      stored = change(stored);
+      stored = renderSettingsToml(change(settingsSectionsOf(stored ?? "")));
     },
   });
   release = snapshot.release;

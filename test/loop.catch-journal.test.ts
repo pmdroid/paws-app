@@ -8,20 +8,18 @@ import { useMemorySettings, useSettingsStore } from "../src/config";
 import { FakeClock, type RepositoryBinding } from "../src/core";
 import {
   beginImplementRun,
-  CONFIG_SETTINGS_KEY,
   enterMergeQueue,
   getTaskMergeSettings,
   getWorkItem,
   insertQueuedItem,
   JobLoop,
   listCloseoutRounds,
-  readSettingSteps,
-  updateSettingSteps,
   OutboxDispatcher,
   recordConfirmedRemoteMerge,
   type WorkItemRecord,
   type PgDb,
 } from "../src/db";
+import { sectionSettings } from "./saved-settings";
 import { createFakeTracker } from "../src/linear";
 import { attachOrchestrator, itemPathId } from "../src/loop";
 import { handleMergeSettingsRequest } from "../src/settings";
@@ -134,11 +132,7 @@ test("a Settings › Merging save reaches the next item without a restart", asyn
   const f = await fixture();
   const configPath = join(f.root, "config.toml");
   const store = f.db;
-  const settings = await useSettingsStore(configPath, {
-    read: () => store.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
-    update: (change) =>
-      store.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, change)),
-  });
+  const settings = await useSettingsStore(configPath, sectionSettings(store));
   try {
     f.tracker.issueMergeContext = async () => ({ projectId: null, labels: [] });
     const save = async (mainMoved: string) => {

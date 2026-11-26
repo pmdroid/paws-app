@@ -25,8 +25,8 @@ import {
 import { parseRoute, routePath, routerBase, type Route } from "./route";
 import { NAVIGATION, PAGES } from "./navigation";
 import {
-  USER_SETTINGS_PAGES,
   WORKSPACE_PAGES,
+  ownSettingsPages,
   settingsAreEditable,
   shownSettingsPage,
 } from "./settings-pages";
@@ -186,15 +186,17 @@ export function Navigation({
       <SidebarMenu className="mt-5">
         <SidebarFlyoutItem
           to={routePath({ view: "settings" })}
-          active={route.view === "settings"}
+          active={
+            route.view === "settings" || (!settingsAreEditable() && route.view === "workspace")
+          }
           flyout={flyout}
           label="Settings pages"
-          pages={USER_SETTINGS_PAGES}
+          pages={ownSettingsPages()}
           onNavigate={onNavigate}
           submenu={
             <SettingsSubmenu
               label="Settings pages"
-              pages={USER_SETTINGS_PAGES}
+              pages={ownSettingsPages()}
               route={route}
               onNavigate={onNavigate}
             />

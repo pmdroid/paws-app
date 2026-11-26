@@ -3,6 +3,7 @@ export type { EnvSource, PawsEnv } from "./env";
 export {
   agentReadAllowed,
   closeoutPolicyRoot,
+  configSettingsSections,
   defaultAgents,
   parseCloseoutSettings,
   readCloseoutSettings,
@@ -28,11 +29,14 @@ export type {
 } from "./file";
 export {
   readConfigText,
+  renderSettingsToml,
+  SETTINGS_SECTIONS,
+  settingsSectionsOf,
   useMemorySettings,
   useMemorySettingsByDefault,
   useSettingsStore,
 } from "./settings-store";
-export type { SettingsStore } from "./settings-store";
+export type { SettingSections, SettingsStore } from "./settings-store";
 export {
   parseLinearCommentSettings,
   readLinearCommentSettings,

@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfigFile, useSettingsStore } from "../src/config";
-import { CONFIG_SETTINGS_KEY, readSetting, readSettingSteps, updateSettingSteps } from "../src/db";
+import { savedSettingsText, sectionSettings, seedSettings } from "./saved-settings";
 import { handleIssueVmSettingsRequest, type IssueVmSettingsOptions } from "../src/settings";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
@@ -18,13 +18,8 @@ async function instance() {
   const { db, close } = await tempStore();
   const home = tempHome();
   const configPath = join(home, "config.toml");
-  await db.transaction((q) =>
-    updateSettingSteps(q, CONFIG_SETTINGS_KEY, () => '[member_vm]\nimage = "ubuntu:24.04"\n'),
-  );
-  const settings = await useSettingsStore(configPath, {
-    read: () => db.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
-    update: (change) => db.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, change)),
-  });
+  await seedSettings(db, '[member_vm]\nimage = "ubuntu:24.04"\n');
+  const settings = await useSettingsStore(configPath, sectionSettings(db));
   cleanups.push(close, () => {
     settings.release();
     rmSync(home, { recursive: true, force: true });
@@ -60,7 +55,7 @@ test("an admin reads the defaults and saves new limits", async () => {
   );
   expect(saved!.status).toBe(200);
   expect(await saved!.json()).toEqual({ perMember: 0, workspaceMax: 500, deleteAfterDays: 60 });
-  const stored = await readSetting(db, CONFIG_SETTINGS_KEY);
+  const stored = await savedSettingsText(db);
   expect(stored).toContain(
     "[issue_vm]\nper_member = 0\nworkspace_max = 500\ndelete_after_days = 60",
   );
@@ -81,7 +76,7 @@ test("a member can neither read nor change the limits", async () => {
   expect(read!.status).toBe(403);
   const saved = await handleIssueVmSettingsRequest(put({ perMember: 9 }), options("member"));
   expect(saved!.status).toBe(403);
-  expect(await readSetting(db, CONFIG_SETTINGS_KEY)).not.toContain("issue_vm");
+  expect(await savedSettingsText(db)).not.toContain("issue_vm");
 });
 
 test("values outside the ranges are refused", async () => {
@@ -98,5 +93,5 @@ test("values outside the ranges are refused", async () => {
     expect(response!.status).toBe(400);
     expect(((await response!.json()) as { error: string }).error).toStartWith(message);
   }
-  expect(await readSetting(db, CONFIG_SETTINGS_KEY)).not.toContain("issue_vm");
+  expect(await savedSettingsText(db)).not.toContain("issue_vm");
 });

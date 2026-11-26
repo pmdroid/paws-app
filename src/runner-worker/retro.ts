@@ -28,6 +28,7 @@ import {
   ExecutionIdSchema,
   openRunnerAccountHome,
   RunnerAccountHomeError,
+  runnerAccountCache,
   type RunnerAccountOwners,
 } from "../runner-execution";
 import { withoutRunnerBin } from "../runner-mise";
@@ -348,7 +349,7 @@ export async function executeRetroCommand(options: RetroWorkerOptions): Promise<
     const env = minimalAgentEnv({
       PATH: "/usr/local/bin:/usr/bin:/bin",
       ...options.launch?.env,
-      ...accountHomeEnv(home),
+      ...accountHomeEnv(home, runnerAccountCache(options.home, home)),
     });
     env.PATH = withoutRunnerBin(env.PATH);
     const limitMs = Math.min(

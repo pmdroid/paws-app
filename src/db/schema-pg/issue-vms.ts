@@ -1,4 +1,13 @@
-import { bigint, check, index, integer, pgTable, text, uniqueIndex } from "drizzle-orm/pg-core";
+import {
+  bigint,
+  check,
+  doublePrecision,
+  index,
+  integer,
+  pgTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { workspace, workspaceUser } from "./workspace";
 import { workItem } from "./items";
@@ -61,3 +70,33 @@ export const issueVmGrant = pgTable(
     check("issue_vm_grant_limit", sql`"limit" BETWEEN 1 AND 50`),
   ],
 );
+
+export const issueVmAwake = pgTable(
+  "issue_vm_awake",
+  {
+    id: text().primaryKey(),
+    issueVmId: text("issue_vm_id")
+      .notNull()
+      .references(() => issueVm.id),
+    startedAt: bigint("started_at", { mode: "number" }).notNull(),
+    endedAt: bigint("ended_at", { mode: "number" }),
+    hourlyUsd: doublePrecision("hourly_usd"),
+  },
+  (table) => [
+    uniqueIndex("issue_vm_awake_open")
+      .on(table.issueVmId)
+      .where(sql`ended_at IS NULL`),
+    index("issue_vm_awake_started").on(table.startedAt),
+  ],
+);
+
+export const issueVmSpend = pgTable("issue_vm_spend", {
+  workspaceId: text("workspace_id")
+    .primaryKey()
+    .references(() => workspace.id),
+  monthlyLimitUsd: doublePrecision("monthly_limit_usd").notNull(),
+  boatHourlyUsd: doublePrecision("boat_hourly_usd"),
+  instaboxHourlyUsd: doublePrecision("instabox_hourly_usd"),
+  updatedBy: text("updated_by").references(() => workspaceUser.id),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+});

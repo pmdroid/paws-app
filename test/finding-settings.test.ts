@@ -3,14 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfigFile, useSettingsStore } from "../src/config";
-import {
-  CONFIG_SETTINGS_KEY,
-  findingGroupingEnabled,
-  readSetting,
-  readSettingSteps,
-  updateSettingSteps,
-  type Db,
-} from "../src/db";
+import { findingGroupingEnabled, type Db } from "../src/db";
+import { savedSettingsText, sectionSettings, seedSettings } from "./saved-settings";
 import { handleFindingSettingsRequest, type FindingSettingsOptions } from "../src/settings";
 import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
@@ -33,11 +27,8 @@ beforeEach(async () => {
   audits = [];
   dir = mkdtempSync(join(tmpdir(), "paws-finding-settings-"));
   configPath = join(dir, "config.toml");
-  await db.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, () => SEEDED));
-  ({ release } = await useSettingsStore(configPath, {
-    read: () => db.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
-    update: (change) => db.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, change)),
-  }));
+  await seedSettings(db, SEEDED);
+  ({ release } = await useSettingsStore(configPath, sectionSettings(db)));
 });
 
 afterEach(async () => {
@@ -105,7 +96,7 @@ test("an admin saves the grouping time to the database", async () => {
   );
   expect(saved!.status).toBe(200);
   expect(await saved!.json()).toEqual({ grouping: true, groupingTime: "21:15" });
-  expect(await readSetting(db, CONFIG_SETTINGS_KEY)).toContain('grouping_time = "21:15"');
+  expect(await savedSettingsText(db)).toContain('grouping_time = "21:15"');
   expect(loadConfigFile(configPath).findingsGroupingTime).toBe("21:15");
   const listed = await handleFindingSettingsRequest(new Request(url), options("admin"));
   expect(await listed!.json()).toEqual({ grouping: true, groupingTime: "21:15" });
@@ -131,6 +122,6 @@ test("members and invalid times cannot change the grouping time", async () => {
       error: "Send groupingTime as HH:MM (24-hour, UTC).",
     });
   }
-  expect(await readSetting(db, CONFIG_SETTINGS_KEY)).toBe(SEEDED);
+  expect(await savedSettingsText(db)).toBe(SEEDED);
   expect(audits).toEqual([]);
 });
