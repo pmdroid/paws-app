@@ -1,14 +1,6 @@
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import {
-  chmodSync,
-  existsSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { RunnerCodingAgent } from "../runner-protocol";
 
@@ -85,56 +77,6 @@ export function collectOpenCodeCredential(home: string, placed: string): boolean
     rmSync(temporary, { force: true });
   }
   return true;
-}
-
-const PURGING = ".paws-opencode-purging";
-
-function nonEmpty(path: string): boolean {
-  try {
-    return statSync(path).size > 0;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
-  }
-}
-
-export function purgeOpenCodeCredential(home: string): void {
-  if (!existsSync(join(home, OPENCODE_DATABASE)))
-    return rmSync(join(home, PURGING), { force: true });
-  writeFileSync(join(home, PURGING), "");
-  for (const file of ["", "-wal", "-shm"].map((end) => join(home, OPENCODE_DATABASE + end)))
-    if (existsSync(file) && statSync(file).uid === process.getuid?.()) chmodSync(file, 0o660);
-  const db = open(home, false);
-  try {
-    db.run("PRAGMA secure_delete = ON");
-    db.run("DELETE FROM credential WHERE integration_id = 'opencode'");
-    db.run("VACUUM");
-    const checkpoint = db.query<{ busy: number }, []>("PRAGMA wal_checkpoint(TRUNCATE)").get();
-    if (checkpoint && checkpoint.busy !== 0)
-      throw new Error("OpenCode database is busy; its journal still holds the token");
-  } finally {
-    db.close();
-  }
-  if (nonEmpty(join(home, `${OPENCODE_DATABASE}-wal`)))
-    throw new Error("OpenCode database journal was not emptied");
-  rmSync(join(home, PURGING), { force: true });
-}
-
-export function finishOpenCodePurge(home: string): void {
-  if (existsSync(join(home, PURGING))) purgeOpenCodeCredential(home);
-}
-
-export function openCodeCredentialLeft(home: string): boolean {
-  if (existsSync(join(home, PURGING))) return true;
-  const database = join(home, OPENCODE_DATABASE);
-  if (nonEmpty(`${database}-wal`) || nonEmpty(`${database}-journal`)) return true;
-  if (!existsSync(database)) return false;
-  const db = open(home, true);
-  try {
-    return db.query<Row, []>(CURRENT).get() !== null;
-  } finally {
-    db.close();
-  }
 }
 
 export async function migrateOpenCodeDatabase(

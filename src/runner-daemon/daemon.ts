@@ -216,7 +216,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   chmodSync(dbPath, 0o600);
   if (options.credentialStore)
     try {
-      attachCredentialStore(db, options.credentialStore);
+      attachCredentialStore(db, options.credentialStore, `${dbPath}.scrubbing`);
     } catch (error) {
       db.close();
       throw error;

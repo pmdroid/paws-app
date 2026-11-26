@@ -53,7 +53,6 @@ import {
   collectOpenCodeCredential,
   migrateOpenCodeDatabase,
   placeOpenCodeCredential,
-  purgeOpenCodeCredential,
 } from "./opencode-credential";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -99,8 +98,6 @@ import {
   openRunnerAccountHome,
   returnRunnerAgentCredentials,
   runnerAccountCache,
-  ISSUE_VM_MARKER,
-  activeExecutions,
   onTmpfs,
   writeReturnedCredentials,
   openRunnerCheckoutToGroup,
@@ -213,7 +210,6 @@ export {
   restoreCodexSessionBundle,
   restoreGrokSessionBundle,
 };
-export { finishOpenCodePurge, openCodeCredentialLeft } from "./opencode-credential";
 
 export interface RunnerWorkerOptions {
   job: RunnerJob;
@@ -1160,8 +1156,6 @@ export async function executeRunnerCommand(
           ),
         ),
       );
-      if (binding.agent === "opencode" && existsSync(ISSUE_VM_MARKER) && onTmpfs(home))
-        if (!activeExecutions(home, job.executionId).length) purgeOpenCodeCredential(home);
     } catch (error) {
       journalCaught(
         error,

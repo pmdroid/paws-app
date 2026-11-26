@@ -50,7 +50,6 @@ export const ISSUE_VM_MARKER = "/etc/paws-runner/issue-vm";
 const CACHES = ".paws-account-caches";
 const RETURNED = ".paws-returned";
 const RETURN_LIMIT = 2_097_152;
-const STAGED_MS = 60_000;
 const TMPFS_MAGIC = 0x01021994;
 const SHARED = new Set(["work", RUNNER_ACCOUNT_HOMES, CACHES, MANIFEST, ACTIVE, PUBLISHING]);
 
@@ -187,7 +186,18 @@ export function writeReturnedCredentials(home: string, executionId: string, seal
   }
 }
 
-export function runnerSignInsLeft(agentHome: string, inDatabase: (home: string) => boolean) {
+function writerStopped(name: string, home: string): boolean {
+  const pid = Number(/\.(\d+)-[0-9a-f-]{36}\.tmp$/.exec(name)?.[1]);
+  if (!pid) return activeExecutions(home).length === 0;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
+export function runnerSignInsLeft(agentHome: string) {
   const root = join(agentHome, RUNNER_ACCOUNT_HOMES);
   const entries = (path: string) => {
     try {
@@ -210,14 +220,12 @@ export function runnerSignInsLeft(agentHome: string, inDatabase: (home: string) 
         if (!staged.name.startsWith(`${basename(path)}.`) || !staged.name.endsWith(".tmp"))
           continue;
         const file = join(dirname(join(home, path)), staged.name);
-        if (Date.now() - lstatSync(file).mtimeMs > STAGED_MS && !activeExecutions(home).length)
-          rmSync(file, { force: true });
+        if (writerStopped(staged.name, home)) rmSync(file, { force: true });
         else left.push(`${entry.name}/${dirname(path)}/${staged.name}`);
       }
     }
     for (const returned of entries(join(home, RETURNED)))
       left.push(`${entry.name}/${RETURNED}/${returned.name}`);
-    if (inDatabase(home)) left.push(`${entry.name}/opencode.db`);
   }
   return left;
 }
@@ -236,6 +244,10 @@ export function runnerAgentCredentials(
     join(runnerAccountHome(agentHome, account), RETURNED, ExecutionIdSchema.parse(executionId));
   return {
     write(account, agent, written) {
+      if (tmpfs && agent === "opencode")
+        throw new RunnerAccountHomeError(
+          "OpenCode sign-ins are refused on an issue VM: OpenCode keeps its token in opencode.db",
+        );
       const home = openRunnerAccountHome(agentHome, account, agent, { signIn: true, owners });
       if (tmpfs && !onTmpfs(dirname(home)))
         throw new RunnerAccountHomeError("Agent sign-ins on an issue VM need a tmpfs account root");
@@ -937,7 +949,7 @@ function writeSharedFile(
   owners: RunnerAccountOwners,
   mode = 0o640,
 ): void {
-  const temporary = `${path}.${randomUUID()}.tmp`;
+  const temporary = `${path}.${process.pid}-${randomUUID()}.tmp`;
   try {
     const descriptor = openSync(temporary, "wx", mode);
     try {
