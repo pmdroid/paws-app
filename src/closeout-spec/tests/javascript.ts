@@ -1,7 +1,7 @@
-import { basename, dirname } from "node:path/posix";
+import { basename } from "node:path/posix";
 import { anyPathMatches, pathMatches } from "../evaluate/paths";
 import type { TestSelect } from "../types";
-import { affectedTests, knownType, testFilesOf } from "./graph";
+import { affectedTests, directTests, knownType, testFilesOf } from "./graph";
 import type { Snapshot, TestAdapter, TestContext, TestPlan } from "./types";
 
 const SHARED =
@@ -101,16 +101,10 @@ function directPlan(
   },
 ): TestPlan {
   const { changed, head, always, reasons } = input;
-  const tests = testFilesOf(head);
-  const testSet = new Set(tests);
-  const folders = [...changed]
-    .filter((path) => !testSet.has(path))
-    .map((path) => dirname(path))
-    .filter((folder) => folder !== ".");
-  const direct = tests.filter(
-    (path) =>
-      !always.includes(path) &&
-      (changed.has(path) || folders.some((folder) => path.startsWith(`${folder}/`))),
+  const siblings = new Set([...changed].map(sourceStem));
+  const importers = new Set(directTests(head, changed));
+  const direct = testFilesOf(head).filter(
+    (path) => !always.includes(path) && (importers.has(path) || siblings.has(testStem(path))),
   );
   if (direct.length === 0 && always.length === 0)
     return fullPlan(runner, context, [
@@ -131,6 +125,14 @@ function directPlan(
     },
     ...runner.invocation(context, targets),
   };
+}
+
+function sourceStem(path: string): string {
+  return path.replace(/\.[^./]+$/, "");
+}
+
+function testStem(path: string): string {
+  return path.replace(/(\.|_)(test|spec)\.[^./]+$/, "");
 }
 
 export function javascriptAdapter(runner: JavaScriptRunner): TestAdapter {

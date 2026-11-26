@@ -9,6 +9,8 @@ import {
   useMemorySettings,
   useMemorySettingsByDefault,
   useSettingsStore,
+  renderSettingsToml,
+  settingsSectionsOf,
 } from "./settings-store";
 
 const cleanups: (() => void)[] = [];
@@ -54,9 +56,9 @@ async function storedSettings(initial: string | null) {
   const configPath = join(home, "config.toml");
   let stored = initial;
   const settings = await useSettingsStore(configPath, {
-    read: async () => stored,
+    read: async () => settingsSectionsOf(stored ?? ""),
     update: async (change) => {
-      stored = change(stored);
+      stored = renderSettingsToml(change(settingsSectionsOf(stored ?? "")));
     },
   });
   cleanups.push(() => {
@@ -76,7 +78,9 @@ test("every section the settings writer emits parses again", async () => {
     ].join("\n\n"),
   );
   const saved = stored() ?? "";
-  for (const name of WRITER_SECTIONS) expect(saved).toContain(`[${name}]`);
+  expect(Object.keys(settingsSectionsOf(saved)).sort()).toEqual(
+    [...new Set(WRITER_SECTIONS.map((name) => name.replace(/\..*/, "")))].sort(),
+  );
   expect(saved).not.toContain("[agents.grok]");
   expect(() => parseConfigToml(saved)).not.toThrow();
 });
@@ -98,7 +102,7 @@ test("a config.toml on disk is never read or written", async () => {
 test("a save does not create a file", async () => {
   const configPath = join(tmpdir(), `paws-memory-${crypto.randomUUID()}`, "config.toml");
   const settings = await useSettingsStore(configPath, {
-    read: async () => null,
+    read: async () => ({}),
     update: async () => undefined,
   });
   cleanups.push(() => settings.release());

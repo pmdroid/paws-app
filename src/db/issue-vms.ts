@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gt, isNull, max, notInArray, or } from "drizzle-orm";
+import { and, count, desc, eq, gt, isNull, lt, max, notInArray, or } from "drizzle-orm";
 import { type Q } from "./db";
 import { ulid } from "./ulid";
 
@@ -211,4 +211,79 @@ export function* activeIssueVmGrantLimitSteps(
       ),
   );
   return row?.limit ?? null;
+}
+
+export function* openIssueVmAwakeSteps(
+  q: Q,
+  { issueVmId, hourlyUsd, now }: { issueVmId: string; hourlyUsd: number | null; now: number },
+) {
+  const row = { id: ulid(now), issueVmId, startedAt: now, hourlyUsd };
+  yield* q.exec(q.orm.insert(q.t.issueVmAwake).values(row).onConflictDoNothing());
+}
+
+export function* closeIssueVmAwakeSteps(q: Q, input: { issueVmId: string; now: number }) {
+  const { issueVmAwake: a } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(a)
+      .set({ endedAt: input.now })
+      .where(and(eq(a.issueVmId, input.issueVmId), isNull(a.endedAt))),
+  );
+}
+
+export function* issueVmAwakeIntervalsSteps(
+  q: Q,
+  input: { workspaceId: string; from: number; to: number },
+) {
+  const { issueVmAwake: a, issueVm: v } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        provider: v.provider,
+        startedAt: a.startedAt,
+        endedAt: a.endedAt,
+        hourlyUsd: a.hourlyUsd,
+      })
+      .from(a)
+      .innerJoin(v, eq(v.id, a.issueVmId))
+      .where(
+        and(
+          eq(v.workspaceId, input.workspaceId),
+          lt(a.startedAt, input.to),
+          or(isNull(a.endedAt), gt(a.endedAt, input.from)),
+        ),
+      ),
+  );
+  return rows.map((row) => ({ ...row, provider: row.provider as IssueVmProvider }));
+}
+
+export type IssueVmSpendSettings = {
+  monthlyLimitUsd: number;
+  boatHourlyUsd: number | null;
+  instaboxHourlyUsd: number | null;
+};
+
+export function* issueVmSpendSettingsSteps(q: Q, workspaceId: string) {
+  const { issueVmSpend: s } = q.t;
+  const row = yield* q.one(q.orm.select().from(s).where(eq(s.workspaceId, workspaceId)));
+  return (row ?? null) as IssueVmSpendSettings | null;
+}
+
+export function* saveIssueVmSpendSettingsSteps(
+  q: Q,
+  input: {
+    workspaceId: string;
+    changes: Partial<IssueVmSpendSettings>;
+    defaultLimitUsd: number;
+    updatedBy: string;
+    now: number;
+  },
+) {
+  const set = { ...input.changes, updatedBy: input.updatedBy, updatedAt: input.now };
+  yield* q.exec(
+    q.orm
+      .insert(q.t.issueVmSpend)
+      .values({ workspaceId: input.workspaceId, monthlyLimitUsd: input.defaultLimitUsd, ...set })
+      .onConflictDoUpdate({ target: q.t.issueVmSpend.workspaceId, set }),
+  );
 }

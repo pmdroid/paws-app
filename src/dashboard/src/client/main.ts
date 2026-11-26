@@ -1,6 +1,7 @@
 import { mountRepositorySettings } from "./repository-settings";
 import { createStorageSettings } from "./storage-settings";
 import { createStorageDisk } from "./storage-disk";
+import { createIssueVmSettings } from "./issue-vm-settings";
 import { createMemberVmSettings } from "./member-vm-settings";
 import { createCloseoutSettings } from "./closeout-settings";
 import { createRunnerVmKeys } from "./runner-vm-keys";
@@ -99,6 +100,7 @@ const storageSettings = createStorageSettings();
 const storageDisk = createStorageDisk();
 const performancePage = createPerformance();
 const memberVmSettings = createMemberVmSettings();
+const issueVmSettings = createIssueVmSettings();
 const closeoutSettings = createCloseoutSettings();
 const runnerVmKeys = createRunnerVmKeys();
 const timeLimitSettings = createTimeLimitSettings();
@@ -533,6 +535,8 @@ function paint(): void {
   if (performanceRoot) performancePage.mount(performanceRoot, currentEngine());
   const memberVmRoot = document.querySelector<HTMLElement>("#member-vm-settings");
   if (memberVmRoot) memberVmSettings.mount(memberVmRoot, currentEngine());
+  const issueVmRoot = document.querySelector<HTMLElement>("#issue-vm-settings");
+  if (issueVmRoot) issueVmSettings.mount(issueVmRoot, currentEngine());
   const closeoutRoot = document.querySelector<HTMLElement>("#closeout-settings");
   if (closeoutRoot) closeoutSettings.mount(closeoutRoot, currentEngine());
   const runnerVmKeysRoot = document.querySelector<HTMLElement>("#runner-vm-keys");

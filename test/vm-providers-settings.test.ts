@@ -2,13 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfigFile, useSettingsStore } from "../src/config";
-import {
-  CONFIG_SETTINGS_KEY,
-  failMemberVmStep,
-  insertMemberVm,
-  readSettingSteps,
-  updateSettingSteps,
-} from "../src/db";
+import { failMemberVmStep, insertMemberVm } from "../src/db";
+import { sectionSettings } from "./saved-settings";
 import { createFakeExeDev } from "../src/provisioning";
 import {
   handleRunnerVmKeysSettingsRequest,
@@ -31,10 +26,7 @@ async function instance() {
   const { db, close } = await tempStore();
   const home = tempHome();
   const configPath = join(home, "config.toml");
-  const settings = await useSettingsStore(configPath, {
-    read: () => db.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
-    update: (change) => db.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, change)),
-  });
+  const settings = await useSettingsStore(configPath, sectionSettings(db));
   cleanups.push(close, () => {
     settings.release();
     rmSync(home, { recursive: true, force: true });

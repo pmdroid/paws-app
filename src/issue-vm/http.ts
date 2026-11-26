@@ -1,25 +1,28 @@
-import { issueVmSettings, parseConfigToml } from "../config";
+import { issueVmSettings, parseConfigToml, renderSettingsToml } from "../config";
 import {
   activeIssueVmGrantsSteps,
   auditWorkspaceAccessSteps,
-  CONFIG_SETTINGS_KEY,
   insertIssueVmGrantSteps,
   issueVmStateCountsSteps,
   listWorkspaceMembersSteps,
-  readSettingSteps,
+  readSettingSectionsSteps,
   revokeIssueVmGrantSteps,
+  saveIssueVmSpendSettingsSteps,
   workspaceMemberSteps,
   workspaceMemberUsable,
   type Db,
   type IssueVmGrant,
+  type IssueVmSpendSettings,
   type Q,
 } from "../db";
 import { journalCaught } from "../journal";
 import { json, localRequest, readJson, sameToken } from "../settings";
 import { isWorkspaceAdmin, type WorkspacePrincipal } from "../workspace";
+import { DEFAULT_MONTHLY_LIMIT_USD, issueVmSpendSteps } from "./spend";
 
 export const ISSUE_VM_MEMBERS_PATH = "/api/settings/issue-vm/members";
 export const ISSUE_VM_GRANTS_PATH = "/api/settings/issue-vm/grants";
+export const ISSUE_VM_SPEND_PATH = "/api/settings/issue-vm/spend";
 const GRANT_PATH = /^\/api\/settings\/issue-vm\/grants\/([0-9A-Za-z]+)$/;
 
 const DAY = 86_400_000;
@@ -45,7 +48,12 @@ export type IssueVmHttpOptions = {
 };
 
 export function isIssueVmGrantPath(path: string): boolean {
-  return path === ISSUE_VM_MEMBERS_PATH || path === ISSUE_VM_GRANTS_PATH || GRANT_PATH.test(path);
+  return (
+    path === ISSUE_VM_MEMBERS_PATH ||
+    path === ISSUE_VM_GRANTS_PATH ||
+    path === ISSUE_VM_SPEND_PATH ||
+    GRANT_PATH.test(path)
+  );
 }
 
 function view({ workspaceId: _workspaceId, ...grant }: IssueVmGrant): IssueVmGrantView {
@@ -53,9 +61,9 @@ function view({ workspaceId: _workspaceId, ...grant }: IssueVmGrant): IssueVmGra
 }
 
 function* membersSteps(q: Q, workspaceId: string, at: number) {
-  const text = yield* readSettingSteps(q, CONFIG_SETTINGS_KEY);
+  const sections = yield* readSettingSectionsSteps(q, ["issue_vm"]);
   const defaultLimit = issueVmSettings(
-    text === null ? undefined : parseConfigToml(text).issueVm,
+    parseConfigToml(renderSettingsToml(sections)).issueVm,
   ).perMember;
   const members = (yield* listWorkspaceMembersSteps(q, workspaceId)).filter(workspaceMemberUsable);
   const grants = yield* activeIssueVmGrantsSteps(q, { workspaceId, at });
@@ -99,6 +107,76 @@ function parseGrant(body: unknown, now: number): GrantInput | string {
   return { memberUserId, limit, endsAt: ends };
 }
 
+const MAX_USD = 1_000_000;
+
+type SpendChanges = Partial<IssueVmSpendSettings>;
+
+function amount(value: unknown, name: string): number | string {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > MAX_USD)
+    return `${name} must be a number of US dollars from 0 to ${MAX_USD}`;
+  return value;
+}
+
+function parseSpend(body: unknown): SpendChanges | string {
+  if (typeof body !== "object" || body === null) return "Expected a JSON object";
+  const { monthlyLimitUsd, prices } = body as Record<string, unknown>;
+  const changes: SpendChanges = {};
+  if (monthlyLimitUsd !== undefined) {
+    const limit = amount(monthlyLimitUsd, "monthlyLimitUsd");
+    if (typeof limit === "string") return limit;
+    changes.monthlyLimitUsd = limit;
+  }
+  if (prices !== undefined) {
+    if (typeof prices !== "object" || prices === null) return "prices must be an object";
+    for (const [provider, value] of Object.entries(prices)) {
+      if (provider !== "boat" && provider !== "instabox")
+        return "prices takes only boat and instabox";
+      const price = amount(value, `prices.${provider}`);
+      if (typeof price === "string") return price;
+      changes[provider === "boat" ? "boatHourlyUsd" : "instaboxHourlyUsd"] = price;
+    }
+  }
+  if (Object.keys(changes).length === 0) return "Expected monthlyLimitUsd or prices";
+  return changes;
+}
+
+async function handleSpend(request: Request, options: IssueVmHttpOptions, now: number) {
+  const { db, principal } = options;
+  const workspaceId = principal.workspaceId;
+  if (request.method === "GET")
+    return json(await db.run((q) => issueVmSpendSteps(q, { workspaceId, at: now })));
+  if (request.method !== "PUT") return json({ error: "Method not allowed" }, 405);
+  if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))
+    return json({ error: "CSRF token missing" }, 403);
+  let changes: SpendChanges | string;
+  try {
+    changes = parseSpend(await readJson(request));
+  } catch (error) {
+    journalCaught(error, "issue-vm.handleSpend.parse", null);
+    changes = "Expected a JSON body";
+  }
+  if (typeof changes === "string") return json({ error: changes }, 400);
+  const update = changes;
+  const saved = await db.transaction(function* (q) {
+    yield* saveIssueVmSpendSettingsSteps(q, {
+      workspaceId,
+      changes: update,
+      defaultLimitUsd: DEFAULT_MONTHLY_LIMIT_USD,
+      updatedBy: principal.userId,
+      now,
+    });
+    yield* auditWorkspaceAccessSteps(q, {
+      workspaceId,
+      userId: principal.userId,
+      action: "settings.issue_vm_spend",
+      subject: `Set issue VM spend: ${JSON.stringify(update)}`,
+      now,
+    });
+    return yield* issueVmSpendSteps(q, { workspaceId, at: now });
+  });
+  return json(saved);
+}
+
 function describe(name: string | null, userId: string, grant: { limit: number; endsAt: number }) {
   return `${name ?? userId} (${userId}): ${grant.limit} issue VMs until ${new Date(grant.endsAt).toISOString()}`;
 }
@@ -111,14 +189,22 @@ export async function handleIssueVmGrantRequest(
   if (!isIssueVmGrantPath(path)) return null;
   if (!localRequest(request, options.trustedOrigin))
     return json({ error: "Issue VM grants are only available on the local Paws origin" }, 403);
-  if (!isWorkspaceAdmin(options.principal.role))
-    return json({ error: "Only workspace admins can see and grant issue VMs." }, 403);
   const { db, principal } = options;
+  const admin = isWorkspaceAdmin(principal.role);
   const now = (options.now ?? Date.now)();
   if (path === ISSUE_VM_MEMBERS_PATH) {
     if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
-    return json(await db.run((q) => membersSteps(q, principal.workspaceId, now)));
+    const listing = await db.run((q) => membersSteps(q, principal.workspaceId, now));
+    if (admin) return json(listing);
+    return json({
+      defaultLimit: listing.defaultLimit,
+      members: listing.members.filter((member) => member.userId === principal.userId),
+    });
   }
+  if (path === ISSUE_VM_SPEND_PATH && request.method === "GET")
+    return handleSpend(request, options, now);
+  if (!admin) return json({ error: "Only workspace admins can see and grant issue VMs." }, 403);
+  if (path === ISSUE_VM_SPEND_PATH) return handleSpend(request, options, now);
   const revoking = GRANT_PATH.exec(path)?.[1];
   if (request.method !== (revoking === undefined ? "POST" : "DELETE"))
     return json({ error: "Method not allowed" }, 405);

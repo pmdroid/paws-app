@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   markRunnerAccountSignedIn,
+  onTmpfs,
   openRunnerAccountHome,
   publishRunnerAccountHome,
+  runnerAccountCache,
   type RunnerJob,
 } from "../src/runner-execution";
 import type { RunnerAccount } from "../src/runner-protocol";
@@ -19,6 +21,15 @@ afterEach(() => {
 function temporary(prefix: string) {
   const root = mkdtempSync(join(tmpdir(), prefix));
   roots.push(root);
+  return root;
+}
+
+function runnerHomeRoot(prefix: string) {
+  const parent = onTmpfs(tmpdir()) ? join(import.meta.dir, "..", "out") : tmpdir();
+  mkdirSync(parent, { recursive: true });
+  const root = mkdtempSync(join(parent, prefix));
+  roots.push(root);
+  expect(onTmpfs(root)).toBe(false);
   return root;
 }
 
@@ -100,7 +111,7 @@ async function check(root: string, account?: RunnerAccount, agent: "codex" | "cl
 }
 
 test("checks run with their binding's home and never see another account's secrets", async () => {
-  const root = temporary("paws-account-check-");
+  const root = runnerHomeRoot("paws-account-check-");
   const home = seedCodex(root, a, "synthetic-token-a");
   seedCodex(root, b, "synthetic-token-b");
   const named = await check(root, a);
@@ -112,7 +123,7 @@ test("checks run with their binding's home and never see another account's secre
   expect(env.XDG_DATA_HOME).toBe(join(home, ".local", "share"));
   expect(env.XDG_CONFIG_HOME).toBe(join(home, ".config"));
   expect(env.XDG_STATE_HOME).toBe(join(home, ".local", "state"));
-  expect(env.XDG_CACHE_HOME).toBe(join(home, ".cache"));
+  expect(env.XDG_CACHE_HOME).toBe(runnerAccountCache(root, home) ?? join(home, ".cache"));
   expect(env.MISE_DATA_DIR).toBe(join(root, ".local", "share", "mise"));
   expect(env.XAI_API_KEY).toBeUndefined();
   const persisted = JSON.stringify([named.result, ...named.files]);

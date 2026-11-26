@@ -36,6 +36,7 @@ export const ALLOWED_AGENT_ENV: readonly string[] = [
   "BUN_INSTALL",
   "BUN_INSTALL_CACHE_DIR",
   "npm_config_cache",
+  "PIP_CACHE_DIR",
   "NODE_COMPILE_CACHE",
   "NODE_EXTRA_CA_CERTS",
   // The runner's shared mise installs, which Paws sets in the runner worker's agent env.
@@ -121,7 +122,7 @@ function isBenignProxy(value: string): boolean {
   }
 }
 
-export function accountHomeEnv(home: string): Record<string, string> {
+export function accountHomeEnv(home: string, cache?: string | null): Record<string, string> {
   return {
     HOME: home,
     CODEX_HOME: join(home, ".codex"),
@@ -129,7 +130,14 @@ export function accountHomeEnv(home: string): Record<string, string> {
     XDG_CONFIG_HOME: join(home, ".config"),
     XDG_DATA_HOME: join(home, ".local", "share"),
     XDG_STATE_HOME: join(home, ".local", "state"),
-    XDG_CACHE_HOME: join(home, ".cache"),
+    XDG_CACHE_HOME: cache ?? join(home, ".cache"),
+    ...(cache
+      ? {
+          BUN_INSTALL_CACHE_DIR: join(cache, "bun"),
+          npm_config_cache: join(cache, "npm"),
+          PIP_CACHE_DIR: join(cache, "pip"),
+        }
+      : {}),
   };
 }
 

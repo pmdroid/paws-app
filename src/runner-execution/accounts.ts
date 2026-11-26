@@ -19,11 +19,12 @@ import {
   renameSync,
   rmSync,
   rmdirSync,
+  statfsSync,
   unlinkSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { z } from "zod";
 import {
   RUNNER_AGENT_CREDENTIAL_FILES,
@@ -45,7 +46,12 @@ const ACTIVE = ".paws-active";
 const PUBLISHING = ".paws-publishing";
 const ADMISSION_MS = 60_000;
 const SHARE_LIMIT = 100_000;
-const SHARED_ELSEWHERE = new Set(["work", RUNNER_ACCOUNT_HOMES, MANIFEST, ACTIVE, PUBLISHING]);
+export const ISSUE_VM_MARKER = "/etc/paws-runner/issue-vm";
+const CACHES = ".paws-account-caches";
+const RETURNED = ".paws-returned";
+const RETURN_LIMIT = 2_097_152;
+const TMPFS_MAGIC = 0x01021994;
+const SHARED = new Set(["work", RUNNER_ACCOUNT_HOMES, CACHES, MANIFEST, ACTIVE, PUBLISHING]);
 
 const HOME_FOLDERS = [
   ".claude",
@@ -152,19 +158,99 @@ export function markRunnerAccountSignedIn(
 
 const CLAUDE_STATE = ".claude/.claude.json";
 const CREDENTIAL_LIMIT = 196_608;
+const SIGN_IN_FILES = [...new Set(Object.values(RUNNER_AGENT_CREDENTIAL_FILES).flat())].filter(
+  (path) => path !== CLAUDE_STATE,
+);
+
+export function onTmpfs(path: string): boolean {
+  return Number(statfsSync(path).type) === TMPFS_MAGIC;
+}
+
+export function runnerAccountCache(agentHome: string, home: string): string | null {
+  if (!onTmpfs(home)) return null;
+  const cache = join(agentHome, CACHES, basename(home));
+  mkdirSync(cache, { recursive: true, mode: 0o700 });
+  return cache;
+}
+
+export function writeReturnedCredentials(home: string, executionId: string, sealed: string) {
+  const folder = join(home, RETURNED);
+  mkdirSync(folder, { recursive: true, mode: 0o770 });
+  const target = join(folder, ExecutionIdSchema.parse(executionId));
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, sealed, { mode: 0o640, flag: "wx" });
+    renameSync(temporary, target);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
+
+function writerStopped(name: string, home: string): boolean {
+  const pid = Number(/\.(\d+)-[0-9a-f-]{36}\.tmp$/.exec(name)?.[1]);
+  if (!pid) return activeExecutions(home).length === 0;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
+export function runnerSignInsLeft(agentHome: string) {
+  const root = join(agentHome, RUNNER_ACCOUNT_HOMES);
+  const entries = (path: string) => {
+    try {
+      return readdirSync(path, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+  };
+  const left: string[] = [];
+  for (const entry of entries(root)) {
+    if (!entry.isDirectory()) {
+      left.push(entry.name);
+      continue;
+    }
+    const home = join(root, entry.name);
+    for (const path of SIGN_IN_FILES) {
+      if (present(join(home, path))) left.push(`${entry.name}/${path}`);
+      for (const staged of entries(dirname(join(home, path)))) {
+        if (!staged.name.startsWith(`${basename(path)}.`) || !staged.name.endsWith(".tmp"))
+          continue;
+        const file = join(dirname(join(home, path)), staged.name);
+        if (writerStopped(staged.name, home)) rmSync(file, { force: true });
+        else left.push(`${entry.name}/${dirname(path)}/${staged.name}`);
+      }
+    }
+    for (const returned of entries(join(home, RETURNED)))
+      left.push(`${entry.name}/${RETURNED}/${returned.name}`);
+  }
+  return left;
+}
 
 export function runnerAgentCredentials(
   agentHome: string,
   owners: RunnerAccountOwners = processOwners(),
+  tmpfs = false,
 ): RunnerAgentCredentialStore {
   const files = (account: RunnerAccount, agent: RunnerCodingAgent) =>
     RUNNER_AGENT_CREDENTIAL_FILES[agent].map((path) => ({
       path,
       target: join(runnerAccountHome(agentHome, account), path),
     }));
+  const returnedPath = (account: RunnerAccount, executionId: string) =>
+    join(runnerAccountHome(agentHome, account), RETURNED, ExecutionIdSchema.parse(executionId));
   return {
     write(account, agent, written) {
+      if (tmpfs && agent === "opencode")
+        throw new RunnerAccountHomeError(
+          "OpenCode sign-ins are refused on an issue VM: OpenCode keeps its token in opencode.db",
+        );
       const home = openRunnerAccountHome(agentHome, account, agent, { signIn: true, owners });
+      if (tmpfs && !onTmpfs(dirname(home)))
+        throw new RunnerAccountHomeError("Agent sign-ins on an issue VM need a tmpfs account root");
       markRunnerAccountSignedIn(home, account, agent, owners);
       const busy = activeExecutions(home).length > 0;
       const oauth =
@@ -186,9 +272,17 @@ export function runnerAgentCredentials(
       }
     },
     busy: (account) => activeExecutions(runnerAccountHome(agentHome, account)).length > 0,
+    readReturned: (account, executionId) =>
+      readCredentialFile(returnedPath(account, executionId), RETURN_LIMIT),
+    dropReturned: (account, executionId) =>
+      rmSync(returnedPath(account, executionId), { force: true }),
     remove(account, agent) {
       for (const { path, target } of files(account, agent))
         if (path !== CLAUDE_STATE) rmSync(target, { force: true });
+      rmSync(join(runnerAccountHome(agentHome, account), RETURNED), {
+        recursive: true,
+        force: true,
+      });
     },
   };
 }
@@ -256,17 +350,17 @@ function credentialFolder(path: string, owners: RunnerAccountOwners): void {
     throw new RunnerAccountHomeError("Agent sign-in folder is not shared with the runner");
 }
 
-function readCredentialFile(path: string): Buffer | null {
+function readCredentialFile(path: string, limit = CREDENTIAL_LIMIT): Buffer | null {
   let descriptor: number;
   try {
-    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
   try {
     const info = fstatSync(descriptor);
-    if (!info.isFile() || info.size > CREDENTIAL_LIMIT)
+    if (!info.isFile() || info.size > limit)
       throw new RunnerAccountHomeError("Agent sign-in file is unsafe");
     return readFileSync(descriptor);
   } finally {
@@ -588,7 +682,7 @@ export function shareRunnerAgentState(
     throw error;
   }
   shareAgentConfigFolders(home, owners);
-  const top = names.filter((name) => !SHARED_ELSEWHERE.has(name)).map((name) => join(home, name));
+  const top = names.filter((name) => !SHARED.has(name)).map((name) => join(home, name));
   shareRunnerPaths(top, owners, { depth: 0 });
   const unreadable = new Set<string>();
   for (const folder of AGENT_STATE) {
@@ -855,7 +949,7 @@ function writeSharedFile(
   owners: RunnerAccountOwners,
   mode = 0o640,
 ): void {
-  const temporary = `${path}.${randomUUID()}.tmp`;
+  const temporary = `${path}.${process.pid}-${randomUUID()}.tmp`;
   try {
     const descriptor = openSync(temporary, "wx", mode);
     try {

@@ -97,6 +97,9 @@ import {
   createRunnerResultDirectory,
   openRunnerAccountHome,
   returnRunnerAgentCredentials,
+  runnerAccountCache,
+  onTmpfs,
+  writeReturnedCredentials,
   openRunnerCheckoutToGroup,
   openRunnerRunStatesToGroup,
   readRunnerJob,
@@ -719,6 +722,16 @@ function replaceOutputFile(
   }
 }
 
+function returnSealed(
+  options: { outputDirectory: string; resultsGid: number },
+  home: string,
+  executionId: string,
+  sealed: string,
+): void {
+  if (onTmpfs(home)) writeReturnedCredentials(home, executionId, sealed);
+  else replaceOutputFile(options, "credentials.json", sealed);
+}
+
 function createJournal(options: { outputDirectory: string; resultsGid: number }): number {
   const journalName = `.events-${randomUUID()}.tmp`;
   const journalPath = join(options.outputDirectory, journalName);
@@ -1132,9 +1145,10 @@ export async function executeRunnerCommand(
     try {
       if (placedOpenCode !== null) collectOpenCodeCredential(home, placedOpenCode);
       returnRunnerAgentCredentials(home, binding.agent, job.executionId, (files) =>
-        replaceOutputFile(
+        returnSealed(
           options,
-          "credentials.json",
+          home,
+          job.executionId,
           sealForRunner(
             recipient,
             JSON.stringify(files),
@@ -1150,7 +1164,7 @@ export async function executeRunnerCommand(
       );
     }
   };
-  const homeEnv = accountHomeEnv(home);
+  const homeEnv = accountHomeEnv(home, runnerAccountCache(options.home, home));
   for (const provider of [".codex", ".claude", ".grok"]) {
     const folder = join(home, provider);
     mkdirSync(folder, { recursive: true, mode: 0o700 });
@@ -2959,9 +2973,10 @@ export async function runRunnerWorker(options: {
         ? {
             returnCredentials: (home: string) =>
               returnRunnerAgentCredentials(home, command.profile.agent, job.executionId, (files) =>
-                replaceOutputFile(
+                returnSealed(
                   { outputDirectory, resultsGid: options.results.resultsGid },
-                  "credentials.json",
+                  home,
+                  job.executionId,
                   sealForRunner(
                     recipient,
                     JSON.stringify(files),
