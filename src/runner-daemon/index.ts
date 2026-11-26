@@ -31,6 +31,7 @@ export {
   type IssueVmStopReason,
   type IssueVmUnits,
 } from "./issue-vm-machines";
+export { heldCredentialsLeft } from "./credential-store";
 export { createRunnerHostSampler, type RunnerHostSamplerOptions } from "./host";
 export type {
   RunnerHeartbeat,

@@ -1,11 +1,14 @@
 import { journalCaught } from "../journal";
 import { execFileSync } from "node:child_process";
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { closeSync, constants, existsSync, fstatSync, openSync, readSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { createRunnerHostSampler, EnrollmentTokenSchema, openRunnerDaemon } from "../runner-daemon";
 import {
   ExecutionIdSchema,
+  ISSUE_VM_MARKER,
+  onTmpfs,
+  RUNNER_ACCOUNT_HOMES,
   RUNNER_AGENT_USER_ENV,
   RUNNER_AGENT_USERS,
   type RunnerAgentUser,
@@ -17,6 +20,7 @@ import { runRunnerWorker } from "../runner-worker";
 import { describeRunnerFailure, RunnerCliFailure, journalRunnerFailure } from "../runner-failure";
 import { RUNNER_WORK_ROOT, runPairedDaemon } from "./daemon";
 import { hostResources, runnerConcurrency } from "./slots";
+import { ISSUE_VM_CREDENTIALS, runnerSleepLeftovers } from "./sleep-check";
 
 export {
   CAUSE_LIMIT,
@@ -27,6 +31,7 @@ export {
   journalRunnerFailure,
 } from "../runner-failure";
 export { hostSlots, runnerConcurrency, type HostResources } from "./slots";
+export { runnerSleepLeftovers } from "./sleep-check";
 
 const SHARED_UMASK = 0o007;
 
@@ -339,11 +344,24 @@ export async function runRunnerCli(
         daemon.close();
       }
     }
+    if (operation === "sleep-check") {
+      if (args.length !== 0) throw new RunnerCliFailure("usage", "Invalid sleep check command.");
+      if (process.getuid?.() !== ids.runnerUid)
+        throw new RunnerCliFailure("identity", "Runner service identity is invalid.");
+      const left = runnerSleepLeftovers("/var/lib/paws-agent", ISSUE_VM_CREDENTIALS);
+      if (left.length === 0) {
+        write("No agent sign-ins remain.");
+        return 0;
+      }
+      error(`Agent sign-ins remain: ${left.slice(0, 20).join(", ")}`);
+      return 1;
+    }
     if (operation !== "daemon" || args.length !== 2 || args[0] !== "--config" || !args[1])
       throw new RunnerCliFailure("usage", "Invalid daemon command.");
     if (process.getuid?.() !== ids.runnerUid)
       throw new RunnerCliFailure("identity", "Runner service identity is invalid.");
     const config = loadConfig(args[1]!, ids.runnerUid);
+    const issueVm = existsSync(ISSUE_VM_MARKER);
     const daemonIds = accounts(config.agentUser);
     const sampleHost = createRunnerHostSampler({ workRoot: "/var/lib/paws-runner" });
     let healthFailure: string | null | undefined;
@@ -363,11 +381,17 @@ export async function runRunnerCli(
           runnerUid: ids.runnerUid,
           agentGid: ids.agentGid,
         }),
-      agentCredentials: runnerAgentCredentials("/var/lib/paws-agent", {
-        runnerUid: ids.runnerUid,
-        agentGid: ids.agentGid,
-        agentUid: ids.pawsAgentUid,
-      }),
+      agentCredentials: runnerAgentCredentials(
+        "/var/lib/paws-agent",
+        { runnerUid: ids.runnerUid, agentGid: ids.agentGid, agentUid: ids.pawsAgentUid },
+        issueVm,
+      ),
+      ...(issueVm
+        ? {
+            credentialStore: ISSUE_VM_CREDENTIALS,
+            memorySignIns: () => onTmpfs(join("/var/lib/paws-agent", RUNNER_ACCOUNT_HOMES)),
+          }
+        : {}),
     });
     try {
       await runPairedDaemon(

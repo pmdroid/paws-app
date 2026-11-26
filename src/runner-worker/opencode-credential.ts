@@ -79,6 +79,28 @@ export function collectOpenCodeCredential(home: string, placed: string): boolean
   return true;
 }
 
+export function purgeOpenCodeCredential(home: string): void {
+  if (!existsSync(join(home, OPENCODE_DATABASE))) return;
+  const db = open(home, false);
+  try {
+    db.run("PRAGMA secure_delete = ON");
+    db.run("DELETE FROM credential WHERE integration_id = 'opencode'");
+    db.query("PRAGMA wal_checkpoint(TRUNCATE)").all();
+  } finally {
+    db.close();
+  }
+}
+
+export function openCodeCredentialLeft(home: string): boolean {
+  if (!existsSync(join(home, OPENCODE_DATABASE))) return false;
+  const db = open(home, true);
+  try {
+    return db.query<Row, []>(CURRENT).get() !== null;
+  } finally {
+    db.close();
+  }
+}
+
 export async function migrateOpenCodeDatabase(
   command: string,
   home: string,

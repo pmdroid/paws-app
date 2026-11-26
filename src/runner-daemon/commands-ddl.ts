@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 
 /** Runners upgrade in place with live state, so these statements are the store's only migration. */
-export function createCommandStore(db: Database) {
+export function createCommandStore(db: Database, credentials = "main") {
   db.run(
     "CREATE TABLE IF NOT EXISTS command_receipt (id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL) STRICT",
   );
@@ -15,6 +15,6 @@ export function createCommandStore(db: Database) {
     "CREATE TABLE IF NOT EXISTS retro_attempt (retro_id TEXT PRIMARY KEY, attempt INTEGER NOT NULL) STRICT",
   );
   db.run(
-    "CREATE TABLE IF NOT EXISTS agent_credential (binding_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, agent TEXT NOT NULL, version INTEGER NOT NULL, digest TEXT NOT NULL, commands TEXT NOT NULL, upload TEXT, latest TEXT, files TEXT) STRICT",
+    `CREATE TABLE IF NOT EXISTS ${credentials}.agent_credential (binding_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, agent TEXT NOT NULL, version INTEGER NOT NULL, digest TEXT NOT NULL, commands TEXT NOT NULL, upload TEXT, latest TEXT, files TEXT) STRICT`,
   );
 }

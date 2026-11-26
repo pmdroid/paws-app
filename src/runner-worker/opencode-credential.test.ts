@@ -9,7 +9,9 @@ import {
   OPENCODE_CREDENTIAL_FILE,
   OPENCODE_DATABASE,
   collectOpenCodeCredential,
+  openCodeCredentialLeft,
   placeOpenCodeCredential,
+  purgeOpenCodeCredential,
 } from "./opencode-credential";
 
 const roots: string[] = [];
@@ -130,6 +132,41 @@ test("uploads a row the CLI refreshed during the turn", async () => {
   expect(collectOpenCodeCredential(root, placed!)).toBe(true);
   const file = returned(root).find((entry) => entry.path === OPENCODE_CREDENTIAL_FILE);
   expect(Buffer.from(file!.data, "base64").toString("utf8")).toBe(refreshed);
+});
+
+test("after collection the token is gone from opencode.db, its journal and the account home", async () => {
+  const root = home();
+  await migrate(root)();
+  const wal = new Database(join(root, OPENCODE_DATABASE));
+  wal.run("PRAGMA journal_mode = WAL");
+  wal.close();
+  insert(root, "cred_xai", "xai", '{"type":"key","key":"k"}');
+  const placed = await placeOpenCodeCredential(root, "opencode", migrate(root));
+  refresh(root, JSON.stringify({ ...JSON.parse(credential), access: "access-2" }));
+  expect(openCodeCredentialLeft(root)).toBe(true);
+  expect(collectOpenCodeCredential(root, placed!)).toBe(true);
+  let files: RunnerAgentCredentialFiles = [];
+  returnRunnerAgentCredentials(
+    root,
+    "opencode",
+    "01JEXECUTION00000000000000",
+    (read) => {
+      files = read;
+    },
+    false,
+    () => purgeOpenCodeCredential(root),
+  );
+  expect(files.map((file) => file.path)).toContain(OPENCODE_CREDENTIAL_FILE);
+  expect(openCodeCredentialLeft(root)).toBe(false);
+  expect(existsSync(join(root, OPENCODE_CREDENTIAL_FILE))).toBe(false);
+  expect(rows(root).map((row) => row.integration_id)).toEqual(["xai"]);
+  for (const suffix of ["", "-wal", "-journal"]) {
+    const path = join(root, `${OPENCODE_DATABASE}${suffix}`);
+    if (!existsSync(path)) continue;
+    const bytes = readFileSync(path, "latin1");
+    expect(bytes).not.toContain("refresh-1");
+    expect(bytes).not.toContain("access-");
+  }
 });
 
 test("keeps the delivered credential when the row did not change", async () => {

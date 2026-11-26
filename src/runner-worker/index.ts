@@ -53,6 +53,7 @@ import {
   collectOpenCodeCredential,
   migrateOpenCodeDatabase,
   placeOpenCodeCredential,
+  purgeOpenCodeCredential,
 } from "./opencode-credential";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -97,6 +98,9 @@ import {
   createRunnerResultDirectory,
   openRunnerAccountHome,
   returnRunnerAgentCredentials,
+  runnerAccountCache,
+  onTmpfs,
+  writeReturnedCredentials,
   openRunnerCheckoutToGroup,
   openRunnerRunStatesToGroup,
   readRunnerJob,
@@ -207,6 +211,7 @@ export {
   restoreCodexSessionBundle,
   restoreGrokSessionBundle,
 };
+export { openCodeCredentialLeft } from "./opencode-credential";
 
 export interface RunnerWorkerOptions {
   job: RunnerJob;
@@ -719,6 +724,16 @@ function replaceOutputFile(
   }
 }
 
+function returnSealed(
+  options: { outputDirectory: string; resultsGid: number },
+  home: string,
+  executionId: string,
+  sealed: string,
+): void {
+  if (onTmpfs(home)) writeReturnedCredentials(home, executionId, sealed);
+  else replaceOutputFile(options, "credentials.json", sealed);
+}
+
 function createJournal(options: { outputDirectory: string; resultsGid: number }): number {
   const journalName = `.events-${randomUUID()}.tmp`;
   const journalPath = join(options.outputDirectory, journalName);
@@ -1131,16 +1146,23 @@ export async function executeRunnerCommand(
     credentialsReturned = true;
     try {
       if (placedOpenCode !== null) collectOpenCodeCredential(home, placedOpenCode);
-      returnRunnerAgentCredentials(home, binding.agent, job.executionId, (files) =>
-        replaceOutputFile(
-          options,
-          "credentials.json",
-          sealForRunner(
-            recipient,
-            JSON.stringify(files),
-            agentCredentialReturnContext(job.executionId),
+      returnRunnerAgentCredentials(
+        home,
+        binding.agent,
+        job.executionId,
+        (files) =>
+          returnSealed(
+            options,
+            home,
+            job.executionId,
+            sealForRunner(
+              recipient,
+              JSON.stringify(files),
+              agentCredentialReturnContext(job.executionId),
+            ),
           ),
-        ),
+        false,
+        binding.agent === "opencode" ? () => purgeOpenCodeCredential(home) : undefined,
       );
     } catch (error) {
       journalCaught(
@@ -1150,7 +1172,7 @@ export async function executeRunnerCommand(
       );
     }
   };
-  const homeEnv = accountHomeEnv(home);
+  const homeEnv = accountHomeEnv(home, runnerAccountCache(options.home, home));
   for (const provider of [".codex", ".claude", ".grok"]) {
     const folder = join(home, provider);
     mkdirSync(folder, { recursive: true, mode: 0o700 });
@@ -2959,9 +2981,10 @@ export async function runRunnerWorker(options: {
         ? {
             returnCredentials: (home: string) =>
               returnRunnerAgentCredentials(home, command.profile.agent, job.executionId, (files) =>
-                replaceOutputFile(
+                returnSealed(
                   { outputDirectory, resultsGid: options.results.resultsGid },
-                  "credentials.json",
+                  home,
+                  job.executionId,
                   sealForRunner(
                     recipient,
                     JSON.stringify(files),
