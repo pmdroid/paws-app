@@ -115,11 +115,9 @@ class Rules(unittest.TestCase):
     def test_the_relay_forwards_only_the_paws_runner_urls_over_the_tailnet(self):
         config = pathlib.Path(tempfile.mkdtemp()) / "config.json"
         config.write_text(json.dumps({"controlPlaneUrl": "https://paws.example.ts.net:8787", "runnerApiUrl": "https://paws.example.ts.net:8788/v1", "agentUser": "paws-agent"}))
-        resolve = lambda host, port, *rest: [(2, 1, 6, "", ("100.90.1.2", port))] if host == "paws.example.ts.net" else []
+        resolve = lambda host, port, *rest: [(2, 1, 6, "", ({"paws.example.ts.net": "100.90.1.2", "api.example.ts.net": "100.90.1.3"}[host], port))] if host.endswith(".ts.net") else []
         relay = self.network.paws_relay(config, resolve)
-        self.assertEqual(relay, [("100.90.1.2", 8787), ("100.90.1.2", 8788)])
-        config.write_text(json.dumps({"controlPlaneUrl": "https://paws.example.ts.net", "runnerApiUrl": 7}))
-        self.assertEqual(self.network.paws_relay(config, resolve), [("100.90.1.2", 443)])
+        self.assertEqual(relay, [("10.199.0.1", "100.90.1.2", 8787), ("10.199.0.1", "100.90.1.2", 8788)])
         config.write_text(json.dumps({"controlPlaneUrl": "ftp://paws.example.ts.net", "runnerApiUrl": "https://elsewhere:9000"}))
         self.assertEqual(self.network.paws_relay(config, resolve), [])
         self.assertEqual(self.network.paws_relay(config.parent / "missing.json", resolve), [])
@@ -128,10 +126,21 @@ class Rules(unittest.TestCase):
         accept = lines.index('iifname "pawsvm*" ip daddr 100.90.1.2 tcp dport 8788 accept')
         self.assertLess(accept, lines.index('iifname "pawsvm*" ip daddr @denied4 drop'))
         self.assertLess(lines.index('oifname "pawsvm*" ip saddr 100.90.1.2 tcp sport 8787 ct state established accept'), lines.index('oifname "pawsvm*" iifname != "eth0" drop'))
-        for rule in ('iifname "pawsvm*" ip daddr 10.199.0.0/16 tcp dport 8787 dnat ip to 100.90.1.2', "ip saddr 10.199.0.0/16 ip daddr 100.90.1.2 tcp dport 8788 masquerade", 'iifname "pawsvm*" drop'):
+        for rule in ('iifname "pawsvm*" ip daddr 10.199.0.1 tcp dport 8787 dnat ip to 100.90.1.2', "ip saddr 10.199.0.0/16 ip daddr 100.90.1.2 tcp dport 8788 masquerade", 'iifname "pawsvm*" drop'):
             self.assertIn(rule, lines)
         self.assertEqual(sum("dport" in line for line in lines), 6)
         self.assertNotIn("100.64.0.0/10 accept", ruleset)
+
+    def test_two_https_servers_on_443_each_keep_their_own_forward(self):
+        config = pathlib.Path(tempfile.mkdtemp()) / "config.json"
+        config.write_text(json.dumps({"controlPlaneUrl": "https://paws.example.ts.net", "runnerApiUrl": "https://api.example.ts.net"}))
+        resolve = lambda host, port, *rest: [(2, 1, 6, "", ({"paws.example.ts.net": "100.90.1.2", "api.example.ts.net": "100.90.1.3"}[host], port))]
+        relay = self.network.paws_relay(config, resolve)
+        self.assertEqual(relay, [("10.199.0.1", "100.90.1.3", 443), ("10.199.0.2", "100.90.1.2", 443)])
+        ruleset, _ = self.network.render([1], LINKS, ROUTES, relay)
+        self.assertIn('iifname "pawsvm*" ip daddr 10.199.0.1 tcp dport 443 dnat ip to 100.90.1.3', ruleset)
+        self.assertIn('iifname "pawsvm*" ip daddr 10.199.0.2 tcp dport 443 dnat ip to 100.90.1.2', ruleset)
+        self.assertEqual(self.network.relay_hosts(self.network.paws_endpoints(config)), {"api.example.ts.net": "10.199.0.1", "paws.example.ts.net": "10.199.0.2"})
 
     def test_every_default_route_device_is_an_uplink(self):
         ruleset, outward = self.network.render([1], LINKS, [*ROUTES, {"dst": "default", "dev": "wlan0", "metric": 600}, {"dst": "default", "dev": "pawsvm2"}])
@@ -190,7 +199,7 @@ class Lifecycle(unittest.TestCase):
     def test_the_relay_follows_the_runner_config(self):
         fake = self.host()
         self.network.CONFIG.write_text(json.dumps({"controlPlaneUrl": "https://100.90.1.2:8787", "runnerApiUrl": "https://100.90.1.2:8788"}))
-        self.assertEqual(self.network.up(1, self.state)["relay"], ["100.90.1.2:8787", "100.90.1.2:8788"])
+        self.assertEqual(self.network.up(1, self.state)["relay"], ["10.199.0.1:8787>100.90.1.2", "10.199.0.1:8788>100.90.1.2"])
         self.assertIn("dnat ip to 100.90.1.2", fake.applied[-1])
         self.assertEqual(len(fake.docker_rules), 6)
 

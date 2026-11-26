@@ -35,7 +35,6 @@ export type EligibleRunnersInput = {
   ownerUserId: string | null;
   agent: string;
   purpose: PlacementPurpose;
-  itemId?: string;
   now?: number;
   /** Include revoked runners in rejection diagnostics. They remain ineligible. */
   includeRevoked?: boolean;

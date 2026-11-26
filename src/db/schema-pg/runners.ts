@@ -9,7 +9,6 @@ import {
   primaryKey,
   text,
   unique,
-  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { jsonb } from "./types";
 import { sql } from "drizzle-orm";
@@ -17,7 +16,6 @@ import { workspace, workspaceMember, workspaceUser } from "./workspace";
 import { run, workItem } from "./items";
 import { linearSession } from "./linear";
 import { agentAccountBinding } from "./accounts";
-import { issueVm } from "./issue-vms";
 
 export const runner = pgTable(
   "runner",
@@ -35,7 +33,6 @@ export const runner = pgTable(
     terminationsSince: bigint("terminations_since", { mode: "number" }),
     fixSlots: integer("fix_slots").default(1).notNull(),
     isolation: text().default("none").notNull(),
-    issueVmId: text("issue_vm_id"),
   },
   (table) => [
     foreignKey({
@@ -46,8 +43,6 @@ export const runner = pgTable(
     check("runner_check_1", sql`status IN ('active','paused','draining','revoked')`),
     check("runner_check_2", sql`fence >= 0`),
     check("runner_check_3", sql`isolation IN ('none','issue_vm')`),
-    check("runner_check_4", sql`issue_vm_id IS NULL OR isolation = 'issue_vm'`),
-    uniqueIndex("runner_issue_vm").on(table.issueVmId),
   ],
 );
 
@@ -505,7 +500,6 @@ export const runnerEnrollment = pgTable(
     usedAt: bigint("used_at", { mode: "number" }),
     runnerId: text("runner_id").references(() => runner.id),
     adminRepositories: jsonb("admin_repositories"),
-    issueVmId: text("issue_vm_id").references(() => issueVm.id),
   },
   (table) => [
     unique().on(table.tokenHash),

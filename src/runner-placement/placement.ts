@@ -254,7 +254,6 @@ export function createRunnerPlacement(options: {
       workspaceId: current.workspace.id,
       teamId,
       ownerUserId: current.placement?.ownerUserId ?? requester,
-      ...(current.item ? { itemId: current.item.id } : {}),
     };
   }
   function* observeAccountSteps(
@@ -371,7 +370,6 @@ export function createRunnerPlacement(options: {
       workspaceId: string;
       teamId: string;
       ownerUserId: string | null;
-      itemId?: string;
     }[] = [];
     if (input.findingGroups && input.purpose === "helper") {
       for (const admin of yield* findingGroupingAdminsSteps(q, current.workspace.id))

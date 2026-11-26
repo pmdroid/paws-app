@@ -39,25 +39,43 @@ SLOT = re.compile(r"[1-9][0-9]{0,2}\Z")
 DOCKER_CHAIN = "DOCKER-USER"
 CONFIG = pathlib.Path("/etc/paws-runner/config.json")
 DEFAULT_PORTS = {"https": 443, "http": 80}
+HOSTNAME = re.compile(r"[a-z0-9][a-z0-9.-]{0,252}\Z")
 
 
-def paws_relay(config=None, resolve=socket.getaddrinfo):
+def paws_endpoints(config=None):
     try:
         loaded = json.loads((config or CONFIG).read_text())
     except (OSError, ValueError):
         return []
-    found = {}
+    found = set()
     for key in ("controlPlaneUrl", "runnerApiUrl"):
         value = loaded.get(key) if isinstance(loaded, dict) else None
         try:
             url = urllib.parse.urlsplit(value) if isinstance(value, str) else None
             port = (url.port or DEFAULT_PORTS.get(url.scheme)) if url else None
-            addresses = resolve(url.hostname, port, socket.AF_INET, socket.SOCK_STREAM) if port and url.hostname else []
-        except (OSError, ValueError):
+        except ValueError:
             continue
-        for entry in addresses:
-            found.setdefault(port, entry[4][0])
-    return sorted((address, port) for port, address in found.items())
+        if port and url.hostname and HOSTNAME.match(url.hostname):
+            found.add((url.hostname, port))
+    return sorted(found)
+
+
+def relay_hosts(endpoints):
+    return {host: str(VM_NETWORK.network_address + index + 1) for index, host in enumerate(sorted({host for host, _ in endpoints}))}
+
+
+def paws_relay(config=None, resolve=socket.getaddrinfo):
+    endpoints = paws_endpoints(config)
+    hosts = relay_hosts(endpoints)
+    relay = []
+    for host, port in endpoints:
+        try:
+            entries = resolve(host, port, socket.AF_INET, socket.SOCK_STREAM)
+        except OSError:
+            continue
+        if entries:
+            relay.append((hosts[host], entries[0][4][0], port))
+    return relay
 
 
 def slot_number(value):
@@ -112,6 +130,7 @@ def interfaces(names):
 
 def render(slots, links, routes, relay=()):
     vms = sorted(set(slots))
+    targets = sorted({(address, port) for _, address, port in relay})
     outward = uplinks(routes)
     denied = [str(network) for network in ipaddress.collapse_addresses([*map(ipaddress.IPv4Network, DENIED4), *host_prefixes(links)])]
     forward = [
@@ -119,8 +138,8 @@ def render(slots, links, routes, relay=()):
         f'oifname "{TAP_PREFIX}*" meta nfproto ipv6 drop',
         *(f'iifname "{addresses(slot)["tap"]}" ip saddr != {addresses(slot)["guest"]} drop' for slot in vms),
         *(f'oifname "{addresses(slot)["tap"]}" ip daddr != {addresses(slot)["guest"]} drop' for slot in vms),
-        *(f'iifname "{TAP_PREFIX}*" ip daddr {address} tcp dport {port} accept' for address, port in relay),
-        *(f'oifname "{TAP_PREFIX}*" ip saddr {address} tcp sport {port} ct state established accept' for address, port in relay),
+        *(f'iifname "{TAP_PREFIX}*" ip daddr {address} tcp dport {port} accept' for address, port in targets),
+        *(f'oifname "{TAP_PREFIX}*" ip saddr {address} tcp sport {port} ct state established accept' for address, port in targets),
         f'iifname "{TAP_PREFIX}*" ip daddr @denied4 drop',
     ]
     if outward:
@@ -133,8 +152,8 @@ def render(slots, links, routes, relay=()):
     else:
         forward += [f'iifname "{TAP_PREFIX}*" drop', f'oifname "{TAP_PREFIX}*" drop']
     postrouting = [f"ip saddr {VM_NETWORK} oifname {interfaces(outward)} masquerade"] if outward else []
-    postrouting += [f"ip saddr {VM_NETWORK} ip daddr {address} tcp dport {port} masquerade" for address, port in relay]
-    prerouting = [f'iifname "{TAP_PREFIX}*" ip daddr {VM_NETWORK} tcp dport {port} dnat ip to {address}' for address, port in relay]
+    postrouting += [f"ip saddr {VM_NETWORK} ip daddr {address} tcp dport {port} masquerade" for address, port in targets]
+    prerouting = [f'iifname "{TAP_PREFIX}*" ip daddr {local} tcp dport {port} dnat ip to {address}' for local, address, port in relay]
     lines = [
         f"table inet {TABLE}",
         f"delete table inet {TABLE}",
@@ -167,7 +186,7 @@ def render(slots, links, routes, relay=()):
 
 def docker_rules(outward, relay=()):
     rules = []
-    for address, port in relay:
+    for address, port in sorted({(address, port) for _, address, port in relay}):
         rules.append(["-d", f"{address}/32", "-i", f"{TAP_PREFIX}+", "-p", "tcp", "-m", "tcp", "--dport", str(port), "-j", "ACCEPT"])
         rules.append(["-s", f"{address}/32", "-o", f"{TAP_PREFIX}+", "-p", "tcp", "-m", "tcp", "--sport", str(port), "-m", "conntrack", "--ctstate", "ESTABLISHED", "-j", "ACCEPT"])
     for uplink in outward:
@@ -229,7 +248,7 @@ def apply(state=None):
     if outward or relay:
         FORWARD_SWITCH.write_text("1\n")
     docker = sync_docker(outward, relay)
-    return {"vms": slots, "uplinks": outward, "docker": docker, "relay": [f"{address}:{port}" for address, port in relay]}
+    return {"vms": slots, "uplinks": outward, "docker": docker, "relay": [f"{local}:{port}>{address}" for local, address, port in relay]}
 
 
 def locked(action):
@@ -282,7 +301,11 @@ def main(arguments):
     if arguments == ["watch"]:
         watch()
         return 0
-    print("usage: issue-vm-network.py up|down <slot> | apply | watch", file=sys.stderr)
+    if len(arguments) == 2 and arguments[0] == "hosts":
+        for host, local in relay_hosts(paws_endpoints(pathlib.Path(arguments[1]))).items():
+            print(f"{local} {host}")
+        return 0
+    print("usage: issue-vm-network.py up|down <slot> | apply | watch | hosts <config>", file=sys.stderr)
     return 2
 
 

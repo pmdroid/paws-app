@@ -8,6 +8,7 @@ dev=${PAWS_ISSUE_VM_DEV:-/dev/paws-issue-vms}
 enroll=${PAWS_ISSUE_VM_ENROLL:-/var/lib/paws-runner/issue-vm-enroll}
 config=${PAWS_ISSUE_VM_CONFIG:-/etc/paws-runner/config.json}
 proc=${PAWS_ISSUE_VM_PROC:-/proc}
+network=${PAWS_ISSUE_VM_NETWORK:-/opt/paws-runner/current/deploy/linux/issue-vm-network.py}
 user=paws-issue-vm
 id_pattern='^[0-7][0-9A-HJKMNP-TV-Z]{25}$'
 live='active|activating|deactivating|reloading|refreshing'
@@ -72,9 +73,8 @@ user_data() {
     printf '#cloud-config\n{}\n'
     return
   fi
-  local names
-  names=$(python3 -I -c 'import json, sys, urllib.parse; c = json.load(open(sys.argv[1])); u = [urllib.parse.urlsplit(c.get(k) or "") for k in ("controlPlaneUrl", "runnerApiUrl")]; print(" ".join(sorted({x.hostname for x in u if x.hostname})))' "$config") || names=
-  [[ $names =~ ^[A-Za-z0-9.\ -]*$ ]] || names=
+  local hosts
+  hosts=$(python3 -I -B "$network" hosts "$config" | grep -E '^10\.199\.0\.[0-9]+ [a-z0-9.-]+$' | sed 's/^/      /') || hosts=
   cat <<EOF
 #cloud-config
 write_files:
@@ -90,7 +90,8 @@ write_files:
     permissions: "0600"
   - path: /etc/hosts
     append: true
-    content: "$host_ip $names\n"
+    content: |
+$hosts
 runcmd:
   - [sh, -c, "code=1; for try in \$(seq 40); do /opt/paws-runner/bin/paws-runner runner enroll --config /etc/paws-runner/config.json --name paws-vm-${id,,} --token-file /var/lib/paws-bootstrap/enrollment-token && code=0 && break; sleep 15; done; rm -f /var/lib/paws-bootstrap/enrollment-token; [ \$code -eq 0 ] && systemctl enable --now paws-runner.service"]
 EOF

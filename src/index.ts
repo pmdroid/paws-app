@@ -1246,13 +1246,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           storageReports: async (request, runnerId) =>
             (await storageUsage.fetch(request, runnerId)) ??
             storageCleanup.fetch(request, runnerId),
-          issueVms: (request, runnerId) =>
-            handleVmHostRunnerRequest(
-              request,
-              runnerId,
-              store,
-              runner && ((id) => runner!.control.createIssueVmEnrollment(id)),
-            ),
+          issueVms: (request, runnerId) => handleVmHostRunnerRequest(request, runnerId, store),
           slackReplyAuthority: (q, input) => slackReplyAllowedSteps(q, paths.home, input),
           repositorySummaryAuthority: repositorySummaryAllowedSteps,
         }).then(async (value) => {

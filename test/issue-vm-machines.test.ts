@@ -1,5 +1,4 @@
 import { afterEach, expect, test } from "bun:test";
-import { eq } from "drizzle-orm";
 import {
   chmodSync,
   existsSync,
@@ -211,50 +210,6 @@ async function vm(db: Db, id: string, state: IssueVmState, hostRunnerId = HOST) 
   if (state !== "creating") await db.run((q) => setIssueVmStateSteps(q, { id, state, now: 2 }));
 }
 
-test("Paws mints a bootstrap token only for its own host's unenrolled, live issue VM", async () => {
-  const db = await store();
-  await vm(db, A, "awake");
-  await vm(db, B, "awake");
-  await vm(db, C, "awake", OTHER);
-  await vm(db, D, "asleep");
-  await db.run((q) =>
-    q.exec(q.orm.update(q.t.issueVm).set({ runnerId: "vm-runner" }).where(eq(q.t.issueVm.id, B))),
-  );
-  const minted: string[] = [];
-  const mint = async (id: string) => {
-    await Promise.resolve();
-    minted.push(id);
-    return { token: `token-${id}` };
-  };
-  const enroll = async (body: unknown, using?: typeof mint) => {
-    const response = (await handleVmHostRunnerRequest(
-      new Request("https://runner.paws.test/v1/issue-vms/enrollment", {
-        method: "POST",
-        body: JSON.stringify(body),
-      }),
-      HOST,
-      db,
-      using,
-    ))!;
-    return { status: response.status, body: (await response.json()) as Record<string, unknown> };
-  };
-  expect(await enroll({ id: A }, mint)).toEqual({ status: 200, body: { token: `token-${A}` } });
-  expect(await enroll({ id: B }, mint)).toEqual({ status: 200, body: { token: null } });
-  expect(await enroll({ id: D }, mint)).toEqual({ status: 200, body: { token: null } });
-  expect((await enroll({ id: C }, mint)).status).toBe(404);
-  expect((await enroll({ id: "nope" }, mint)).status).toBe(400);
-  expect((await enroll({ id: A })).status).toBe(503);
-  const refuse = async () => {
-    await Promise.resolve();
-    throw new Error("The Tailscale key's new machines wait for approval.");
-  };
-  expect(await enroll({ id: A }, refuse)).toEqual({
-    status: 409,
-    body: { error: "The Tailscale key's new machines wait for approval." },
-  });
-  expect(minted).toEqual([A]);
-});
-
 test("the systemd units list live paws-issue-vm units and start and stop them", async () => {
   const started: string[][] = [];
   const spawn = ((argv: string[]) => {
@@ -330,6 +285,7 @@ true`,
         PAWS_ISSUE_VM_DEV: dev,
         PAWS_ISSUE_VM_ENROLL: enroll,
         PAWS_ISSUE_VM_CONFIG: config,
+        PAWS_ISSUE_VM_NETWORK: join(import.meta.dir, "../deploy/linux/issue-vm-network.py"),
       },
     });
   const calls = () => readFileSync(log, "utf8");
@@ -385,7 +341,9 @@ test("vm.sh moves a staged bootstrap token into the seed once and deletes the se
     `paws-runner runner enroll --config /etc/paws-runner/config.json --name paws-vm-${A.toLowerCase()} --token-file /var/lib/paws-bootstrap/enrollment-token`,
   );
   expect(userData).toContain("for try in $(seq 40)");
-  expect(userData).toContain('    content: "10.199.7.1 paws.test public.test\\n"');
+  expect(userData).toContain(
+    "    content: |\n      10.199.0.1 paws.test\n      10.199.0.2 public.test\nruncmd:",
+  );
   expect(existsSync(join(enroll, A))).toBe(false);
   const seed = join(state, `seed-${A}.img`);
   expect(existsSync(seed)).toBe(true);

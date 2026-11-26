@@ -3,7 +3,6 @@ import {
   endRunnerHelperSteps,
   workspaceMemberUsable,
   getLinearSessionSteps,
-  getWorkItemSteps,
   insertRunnerHelperSteps,
   linearSessionClientIdSteps,
   openSessionHelperSteps,
@@ -13,7 +12,6 @@ import {
   runnerHelperResultMatchesSteps,
   runnerHelperRowSteps,
   runnerHostVersionSteps,
-  runnerIssueVmItemSteps,
   storeRunnerHelperResultSteps,
   unacknowledgedRunnerHelpersSteps,
   usableRunnerSteps,
@@ -331,14 +329,6 @@ export function createRunnerHelpers(options: {
       input.summary,
     );
     if (runner.status !== "active") throw new Error("Runner is not accepting helper work");
-    const bound = yield* runnerIssueVmItemSteps(q, input.runnerId);
-    if (
-      bound &&
-      (sessionless ||
-        bound.itemId === null ||
-        (yield* getWorkItemSteps(q, bound.itemId))?.sessionKey !== input.sessionId)
-    )
-      throw new Error("Runner is not accepting helper work");
     const conversation = input.purpose === "conversation" || slack;
     if (input.purpose === "classify" || input.purpose === "select_repository") {
       const open = yield* openSteps(q, input.sessionId);

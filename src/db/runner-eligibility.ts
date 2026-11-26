@@ -8,7 +8,7 @@ export function* eligibleRunnerRowsSteps(
   agent: string,
   includeRevoked: boolean,
 ) {
-  const { runner: r, runnerAgentPolicy: a, issueVm: v } = q.t;
+  const { runner: r, runnerAgentPolicy: a } = q.t;
   return yield* q.all(
     q.orm
       .select({
@@ -19,8 +19,6 @@ export function* eligibleRunnerRowsSteps(
         lastSeenAt: r.lastSeenAt,
         revokedAt: r.revokedAt,
         isolation: r.isolation,
-        issueVmId: r.issueVmId,
-        issueVmItemId: v.itemId,
         quotaState: sql<string>`COALESCE(${a.quotaState}, 'ok')`,
         cooldownUntil: sql<number>`COALESCE(${a.cooldownUntil}, 0)`.mapWith(Number),
         virtualFinish: sql<number>`COALESCE(${a.virtualFinish}, 0)`.mapWith(Number),
@@ -29,7 +27,6 @@ export function* eligibleRunnerRowsSteps(
       })
       .from(r)
       .leftJoin(a, and(eq(a.runnerId, r.id), eq(a.agent, agent)))
-      .leftJoin(v, and(eq(v.id, r.issueVmId), eq(v.runnerId, r.id)))
       .where(
         and(
           eq(r.workspaceId, workspaceId),
