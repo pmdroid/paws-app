@@ -4,6 +4,7 @@ import {
   enqueueJobSteps,
   commandAccountSteps,
   delegatedLinearUserIdSteps,
+  dropCatalogModelSteps,
   findingGroupingAdminsSteps,
   finishRunnerExecutionUsageSteps,
   getLinearSessionAccessSteps,
@@ -797,7 +798,22 @@ export function createRunnerPlacement(options: {
       recheckAt
     )
       yield* setRunnerAgentCooldownSteps(q, input.runnerId, usage.agent, recheckAt);
+    const selected = input.profile?.model;
+    const missing = selected
+      ? [selected, selected.replace(/\[1m\]$/i, "")].find((id) =>
+          new RegExp(
+            `Agent does not advertise model ${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.?(?:\\s|$)`,
+          ).test(result?.errorMessage ?? ""),
+        )
+      : undefined;
+    if (missing && usage.agent)
+      yield* dropCatalogModelSteps(q, {
+        runnerId: input.runnerId,
+        agent: usage.agent,
+        model: missing,
+      });
     return {
+      ...(missing ? { modelMissing: missing } : {}),
       retryable: retryable || modelConflict,
       ...(quota?.state === "exhausted"
         ? {

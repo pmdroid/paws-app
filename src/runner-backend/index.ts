@@ -538,6 +538,11 @@ export function createRemoteAgentRunner(options: {
     );
     return new RunnerCapacityWait([], undefined, [`${name}: ${error.message}`]);
   }
+  async function modelMissing(itemId: string, runnerId: string, model: string) {
+    const name = await runnerName(runnerId);
+    journal(`item ${itemId} runner ${runnerId} no longer offers model ${model}; placing again`);
+    return new RunnerCapacityWait([], undefined, [`${name}: the agent no longer offers ${model}`]);
+  }
   /** Whether any runner has already run work, not just preparation, for the item. */
   function startedWork(itemId: string) {
     return store.run((q) => itemStartedRunnerWorkSteps(q, itemId));
@@ -1029,6 +1034,8 @@ export function createRemoteAgentRunner(options: {
                     }))
                   );
                 });
+                if (disposition?.modelMissing)
+                  throw await modelMissing(itemId, selected.id, disposition.modelMissing);
                 if (
                   disposition?.retryable &&
                   result.agentExited &&
@@ -1956,6 +1963,10 @@ export function createRemoteAgentRunner(options: {
                   }))
                 );
               });
+            if (complete && disposition?.modelMissing) {
+              await cancelItem(itemId, signal);
+              throw await modelMissing(itemId, selected.id, disposition.modelMissing);
+            }
             if (complete && disposition?.retryable && input.role === "reviewer")
               throw new RetryableRunnerError(
                 selected.id,

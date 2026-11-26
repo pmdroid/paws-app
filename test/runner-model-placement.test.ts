@@ -1,0 +1,139 @@
+import { afterEach, expect, test } from "bun:test";
+import { getWorkItem, listItemHolds, saveAgentModelCatalog, type Db } from "../src/db";
+import { createRunnerPlacement, itemRunnerVerdictsSteps } from "../src/runner-placement";
+import { dispatch } from "../src/scheduler";
+import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
+import { seed } from "./pglite-fixtures";
+import { workspaceWithRunners, NOW } from "./runner-slot-fixture";
+
+const MODEL = "gpt-6.2-sol";
+let close: (() => Promise<void>) | undefined;
+afterEach(async () => {
+  await close?.();
+  close = undefined;
+});
+
+async function fixture() {
+  const store = await tempStore();
+  close = store.close;
+  const { db } = store;
+  const runners = await workspaceWithRunners(db);
+  return { db, ...runners };
+}
+
+function offer(db: Db, runnerId: string, userId: string, models: string[], at = NOW) {
+  return saveAgentModelCatalog(db, {
+    runnerId,
+    userId,
+    agent: "claude",
+    model: "",
+    resultJson: JSON.stringify({
+      executionId: "01M5GCQ27RE0YMKT767K0P3451",
+      commandId: `probe-${runnerId}`,
+      role: "implementer",
+      stopReason: "end_turn",
+      timedOut: false,
+      cancelled: false,
+      authRequired: false,
+      agentExited: true,
+      models: models.map((id) => ({ id, name: id })),
+    }),
+    updatedAt: at,
+  });
+}
+
+const request = {
+  itemId: "item",
+  profile: { agent: "claude" as const, model: MODEL },
+  role: "implementer" as const,
+  purpose: "work" as const,
+};
+
+test("a turn goes only to the runner whose catalog lists the selected model", async () => {
+  const { db, pair, queue, userId } = await fixture();
+  const lagging = await pair("lagging", 2, null);
+  const current = await pair("current", 2, null);
+  const empty = await pair("empty", 2, null);
+  await offer(db, lagging, userId, ["gpt-6.1-sol"]);
+  await offer(db, current, userId, ["gpt-6.1-sol", MODEL]);
+  await queue("item");
+  const rejected: string[] = [];
+  const offered = await createRunnerPlacement({ store: db, now: () => NOW }).candidates({
+    ...request,
+    onRejected: (id, reason) => rejected.push(`${id}: ${reason}`),
+  });
+  expect(offered.map((runner) => runner.id)).toEqual([current]);
+  expect(rejected).toContain(`${lagging}: claude does not offer ${MODEL}`);
+  expect(rejected).toContain(`${empty}: claude does not offer ${MODEL}`);
+});
+
+test("with no runner offering the model the item waits queued, then starts once a catalog lists it", async () => {
+  const { db, pair, queue, userId } = await fixture();
+  const runner = await pair("runner", 2, null);
+  await offer(db, runner, userId, ["gpt-6.1-sol"]);
+  await queue("item");
+  const pass = (now: number) =>
+    dispatch(db, {
+      now,
+      admission: workspaceAdmission(db),
+      itemRunners: (q, itemId) =>
+        itemRunnerVerdictsSteps(q, db, { itemId, agent: "claude", model: MODEL, now }),
+    });
+  expect(await pass(NOW)).toEqual([]);
+  expect(await listItemHolds(db)).toMatchObject([
+    { itemId: "item", reason: "slot", blockers: [`No runner offers claude ${MODEL}`] },
+  ]);
+  expect((await getWorkItem(db, "item"))?.state).toBe("queued");
+  await offer(db, runner, userId, ["gpt-6.1-sol", MODEL], NOW + 1);
+  expect(await pass(NOW + 1)).toEqual(["item"]);
+  expect(await listItemHolds(db)).toEqual([]);
+});
+
+test("a turn whose agent does not advertise the model drops it from that runner's catalog", async () => {
+  const { db, pair, queue, userId } = await fixture();
+  const stale = await pair("stale", 2, null);
+  const other = await pair("other", 2, null);
+  await offer(db, stale, userId, [MODEL]);
+  await offer(db, other, userId, [MODEL]);
+  await queue("item");
+  const placement = createRunnerPlacement({ store: db, now: () => NOW });
+  await seed(db, (q) =>
+    q.orm.insert(q.t.runnerExecutionUsage).values({
+      commandId: "turn",
+      runnerId: stale,
+      ownerUserId: userId,
+      itemId: "item",
+      agent: "claude",
+      model: MODEL,
+      role: "implementer",
+      purpose: "work",
+      startedAt: NOW,
+    }),
+  );
+  const disposition = await db.transaction((q) =>
+    placement.finishedSteps(q, {
+      commandId: "turn",
+      runnerId: stale,
+      profile: request.profile,
+      result: {
+        executionId: "01M5GCQ27RE0YMKT767K0P3451",
+        commandId: "turn",
+        role: "implementer",
+        stopReason: "error",
+        timedOut: false,
+        cancelled: false,
+        authRequired: false,
+        agentExited: true,
+        errorMessage: `Run failed during agent: Agent does not advertise model ${MODEL}.`,
+      },
+      finishedAt: NOW + 2_000,
+    }),
+  );
+  expect(disposition).toMatchObject({ retryable: false, modelMissing: MODEL });
+  const offered = await placement.candidates(request);
+  expect(offered.map((runner) => runner.id)).toEqual([other]);
+  await offer(db, stale, userId, [MODEL], NOW + 3_000);
+  const again = await placement.candidates(request);
+  expect(again.map((runner) => runner.id).sort()).toEqual([other, stale].sort());
+});

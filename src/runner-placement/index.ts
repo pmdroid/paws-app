@@ -134,6 +134,7 @@ type PlacementFinish = {
 };
 export type PlacementDisposition = {
   retryable: boolean;
+  modelMissing?: string;
   usageLimit?: { resetsAt: number | null; recheckAt?: number };
 };
 export type RunnerPlacement = {

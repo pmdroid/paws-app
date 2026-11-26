@@ -1,5 +1,10 @@
 import { boundHeartbeat, boundAccountSteps } from "./bound-runner-account";
-import { bindFixtureAccounts, CURRENT_RUNNER_RELEASE, seedCredential } from "./pglite-fixtures";
+import {
+  bindFixtureAccounts,
+  CURRENT_RUNNER_RELEASE,
+  offerFixtureModels,
+  seedCredential,
+} from "./pglite-fixtures";
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -456,6 +461,7 @@ async function setup() {
     }
     for (const runnerId of Object.values(runners)) {
       await bindFixtureAccounts(db, runnerId, "claude");
+      await offerFixtureModels(db, runnerId, "claude", ["model", "reviewer-model"]);
       accountBindings.add((await db.run((q) => boundAccountSteps(q, runnerId))).bindingId);
     }
     for (const runnerId of Object.values(runners)) await setAgentReady(db, runnerId, 1);

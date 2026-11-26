@@ -22,7 +22,7 @@ import { createRunnerPlacement, type PlacementRequest } from "../../src/runner-p
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 import type { RunnerResult } from "../../src/runner-protocol";
 import { and, count, eq, isNotNull, sql } from "drizzle-orm";
-import { seed } from "../pglite-fixtures";
+import { offerFixtureModels, seed } from "../pglite-fixtures";
 import { tempStore } from "../pglite";
 
 export async function probeRunnerPlacement(
@@ -110,6 +110,7 @@ export async function probeRunnerPlacement(
         }),
       (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: id!, agent: "codex" }),
     );
+    await offerFixtureModels(db, id!, "codex", ["implementation-model", "review-model"]);
   }
   const setIsolation = (isolation: "none" | "issue_vm") =>
     change((q) => q.orm.update(q.t.runner).set({ isolation }).where(eq(q.t.runner.id, "own")));
