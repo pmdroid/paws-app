@@ -8,7 +8,7 @@ import {
   useSettingsStore,
   writeMemberVmSize,
 } from "../src/config";
-import { CONFIG_SETTINGS_KEY, readSetting, readSettingSteps, updateSettingSteps } from "../src/db";
+import { savedSettingsText, sectionSettings, seedSettings } from "./saved-settings";
 import { createMemberVmProvisioning } from "../src/member-vm";
 import { handleMemberVmSettingsRequest, type MemberVmSettingsOptions } from "../src/settings";
 import { tempHome } from "./helpers";
@@ -26,11 +26,8 @@ async function instance(seeded = SEEDED) {
   const { db, close } = await tempStore();
   const home = tempHome();
   const configPath = join(home, "config.toml");
-  await db.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, () => seeded));
-  const settings = await useSettingsStore(configPath, {
-    read: () => db.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
-    update: (change) => db.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, change)),
-  });
+  await seedSettings(db, seeded);
+  const settings = await useSettingsStore(configPath, sectionSettings(db));
   cleanups.push(close, () => {
     settings.release();
     rmSync(home, { recursive: true, force: true });
@@ -65,7 +62,7 @@ test("GET reads the saved size and a save replaces it", async () => {
   const response = await handleMemberVmSettingsRequest(put(saved), options("admin"));
   expect(response!.status).toBe(200);
   expect(await response!.json()).toEqual(saved);
-  expect(await readSetting(db, CONFIG_SETTINGS_KEY)).toContain("[member_vm]\ncpu = 8");
+  expect(await savedSettingsText(db)).toContain("[member_vm]\ncpu = 8");
   expect(audits).toEqual([
     "settings.member_vm: Set member VM size: cpu 8, memoryGb 16, diskGb 100, pool build",
   ]);
@@ -119,7 +116,7 @@ test("invalid values get 400 with a message and members get 403", async () => {
   }
   const member = await handleMemberVmSettingsRequest(put({ cpu: 4 }), options("member"));
   expect(member!.status).toBe(403);
-  expect(await readSetting(db, CONFIG_SETTINGS_KEY)).toBe(SEEDED);
+  expect(await savedSettingsText(db)).toBe(SEEDED);
 });
 
 test("boat takes only its own sizes and no pool, image or disk", async () => {
@@ -152,7 +149,7 @@ test("boat takes only its own sizes and no pool, image or disk", async () => {
 test("a saved empty size resets the defaults", async () => {
   const { db, configPath, options, read } = await instance();
   expect((await handleMemberVmSettingsRequest(put({}), options("admin")))!.status).toBe(200);
-  expect(await readSetting(db, CONFIG_SETTINGS_KEY)).not.toMatch(/cpu|memory|disk/);
+  expect(await savedSettingsText(db)).not.toMatch(/cpu|memory|disk/);
   expect(await read()).toEqual({});
   expect(loadConfigFile(configPath).memberVm ?? {}).toEqual({});
 });

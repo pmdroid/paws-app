@@ -1,12 +1,11 @@
-import { issueVmSettings, parseConfigToml } from "../config";
+import { issueVmSettings, parseConfigToml, renderSettingsToml } from "../config";
 import {
   activeIssueVmGrantsSteps,
   auditWorkspaceAccessSteps,
-  CONFIG_SETTINGS_KEY,
   insertIssueVmGrantSteps,
   issueVmStateCountsSteps,
   listWorkspaceMembersSteps,
-  readSettingSteps,
+  readSettingSectionsSteps,
   revokeIssueVmGrantSteps,
   saveIssueVmSpendSettingsSteps,
   workspaceMemberSteps,
@@ -62,9 +61,9 @@ function view({ workspaceId: _workspaceId, ...grant }: IssueVmGrant): IssueVmGra
 }
 
 function* membersSteps(q: Q, workspaceId: string, at: number) {
-  const text = yield* readSettingSteps(q, CONFIG_SETTINGS_KEY);
+  const sections = yield* readSettingSectionsSteps(q, ["issue_vm"]);
   const defaultLimit = issueVmSettings(
-    text === null ? undefined : parseConfigToml(text).issueVm,
+    parseConfigToml(renderSettingsToml(sections)).issueVm,
   ).perMember;
   const members = (yield* listWorkspaceMembersSteps(q, workspaceId)).filter(workspaceMemberUsable);
   const grants = yield* activeIssueVmGrantsSteps(q, { workspaceId, at });

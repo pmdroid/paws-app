@@ -1,15 +1,22 @@
 import { existsSync } from "node:fs";
-import { databaseUrlOf, loadEnv, pawsPaths, useSettingsStore, type EnvSource } from "../config";
 import {
-  CONFIG_SETTINGS_KEY,
+  configSettingsSections,
+  databaseUrlOf,
+  loadEnv,
+  pawsPaths,
+  SETTINGS_SECTIONS,
+  useSettingsStore,
+  type EnvSource,
+} from "../config";
+import {
+  convertConfigSettingsSteps,
   openPawsStore,
   openPostgres,
   PgliteInUseError,
   postgresDb,
   refuseOlderDatabase,
   UnknownDatabaseError,
-  readSettingSteps,
-  updateSettingSteps,
+  settingSectionsStore,
   type Db,
   type PawsStore,
 } from "../db";
@@ -54,12 +61,15 @@ export async function withSavedStore<T>(
     const store = opened?.store;
     if (store && databaseUrl !== null && storedSecrets() === null)
       secrets = await useDatabaseSecrets(store, paths.secretsDir, { copy: false });
-    if (store)
-      settings = await useSettingsStore(paths.configFile, {
-        read: () => store.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
-        update: (change) =>
-          store.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, change)),
-      });
+    if (store) {
+      await store.transaction((q) =>
+        convertConfigSettingsSteps(q, SETTINGS_SECTIONS, configSettingsSections),
+      );
+      settings = await useSettingsStore(
+        paths.configFile,
+        settingSectionsStore(store, SETTINGS_SECTIONS),
+      );
+    }
   } catch (error) {
     await secrets?.close().catch(() => undefined);
     await opened?.close().catch(() => undefined);
