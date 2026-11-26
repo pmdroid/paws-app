@@ -15,6 +15,7 @@ export default {
       [
         "bun",
         "test",
+        "--parallel=4",
         "test/candidate-head-replica.test.ts",
         "test/runner-orchestration.test.ts",
         "test/merge-dependency-yield.test.ts",
