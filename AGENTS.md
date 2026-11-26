@@ -63,6 +63,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/metrics`                                            | Metrics recorder, per-minute rollups, flush job and series reads      |
 | `src/merge`                                              | Merge lane: `mergeable(S)`, squash at head S, rebase returns, CI      |
 | `src/onboarding`                                         | Onboarding routes and reconnection                                    |
+| `src/probe-collector`                                    | Runner probe collection and result storage                            |
 | `src/process`                                            | Owned child processes and process anchors                             |
 | `src/project-context`                                    | Scoped project context records: provenance, access and invalidation   |
 | `src/provisioning`                                       | Remote VM bootstrap, releases, mise and Tailscale setup               |

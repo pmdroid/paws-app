@@ -54,6 +54,13 @@ import {
   slackSigningSecret,
 } from "./slack";
 import {
+  collectProbes,
+  keepCandidates,
+  parseProbesArgs,
+  readStoredFindings,
+  type ProbesCommand,
+} from "./probe-collector";
+import {
   envelopeSubkey,
   importCredentialFile,
   loadSecretKey,
@@ -62,7 +69,14 @@ import {
   useDatabaseSecrets,
   readAgentCredentialSteps,
 } from "./credentials";
-import { ArtifactRejectedError, commitCheckpointSync, git, mirrorFiles, worktreePath } from "./acp";
+import {
+  ArtifactRejectedError,
+  commitCheckpointSync,
+  git,
+  mirrorFiles,
+  runAgent,
+  worktreePath,
+} from "./acp";
 import { useGitReader } from "./closeout";
 import { useEvidenceRecordObjects } from "./closeout-spec";
 import {
@@ -213,7 +227,7 @@ import {
   recordDuration,
   recordQueueDepths,
 } from "./metrics";
-import { doctorChecks, formatDoctor, realProbe } from "./doctor";
+import { DATABASE_HELD, doctorChecks, formatDoctor, realProbe, withSavedStore } from "./doctor";
 import { installHostMain } from "./install-host";
 import { runInstallCli } from "./installer";
 import {
@@ -280,6 +294,7 @@ import {
   type PullCommentFilter,
   attachOrchestrator,
   createLinearArtifactReader,
+  createRepositoryGit,
   itemPathId,
   repositoryAtPath,
   repositoryAnswer,
@@ -3038,6 +3053,8 @@ Commands:
   paws runner <command>         enroll and run a remote runner
   paws runner-authority init    create the runner command key
   paws public-tls validate      check the public HTTPS certificate
+  paws probes collect <owner/repo>
+                                draft Closeout probe rules into probes.proposed.yaml
 
 GitHub access uses the GitHub App only. See docs/github-app.md.`;
 
@@ -3242,6 +3259,73 @@ async function withCommandStore<T>(command: string, work: (store: Db) => Promise
   }
 }
 
+/** `paws probes collect`: the agent runs here, with the signed-in agent of whoever runs it. */
+async function probesMain(argv: string[]): Promise<number> {
+  let command: ProbesCommand;
+  try {
+    command = parseProbesArgs(argv);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+  const controller = new AbortController();
+  process.once("SIGINT", () => controller.abort());
+  const print = (text: string) => console.log(text);
+  try {
+    ensureLayout(pawsPaths(loadEnv(process.env).home));
+    await withSavedStore(process.env, async ({ store, held }) => {
+      if (held) print(`note: ${DATABASE_HELD}`);
+      const runtime = loadRuntime(process.env);
+      const paths = pawsPaths(runtime.env.home);
+      const repository = {
+        owner: command.owner,
+        repo: command.repo,
+        remoteUrl: githubHttpsUrl(command.owner, command.repo),
+      };
+      const appActivation = store
+        ? createWorkspaceGitHubActivation(store, runtime.env.home, process.env)
+        : null;
+      const provider = authProvider(
+        runtime,
+        repository,
+        "read",
+        appActivation ? (name) => appActivation.resolve(name) : undefined,
+      );
+      if (!provider) throw new Error("The GitHub App is not configured. Run `paws doctor`.");
+      await collectProbes({
+        repository,
+        pawsRoot: paths.home,
+        since: command.since,
+        dryRun: command.dryRun,
+        out: command.out,
+        github: { client: createFetchGitHubClient(), tokenProvider: gitHostToken(provider) },
+        turn: runAgent,
+        networkGit: createRepositoryGit({
+          remoteUrl: repository.remoteUrl,
+          token: () => provider.token(),
+          signal: controller.signal,
+          assert: async () => undefined,
+          onCleanupFailure: () => undefined,
+        }),
+        findings: () =>
+          readStoredFindings({
+            home: paths.home,
+            store,
+            owner: command.owner,
+            repo: command.repo,
+          }),
+        keep: keepCandidates(command.keep, print),
+        print,
+        signal: controller.signal,
+      });
+    });
+    return 0;
+  } catch (error) {
+    journalCaught(error, "paws probes collect failed.", null);
+    return 1;
+  }
+}
+
 if (import.meta.main || compiled()) {
   const argv = process.argv.slice(2);
   const command = argv[0];
@@ -3249,6 +3333,7 @@ if (import.meta.main || compiled()) {
     console.log(installedPawsVersion() ?? "unknown");
     process.exit(0);
   }
+  if (command === "probes") process.exit(await probesMain(argv.slice(1)));
   if (command === "runner") process.exit(await runRunnerCli(argv.slice(1)));
   if (command === "runner-storage")
     process.exit(
