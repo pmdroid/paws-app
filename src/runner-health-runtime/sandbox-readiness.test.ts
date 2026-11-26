@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { helperSandboxFailure } from "./sandbox-readiness";
+import { heartbeatHealthFailure, helperSandboxFailure } from "./sandbox-readiness";
 
 const account = { name: "paws-agent", uid: 983 };
 const manager = "/sys/fs/cgroup/user.slice/user-983.slice/user@983.service";
@@ -60,4 +60,16 @@ test("both failures are reported together", () => {
 test("this host's real files are readable", () => {
   const result = helperSandboxFailure({ name: "probe", uid: process.getuid?.() ?? 0 });
   expect(result === null || result.startsWith("Sandboxed helper turns cannot start:")).toBe(true);
+});
+
+test("the heartbeat sends null once the sandbox recovers, so a stored failure clears", () => {
+  const missing = helperSandboxFailure(account, host([]));
+  expect(heartbeatHealthFailure(missing, undefined)).toBe(missing);
+  expect(
+    heartbeatHealthFailure(helperSandboxFailure(account, host([manager])), undefined),
+  ).toBeNull();
+  expect(heartbeatHealthFailure(null, null)).toBeNull();
+  expect(heartbeatHealthFailure(null, "Probe failed")).toBe("Probe failed");
+  expect(heartbeatHealthFailure("Sandbox.", "Probe failed")).toBe("Sandbox. Probe failed");
+  expect(heartbeatHealthFailure("x".repeat(600), undefined)).toHaveLength(500);
 });

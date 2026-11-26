@@ -35,7 +35,7 @@ import {
   type RunnerHelperResult,
 } from "../runner-protocol";
 
-export { helperSandboxFailure } from "./sandbox-readiness";
+export { heartbeatHealthFailure, helperSandboxFailure } from "./sandbox-readiness";
 
 type Command = Extract<RunnerCommand, { type: "probe" | "login_check" | "helper" }>;
 type Entry = {

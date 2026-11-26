@@ -35,3 +35,10 @@ export function helperSandboxFailure(
     ? null
     : `Sandboxed helper turns cannot start: ${failures.join(" ")}`;
 }
+
+export function heartbeatHealthFailure(
+  sandbox: string | null,
+  operation: string | null | undefined,
+): string | null {
+  return [sandbox, operation].filter(Boolean).join(" ").slice(0, 500) || null;
+}
