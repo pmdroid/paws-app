@@ -548,6 +548,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       returned = options.agentCredentials?.readReturned?.(account, executionId) ?? written;
     } catch (error) {
       journalCaught(error, "daemon.returnCredentials.readReturned", null);
+      return;
     }
     recordReturned(row, commandId, executionId, returned);
     try {

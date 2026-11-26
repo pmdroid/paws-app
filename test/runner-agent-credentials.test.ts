@@ -564,6 +564,13 @@ test.skipIf(!shmTmpfs)(
       const returned = join(accountHome, ".paws-returned", EXECUTION);
       expect(existsSync(returned)).toBe(true);
       expect(runnerSleepLeftovers(home, store!)).toContain(`binding-1/.paws-returned/${EXECUTION}`);
+      const envelope = readFileSync(returned);
+      rmSync(returned);
+      mkdirSync(returned);
+      daemon.returnCredentials("check-vm", EXECUTION, null);
+      expect(existsSync(returned)).toBe(true);
+      rmSync(returned, { recursive: true });
+      writeFileSync(returned, envelope);
       daemon.returnCredentials("check-vm", EXECUTION, null);
       expect(existsSync(returned)).toBe(false);
       expect(runnerSleepLeftovers(home, store!)).toEqual(["1 held or pending sign-in uploads"]);
