@@ -18,6 +18,7 @@ let window: Window;
 let calls: { method: string; path: string; body: unknown }[];
 let limits: Record<string, number>;
 let grant: Record<string, unknown> | null;
+let spend: Record<string, unknown>;
 let host: Record<string, unknown>;
 let failing: Set<string>;
 let others: Record<string, unknown>[];
@@ -42,6 +43,12 @@ beforeEach(() => {
   calls = [];
   limits = { perMember: 2, workspaceMax: 10, deleteAfterDays: 7 };
   grant = null;
+  spend = {
+    month: "2026-11",
+    spentUsd: 40,
+    monthlyLimitUsd: 50,
+    prices: { boat: 0.12, instabox: null },
+  };
   failing = new Set();
   others = [];
   host = {
@@ -74,6 +81,15 @@ beforeEach(() => {
         limits = body;
       }
       return Response.json(limits);
+    }
+    if (path === "/api/settings/issue-vm/spend") {
+      if (method === "PUT")
+        spend = {
+          ...spend,
+          monthlyLimitUsd: body.monthlyLimitUsd,
+          prices: { ...(spend.prices as object), ...body.prices },
+        };
+      return Response.json(spend);
     }
     if (path === "/api/settings/issue-vm/members")
       return Response.json({ defaultLimit: limits.perMember, members: [member(), ...others] });
@@ -196,6 +212,48 @@ test("a member sees only their own limit and grant, read-only", async () => {
   expect(root.textContent).toContain("4 until 2099-02-01");
   expect(root.querySelectorAll("input, select, button").length).toBe(0);
   expect(calls.every((call) => call.method === "GET")).toBe(true);
+});
+
+test("an admin sees spend against the limit and saves the limit and prices", async () => {
+  const root = await mount();
+  const bar = root.querySelector("progress")!;
+  expect([bar.getAttribute("value"), bar.getAttribute("max")]).toEqual(["40", "50"]);
+  expect(bar.className).toContain("high");
+  expect(root.textContent).toContain("$40.00 of $50.00 spent in 2026-11");
+  expect(root.textContent).toContain("No cloud issue VMs until a price is set");
+  type(root, "#issue-vm-spend-limit", "80");
+  type(root, "#issue-vm-price-instabox", "0.25");
+  await submit(root, "[data-spend]");
+  expect(calls.find((call) => call.path.endsWith("/spend") && call.method === "PUT")?.body).toEqual(
+    { monthlyLimitUsd: 80, prices: { boat: 0.12, instabox: 0.25 } },
+  );
+  expect(root.textContent).toContain("Spend settings saved.");
+  expect(root.textContent).toContain("$40.00 of $80.00");
+  expect(root.querySelector<HTMLInputElement>("#issue-vm-price-instabox")!.value).toBe("0.25");
+  expect(root.textContent).not.toContain("No cloud issue VMs until a price is set");
+  type(root, "#issue-vm-spend-limit", "");
+  await submit(root, "[data-spend]");
+  expect(root.querySelector('[role="alert"]')?.textContent).toBe(
+    "Enter the monthly limit and each price in US dollars.",
+  );
+});
+
+test("a member sees the spend and prices without a form", async () => {
+  const root = await mount(false);
+  expect(root.textContent).toContain("$40.00 of $50.00 spent in 2026-11");
+  expect(root.querySelector('[data-price="boat"]')?.textContent).toBe("boat: $0.12 an hour");
+  expect(root.querySelector('[data-price="instabox"]')?.textContent).toBe(
+    "InstaBox: No cloud issue VMs until a price is set",
+  );
+  expect(root.querySelector("[data-spend]")).toBeNull();
+});
+
+test("a member refused the spend sees the rest of the page and no error", async () => {
+  failing.add("GET /api/settings/issue-vm/spend");
+  const root = await mount(false);
+  expect(root.querySelector("progress")).toBeNull();
+  expect(root.querySelector('[role="alert"]')).toBeNull();
+  expect(root.textContent).toContain("Robin");
 });
 
 test("saving the default limit refreshes an ungranted member's limit", async () => {
