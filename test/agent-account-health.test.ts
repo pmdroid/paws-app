@@ -724,3 +724,25 @@ for (const source of ["login_check", "sign_in"] as const)
     await success(NOW + 1);
     expect(await checks()).toMatchObject([{ payload: { ownerUserId: "U1" }, status: "pending" }]);
   });
+
+test("a refreshable account in use on an issue VM waits for that issue elsewhere", async () => {
+  const { db, bindings } = await fixture();
+  const reason = async (bindingId: string, refreshable: boolean) => {
+    const readiness = await bindingReadiness(db, { bindingId, now: NOW + 1, refreshable });
+    return readiness.ready ? "ready" : readiness.reason;
+  };
+  const isolate = (runnerId: string, isolation: "none" | "issue_vm") =>
+    write(db, (q) =>
+      q.orm.update(q.t.runner).set({ isolation }).where(eq(q.t.runner.id, runnerId)),
+    );
+  await attempt(db, "cmd-first-issue", bindings.a1, NOW);
+  expect(await reason(bindings.a2, true)).toBe("ready");
+  await isolate("R1", "issue_vm");
+  expect(await reason(bindings.a2, true)).toBe("busy");
+  expect(await reason(bindings.a2, false)).toBe("ready");
+  expect(await reason(bindings.a1, true)).toBe("ready");
+  await isolate("R1", "none");
+  await isolate("R2", "issue_vm");
+  expect(await reason(bindings.a2, true)).toBe("busy");
+  expect(await reason(bindings.b1, true)).toBe("ready");
+});

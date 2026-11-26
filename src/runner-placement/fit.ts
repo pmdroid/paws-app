@@ -65,8 +65,12 @@ export function* signInFitSteps(
   runner: SignInRunner,
   workspaceId: string,
   input: SignInInput,
-  requiresOAuthSteps?: (q: Q, accountId: string) => Steps<boolean>,
+  checks: {
+    requiresOAuthSteps?: (q: Q, accountId: string) => Steps<boolean>;
+    refreshableSteps?: (q: Q, accountId: string) => Steps<boolean>;
+  } = {},
 ): Steps<AccountFit | AccountRefusal> {
+  const { requiresOAuthSteps, refreshableSteps } = checks;
   const bindings = (yield* listAgentBindingsSteps(q, workspaceId)).filter(
     (binding) => binding.runnerId === runner.id && binding.agent === input.agent,
   );
@@ -99,6 +103,7 @@ export function* signInFitSteps(
       purpose: input.purpose,
       runnerCapacity: false,
       exceptCommandId: input.exceptCommandId,
+      refreshable: refreshableSteps ? yield* refreshableSteps(q, binding.accountId) : false,
     });
     if (readiness.ready)
       return {

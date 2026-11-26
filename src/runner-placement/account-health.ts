@@ -106,6 +106,7 @@ export function* bindingReadinessSteps(
     runnerCapacity?: boolean;
     purpose?: "prepare" | "work" | "helper";
     exceptCommandId?: string;
+    refreshable?: boolean;
   },
 ): Steps<BindingReadiness> {
   const binding = yield* bindingReadinessRowSteps(q, input.bindingId);
@@ -138,6 +139,19 @@ export function* bindingReadinessSteps(
     binding.concurrency !== null &&
     (yield* accountSlotsInUseSteps(q, binding.accountId, input.now, input.exceptCommandId)) >=
       binding.concurrency
+  )
+    return unavailable("busy");
+  if (
+    input.refreshable &&
+    (yield* accountSlotsInUseSteps(
+      q,
+      binding.accountId,
+      input.now,
+      input.exceptCommandId,
+      binding.isolation === "issue_vm"
+        ? { except: binding.runnerId }
+        : { except: binding.runnerId, issueVm: true },
+    )) > 0
   )
     return unavailable("busy");
   return {

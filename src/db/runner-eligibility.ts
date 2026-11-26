@@ -152,6 +152,7 @@ export function* bindingReadinessRowSteps(q: Q, bindingId: string) {
         enabled: a.enabled,
         concurrency: a.concurrency,
         status: r.status,
+        isolation: r.isolation,
         revokedAt: r.revokedAt,
         lastSeenAt: r.lastSeenAt,
       })
