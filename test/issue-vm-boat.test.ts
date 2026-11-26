@@ -218,6 +218,13 @@ test("a boat VM sleeps only after its sign-in check passes", async () => {
   expect(await rejection(vms.sleep("pas-1-vm"))).toBeInstanceOf(ProvisioningError);
   expect(boat.sandboxes.get("pas-1-vm")?.state).toBe("ready");
   boat.execVm = execVm;
+  const stops = () => boat.calls.filter((call) => call.operation === "stopVm").length;
+  const stopped = stops();
+  const getVm = boat.getVm;
+  boat.getVm = async (name) => ({ ...(await getVm(name)), state: "starting" });
+  expect(await rejection(vms.sleep("pas-1-vm"))).toBeInstanceOf(BoatIssueVmError);
+  boat.getVm = getVm;
+  expect(stops()).toBe(stopped);
   await vms.sleep("pas-1-vm");
   expect(boat.calls.filter((call) => call.operation === "execVm").at(-1)?.command).toBe(
     ISSUE_VM_SLEEP_CHECK,

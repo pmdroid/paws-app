@@ -172,7 +172,10 @@ export function createBoatIssueVms(options: BoatIssueVmOptions): BoatIssueVms {
     },
 
     async sleep(name) {
-      if ((await state(name)) === "running") {
+      const seen = await state(name);
+      if (seen !== "stopped" && seen !== "stopping") {
+        if (seen !== "running")
+          throw new BoatIssueVmError("failed", `${name} can't sleep while it is ${seen}.`);
         const checked = await boat.execVm(name, ISSUE_VM_SLEEP_CHECK, { timeoutMs: 60_000 });
         if (checked.exitCode !== 0)
           throw new BoatIssueVmError(
