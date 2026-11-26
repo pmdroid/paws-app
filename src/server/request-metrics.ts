@@ -16,7 +16,8 @@ const ROUTES = `
 /api/settings/member-vm /api/settings/merging /api/settings/skills /api/settings/time-limits
 /api/settings/github-access /api/settings/storage /api/settings/closeout-summary
 /api/settings/repository-descriptions /api/settings/issue-vm/members
-/api/settings/issue-vm/grants /api/settings/issue-vm/grants/:id /api/settings/runner-vm-keys
+/api/settings/issue-vm/grants /api/settings/issue-vm/spend /api/settings/issue-vm/grants/:id
+/api/settings/runner-vm-keys
 /api/settings/vm-providers /api/settings/vm-providers/check /api/settings/storage/check
 /api/metrics /api/metrics/stages /api/settings/storage-usage /api/settings/storage-usage/refresh
 /api/settings/storage-cleanup /api/settings/storage-cleanup/preview

@@ -95,7 +95,9 @@ async function ada(db: Db) {
 }
 
 function admit(db: Db, at = NOW) {
-  return db.run((q) => issueVmAdmissionSteps(q, { workspaceId: "acme", memberUserId: "ada", at }));
+  return db.run((q) =>
+    issueVmAdmissionSteps(q, { workspaceId: "acme", memberUserId: "ada", provider: "host", at }),
+  );
 }
 
 async function audits(db: Db) {

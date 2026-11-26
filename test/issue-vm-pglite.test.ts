@@ -43,7 +43,9 @@ function move(db: Db, id: string, state: IssueVmState, now = NOW + 1) {
 }
 
 function admit(db: Db, member = "ada", at = NOW) {
-  return db.run((q) => issueVmAdmissionSteps(q, { workspaceId: "acme", memberUserId: member, at }));
+  return db.run((q) =>
+    issueVmAdmissionSteps(q, { workspaceId: "acme", memberUserId: member, provider: "host", at }),
+  );
 }
 
 describePglite((connect) => {
