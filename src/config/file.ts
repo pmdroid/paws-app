@@ -23,6 +23,7 @@ import {
 import {
   knownConfigSection,
   readConfigText,
+  SAVED_SETTINGS_SECTIONS,
   savedSettingsSections,
   updateConfigText,
   type SettingSections,
@@ -31,8 +32,9 @@ import { parseTimeLimitTables, type StoredTimeLimits } from "./time-limits";
 import {
   assignMemberVmKey,
   setMemberVmText,
+  upgradeSettingSections,
   type MemberVmProviderName,
-  type MemberVmSize,
+  type VmSizes,
 } from "./member-vm";
 import { assignIssueVmKey, type StoredIssueVmSettings } from "./issue-vm";
 import { parseProjectSkills, type ProjectSkills } from "./skills";
@@ -104,8 +106,7 @@ export type PawsConfigFile = {
   /** `[findings] grouping_time`, HH:MM UTC; default 06:00. */
   findingsGroupingTime?: string;
   projectSkills?: ProjectSkills[];
-  /** `[member_vm]`: the exe.dev size Create VM asks for. Missing means exe.dev's default. */
-  memberVm?: MemberVmSize;
+  vmSizes?: VmSizes;
   issueVm?: StoredIssueVmSettings;
   /** `[brief] template`. Missing means the built-in brief. */
   briefTemplate?: string | null;
@@ -142,6 +143,7 @@ export function parseConfigToml(text: string): PawsConfigFile {
     if (eq <= 0) throw new Error(`Saved settings line ${index + 1} is not a key`);
     if (section === "brief" || section.startsWith("brief.")) continue;
     if (section === "time_limits" || section.startsWith("time_limits.")) continue;
+    if (section === "member_vm") continue;
     const key = line.slice(0, eq).trim().toLowerCase();
     const raw = line.slice(eq + 1).trim();
     if (key.length === 0 || raw.length === 0) {
@@ -163,6 +165,12 @@ export function parseConfigToml(text: string): PawsConfigFile {
 export function configSettingsSections(text: string): SettingSections {
   return savedSettingsSections(text, (known) => void parseConfigToml(known));
 }
+
+export const SETTINGS_CONVERSION = {
+  names: SAVED_SETTINGS_SECTIONS,
+  sectionsOf: configSettingsSections,
+  upgrade: upgradeSettingSections,
+};
 
 export type GitHubAccess = { agentRead?: boolean; mirrors?: boolean };
 
@@ -432,8 +440,8 @@ function assignConfig(
     if (key === "max_running_per_owner") config.queueMaxRunningPerOwner = asInt(value, line);
     return;
   }
-  if (section === "member_vm") {
-    assignMemberVmKey((config.memberVm ??= {}), key, value, line);
+  if (section === "vm_sizes" || section.startsWith("vm_sizes.")) {
+    assignMemberVmKey((config.vmSizes ??= {}), section, key, value, line);
     return;
   }
   if (section === "issue_vm") {
@@ -446,15 +454,20 @@ function assignConfig(
   }
 }
 
+export function updateVmSizes(path: string, change: (saved: VmSizes) => VmSizes): Promise<void> {
+  return updateConfigText(path, (text) =>
+    setMemberVmText(text, change(parseConfigToml(text).vmSizes ?? {})),
+  );
+}
+
 export function writeMemberVmProviderOff(
   path: string,
   provider: MemberVmProviderName,
   off: boolean,
 ): Promise<void> {
-  return updateConfigText(path, (text) => {
-    const size = parseConfigToml(text).memberVm ?? {};
+  return updateVmSizes(path, (size) => {
     const others = (size.offProviders ?? []).filter((name) => name !== provider);
-    return setMemberVmText(text, { ...size, offProviders: off ? [...others, provider] : others });
+    return { ...size, offProviders: off ? [...others, provider] : others };
   });
 }
 

@@ -11,8 +11,13 @@ import {
   ProvisioningError,
   type FakeBoatOptions,
 } from "../src/provisioning";
+import { parseConfigToml, vmSizeFor } from "../src/config";
 
-const SIZE = { cpu: 8, memoryGb: 16 };
+const SIZE = vmSizeFor(
+  parseConfigToml("[vm_sizes.exe-dev]\ncpu = 32\n\n[vm_sizes.boat]\ncpu = 8\nmemory_gb = 16\n")
+    .vmSizes,
+  "boat",
+);
 
 function setup(boatOptions: FakeBoatOptions = {}, startsPerMinute = 10, maxWaitMs?: number) {
   let now = 1_000_000;
@@ -70,7 +75,7 @@ describe("boat issue VMs", () => {
     });
     expect(boat.sandboxes.get("pas-1-vm")).toMatchObject({
       from: "paws-issue-vm",
-      size: SIZE,
+      size: { cpu: 8, memoryGb: 16 },
       state: "ready",
     });
     expect(boat.calls.find((call) => call.operation === "execVm")?.command).toBe(

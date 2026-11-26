@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { readSecretFile, secretFileExists } from "../credentials";
 import { journalCaught } from "../journal";
 import { exeDevTokenPath, type ExeDevTokenStatus } from "./exe-dev";
-import { memberVmProvider, type MemberVmProviderName, type MemberVmSize } from "./member-vm";
+import { memberVmProvider, type MemberVmProviderName, type VmSizes } from "./member-vm";
 import { pawsPaths } from "./paths";
 
 export function boatTokenPath(home: string): string {
@@ -43,6 +43,6 @@ export function vmProviderTokenStatus(
   }
 }
 
-export function memberVmKeyReadable(home: string, settings: MemberVmSize | undefined): boolean {
+export function memberVmKeyReadable(home: string, settings: VmSizes | undefined): boolean {
   return readVmProviderToken(home, memberVmProvider(settings)) !== null;
 }

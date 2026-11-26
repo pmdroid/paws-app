@@ -23,8 +23,14 @@ import {
   createFakeInstaBox,
   type FakeInstaBoxOptions,
 } from "../src/provisioning";
+import { parseConfigToml, vmSizeFor } from "../src/config";
 
-const SIZE = { cpu: 4, memoryGb: 8 };
+const SIZE = vmSizeFor(
+  parseConfigToml(
+    "[vm_sizes.boat]\ncpu = 16\nmemory_gb = 32\n\n[vm_sizes.instabox]\ncpu = 4\nmemory_gb = 8\n",
+  ).vmSizes,
+  "instabox",
+);
 const SNAPSHOT = "snap_paws-issue-vm";
 
 function setup(boxOptions: FakeInstaBoxOptions = {}, startsPerMinute = 10) {
@@ -83,7 +89,7 @@ describe("InstaBox issue VMs", () => {
     expect(remembered.get("pas-1-vm")).toBe(id ?? "");
     expect(instaBox.machines.get("pas-1-vm")).toMatchObject({
       from: SNAPSHOT,
-      size: SIZE,
+      size: { cpu: 4, memoryGb: 8 },
       state: "running",
     });
     expect(instaBox.calls.filter((call) => call.operation === "startVm")).toHaveLength(1);
@@ -168,6 +174,8 @@ describe("InstaBox issue VMs", () => {
     expect(instaBox.machines.size).toBe(0);
     await create("pas-2-vm", { cpu: 8, memoryGb: 16 });
     expect(instaBox.machines.get("pas-2-vm")?.size).toEqual({ cpu: 8, memoryGb: 16 });
+    await create("pas-3-vm", vmSizeFor(undefined, "instabox"));
+    expect(instaBox.machines.get("pas-3-vm")?.size).toEqual({});
   });
 });
 

@@ -312,16 +312,16 @@ try {
       route.fulfill({ json: { runners: [], serverVersion: null, workspaceReady: true } }),
     );
     let vmSize = { cpu: 4, memoryGb: 8 };
-    await admin.route("**/api/settings/member-vm", async (route) => {
+    await admin.route("**/api/settings/vm-sizes", async (route) => {
       if (route.request().method() === "PUT") {
-        const body = route.request().postDataJSON();
+        const body = route.request().postDataJSON().sizes["exe-dev"];
         if (body.cpu < 1) {
           await route.fulfill({ status: 400, json: { error: "CPUs must be a positive integer." } });
           return;
         }
         vmSize = body;
       }
-      await route.fulfill({ json: vmSize });
+      await route.fulfill({ json: { providers: { "exe-dev": { size: vmSize } } } });
     });
     await visit(admin, width, "runners-editable", "/dashboard/runners", "Runners");
     await expect(admin.locator("[data-vm-size]")).toHaveCount(0);

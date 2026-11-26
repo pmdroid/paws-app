@@ -66,7 +66,7 @@ export type InstaBoxIssueVmCreate = {
   name: string;
   key: string;
   snapshot: string;
-  size: { cpu: number; memoryGb: number };
+  size: { cpu?: number; memoryGb?: number };
   mintToken: () => Promise<string>;
 };
 
@@ -98,8 +98,9 @@ function instaBoxPlanRefusal(
       "plan",
       `InstaBox's ${plan.tier} plan doesn't allow turning idle pause off, so an issue VM would pause in the middle of a turn. Use an InstaBox plan that allows always on.`,
     );
-  if (plan.sizes.some((spec) => spec.vcpus === size.cpu && spec.memMiB === size.memoryGb * 1024))
-    return null;
+  if (size.cpu === undefined && size.memoryGb === undefined) return null;
+  const memMiB = (size.memoryGb ?? 0) * 1024;
+  if (plan.sizes.some((spec) => spec.vcpus === size.cpu && spec.memMiB === memMiB)) return null;
   const allowed = plan.sizes.map((spec) => `${spec.vcpus} vCPU / ${spec.memMiB / 1024} GB`);
   return new InstaBoxIssueVmError(
     "size",

@@ -92,13 +92,13 @@ test("GET lists each provider, PUT turns boat off and on, and tailscale can't be
   >;
   expect(listed.boat?.off).toBe(true);
   expect(listed["exe-dev"]?.off).toBe(false);
-  expect(loadConfigFile(configPath).memberVm?.offProviders).toEqual(["boat"]);
+  expect(loadConfigFile(configPath).vmSizes?.offProviders).toEqual(["boat"]);
   const tailscale = await providers(
     send("PUT", "/vm-providers", { provider: "tailscale", off: true }),
   );
   expect(tailscale.status).toBe(400);
   await providers(send("PUT", "/vm-providers", { provider: "boat", off: false }));
-  expect(loadConfigFile(configPath).memberVm?.offProviders).toBeUndefined();
+  expect(loadConfigFile(configPath).vmSizes?.offProviders).toBeUndefined();
   expect(audits).toEqual(["Turned boat off", "Turned boat on"]);
 });
 
@@ -148,7 +148,7 @@ test("overlapping toggles of different providers both stay saved", async () => {
     providers(send("PUT", "/vm-providers", { provider: "boat", off: true })),
     providers(send("PUT", "/vm-providers", { provider: "instabox", off: true })),
   ]);
-  expect(loadConfigFile(configPath).memberVm?.offProviders?.toSorted()).toEqual([
+  expect(loadConfigFile(configPath).vmSizes?.offProviders?.toSorted()).toEqual([
     "boat",
     "instabox",
   ]);

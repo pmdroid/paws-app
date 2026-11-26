@@ -149,9 +149,7 @@ Each workspace spends at most one helper turn per UTC day, including **Run now**
 
 ### Member VM
 
-Workspace › Member VMs › **Member VM size**: **CPUs**, **Memory (GB)**, **Disk (GB)**, **Image** and **Default pool** for newly created VMs. An empty field uses the exe.dev default. Existing VMs keep their size.
-
-In `config.toml`, `[member_vm]` also takes `provider`: `exe-dev` (the default), `boat` or `instabox`. It applies to VMs created from then on, and each VM keeps the provider it was created with. boat and InstaBox accept only their own sizes, and Settings refuses any other; see [Choose the provider](create-vm.md#choose-the-provider). Save each provider's API key, and the Tailscale auth key, on Settings › Runner VMs.
+`[vm_sizes]` holds one size per VM provider, and `provider`, where Create VM makes new VMs: `exe-dev` (the default), `boat` or `instabox`. exe.dev takes **CPUs**, **Memory (GB)**, **Disk (GB)**, **Image** and **Default pool**; boat and InstaBox take CPUs and memory from their own sizes, and saving refuses any other with the allowed list. A provider without a size uses its default, and existing VMs keep their size; see [Choose the provider](create-vm.md#choose-the-provider). A single size saved under the old `[member_vm]` moves to the provider it named, or to exe.dev, when Paws starts. Save each provider's API key, and the Tailscale auth key, on Settings › Runner VMs.
 
 ### Linear comments
 

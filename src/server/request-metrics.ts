@@ -13,7 +13,7 @@ const ROUTES = `
 /api/findings /api/finding-groups /api/review-findings/issues /api/visual-review-changes
 /api/settings/agents /api/settings/brief /api/settings/brief/preview /api/settings/closeout
 /api/settings/findings /api/settings/hooks /api/settings/issue-vm /api/settings/linear-comments
-/api/settings/member-vm /api/settings/merging /api/settings/skills /api/settings/time-limits
+/api/settings/vm-sizes /api/settings/merging /api/settings/skills /api/settings/time-limits
 /api/settings/github-access /api/settings/storage /api/settings/closeout-summary
 /api/settings/repository-descriptions /api/settings/issue-vm/members
 /api/settings/issue-vm/grants /api/settings/issue-vm/spend /api/settings/issue-vm/grants/:id

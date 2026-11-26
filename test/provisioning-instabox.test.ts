@@ -90,11 +90,8 @@ describe("InstaBox client", () => {
     });
   });
 
-  test("create refuses a size InstaBox does not offer before calling it", async () => {
+  test("create passes the size to InstaBox, which checks it against the plan", async () => {
     const { box, sent } = client(() => json(202, { id: "op_1", machineId: ID, state: "queued" }));
-    const error = await failure(box.createVm("ada-paws", { cpu: 3, memoryGb: 8 }, { key: "k" }));
-    expect(error.message).toStartWith("InstaBox has no 3 vCPU / 8 GB size.");
-    expect(sent).toHaveLength(0);
     await box.createVm("ada-paws", { cpu: 6, memoryGb: 12 }, { key: "k2", from: "snap_granted" });
     expect(sent[0]!.body).toMatchObject({ snapshotId: "snap_granted", vcpus: 6, memMiB: 12288 });
   });

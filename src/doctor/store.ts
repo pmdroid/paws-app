@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import {
-  configSettingsSections,
+  SETTINGS_CONVERSION,
   databaseUrlOf,
   loadEnv,
   pawsPaths,
@@ -62,9 +62,7 @@ export async function withSavedStore<T>(
     if (store && databaseUrl !== null && storedSecrets() === null)
       secrets = await useDatabaseSecrets(store, paths.secretsDir, { copy: false });
     if (store) {
-      await store.transaction((q) =>
-        convertConfigSettingsSteps(q, SETTINGS_SECTIONS, configSettingsSections),
-      );
+      await store.transaction((q) => convertConfigSettingsSteps(q, SETTINGS_CONVERSION));
       settings = await useSettingsStore(
         paths.configFile,
         settingSectionsStore(store, SETTINGS_SECTIONS),

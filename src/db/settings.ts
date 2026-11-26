@@ -93,16 +93,26 @@ function sectionJson(value: unknown): string | null {
   );
 }
 
+export type SettingsConversion = {
+  names: readonly string[];
+  sectionsOf: (text: string) => Sections;
+  upgrade: (sections: Sections) => Sections;
+};
+
 export function* convertConfigSettingsSteps(
   q: Q,
-  names: readonly string[],
-  sectionsOf: (text: string) => Sections,
+  conversion: SettingsConversion,
   now = Date.now(),
 ) {
   const text = yield* readSettingSteps(q, CONFIG_SETTINGS_KEY);
+  const sections = text === null ? null : conversion.sectionsOf(text);
+  yield* updateSettingSectionsSteps(
+    q,
+    conversion.names,
+    (stored) => conversion.upgrade(sections ?? stored),
+    now,
+  );
   if (text === null) return false;
-  const sections = sectionsOf(text);
-  yield* updateSettingSectionsSteps(q, names, () => sections, now);
   yield* deleteSettingSteps(q, CONFIG_SETTINGS_KEY);
   return true;
 }

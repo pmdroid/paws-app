@@ -6,101 +6,48 @@ import {
   boatTokenPath,
   ensureLayout,
   memberVmKeyReadable,
-  memberVmSizeOnly,
   parseConfigToml,
   pawsPaths,
   renderMemberVmSettings,
   vmProviderTokenStatus,
+  vmSizeFor,
 } from "../src/config";
 import { removeSecret, writeSecretFile } from "../src/credentials";
 
-describe("[member_vm]", () => {
-  test("a missing section or key leaves the size to exe.dev", () => {
-    expect(parseConfigToml("").memberVm).toBeUndefined();
-    expect(parseConfigToml("[member_vm]\ncpu = 4\n").memberVm).toEqual({ cpu: 4 });
-    expect(renderMemberVmSettings(undefined)).toBe("");
-    expect(renderMemberVmSettings({})).toBe("");
-  });
-
-  test("valid values round-trip", () => {
+describe("[vm_sizes]", () => {
+  test("each provider keeps its own size, and the settings round-trip", () => {
+    expect(parseConfigToml("").vmSizes).toBeUndefined();
+    expect(renderMemberVmSettings({ offProviders: [], sizes: {} })).toBe("");
     const text =
-      '[member_vm]\ncpu = 8 # vCPUs\nmemory_gb = 16\ndisk_gb = 100\nimage = "ubuntu:24.04"\n';
-    const size = parseConfigToml(text).memberVm;
-    expect(size).toEqual({ cpu: 8, memoryGb: 16, diskGb: 100, image: "ubuntu:24.04" });
-    const rendered = renderMemberVmSettings(size);
-    expect(rendered).toBe(
-      '\n[member_vm]\ncpu = 8\nmemory_gb = 16\ndisk_gb = 100\nimage = "ubuntu:24.04"\n',
-    );
-    expect(parseConfigToml(rendered).memberVm).toEqual(size);
-  });
-
-  test("pool round-trips next to the size and must be a pool name", () => {
-    const text = '[member_vm]\ncpu = 4\npool = "build-eu_2"\n';
-    const size = parseConfigToml(text).memberVm;
-    expect(size).toEqual({ cpu: 4, pool: "build-eu_2" });
-    const rendered = renderMemberVmSettings(size);
-    expect(rendered).toBe('\n[member_vm]\ncpu = 4\npool = "build-eu_2"\n');
-    expect(parseConfigToml(rendered).memberVm).toEqual(size);
-    expect(parseConfigToml('[member_vm]\npool = "build"\n').memberVm).toEqual({ pool: "build" });
-    for (const line of [
-      "pool = 3",
-      'pool = ""',
-      'pool = "build --cpu=64"',
-      'pool = "-build"',
-      'pool = "build;rm"',
-      `pool = "${"p".repeat(64)}"`,
-    ])
-      expect(() => parseConfigToml(`[member_vm]\n${line}\n`)).toThrow(
-        "Saved settings line 2 member_vm.pool must be an exe.dev pool name",
-      );
-  });
-
-  test("off_providers round-trips, is empty by default and must name providers", () => {
-    const size = parseConfigToml(
-      '[member_vm]\nprovider = "boat"\noff_providers = ["boat", "instabox"]\n',
-    ).memberVm;
-    expect(size).toEqual({ provider: "boat", offProviders: ["boat", "instabox"] });
-    const rendered = renderMemberVmSettings(size);
-    expect(rendered).toBe(
-      '\n[member_vm]\nprovider = "boat"\noff_providers = ["boat", "instabox"]\n',
-    );
-    expect(parseConfigToml(rendered).memberVm).toEqual(size);
-    expect(renderMemberVmSettings({ offProviders: [] })).toBe("");
-    expect(memberVmSizeOnly({ cpu: 2, offProviders: ["boat"] })).toEqual({ cpu: 2 });
-    expect(() => parseConfigToml('[member_vm]\noff_providers = ["aws"]\n')).toThrow(
-      "Saved settings line 2 member_vm.off_providers must be a list",
-    );
+      '[vm_sizes]\nprovider = "boat"\noff_providers = ["instabox"]\n\n[vm_sizes.exe-dev]\ncpu = 8 # vCPUs\nmemory_gb = 16\ndisk_gb = 100\nimage = "ubuntu:24.04"\npool = "build-eu_2"\n\n[vm_sizes.boat]\ncpu = 4\nmemory_gb = 8\n\n[vm_sizes.instabox]\ncpu = 2\nmemory_gb = 4\n';
+    const settings = parseConfigToml(text).vmSizes;
+    expect(settings).toEqual({
+      provider: "boat",
+      offProviders: ["instabox"],
+      sizes: {
+        "exe-dev": { cpu: 8, memoryGb: 16, diskGb: 100, image: "ubuntu:24.04", pool: "build-eu_2" },
+        boat: { cpu: 4, memoryGb: 8 },
+        instabox: { cpu: 2, memoryGb: 4 },
+      },
+    });
+    expect(vmSizeFor(settings, "boat")).toEqual({ cpu: 4, memoryGb: 8 });
+    expect(parseConfigToml(renderMemberVmSettings(settings)).vmSizes).toEqual(settings);
   });
 
   test("invalid values are refused with their line", () => {
-    const cases: [string, string][] = [
-      ["cpu = -2", "Saved settings line 3 member_vm.cpu must be a whole number from 1 to 512"],
-      ["cpu = 0", "Saved settings line 3 member_vm.cpu must be a whole number from 1 to 512"],
-      ['cpu = "4"', "Saved settings line 3 member_vm.cpu must be a whole number from 1 to 512"],
-      ["memory_gb = true", "Saved settings line 3 member_vm.memory_gb must be a whole number"],
-      ["memory_gb = 8GB", "Saved settings line 3 has an unsupported value"],
-      ["disk_gb = 1.5", "Saved settings line 3 has an unsupported value"],
-      ["disk_gb = 1000000", "Saved settings line 3 member_vm.disk_gb must be a whole number"],
-      ["image = 22", "Saved settings line 3 member_vm.image must be an image name"],
-      ['image = "x --cpu=64"', "Saved settings line 3 member_vm.image must be an image name"],
-      ["cpus = 4", "Saved settings line 3 has an unknown key: member_vm.cpus"],
-      ["size = 4", "Saved settings line 3 has an unknown key: member_vm.size"],
+    const cases: [string, string, string][] = [
+      ["exe-dev", "cpu = 0", "line 3 vm_sizes.cpu must be a whole number from 1 to 512"],
+      ["exe-dev", "cpus = 4", "line 3 has an unknown key: vm_sizes.exe-dev.cpus"],
+      ["instabox", "disk_gb = 20", "line 3 has an unknown key: vm_sizes.instabox.disk_gb"],
     ];
-    for (const [line, message] of cases)
-      expect(() => parseConfigToml(`[member_vm]\ncpu = 2\n${line}\n`)).toThrow(message);
-  });
-
-  test("provider round-trips and defaults to exe-dev", () => {
-    const size = parseConfigToml(
-      '[member_vm]\nprovider = "boat"\ncpu = 8\nmemory_gb = 16\n',
-    ).memberVm;
-    expect(size).toEqual({ provider: "boat", cpu: 8, memoryGb: 16 });
-    expect(renderMemberVmSettings(size)).toBe(
-      '\n[member_vm]\nprovider = "boat"\ncpu = 8\nmemory_gb = 16\n',
+    for (const [provider, line, message] of cases)
+      expect(() => parseConfigToml(`[vm_sizes.${provider}]\ncpu = 2\n${line}\n`)).toThrow(
+        `Saved settings ${message}`,
+      );
+    expect(() => parseConfigToml('[vm_sizes]\nprovider = "aws"\n')).toThrow(
+      "vm_sizes.provider must be exe-dev, boat or instabox",
     );
-    expect(() => parseConfigToml('[member_vm]\nprovider = "aws"\n')).toThrow(
-      "member_vm.provider must be exe-dev, boat or instabox",
-    );
+    expect(() => parseConfigToml("[vm_sizes.aws]\ncpu = 2\n")).toThrow("unknown section");
   });
 
   test("Create VM is offered only once the configured provider's key is saved", async () => {

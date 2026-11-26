@@ -117,7 +117,7 @@ import {
   MEMBER_VM_PROVIDERS,
   memberVmKeyReadable,
   memberVmProvider,
-  memberVmSizeOnly,
+  vmSizeFor,
   readVmProviderToken,
   resolveLinearCommentAgents,
   resolveTimeLimits,
@@ -127,9 +127,10 @@ import {
   readQueueSettings,
   MERGE_OVERRIDES_IGNORED,
   useSettingsStore,
-  configSettingsSections,
+  SETTINGS_CONVERSION,
   SETTINGS_SECTIONS,
   type EnvSource,
+  type MemberVmProviderName,
   type PawsEnv,
   type PawsPaths,
   type RuntimeConfig,
@@ -659,9 +660,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   );
   bindInstance(store, instance.id);
   try {
-    await store.transaction((q) =>
-      convertConfigSettingsSteps(q, SETTINGS_SECTIONS, configSettingsSections),
-    );
+    await store.transaction((q) => convertConfigSettingsSteps(q, SETTINGS_CONVERSION));
   } catch (error) {
     await database.close();
     throw error;
@@ -1059,7 +1058,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     });
 
   const exeDevToken = exeDevTokenReader(paths.home);
-  const memberVmSettings = () => loadConfigFile(paths.configFile).memberVm;
+  const memberVmSettings = () => loadConfigFile(paths.configFile).vmSizes;
   const memberVmProviderSetting = () => memberVmProvider(memberVmSettings());
   const createVmAvailable = async () =>
     options?.memberVm !== undefined || memberVmKeyReadable(paths.home, memberVmSettings());
@@ -1309,11 +1308,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     },
   });
   const MEMBER_VM_STOP_WAIT_MS = 15_000;
-  const memberVmSize = () => memberVmSizeOnly(memberVmSettings());
-  const memberVmProvisioning = createMemberVmProvisioning({
+  const provisionMemberVm = createMemberVmProvisioning({
     readToken: exeDevToken,
     tailscaleAuthKey,
-    size: memberVmSize,
     providers: [memberVmBoat, memberVmInstaBox],
     ...(options?.memberVm
       ? { exeDev: options.memberVm.exeDev, bootstrap: options.memberVm.bootstrap }
@@ -1355,6 +1352,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           ),
       };
     },
+  });
+  const memberVmProvisioning = async (provider: MemberVmProviderName) => ({
+    ...(await provisionMemberVm(provider)),
+    size: vmSizeFor(memberVmSettings(), provider),
   });
   // A delegated parent runs each sub-issue in its own Linear session.
   const parents =
@@ -1416,7 +1417,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const memberVmHttp = createMemberVmHttp({
     store,
     available: createVmAvailable,
-    size: memberVmSize,
+    size: () => vmSizeFor(memberVmSettings(), memberVmProviderSetting()),
     provider: memberVmProviderSetting,
     usable: (provider) =>
       usableVmProvider(provider, {
@@ -1728,6 +1729,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             }
           : {}),
         configPath: paths.configFile,
+        instaBoxSizes: async () =>
+          readVmProviderToken(paths.home, "instabox") === null
+            ? null
+            : (await memberVmInstaBox.listSizes()).map((spec) => [spec.vcpus, spec.memMiB / 1024]),
         repos: repositories.map((value) => `${value.owner}/${value.repo}`),
         highRiskFile: async (name: string) => {
           const [owner, repo] = name.split("/");

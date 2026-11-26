@@ -18,7 +18,7 @@ async function instance() {
   const { db, close } = await tempStore();
   const home = tempHome();
   const configPath = join(home, "config.toml");
-  await seedSettings(db, '[member_vm]\nimage = "ubuntu:24.04"\n');
+  await seedSettings(db, '[vm_sizes.exe-dev]\nimage = "ubuntu:24.04"\n');
   const settings = await useSettingsStore(configPath, sectionSettings(db));
   cleanups.push(close, () => {
     settings.release();

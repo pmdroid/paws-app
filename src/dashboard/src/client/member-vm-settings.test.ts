@@ -24,13 +24,13 @@ beforeEach(() => {
   size = { cpu: 4, memoryGb: 8 };
   globalThis.fetch = (async (_url: URL | string, init?: RequestInit) => {
     if (init?.method === "PUT") {
-      const body = JSON.parse(String(init.body));
+      const body = JSON.parse(String(init.body)).sizes["exe-dev"];
       puts.push(body);
       if (body.cpu < 1)
         return Response.json({ error: "CPUs must be a positive integer." }, { status: 400 });
       size = body;
     }
-    return Response.json(size);
+    return Response.json({ providers: { "exe-dev": { size } } });
   }) as typeof fetch;
 });
 

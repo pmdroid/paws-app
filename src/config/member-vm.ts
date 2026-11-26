@@ -1,23 +1,21 @@
-import { updateConfigText, withoutConfigSection } from "./settings-store";
+import { withoutConfigSection, type SettingSections } from "./settings-store";
 
-/**
- * `[member_vm]`: the size Create VM asks exe.dev for. The keys follow `ssh exe.dev help new`:
- * `--cpu`, `--memory`, `--disk`, `--image` and `--pool`. A missing key sends no flag, so exe.dev
- * uses its default (2 CPUs, the team's VM placement). exe.dev enforces the plan limits and the
- * pool's capacity, and Paws shows its refusal.
- */
 export const MEMBER_VM_PROVIDERS = ["exe-dev", "boat", "instabox"] as const;
 export type MemberVmProviderName = (typeof MEMBER_VM_PROVIDERS)[number];
 
 export type MemberVmSize = {
-  provider?: MemberVmProviderName;
   cpu?: number;
   memoryGb?: number;
   diskGb?: number;
   image?: string;
   /** The exe.dev pool Create VM places runner VMs in, unless the member picks another. */
   pool?: string;
+};
+
+export type VmSizes = {
+  provider?: MemberVmProviderName;
   offProviders?: MemberVmProviderName[];
+  sizes?: Partial<Record<MemberVmProviderName, MemberVmSize>>;
 };
 
 const MEMBER_VM_KEYS = [
@@ -29,6 +27,13 @@ const MEMBER_VM_KEYS = [
   "pool",
   "off_providers",
 ] as const;
+
+const SECTION_KEYS: Record<string, readonly MemberVmKey[]> = {
+  vm_sizes: ["provider", "off_providers"],
+  "vm_sizes.exe-dev": ["cpu", "memory_gb", "disk_gb", "image", "pool"],
+  "vm_sizes.boat": ["cpu", "memory_gb"],
+  "vm_sizes.instabox": ["cpu", "memory_gb"],
+};
 
 /** Upper bounds that catch typos. exe.dev's plan limits are lower and it says so itself. */
 const MAX_MEMBER_VM_CPU = 512;
@@ -51,37 +56,35 @@ export function isMemberVmPool(value: unknown): value is string {
 
 export type MemberVmKey = (typeof MEMBER_VM_KEYS)[number];
 
-export function isMemberVmKey(key: string): key is MemberVmKey {
-  return (MEMBER_VM_KEYS as readonly string[]).includes(key);
-}
+const field = (key: string) => key.replace(/_(\w)/, (_, letter: string) => letter.toUpperCase());
 
-/** Assign one `[member_vm]` key, or throw with the line number. */
 export function assignMemberVmKey(
-  size: MemberVmSize,
+  settings: VmSizes,
+  section: string,
   key: string,
   value: string | number | boolean | string[],
   line: number,
 ): void {
-  if (!isMemberVmKey(key))
+  const keys = SECTION_KEYS[section] ?? [];
+  if (!(keys as readonly string[]).includes(key))
     throw new Error(
-      `Saved settings line ${line} has an unknown key: member_vm.${key} (use ${MEMBER_VM_KEYS.join(", ")})`,
+      `Saved settings line ${line} has an unknown key: ${section}.${key} (use ${keys.join(", ")})`,
     );
   let checked: number | string | MemberVmProviderName[];
   try {
-    checked = checkMemberVmValue(key, value);
+    checked = checkMemberVmValue(key as MemberVmKey, value);
   } catch (error) {
     throw new Error(`Saved settings line ${line} ${(error as Error).message}`, { cause: error });
   }
-  if (key === "provider") size.provider = checked as MemberVmProviderName;
-  else if (key === "cpu") size.cpu = checked as number;
-  else if (key === "memory_gb") size.memoryGb = checked as number;
-  else if (key === "disk_gb") size.diskGb = checked as number;
-  else if (key === "image") size.image = checked as string;
-  else if (key === "off_providers") size.offProviders = checked as MemberVmProviderName[];
-  else size.pool = checked as string;
+  if (key === "provider") settings.provider = checked as MemberVmProviderName;
+  else if (key === "off_providers") settings.offProviders = checked as MemberVmProviderName[];
+  else {
+    const provider = section.slice("vm_sizes.".length) as MemberVmProviderName;
+    const size = ((settings.sizes ??= {})[provider] ??= {}) as Record<string, unknown>;
+    size[field(key)] = checked;
+  }
 }
 
-/** One `[member_vm]` value, checked as Settings and `paws install` take it. */
 export function checkMemberVmValue(
   key: MemberVmKey,
   value: string | number | boolean | string[],
@@ -91,12 +94,12 @@ export function checkMemberVmValue(
       !Array.isArray(value) ||
       !value.every((id) => (MEMBER_VM_PROVIDERS as readonly unknown[]).includes(id))
     )
-      throw new Error('member_vm.off_providers must be a list of "exe-dev", "boat" or "instabox"');
+      throw new Error('vm_sizes.off_providers must be a list of "exe-dev", "boat" or "instabox"');
     return [...new Set(value as MemberVmProviderName[])];
   }
   if (key === "provider") {
     if (!(MEMBER_VM_PROVIDERS as readonly unknown[]).includes(value))
-      throw new Error("member_vm.provider must be exe-dev, boat or instabox");
+      throw new Error("vm_sizes.provider must be exe-dev, boat or instabox");
     return value as MemberVmProviderName;
   }
   if (key === "cpu") return positive(value, key, MAX_MEMBER_VM_CPU);
@@ -105,112 +108,111 @@ export function checkMemberVmValue(
   if (key === "pool") {
     if (!isMemberVmPool(value))
       throw new Error(
-        'member_vm.pool must be an exe.dev pool name such as "build" (letters, digits, - and _)',
+        'vm_sizes.pool must be an exe.dev pool name such as "build" (letters, digits, - and _)',
       );
     return value;
   }
   if (typeof value !== "string" || !isMemberVmImage(value))
-    throw new Error('member_vm.image must be an image name such as "ubuntu:24.04"');
+    throw new Error('vm_sizes.image must be an image name such as "ubuntu:24.04"');
   return value;
 }
 
 function positive(value: string | number | boolean | string[], key: string, max: number): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > max)
-    throw new Error(`member_vm.${key} must be a whole number from 1 to ${max}`);
+    throw new Error(`vm_sizes.${key} must be a whole number from 1 to ${max}`);
   return value;
 }
 
-export function renderMemberVmSettings(size: MemberVmSize | undefined): string {
-  const lines = [
-    ...(size?.provider === undefined ? [] : [`provider = "${size.provider}"`]),
-    ...(size?.cpu === undefined ? [] : [`cpu = ${size.cpu}`]),
-    ...(size?.memoryGb === undefined ? [] : [`memory_gb = ${size.memoryGb}`]),
-    ...(size?.diskGb === undefined ? [] : [`disk_gb = ${size.diskGb}`]),
-    ...(size?.image === undefined ? [] : [`image = "${size.image}"`]),
-    ...(size?.pool === undefined ? [] : [`pool = "${size.pool}"`]),
-    ...(size?.offProviders?.length
-      ? [`off_providers = [${size.offProviders.map((id) => `"${id}"`).join(", ")}]`]
+export function renderMemberVmSettings(settings: VmSizes | undefined): string {
+  const top = [
+    ...(settings?.provider === undefined ? [] : [`provider = "${settings.provider}"`]),
+    ...(settings?.offProviders?.length
+      ? [`off_providers = [${settings.offProviders.map((id) => `"${id}"`).join(", ")}]`]
       : []),
   ];
-  return lines.length ? `\n[member_vm]\n${lines.join("\n")}\n` : "";
+  const tables = MEMBER_VM_PROVIDERS.flatMap((provider) => {
+    const size = settings?.sizes?.[provider] ?? {};
+    const lines = SECTION_KEYS[`vm_sizes.${provider}`]!.flatMap((key) => {
+      const value = size[field(key) as keyof MemberVmSize];
+      return value === undefined ? [] : [`${key} = ${JSON.stringify(value)}`];
+    });
+    return lines.length ? [`\n[vm_sizes.${provider}]\n${lines.join("\n")}\n`] : [];
+  });
+  if (top.length === 0 && tables.length === 0) return "";
+  return `\n[vm_sizes]\n${top.length ? `${top.join("\n")}\n` : ""}${tables.join("")}`;
 }
 
-export function parseMemberVmSettings(value: unknown): MemberVmSize {
+function record(value: unknown, name: string, fields: readonly string[]): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value))
-    throw new Error("member_vm must be an object");
-  const field = (key: string) => key.replace(/_(\w)/, (_, letter: string) => letter.toUpperCase());
-  const fields = MEMBER_VM_KEYS.map(field);
-  const unknown = Object.keys(value).find((name) => !(fields as string[]).includes(name));
+    throw new Error(`${name} must be an object`);
+  const unknown = Object.keys(value).find((key) => !fields.includes(key));
   if (unknown !== undefined)
-    throw new Error(`member_vm has an unknown field: ${unknown} (use ${fields.join(", ")})`);
-  const size: Record<string, number | string | MemberVmProviderName[]> = {};
-  for (const key of MEMBER_VM_KEYS) {
-    const raw = (value as Record<string, unknown>)[field(key)];
-    if (raw !== undefined && raw !== null)
-      size[field(key)] = checkMemberVmValue(key, raw as string | number | boolean | string[]);
-  }
-  checkMemberVmSize(memberVmProvider(size), size);
-  return size as MemberVmSize;
+    throw new Error(`${name} has an unknown field: ${unknown} (use ${fields.join(", ")})`);
+  return value as Record<string, unknown>;
 }
 
-export function memberVmProvider(settings: MemberVmSize | undefined): MemberVmProviderName {
+export function parseMemberVmSettings(value: unknown): VmSizes {
+  const body = record(value, "vm_sizes", ["provider", "offProviders", "sizes"]);
+  const settings: VmSizes = {};
+  if (body.provider != null)
+    settings.provider = checkMemberVmValue(
+      "provider",
+      body.provider as string,
+    ) as MemberVmProviderName;
+  if (body.offProviders != null)
+    settings.offProviders = checkMemberVmValue(
+      "off_providers",
+      body.offProviders as string[],
+    ) as MemberVmProviderName[];
+  const sizes = body.sizes == null ? {} : record(body.sizes, "vm_sizes.sizes", MEMBER_VM_PROVIDERS);
+  for (const provider of MEMBER_VM_PROVIDERS) {
+    if (sizes[provider] == null) continue;
+    const keys = SECTION_KEYS[`vm_sizes.${provider}`]!;
+    const raw = record(sizes[provider], `vm_sizes.${provider}`, keys.map(field));
+    const size: Record<string, number | string> = {};
+    for (const key of keys)
+      if (raw[field(key)] != null)
+        size[field(key)] = checkMemberVmValue(key, raw[field(key)] as number) as number | string;
+    checkMemberVmSize(provider, size);
+    (settings.sizes ??= {})[provider] = size;
+  }
+  return settings;
+}
+
+export function memberVmProvider(settings: VmSizes | undefined): MemberVmProviderName {
   return settings?.provider ?? "exe-dev";
 }
 
-export function memberVmSizeOnly(
-  settings: MemberVmSize | undefined,
-): Omit<MemberVmSize, "provider" | "offProviders"> {
-  const { provider: _provider, offProviders: _off, ...size } = settings ?? {};
-  return size;
+export function vmSizeFor(
+  settings: VmSizes | undefined,
+  provider: MemberVmProviderName,
+): MemberVmSize {
+  return { ...settings?.sizes?.[provider] };
 }
 
-const FIXED_SIZES = {
-  boat: {
-    name: "boat",
-    pairs: [
-      [2, 4],
-      [4, 8],
-      [8, 16],
-      [16, 32],
-    ],
-    maxDiskGb: null,
-  },
-  instabox: {
-    name: "InstaBox",
-    pairs: [
-      [2, 4],
-      [4, 8],
-      [8, 16],
-      [16, 32],
-      [32, 64],
-    ],
-    maxDiskGb: 1024,
-  },
-} as const;
+export const BOAT_SIZES = [
+  [2, 4],
+  [4, 8],
+  [8, 16],
+  [16, 32],
+] as const;
 
-export function checkMemberVmSize(
-  provider: MemberVmProviderName,
-  size: Omit<MemberVmSize, "provider" | "offProviders">,
+export function checkMemberVmSize(provider: MemberVmProviderName, size: MemberVmSize): void {
+  if (provider === "boat") checkVmSizeIn("boat", size, BOAT_SIZES);
+}
+
+export function checkVmSizeIn(
+  name: string,
+  size: MemberVmSize,
+  pairs: readonly (readonly [number, number])[],
 ): void {
-  if (provider === "exe-dev") return;
-  const { name, pairs, maxDiskGb } = FIXED_SIZES[provider];
-  const unsupported = (
-    [
-      ["image", size.image],
-      ["pool", size.pool],
-      ["disk_gb", maxDiskGb === null ? size.diskGb : undefined],
-    ] as const
-  ).find(([, value]) => value !== undefined && value !== null);
-  if (unsupported !== undefined)
-    throw new Error(
-      `${name} has no ${unsupported[0]} setting. Remove member_vm.${unsupported[0]}.`,
-    );
-  if (maxDiskGb !== null && size.diskGb !== undefined && size.diskGb > maxDiskGb)
-    throw new Error(`${name} has no ${size.diskGb} GB data disk. Use 1 to ${maxDiskGb}.`);
   if (size.cpu === undefined && size.memoryGb === undefined) return;
   if (pairs.some(([cpu, memory]) => cpu === size.cpu && memory === size.memoryGb)) return;
   const sizes = pairs.map(([cpu, memory]) => `${cpu}/${memory}`);
-  const allowed = `${sizes.slice(0, -1).join(", ")} or ${sizes.at(-1)}`;
+  const allowed =
+    sizes.length < 2
+      ? (sizes[0] ?? "no size")
+      : `${sizes.slice(0, -1).join(", ")} or ${sizes.at(-1)}`;
   const asked =
     size.cpu === undefined
       ? `${size.memoryGb} GB size without cpu`
@@ -220,12 +222,28 @@ export function checkMemberVmSize(
   throw new Error(`${name} has no ${asked}. Use ${allowed}.`);
 }
 
-export function setMemberVmText(current: string, size: MemberVmSize): string {
-  const retained = withoutConfigSection(current, "member_vm");
-  const table = renderMemberVmSettings(size);
+export function setMemberVmText(current: string, settings: VmSizes): string {
+  const retained = MEMBER_VM_PROVIDERS.reduce(
+    (text, provider) => withoutConfigSection(text, `vm_sizes.${provider}`),
+    withoutConfigSection(current, "vm_sizes"),
+  );
+  const table = renderMemberVmSettings(settings);
   return retained === "" ? table.trimStart() : `${retained}\n${table}`;
 }
 
-export function writeMemberVmSize(path: string, size: MemberVmSize): Promise<void> {
-  return updateConfigText(path, (text) => setMemberVmText(text, size));
+export function upgradeSettingSections(sections: SettingSections): SettingSections {
+  const { member_vm: legacy, ...rest } = sections;
+  if (legacy === undefined) return sections;
+  if (rest["vm_sizes"] !== undefined) return rest;
+  const old = legacy as Record<string, unknown>;
+  const provider = MEMBER_VM_PROVIDERS.includes(old["provider"] as MemberVmProviderName)
+    ? (old["provider"] as MemberVmProviderName)
+    : "exe-dev";
+  const keys = SECTION_KEYS[`vm_sizes.${provider}`]!.filter((key) => old[key] !== undefined);
+  const vmSizes = {
+    ...(old["provider"] === provider ? { provider } : {}),
+    ...(old["off_providers"] === undefined ? {} : { off_providers: old["off_providers"] }),
+    ...(keys.length ? { [provider]: Object.fromEntries(keys.map((key) => [key, old[key]])) } : {}),
+  };
+  return Object.keys(vmSizes).length ? { ...rest, vm_sizes: vmSizes } : rest;
 }
