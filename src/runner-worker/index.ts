@@ -153,6 +153,8 @@ import {
   parseRecallRequest,
   parseRememberOperations,
   RunnerHelperResultSchema,
+  RUNNER_PROBE_DIRECTORY,
+  type RunnerProbeResult,
   RUNNER_SKILL_FOLDERS,
   AGENT_SIGNED_OUT,
   GITHUB_READ_CONFIRM_MS,
@@ -172,6 +174,7 @@ import {
   type RunnerRecallRequest,
   type RunnerRememberOperation,
 } from "../runner-protocol";
+import { checkoutProbeWorktree, probeOutcome } from "./probe-checkout";
 
 import { AGENT_SESSION_MAX_BYTES } from "../agent-sessions";
 import { agentWaitTracker } from "./agent-wait";
@@ -674,6 +677,7 @@ export interface RunnerWorkerResult {
   text?: string;
   replies?: string[];
   startWork?: string;
+  probe?: RunnerProbeResult;
   login?: {
     agent: "claude" | "codex" | "grok" | "opencode";
     authenticated: boolean;
@@ -1103,6 +1107,8 @@ export async function executeRunnerCommand(
   const repository = command.type === "run" || command.type === "review";
   const task = command.type === "task";
   const talk = command.type === "helper" ? command.conversation : undefined;
+  const probeWrite = command.type === "helper" ? command.probe : undefined;
+  let probeMain: string | undefined;
   const phase =
     (repository || task) && options.resume !== true
       ? startPhaseClock({
@@ -1126,7 +1132,7 @@ export async function executeRunnerCommand(
     (options.skills !== undefined && !isAbsolute(options.skills)) ||
     !Number.isSafeInteger(options.resultsGid) ||
     options.resultsGid < 0 ||
-    repository !== (options.repositoryBundle !== undefined) ||
+    (repository || probeWrite !== undefined) !== (options.repositoryBundle !== undefined) ||
     (options.repositoryBlobs !== undefined && !repository) ||
     (task && command.repository !== undefined) !== (options.repositorySnapshot !== undefined)
   )
@@ -1425,6 +1431,8 @@ export async function executeRunnerCommand(
           .split("\n")
           .filter(Boolean))
           await invokeGit(["-C", worktree, "update-ref", "-d", ref]);
+    } else if (probeWrite) {
+      probeMain = await checkoutProbeWorktree(options.repositoryBundle!, worktree, invokeGit);
     } else if (talk) {
       let info;
       try {
@@ -1702,11 +1710,12 @@ export async function executeRunnerCommand(
       ...options.launch,
       hostAccess: !(
         command.type === "helper" &&
-        ["slack_reply", "repository_summary", "probe_distill"].includes(command.purpose)
+        ["slack_reply", "repository_summary", "probe_distill", "probe_write"].includes(
+          command.purpose,
+        )
       ),
-      ...(command.type === "helper" && command.purpose === "probe_distill"
-        ? { sandbox: true }
-        : {}),
+      ...(command.type === "helper" && command.purpose === "probe_distill" ? { sandbox: {} } : {}),
+      ...(probeWrite ? { sandbox: { writable: RUNNER_PROBE_DIRECTORY } } : {}),
       skillsRoot,
       ...(options.skills && (repository || task)
         ? {
@@ -1738,7 +1747,10 @@ export async function executeRunnerCommand(
       profile:
         command.type === "login_check" ? { agent: command.agent, model: null } : command.profile,
       role: command.type === "review" ? "reviewer" : "implementer",
-      readOnly: command.type === "task" ? command.purpose !== "artifact" : command.type !== "run",
+      readOnly:
+        command.type === "task"
+          ? command.purpose !== "artifact"
+          : command.type !== "run" && !probeWrite,
       checkpoint: command.type === "run" && command.checkpoint !== false,
       ...(command.type === "run" && command.closeoutRulesFirst ? { closeoutRulesFirst: true } : {}),
       ...(command.type === "run" && command.closeoutFocus
@@ -2600,6 +2612,21 @@ export async function executeRunnerCommand(
     enterPhase("verify");
     const result: RunnerWorkerResult = { executionId: job.executionId, commandId: command.id, run };
     if (command.type === "helper") result.text = reviewText;
+    if (probeWrite && !run.errorMessage)
+      try {
+        probeMain ??= (
+          await invokeGit(["-C", worktree, "rev-parse", "--verify", "refs/remotes/origin/main"])
+        ).trim();
+        result.probe = await probeOutcome({
+          worktree,
+          fetched: probeMain,
+          path: probeWrite.path,
+          text: reviewText,
+          git: invokeGit,
+        });
+      } catch (error) {
+        run.errorMessage = workerFailure("verify", error);
+      }
     if (sentReplies.length) result.replies = sentReplies;
     if (startWorkPlan) result.startWork = startWorkPlan;
     if (command.type === "login_check") {
@@ -2788,6 +2815,7 @@ export async function executeRunnerCommand(
               text: true,
               replies: true,
               startWork: true,
+              probe: true,
             })
               .strip()
               .parse(run),
@@ -3033,7 +3061,9 @@ export async function runRunnerWorker(options: {
         ? { repositorySnapshot: runnerTaskRepositoryPath(spool, options.executionId) }
         : job.command.type === "helper" && job.command.repositories
           ? { helperRepositories: () => runnerHelperRepositories(spool, options.executionId) }
-          : {}),
+          : job.command.type === "helper" && job.command.purpose === "probe_write"
+            ? { repositoryBundle: runnerRepositoryBundlePath(spool, options.executionId) }
+            : {}),
     outputDirectory: createRunnerResultDirectory(options.results, options.executionId),
     workRoot: job.command.type === "task" ? "/var/lib/paws-agent-tasks" : options.workRoot,
     home: options.home,

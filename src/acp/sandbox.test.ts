@@ -1,9 +1,18 @@
 import { afterEach, expect, test } from "bun:test";
 import { helperSandboxStarts } from "../../test/helper-sandbox";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { sandboxedLaunch } from "./sandbox";
+import { sandboxedLaunch, writeSandboxed } from "./sandbox";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -14,7 +23,7 @@ const sandbox = helperSandboxStarts;
 
 type Paths = { home: string; worktree: string; scratch: string; socket: string };
 
-async function inUnit(script: (paths: Paths) => string) {
+async function inUnit(script: (paths: Paths) => string, writable?: string) {
   const root = mkdtempSync(join(homedir(), ".paws-sandbox-"));
   roots.push(root);
   const paths: Paths = {
@@ -36,6 +45,7 @@ async function inUnit(script: (paths: Paths) => string) {
     cwd: paths.worktree,
     scratch: paths.scratch,
     home: paths.home,
+    ...(writable ? { writable } : {}),
   });
   expect(launch.args.join(" ")).not.toContain("sk-test");
   const child = Bun.spawn([launch.command, ...launch.args], { env: launch.env, stdout: "pipe" });
@@ -137,4 +147,79 @@ test("sandboxed helper turns refuse an agent whose credential lives in its data 
       home: "/",
     }),
   ).toThrow("opencode can't run in a sandboxed helper turn");
+});
+
+test.skipIf(!sandbox)(
+  "a probe_write unit can write only under .agents/probes",
+  async () => {
+    const { output, paths } = await inUnit(
+      ({ worktree }) =>
+        [
+          ["probe", ".agents/probes/rule.ts"],
+          ["agents", ".agents/other.ts"],
+          ["root", "x"],
+        ]
+          .map(([label, path]) =>
+            attempt(
+              label!,
+              `require("fs").writeFileSync(${JSON.stringify(join(worktree, path!))}, "x")`,
+            ),
+          )
+          .join("\n"),
+      ".agents/probes",
+    );
+    expect(output).toContain("probe ok");
+    expect(output).toContain("agents EROFS");
+    expect(output).toContain("root EROFS");
+    expect(readFileSync(join(paths.worktree, ".agents/probes/rule.ts"), "utf8")).toBe("x");
+    expect(existsSync(join(paths.worktree, "x"))).toBe(false);
+  },
+  30_000,
+);
+
+function probeTree() {
+  const root = mkdtempSync(join(homedir(), ".paws-sandbox-"));
+  roots.push(root);
+  const worktree = join(root, "worktree");
+  const outside = join(root, "outside");
+  mkdirSync(worktree);
+  mkdirSync(outside);
+  mkdirSync(join(root, "scratch"));
+  return { root, worktree, outside };
+}
+
+test("a probe_write sandbox refuses a writable path through a repository symlink", () => {
+  const { root, worktree, outside } = probeTree();
+  symlinkSync(outside, join(worktree, ".agents"));
+  expect(() =>
+    sandboxedLaunch({
+      agent: "codex",
+      command: "x",
+      args: [],
+      env: {},
+      cwd: worktree,
+      scratch: join(root, "scratch"),
+      home: root,
+      writable: ".agents/probes",
+    }),
+  ).toThrow("A sandbox path is not a plain directory");
+  expect(readdirSync(outside)).toEqual([]);
+});
+
+test("a sandboxed turn's ACP writes reach only files directly under its writable folder", () => {
+  const { worktree, outside } = probeTree();
+  const probes = join(worktree, ".agents", "probes");
+  writeSandboxed({ path: join(probes, "rule.ts"), content: "probe" }, worktree, ".agents/probes");
+  expect(readFileSync(join(probes, "rule.ts"), "utf8")).toBe("probe");
+  symlinkSync(join(outside, "target"), join(probes, "link.ts"));
+  for (const [path, writable] of [
+    [join(worktree, "x.ts"), ".agents/probes"],
+    [join(probes, "nested", "x.ts"), ".agents/probes"],
+    [join(probes, "..", "x.ts"), ".agents/probes"],
+    [join(probes, "link.ts"), ".agents/probes"],
+    [join(probes, "rule.ts"), undefined],
+  ] as const)
+    expect(() => writeSandboxed({ path, content: "x" }, worktree, writable)).toThrow();
+  expect(readdirSync(outside)).toEqual([]);
+  expect(existsSync(join(worktree, ".agents", "x.ts"))).toBe(false);
 });

@@ -1,7 +1,17 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  ftruncateSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  realpathSync,
+  writeSync,
+} from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { AgentProfile } from "../config";
 
 const SESSION_DIRECTORIES: Partial<Record<AgentProfile["agent"], string>> = {
@@ -32,12 +42,14 @@ export function sandboxedLaunch(input: {
   cwd: string;
   scratch: string;
   home: string;
+  writable?: string;
 }) {
   const session = SESSION_DIRECTORIES[input.agent];
   if (!session) throw new Error(`${input.agent} can't run in a sandboxed helper turn`);
   const scratch = plainDirectory(input.scratch, "");
   const sessions = plainDirectory(input.home, session);
   const turnSessions = plainDirectory(scratch, "sessions");
+  const writable = input.writable ? [plainDirectory(input.cwd, input.writable)] : [];
   const env = Object.fromEntries(
     Object.entries(input.env).filter(([key]) => key !== "DOCKER_HOST"),
   );
@@ -51,7 +63,7 @@ export function sandboxedLaunch(input: {
     "RestrictAddressFamilies=AF_INET AF_INET6",
     "InaccessiblePaths=/run/user -/run/paws-agent-docker -/run/paws-docker -/run/dbus",
     "RuntimeMaxSec=900",
-    `ReadWritePaths=${scratch}`,
+    `ReadWritePaths=${[scratch, ...writable].join(" ")}`,
     `BindPaths=${turnSessions}:${sessions}`,
   ];
   return {
@@ -74,4 +86,34 @@ export function sandboxedLaunch(input: {
       });
     },
   };
+}
+
+export function writeSandboxed(
+  params: { path: string; content: string },
+  worktree: string,
+  writable: string | undefined,
+): Record<string, never> {
+  const name = basename(params.path);
+  if (
+    !writable ||
+    !isAbsolute(params.path) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(name) ||
+    ![join(worktree, writable), join(realpathSync(worktree), writable)].includes(
+      dirname(resolve(params.path)),
+    )
+  )
+    throw new Error(`This agent session may write only under ${writable ?? "nothing"}`);
+  const file = openSync(
+    join(plainDirectory(worktree, writable), name),
+    constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    0o600,
+  );
+  try {
+    if (!fstatSync(file).isFile()) throw new Error("A sandbox path is not a plain file");
+    ftruncateSync(file, 0);
+    writeSync(file, params.content);
+  } finally {
+    closeSync(file);
+  }
+  return {};
 }

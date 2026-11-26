@@ -112,7 +112,8 @@ export interface RunAgentOptions {
     fallbackProfile?: AgentProfile;
   }>;
   readOnly?: boolean;
-  sandbox?: boolean;
+  /** Run the agent in a sandboxed unit; `writable` is the one worktree folder it may write. */
+  sandbox?: { writable?: string };
   closeoutRulesFirst?: boolean;
   closeoutFocus?: CloseoutFocus;
   pullRequestDraft?: PullRequestDraft;
