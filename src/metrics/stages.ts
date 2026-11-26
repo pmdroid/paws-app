@@ -78,6 +78,7 @@ export async function readStageTimes(
       itemId: row.id,
       identifier: row.identifier,
       title: row.title,
+      state: row.state,
       repository: row.owner && row.repo ? `${row.owner}/${row.repo}` : null,
       ...emptyTotals(),
       waitingForPerson: [] as { questionId: string; reason: string | null; ms: number }[],

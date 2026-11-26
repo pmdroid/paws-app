@@ -733,6 +733,99 @@ try {
     await admin.unroute("**/api/settings/storage");
     await admin.unroute("**/api/settings/storage/check");
 
+    const metricCalls: string[] = [];
+    const sample = (at: number, p95: number, gauge: number | null = null) => ({
+      ...{ at, count: 60, sum: p95 * 30, max: p95 * 2, gauge, p50: p95 / 2, p95, p99: p95 },
+      atMostMs: null,
+    });
+    const hours = Array.from({ length: 24 }, (_, hour) => Date.now() - (23 - hour) * 3_600_000);
+    const metric = (
+      name: string,
+      labels: Record<string, string>,
+      value: (i: number) => number,
+    ) => ({ name, labels, points: hours.map((at, i) => sample(at, value(i), value(i))) });
+    await admin.route("**/api/metrics?**", (route) => {
+      metricCalls.push(route.request().url());
+      const empty = new URL(route.request().url()).searchParams.get("step") === "minute";
+      route.fulfill({
+        json: {
+          step: "hour",
+          from: hours[0],
+          to: Date.now(),
+          series: empty
+            ? []
+            : [
+                metric("process.event_loop_lag", {}, (i) => (i === 14 ? 240 : 30 + i)),
+                metric("process.cpu_percent", {}, (i) => 20 + (i % 5) * 4),
+                metric("process.rss_bytes", {}, (i) => (300 + i * 4) * 1024 ** 2),
+                metric("host.operation", { operation: "closeout.report" }, () => 420),
+                metric("http.request", { route: "/api/issues", status_class: "2xx" }, () => 180),
+                metric("http.request", { route: "/api/overview", status_class: "2xx" }, () => 620),
+                metric("linear.call", { caller: "poll", status_class: "2xx" }, () => 340),
+                metric("github.call", { caller: "pulls", status_class: "5xx" }, () => 2_400),
+                metric("linear.rate_remaining", {}, () => 4_820),
+                metric("github.rate_remaining", {}, () => 4_100),
+                metric("job.depth", { queue: "merge" }, () => 3),
+                metric("job.oldest_age_ms", { queue: "merge" }, () => 42_000),
+                metric("job.wait", { queue: "merge" }, () => 1_800),
+                metric("outbox.wait", { kind: "linear.comment" }, () => 120),
+              ],
+        },
+      });
+    });
+    await admin.route("**/api/metrics/stages?**", (route) => {
+      const from = Number(new URL(route.request().url()).searchParams.get("from"));
+      const empty = from > Date.now() - 2 * 3_600_000;
+      const stages = (scale: number) => ({
+        ...{
+          queued: 4 * 60_000 * scale,
+          running: 22 * 60_000 * scale,
+          verifying: 9 * 60_000 * scale,
+        },
+        ...{ awaitingInput: 6 * 60_000 * scale, mergeQueue: 11 * 60_000 * scale },
+      });
+      route.fulfill({
+        json: {
+          items: empty
+            ? []
+            : [1, 2, 3].map((scale) => ({
+                ...{
+                  itemId: `item-${scale}`,
+                  identifier: `PAS-${100 + scale}`,
+                  title: `Item ${scale}`,
+                },
+                ...{ state: "merged", stagesMs: stages(scale) },
+              })),
+          checks: empty
+            ? []
+            : [
+                { checkId: "test", runs: 12, timeouts: 1, medianMs: 540_000, p95Ms: 1_320_000 },
+                { checkId: "lint", runs: 12, timeouts: 0, medianMs: 48_000, p95Ms: 61_000 },
+              ],
+        },
+      });
+    });
+    await visit(
+      admin,
+      width,
+      "settings-performance",
+      "/dashboard/workspace/performance",
+      "Performance",
+    );
+    for (const name of ["work", "responsiveness", "queues", "services"])
+      await expect(admin.locator(`[data-perf-section="${name}"]`)).toBeVisible();
+    await expect(admin.locator("[data-perf-tile]")).toHaveCount(4);
+    expect(await admin.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+    const before = metricCalls.length;
+    await admin.getByRole("button", { name: "1 h", exact: true }).click();
+    await expect(admin.getByText("No data in this range")).toBeVisible();
+    expect(metricCalls.length).toBe(before + 1);
+    await admin.screenshot({ path: join(out, `settings-performance-empty-${width}.png`) });
+    await admin.unroute("**/api/metrics?**");
+    await admin.unroute("**/api/metrics/stages?**");
+
     await admin.route("**/api/settings/agents", (route) =>
       route.fulfill({
         json: {
@@ -782,7 +875,7 @@ try {
       .getByRole("navigation", { name: "Main navigation" })
       .getByRole("list", { name: "Workspace pages" })
       .getByRole("link");
-    await expect(submenu).toHaveCount(13);
+    await expect(submenu).toHaveCount(14);
     await expect(submenu.and(admin.locator('[aria-current="page"]'))).toHaveText("Agents");
     await admin.screenshot({
       path: join(out, `workspace-submenu-${width}.png`),
