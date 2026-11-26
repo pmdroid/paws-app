@@ -54,7 +54,6 @@ export type InstaBoxIssueVmOptions = {
   bootstrap: ExeDevBootstrap;
   queue: StartQueue;
   readToken: ExeDevTokenReader;
-  size: () => InstaBoxIssueVmSize;
   remember: (name: string, id: string) => void | Promise<void>;
   clock?: BootstrapClock;
   pollMs?: number;
@@ -67,10 +66,9 @@ export type InstaBoxIssueVmCreate = {
   name: string;
   key: string;
   snapshot: string;
+  size: { cpu?: number; memoryGb?: number };
   mintToken: () => Promise<string>;
 };
-
-type InstaBoxIssueVmSize = { cpu?: number; memoryGb?: number };
 
 export type InstaBoxIssueVm = EnrolledRunner & { name: string; id: string };
 
@@ -88,7 +86,7 @@ const SYSTEM_CLOCK: BootstrapClock = {
 
 function instaBoxPlanRefusal(
   plan: InstaBoxPlan,
-  size: InstaBoxIssueVmSize,
+  size: InstaBoxIssueVmCreate["size"],
 ): InstaBoxIssueVmError | null {
   if (plan.tier === "free")
     return new InstaBoxIssueVmError(
@@ -101,12 +99,8 @@ function instaBoxPlanRefusal(
       `InstaBox's ${plan.tier} plan doesn't allow turning idle pause off, so an issue VM would pause in the middle of a turn. Use an InstaBox plan that allows always on.`,
     );
   if (size.cpu === undefined && size.memoryGb === undefined) return null;
-  if (
-    plan.sizes.some(
-      (spec) => spec.vcpus === size.cpu && spec.memMiB === (size.memoryGb ?? 0) * 1024,
-    )
-  )
-    return null;
+  const memMiB = (size.memoryGb ?? 0) * 1024;
+  if (plan.sizes.some((spec) => spec.vcpus === size.cpu && spec.memMiB === memMiB)) return null;
   const allowed = plan.sizes.map((spec) => `${spec.vcpus} vCPU / ${spec.memMiB / 1024} GB`);
   return new InstaBoxIssueVmError(
     "size",
@@ -197,14 +191,11 @@ export function createInstaBoxIssueVms(options: InstaBoxIssueVmOptions): InstaBo
     }
   }
 
-  async function createMachine(
-    input: InstaBoxIssueVmCreate,
-    size: InstaBoxIssueVmSize,
-  ): Promise<string> {
+  async function createMachine(input: InstaBoxIssueVmCreate): Promise<string> {
     const key = await queueKey();
     try {
       const created = await queue.start(key, () =>
-        instaBox.createVm(input.name, size, { key: input.key, from: input.snapshot }),
+        instaBox.createVm(input.name, input.size, { key: input.key, from: input.snapshot }),
       );
       return created.id;
     } catch (error) {
@@ -219,10 +210,9 @@ export function createInstaBoxIssueVms(options: InstaBoxIssueVmOptions): InstaBo
 
   return {
     async create(input) {
-      const size = options.size();
-      const refusal = instaBoxPlanRefusal(await instaBox.readPlan(), size);
+      const refusal = instaBoxPlanRefusal(await instaBox.readPlan(), input.size);
       if (refusal !== null) throw refusal;
-      const id = await createMachine(input, size);
+      const id = await createMachine(input);
       await options.remember(input.name, id);
       await wake(input.name);
       await exec(input.name, INSTABOX_PREPARE_COMMAND, "Preparing the machine for the runner");

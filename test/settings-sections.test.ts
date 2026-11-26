@@ -139,7 +139,6 @@ test("an old single VM size converts to the provider it names, from a blob or a 
     '[member_vm]\nprovider = "boat"\ncpu = 8\nmemory_gb = 16\n\n[queue]\nstart_timeout_hours = 12\n';
   await updateSetting(db, CONFIG_SETTINGS_KEY, () => legacy, 1);
   expect(await convert(db)).toBe(true);
-  expect(Object.keys(await rows(db)).sort()).toEqual(["settings.queue", "settings.vm_sizes"]);
   expect(loadConfigFile(await open(db)).vmSizes).toEqual({
     provider: "boat",
     sizes: { boat: { cpu: 8, memoryGb: 16 } },

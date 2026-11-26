@@ -72,7 +72,7 @@ import {
   handleFindingSettingsRequest,
   handleHookSettingsRequest,
   handleSkillSettingsRequest,
-  handleVmSizesSettingsRequest,
+  handleMemberVmSettingsRequest,
   handleIssueVmSettingsRequest,
   ISSUE_VM_SETTINGS_PATH,
   handleRunnerVmKeysSettingsRequest,
@@ -100,14 +100,14 @@ import {
   STORAGE_CLEANUP_PATH,
   STORAGE_USAGE_PATH,
   STORAGE_USAGE_REFRESH_PATH,
-  VM_SIZES_SETTINGS_PATH,
+  MEMBER_VM_SETTINGS_PATH,
   MERGE_SETTINGS_PATH,
   TIME_LIMIT_SETTINGS_PATH,
   type AgentSettingsOptions,
   type BriefSettingsOptions,
   type StorageCleanupSettingsOptions,
   type StorageUsageSettingsOptions,
-  type VmSizesSettingsOptions,
+  type MemberVmSettingsOptions,
   type VmProviderCheckService,
   type HighRiskFile,
   type OverlapHoldView,
@@ -252,7 +252,7 @@ export type ServerOptions = {
     riskGate?: { on: boolean; reason?: string };
     /** A repository's `.paws/high-risk-paths` in its local mirror, for Settings → Merging. */
     highRiskFile?: (repo: string) => Promise<HighRiskFile | null>;
-    instaBoxSizes?: VmSizesSettingsOptions["instaBoxSizes"];
+    instaBoxSizes?: MemberVmSettingsOptions["instaBoxSizes"];
   };
   /** Registered agent skills: bundles under `root` (`~/.paws/skills`), pins in `db`. */
   skillSettings?: {
@@ -919,10 +919,10 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     }))!;
   }
-  if (path === VM_SIZES_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
+  if (path === MEMBER_VM_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
     const store = secrets.store;
     const { instaBoxSizes } = secrets.agentSettings;
-    return (await handleVmSizesSettingsRequest(request, {
+    return (await handleMemberVmSettingsRequest(request, {
       configPath: secrets.agentSettings.configPath,
       csrfToken,
       ...(instaBoxSizes === undefined ? {} : { instaBoxSizes }),

@@ -30,12 +30,12 @@ import {
 } from "./settings-store";
 import { parseTimeLimitTables, type StoredTimeLimits } from "./time-limits";
 import {
-  assignVmSizesKey,
-  setVmSizesText,
+  assignMemberVmKey,
+  setMemberVmText,
   upgradeSettingSections,
   type MemberVmProviderName,
   type VmSizes,
-} from "./vm-sizes";
+} from "./member-vm";
 import { assignIssueVmKey, type StoredIssueVmSettings } from "./issue-vm";
 import { parseProjectSkills, type ProjectSkills } from "./skills";
 
@@ -441,7 +441,7 @@ function assignConfig(
     return;
   }
   if (section === "vm_sizes" || section.startsWith("vm_sizes.")) {
-    assignVmSizesKey((config.vmSizes ??= {}), section, key, value, line);
+    assignMemberVmKey((config.vmSizes ??= {}), section, key, value, line);
     return;
   }
   if (section === "issue_vm") {
@@ -454,18 +454,20 @@ function assignConfig(
   }
 }
 
+export function updateVmSizes(path: string, change: (saved: VmSizes) => VmSizes): Promise<void> {
+  return updateConfigText(path, (text) =>
+    setMemberVmText(text, change(parseConfigToml(text).vmSizes ?? {})),
+  );
+}
+
 export function writeMemberVmProviderOff(
   path: string,
   provider: MemberVmProviderName,
   off: boolean,
 ): Promise<void> {
-  return updateConfigText(path, (text) => {
-    const settings = parseConfigToml(text).vmSizes ?? {};
-    const others = (settings.offProviders ?? []).filter((name) => name !== provider);
-    return setVmSizesText(text, {
-      ...settings,
-      offProviders: off ? [...others, provider] : others,
-    });
+  return updateVmSizes(path, (size) => {
+    const others = (size.offProviders ?? []).filter((name) => name !== provider);
+    return { ...size, offProviders: off ? [...others, provider] : others };
   });
 }
 

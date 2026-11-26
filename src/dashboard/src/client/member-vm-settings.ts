@@ -24,7 +24,7 @@ async function memberVmRequest(engine: string, body?: Record<string, string | nu
         ? { "Content-Type": "application/json", "x-paws-csrf": readCsrfToken(document) }
         : {}),
     },
-    ...(body ? { body: JSON.stringify(body) } : {}),
+    ...(body ? { body: JSON.stringify({ sizes: { "exe-dev": body } }) } : {}),
   });
   const data = await response.json().catch((error: unknown) => {
     journalCaught(error, "member-vm-settings.memberVmRequest.json", null);
@@ -34,7 +34,7 @@ async function memberVmRequest(engine: string, body?: Record<string, string | nu
     throw new Error(
       typeof data.error === "string" ? data.error : `Request failed (${response.status}).`,
     );
-  return data as MemberVmSize;
+  return (data.providers?.["exe-dev"]?.size ?? {}) as MemberVmSize;
 }
 
 export function createMemberVmSettings() {

@@ -1,4 +1,3 @@
-import { checkMemberVmSize } from "../config";
 import { journalCaught } from "../journal";
 import { abortable, readCapped, type ExeDevFetch, type ExeDevTokenReader } from "./client";
 import { isExeDevVmName, MAX_EXEC_COMMAND_BYTES } from "./names";
@@ -245,11 +244,6 @@ export function createInstaBox(options: InstaBoxOptions): InstaBox {
           "invalid_name",
           `InstaBox createVm for ${vm}: the snapshot id is not an InstaBox snapshot id.`,
         );
-      try {
-        if (from === undefined) checkMemberVmSize("instabox", { ...size });
-      } catch (error) {
-        throw new ProvisioningError("createVm", "unknown", (error as Error).message);
-      }
       const sized = size.cpu !== undefined && size.memoryGb !== undefined;
       const { status, body } = await call("createVm", vm, {
         method: "POST",

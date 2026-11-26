@@ -36,7 +36,6 @@ export type BoatIssueVmOptions = {
   bootstrap: ExeDevBootstrap;
   queue: StartQueue;
   readToken: ExeDevTokenReader;
-  size: () => ExeDevVmSize;
   remember: (name: string, id: string) => void | Promise<void>;
   clock?: BootstrapClock;
   pollMs?: number;
@@ -50,6 +49,7 @@ export type BoatIssueVmCreate = {
   name: string;
   key: string;
   snapshot: string;
+  size: ExeDevVmSize;
   mintToken: () => Promise<string>;
 };
 
@@ -140,9 +140,8 @@ export function createBoatIssueVms(options: BoatIssueVmOptions): BoatIssueVms {
   return {
     async create(input) {
       const key = await queueKey();
-      const size = options.size();
       const created = await queue.start(key, () =>
-        boat.createVm(input.name, size, { key: input.key, from: input.snapshot }),
+        boat.createVm(input.name, input.size, { key: input.key, from: input.snapshot }),
       );
       await options.remember(input.name, created.id);
       await resume(input.name, options.readyMs ?? 120_000);

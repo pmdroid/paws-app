@@ -9,19 +9,17 @@ import {
   createFakeBoat,
   createFakeBootstrap,
   ProvisioningError,
-  type ExeDevVmSize,
   type FakeBoatOptions,
 } from "../src/provisioning";
-import { loadConfigFile, useMemorySettings, vmSizeFor } from "../src/config";
+import { parseConfigToml, vmSizeFor } from "../src/config";
 
-const SIZE = { cpu: 8, memoryGb: 16 };
+const SIZE = vmSizeFor(
+  parseConfigToml("[vm_sizes.exe-dev]\ncpu = 32\n\n[vm_sizes.boat]\ncpu = 8\nmemory_gb = 16\n")
+    .vmSizes,
+  "boat",
+);
 
-function setup(
-  boatOptions: FakeBoatOptions = {},
-  startsPerMinute = 10,
-  maxWaitMs?: number,
-  size: () => ExeDevVmSize = () => SIZE,
-) {
+function setup(boatOptions: FakeBoatOptions = {}, startsPerMinute = 10, maxWaitMs?: number) {
   let now = 1_000_000;
   const clock = {
     now: () => now,
@@ -46,7 +44,6 @@ function setup(
     bootstrap,
     queue,
     readToken: () => "boat_fake-key",
-    size,
     remember: (name, id) => {
       ids.set(name, id);
     },
@@ -55,7 +52,7 @@ function setup(
   const minted: number[] = [];
   const mintToken = async () => `token-${minted.push(now)}`;
   const create = (name: string) =>
-    vms.create({ name, key: `key-${name}`, snapshot: "paws-issue-vm", mintToken });
+    vms.create({ name, key: `key-${name}`, snapshot: "paws-issue-vm", size: SIZE, mintToken });
   return { boat, bootstrap, queue, vms, create, minted, now: () => now };
 }
 
@@ -67,23 +64,6 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
 }
 
 describe("boat issue VMs", () => {
-  test("a VM gets boat's saved size, not another provider's", async () => {
-    const path = "/paws-test/boat-issue-vm/config.toml";
-    const settings = useMemorySettings(
-      path,
-      "[vm_sizes.exe-dev]\ncpu = 32\nmemory_gb = 64\n\n[vm_sizes.boat]\ncpu = 2\nmemory_gb = 4\n",
-    );
-    try {
-      const { boat, create } = setup({}, 10, undefined, () =>
-        vmSizeFor(loadConfigFile(path).vmSizes, "boat"),
-      );
-      await create("pas-1-vm");
-      expect(boat.sandboxes.get("pas-1-vm")?.size).toEqual({ cpu: 2, memoryGb: 4 });
-    } finally {
-      settings.release();
-    }
-  });
-
   test("an issue gets a VM from the snapshot, sleeps, wakes and is deleted", async () => {
     const { boat, bootstrap, vms, create } = setup();
     const vm = await create("pas-1-vm");
@@ -95,7 +75,7 @@ describe("boat issue VMs", () => {
     });
     expect(boat.sandboxes.get("pas-1-vm")).toMatchObject({
       from: "paws-issue-vm",
-      size: SIZE,
+      size: { cpu: 8, memoryGb: 16 },
       state: "ready",
     });
     expect(boat.calls.find((call) => call.operation === "execVm")?.command).toBe(

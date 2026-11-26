@@ -26,9 +26,7 @@ export const SETTINGS_SECTIONS = [
   "checkout",
 ] as const;
 
-const LEGACY_SECTIONS = ["member_vm"] as const;
-
-export const SAVED_SETTINGS_SECTIONS = [...SETTINGS_SECTIONS, ...LEGACY_SECTIONS];
+export const SAVED_SETTINGS_SECTIONS = [...SETTINGS_SECTIONS, "member_vm"];
 
 type SettingsSnapshot = {
   refresh(): Promise<void>;

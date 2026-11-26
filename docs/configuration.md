@@ -38,7 +38,7 @@ The Closeout policy of each repository, `.agents/closeout.yaml` on `origin/main`
 
 `bun run paws install` sets up a control plane as a systemd user service. It asks for the checkout path (`~/.local/share/paws/app`), `PAWS_HOME` (`~/.paws`), `PAWS_HOST`, `PAWS_PORT`, `PAWS_PUBLIC_DASHBOARD`, `PAWS_PUBLIC_URL`, `PAWS_RUNNER_HOST`, `PAWS_RUNNER_PORT`, the Linear team and the GitHub repositories. It writes `PAWS_HOME/https.env` (mode 0600), with the Linear team as `LINEAR_TEAM` and the repositories as `PAWS_GITHUB_REPOS`, then `~/.config/systemd/user/paws.service` and its `paws.service.d/working-directory.conf` drop-in, then runs `systemctl --user daemon-reload`. It does not start the service.
 
-Run it again to change a value: each prompt shows the current value in the env file as its default, and other env lines stay as they are. Type `-` to clear an optional value and remove its line. `paws install` does not change settings; set the runner VM size in Settings ([VM sizes](#vm-sizes)). It needs bun 1.4.4 on `PATH` (`mise use -g bun@1.4.4`).
+Run it again to change a value: each prompt shows the current value in the env file as its default, and other env lines stay as they are. Type `-` to clear an optional value and remove its line. `paws install` does not change settings; set the runner VM size in Settings ([Member VM](#member-vm)). It needs bun 1.4.4 on `PATH` (`mise use -g bun@1.4.4`).
 
 `bun run paws install secrets` asks for nothing. It prints the public URL from `PAWS_PUBLIC_URL` and the setup link, the same text as `paws setup-link`; before Paws has started once it says to start Paws and run `paws setup-link`. GitHub, Linear, [Slack](slack.md) and the runner VM keys are then set up in the browser ([workspace access](workspace-access.md)). Secrets already in `PAWS_HOME/secrets` or the environment keep working.
 
@@ -147,7 +147,7 @@ On the Findings page, an admin sets **Daily grouping time (UTC)**, `06:00` by de
 
 Each workspace spends at most one helper turn per UTC day, including **Run now**; failed or interrupted attempts consume it. Unchanged findings skip the helper. Grouping uses a paired runner owned by an active workspace owner or admin who can authorize the reporting session and is signed in to the implementer, and runs read-only without a checkout. A member chooses **File as one issue**, **Add to** the suggested issue, or **Dismiss group** with a reason. Filing creates an undelegated Triage issue with the `review finding` label.
 
-### VM sizes
+### Member VM
 
 `[vm_sizes]` holds one size per VM provider, and `provider`, where Create VM makes new VMs: `exe-dev` (the default), `boat` or `instabox`. exe.dev takes **CPUs**, **Memory (GB)**, **Disk (GB)**, **Image** and **Default pool**; boat and InstaBox take CPUs and memory from their own sizes, and saving refuses any other with the allowed list. A provider without a size uses its default, and existing VMs keep their size; see [Choose the provider](create-vm.md#choose-the-provider). A single size saved under the old `[member_vm]` moves to the provider it named, or to exe.dev, when Paws starts. Save each provider's API key, and the Tailscale auth key, on Settings › Runner VMs.
 

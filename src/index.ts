@@ -1058,10 +1058,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     });
 
   const exeDevToken = exeDevTokenReader(paths.home);
-  const vmSizeSettings = () => loadConfigFile(paths.configFile).vmSizes;
-  const memberVmProviderSetting = () => memberVmProvider(vmSizeSettings());
+  const memberVmSettings = () => loadConfigFile(paths.configFile).vmSizes;
+  const memberVmProviderSetting = () => memberVmProvider(memberVmSettings());
   const createVmAvailable = async () =>
-    options?.memberVm !== undefined || memberVmKeyReadable(paths.home, vmSizeSettings());
+    options?.memberVm !== undefined || memberVmKeyReadable(paths.home, memberVmSettings());
   const vmProviderKeys = () =>
     MEMBER_VM_PROVIDERS.map((provider) =>
       Promise.resolve()
@@ -1355,7 +1355,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   });
   const memberVmProvisioning = async (provider: MemberVmProviderName) => ({
     ...(await provisionMemberVm(provider)),
-    size: vmSizeFor(vmSizeSettings(), provider),
+    size: vmSizeFor(memberVmSettings(), provider),
   });
   // A delegated parent runs each sub-issue in its own Linear session.
   const parents =
@@ -1417,14 +1417,14 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const memberVmHttp = createMemberVmHttp({
     store,
     available: createVmAvailable,
-    size: () => vmSizeFor(vmSizeSettings(), memberVmProviderSetting()),
+    size: () => vmSizeFor(memberVmSettings(), memberVmProviderSetting()),
     provider: memberVmProviderSetting,
     usable: (provider) =>
       usableVmProvider(provider, {
         store,
         keySaved: (id) =>
           options?.memberVm !== undefined || readVmProviderToken(paths.home, id) !== null,
-        offProviders: () => vmSizeSettings()?.offProviders,
+        offProviders: () => memberVmSettings()?.offProviders,
       }),
     exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
   });
@@ -1732,10 +1732,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         instaBoxSizes: async () =>
           readVmProviderToken(paths.home, "instabox") === null
             ? null
-            : (await memberVmInstaBox.listSizes()).map((spec) => ({
-                cpu: spec.vcpus,
-                memoryGb: spec.memMiB / 1024,
-              })),
+            : (await memberVmInstaBox.listSizes()).map((spec) => [spec.vcpus, spec.memMiB / 1024]),
         repos: repositories.map((value) => `${value.owner}/${value.repo}`),
         highRiskFile: async (name: string) => {
           const [owner, repo] = name.split("/");

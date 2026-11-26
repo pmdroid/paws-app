@@ -16,6 +16,7 @@ export {
   parseConfigToml,
   setConfigKeys,
   writeFindingsGroupingTime,
+  updateVmSizes,
   writeMemberVmProviderOff,
   IMPLEMENTERS,
 } from "./file";
@@ -53,20 +54,17 @@ export {
   writeGitHubAccess,
 } from "./github-access";
 export {
+  BOAT_SIZES,
   checkMemberVmSize,
   checkVmSizeIn,
-  EXE_DEV_LIMITS,
-  fixedVmSizes,
   isMemberVmPool,
   MEMBER_VM_PROVIDERS,
   memberVmProvider,
-  parseVmSizesSettings,
-  renderVmSizesSettings,
-  upgradeSettingSections,
+  parseMemberVmSettings,
+  renderMemberVmSettings,
   vmSizeFor,
-  writeVmSizes,
-} from "./vm-sizes";
-export type { MemberVmProviderName, VmSize, VmSizeChoice, VmSizes } from "./vm-sizes";
+} from "./member-vm";
+export type { MemberVmProviderName, MemberVmSize, VmSizes } from "./member-vm";
 export { issueVmSettings, parseIssueVmSettings, writeIssueVmSettings } from "./issue-vm";
 export type { IssueVmSettings, StoredIssueVmSettings } from "./issue-vm";
 export { ensureLayout, pawsPaths } from "./paths";

@@ -14,17 +14,17 @@ Create VM appears on the Runners page once the key of the configured provider is
 
 `provider` in `[vm_sizes]` names where Create VM makes new VMs: `exe-dev` (the default), `boat` or `instabox`. Each VM keeps the provider it was created with, so changing the setting affects only VMs created afterwards. Save the provider's API key on Settings › Runner VMs: the boat key or the InstaBox key. `bun run paws doctor` reports them as `boat` and `instabox` once the setting or a VM names that provider.
 
-Each provider has its own size, in `[vm_sizes.exe-dev]`, `[vm_sizes.boat]` and `[vm_sizes.instabox]`. Create VM and issue VMs use the size of the provider they run on, and a provider without a size gets its default. Saving refuses a size the provider can't give, listing the sizes it can:
+Each provider keeps its own size in `[vm_sizes.exe-dev]`, `[vm_sizes.boat]` or `[vm_sizes.instabox]`, which Create VM and issue VMs on that provider use. Saving refuses a size the provider can't give and lists the sizes it can:
 
-| Provider   | Keys                                              | Allowed `cpu` / `memory_gb`                         |
-| ---------- | ------------------------------------------------- | --------------------------------------------------- |
-| `exe-dev`  | `cpu`, `memory_gb`, `disk_gb`, `image` and `pool` | any, up to 512 CPUs and 4096 GB                     |
-| `boat`     | `cpu` and `memory_gb`                             | 2/4, 4/8, 8/16 or 16/32                             |
-| `instabox` | `cpu` and `memory_gb`                             | your plan's sizes, read with the saved InstaBox key |
+| Provider   | `cpu` / `memory_gb`                        | `disk_gb`   | `image`, `pool` |
+| ---------- | ------------------------------------------ | ----------- | --------------- |
+| `exe-dev`  | any                                        | any         | allowed         |
+| `boat`     | 2/4, 4/8, 8/16 or 16/32, or neither        | not allowed | not allowed     |
+| `instabox` | your InstaBox plan's own sizes, or neither | not allowed | not allowed     |
 
 To stop Create VM from using a provider without removing its key, list it in `off_providers`, for example `off_providers = ["boat"]`. Create VM also refuses a provider whose key the background check last found rejected. In both cases it creates nothing and names the reason, for example `boat is turned off on Settings › Runner VMs.` It doesn't fall back to another provider. VMs already on that provider can still be read, woken and deleted.
 
-The size check runs again before Create VM calls the provider, so a size the provider can't give fails the VM's `create` step with the same message, for example `boat has no 6 vCPU / 12 GB size. Use 2/4, 4/8, 8/16 or 16/32.`
+The size check runs again before Create VM calls the provider, so a size saved for another provider fails the VM's `create` step with the same message, for example `boat has no 6 vCPU / 12 GB size. Use 2/4, 4/8, 8/16 or 16/32.`
 
 ## boat
 
@@ -43,7 +43,7 @@ Paws creates each boat VM with auto-stop turned off, since a runner that stops a
 
 Create an [InstaBox](https://instabox.sh) API key (it starts with `ibk_`) with the scopes `machines:read`, `machines:write` and `machines:delete`, and save it on Settings › Runner VMs as the InstaBox key.
 
-Create VM makes an InstaBox machine from the `agent-browser` template (Debian with systemd and Docker) named after the VM, and installs the runner on it as on exe.dev. `cpu` and `memory_gb` in `[vm_sizes.instabox]` become the machine's vCPUs and memory; leave them out for InstaBox's default size. InstaBox accepts only the sizes your plan's `allowedSpecs` lists, and refuses any other with `spec_not_allowed`, which the VM's `create` step shows.
+Create VM makes an InstaBox machine from the `agent-browser` template (Debian with systemd and Docker) named after the VM, and installs the runner on it as on exe.dev. `cpu` and `memory_gb` become the machine's vCPUs and memory; leave them out for InstaBox's default size. InstaBox accepts only the sizes your plan's `allowedSpecs` lists, and refuses any other with `spec_not_allowed`, which the VM's `create` step shows.
 
 The machine's idle pause is turned off and it has no run limit, so a runner VM stays running, and billed, until it is deleted. Deleting the VM on its runner page deletes the machine.
 
