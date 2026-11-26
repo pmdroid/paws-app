@@ -47,6 +47,7 @@ export function sandboxedLaunch(input: {
     "ProtectHome=read-only",
     "PrivateTmp=yes",
     "NoNewPrivileges=yes",
+    "PrivateUsers=yes",
     "RestrictAddressFamilies=AF_INET AF_INET6",
     "InaccessiblePaths=/run/user -/run/paws-agent-docker -/run/paws-docker -/run/dbus",
     "RuntimeMaxSec=900",

@@ -115,6 +115,23 @@ test.skipIf(!sandbox)(
   30_000,
 );
 
+test.skipIf(!sandbox)(
+  "a helper unit can't write through another process's /proc root",
+  async () => {
+    const outside = Bun.spawn(["sleep", "30"]);
+    const { output, paths } = await inUnit(({ home }) =>
+      attempt(
+        "proc",
+        `require("fs").writeFileSync(${JSON.stringify(`/proc/${outside.pid}/root${home}/escape`)}, "x")`,
+      ),
+    );
+    outside.kill();
+    expect(output).toMatch(/^proc E[A-Z]+$/m);
+    expect(existsSync(join(paths.home, "escape"))).toBe(false);
+  },
+  30_000,
+);
+
 test("sandboxed helper turns refuse an agent whose credential lives in its data directory", () => {
   expect(() =>
     sandboxedLaunch({
