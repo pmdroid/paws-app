@@ -127,6 +127,8 @@ import {
   readQueueSettings,
   MERGE_OVERRIDES_IGNORED,
   useSettingsStore,
+  configSettingsSections,
+  SETTINGS_SECTIONS,
   type EnvSource,
   type PawsEnv,
   type PawsPaths,
@@ -156,7 +158,8 @@ import {
   type PostgresConnection,
   readSettingSteps,
   updateSettingSteps,
-  CONFIG_SETTINGS_KEY,
+  convertConfigSettingsSteps,
+  settingSectionsStore,
   openPawsStore,
   type PawsStore,
   prepareShutdown,
@@ -655,11 +658,18 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     }),
   );
   bindInstance(store, instance.id);
-  const savedSettings = await useSettingsStore(paths.configFile, {
-    read: () => store.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
-    update: (change) =>
-      store.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, change)),
-  });
+  try {
+    await store.transaction((q) =>
+      convertConfigSettingsSteps(q, SETTINGS_SECTIONS, configSettingsSections),
+    );
+  } catch (error) {
+    await database.close();
+    throw error;
+  }
+  const savedSettings = await useSettingsStore(
+    paths.configFile,
+    settingSectionsStore(store, SETTINGS_SECTIONS),
+  );
   runtime = (await browserSetupRuntime(store, loadRuntime(envSource), envSource)).runtime;
   const settingsTimer = setInterval(() => {
     void savedSettings

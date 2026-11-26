@@ -20,7 +20,13 @@ import {
   type MergeOrder,
   type MergeRepositories,
 } from "./merge";
-import { knownConfigSection, readConfigText, updateConfigText } from "./settings-store";
+import {
+  knownConfigSection,
+  readConfigText,
+  savedSettingsSections,
+  updateConfigText,
+  type SettingSections,
+} from "./settings-store";
 import { parseTimeLimitTables, type StoredTimeLimits } from "./time-limits";
 import {
   assignMemberVmKey,
@@ -152,6 +158,10 @@ export function parseConfigToml(text: string): PawsConfigFile {
   Object.assign(config, parseMergeTables(text));
   Object.assign(config, parseTimeLimitTables(text));
   return config;
+}
+
+export function configSettingsSections(text: string): SettingSections {
+  return savedSettingsSections(text, (known) => void parseConfigToml(known));
 }
 
 export type GitHubAccess = { agentRead?: boolean; mirrors?: boolean };
