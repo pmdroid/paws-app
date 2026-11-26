@@ -19,7 +19,7 @@ bun run paws
 
 Open your configured HTTPS address. A Linear workspace administrator signs in and authorizes Paws. In Integrations, connect GitHub and choose repositories and their Linear teams. [Enroll a Linux runner](docs/runner-enrollment.md), or [create a runner VM](docs/create-vm.md), then sign in to its coding agents through Runners.
 
-Run `bun run paws doctor` to check setup. Paws starts work after the Linear workspace is configured.
+Workspace › Integrations lists the prerequisite checks under Prerequisites. Paws starts work after the Linear workspace is configured.
 
 ## Install the control plane from the package
 

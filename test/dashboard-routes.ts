@@ -316,6 +316,9 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   api("POST", "/api/settings/vm-providers/check", "preserved", "src/settings", {
     sample: "/api/settings/vm-providers/check",
   }),
+  api("GET", "/api/settings/doctor", "canonical", "src/doctor", {
+    sample: "/api/settings/doctor",
+  }),
   api("POST", "/api/settings/storage/check", "preserved", "src/settings", {
     sample: "/api/settings/storage/check",
   }),

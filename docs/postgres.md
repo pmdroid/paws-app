@@ -18,7 +18,7 @@ The URL holds the password, so it is a secret: keep the environment file that se
 
 Paws applies database updates automatically at startup. PGlite allows one process per directory, so Paws holds `~/.paws/pglite` while it runs, recorded in `~/.paws/pglite.lock` with its process id, and refuses to start when another live process holds it. `paws login slack` needs `PAWS_DATABASE_URL`.
 
-`paws doctor` reads the workspace, its GitHub App and the values saved on the Settings page from the same database. While Paws holds PGlite, `paws doctor` uses the defaults and reports that it could not read the saved settings.
+The Prerequisites checks on Workspace › Integrations read the workspace, its GitHub App and the values saved on the Settings page from the same database.
 
 ## Secrets
 
@@ -30,7 +30,7 @@ For a persistent master key across hosts, set `PAWS_SECRET_KEY` to the existing 
 base64 < ~/.paws/secrets/.envelope-key
 ```
 
-Keep that value secret and available to every Paws instance using the database. Paws copies existing encrypted secret files into the external database when it first opens them; the files remain in place. Run `bun run paws doctor` to check secret storage and decryption before moving the service.
+Keep that value secret and available to every Paws instance using the database. Paws copies existing encrypted secret files into the external database when it first opens them; the files remain in place. Check secret storage and decryption under Prerequisites on Workspace › Integrations before moving the service.
 
 A `~/.paws/paws.db` from an earlier release is set aside at the first start: see [Moving to Postgres](database-reset.md).
 
@@ -42,6 +42,6 @@ Paws ships one migration, `0000_baseline`. Before it applies migrations, Paws re
 This database was created by an older Paws. Reset it to start this version.
 ```
 
-When the unknown migration is newer than the baseline, the line is `This database was created by a newer Paws. Start that version or reset it.` A refused start changes nothing in the database. `paws doctor` reports the same message in its `database` check.
+When the unknown migration is newer than the baseline, the line is `This database was created by a newer Paws. Start that version or reset it.` A refused start changes nothing in the database. The Prerequisites checks report the same message in the `database` check.
 
 There is no upgrade path. To reset, stop Paws and start it on an empty database: move `~/.paws/pglite` aside, or drop and create the database at `PAWS_DATABASE_URL`. Then set up again as after [Moving to Postgres](database-reset.md#what-to-set-up-again).

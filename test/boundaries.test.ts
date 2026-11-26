@@ -39,7 +39,6 @@ const MODULES = [
   "loop",
   "doctor",
   "install",
-  "install-host",
   "installer",
   "deployment",
   "auth",
@@ -263,8 +262,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "slack",
   ],
   install: ["journal", "acp", "config"],
-  "install-host": ["config", "deployment"],
-  installer: ["config", "install-host", "onboarding"],
+  installer: ["config", "onboarding"],
   deployment: ["config"],
   // setup is the wizard. It is allowed to import install (and comments) through index.ts.
   auth: ["journal", "config", "github", "credentials", "core", "db"],

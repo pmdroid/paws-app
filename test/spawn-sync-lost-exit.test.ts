@@ -10,7 +10,6 @@ test.each([
   ".github/workflows/ci.yml",
   ".github/workflows/runner-release.yml",
   "deploy/linux/release.py",
-  "src/install-host/install.ts",
 ])("%s pins a Bun whose spawnSync keeps its child's exit", (path) => {
   const text = readFileSync(new URL(`../${path}`, import.meta.url).pathname, "utf8");
   const pins = [...text.matchAll(PIN)].map((match) => match[1]!);

@@ -48,11 +48,7 @@ Paws keeps App credentials and temporary authorization tokens on the server. Int
 
 ## Check the setup
 
-```sh
-bun run paws doctor
-```
-
-Doctor reports these GitHub checks:
+Workspace › Integrations shows the prerequisite checks under Prerequisites. These are the GitHub checks:
 
 | Check                     | Passes when                                                                 |
 | ------------------------- | --------------------------------------------------------------------------- |

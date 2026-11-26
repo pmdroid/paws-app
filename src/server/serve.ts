@@ -2,6 +2,7 @@ import { createHealthReport, type HealthOptions } from "./health";
 import { FIX_RECORDS_PATH, handleFixRecordsRequest } from "./fix-records";
 import type { JobLoopLiveness } from "../db";
 import { journalCaught } from "../journal";
+import type { DoctorCheck } from "../doctor";
 import { recordDuration } from "../metrics";
 import { observeRequest, type RequestMetrics } from "./request-metrics";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
@@ -166,6 +167,7 @@ export type ServerOptions = {
   storageUsage?: StorageUsageSettingsOptions["usage"];
   storageCleanup?: StorageCleanupSettingsOptions["cleanup"];
   vmProviderChecks?: VmProviderCheckService;
+  doctor?: () => Promise<readonly DoctorCheck[]>;
   retros?: (
     request: Request,
     principal: WorkspacePrincipal,
@@ -359,6 +361,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(options.retros ? { retros: options.retros } : {}),
           ...(options.storageUsage ? { storageUsage: options.storageUsage } : {}),
           ...(options.vmProviderChecks ? { vmProviderChecks: options.vmProviderChecks } : {}),
+          ...(options.doctor ? { doctor: options.doctor } : {}),
           ...(options.storageCleanup ? { storageCleanup: options.storageCleanup } : {}),
           ...(options.improvements ? { improvements: options.improvements } : {}),
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
@@ -424,6 +427,7 @@ type Secrets = {
   storageUsage?: ServerOptions["storageUsage"];
   storageCleanup?: ServerOptions["storageCleanup"];
   vmProviderChecks?: ServerOptions["vmProviderChecks"];
+  doctor?: ServerOptions["doctor"];
   improvements?: ServerOptions["improvements"];
   executionControls?: ServerOptions["executionControls"];
   blockerChecks?: ServerOptions["blockerChecks"];
@@ -880,6 +884,13 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
       })) ?? Response.json({ error: "Not found" }, { status: 404 })
     );
+  }
+  if (path === "/api/settings/doctor" && secrets.doctor) {
+    if (request.method !== "GET")
+      return Response.json({ error: "Method not allowed" }, { status: 405 });
+    if (principal !== undefined && !isWorkspaceAdmin(principal.role))
+      return Response.json({ error: "Workspace admin required." }, { status: 403 });
+    return Response.json({ checks: await secrets.doctor() });
   }
   if (path === RUNNER_VM_KEYS_SETTINGS_PATH && secrets.store) {
     const store = secrets.store;

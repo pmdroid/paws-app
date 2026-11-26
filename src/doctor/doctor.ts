@@ -12,11 +12,16 @@ import {
   type ExeDevTokenStatus,
   type TailscaleAuthKeyStatus,
 } from "../config";
-import { describeLinearWebhookWarning, LINEAR_WEBHOOK_FIX, type LinearWebhookWarning } from "../db";
+import {
+  describeLinearWebhookWarning,
+  LINEAR_WEBHOOK_FIX,
+  type Db,
+  type LinearWebhookWarning,
+} from "../db";
 import { doctorAgentProfiles, type DoctorAgentConfig } from "./agents";
 import type { GrokLoginStatus } from "../install";
 import { realProbeFacts, type GitHubDoctorFacts, type ProbeFacts } from "./probe";
-import { DATABASE_HELD, withSavedStore } from "./store";
+import { DATABASE_HELD, withSavedStore, type SavedStore } from "./store";
 
 export type DoctorCheck = {
   name: string;
@@ -24,7 +29,7 @@ export type DoctorCheck = {
   detail: string;
   /** One next step. Printed only when the check is missing. */
   fix?: string;
-  /** Shown, and does not fail `paws doctor`. */
+  /** Shown, and does not count as missing. */
   note?: boolean;
 };
 
@@ -180,8 +185,8 @@ export function formatDoctor(checks: readonly DoctorCheck[]): string {
   return lines.join("\n");
 }
 
-export async function realProbe(env: EnvSource = process.env): Promise<DoctorProbe> {
-  const facts = await withSavedStore(env, async (saved) => {
+export async function realProbe(env: EnvSource = process.env, store?: Db): Promise<DoctorProbe> {
+  const probeFacts = async (saved: SavedStore) => {
     const secretsDir = pawsPaths(loadEnv(env).home).secretsDir;
     const stored = storedSecrets()?.map((row) => resolve(secretsDir, row.name)) ?? null;
     const secrets = { ...checkSecrets(secretsDir), stored };
@@ -191,7 +196,10 @@ export async function realProbe(env: EnvSource = process.env): Promise<DoctorPro
       if (secrets.failed.length === 0) throw error;
       throw new Error(formatDoctor([secretsCheck(secrets)]), { cause: error });
     }
-  });
+  };
+  const facts = await (store === undefined
+    ? withSavedStore(env, probeFacts)
+    : probeFacts({ store, held: false }));
   return {
     env,
     facts,
