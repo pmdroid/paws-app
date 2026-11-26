@@ -80,7 +80,7 @@ export function credentialRefreshable(blob: string | null | undefined): boolean 
   }
 }
 
-function* runnerOffersModelSteps(
+export function* runnerOffersModelSteps(
   q: Q,
   runnerId: string,
   agent: string,
@@ -89,7 +89,7 @@ function* runnerOffersModelSteps(
   const resultJson = yield* latestModelCatalogSteps(q, runnerId, agent);
   const parsed = resultJson ? RunnerHealthResultSchema.safeParse(JSON.parse(resultJson)) : null;
   const ids = new Set((parsed?.success ? (parsed.data.models ?? []) : []).map((entry) => entry.id));
-  return ids.has(model) || (/\[1m\]$/i.test(model) && ids.has(model.slice(0, -4)));
+  return ids.has(model);
 }
 
 export function* signInFitSteps(

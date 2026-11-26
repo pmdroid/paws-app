@@ -61,7 +61,7 @@ import {
   RUNNER_ONLINE_MS,
 } from "./eligible";
 import { BINDING_REASON_TEXT, classifyAgentFailure } from "./account-health";
-import { repositoryRejectionSteps, signInFitSteps } from "./fit";
+import { repositoryRejectionSteps, runnerOffersModelSteps, signInFitSteps } from "./fit";
 
 /** Receipt outcomes whose first `finished()` call returned `retryable: true`. */
 const UNUSABLE_PIN = new Set([
@@ -412,6 +412,8 @@ export function createRunnerPlacement(options: {
         : null;
     const pinnedOnline =
       pinnedReachable &&
+      (!input.profile.model ||
+        (yield* runnerOffersModelSteps(q, pinnedRunnerId!, agent, input.profile.model))) &&
       !(
         pinnedFit &&
         "reason" in pinnedFit &&

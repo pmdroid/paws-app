@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { getWorkItem, listItemHolds, type Db } from "../src/db";
+import { getWorkItem, listItemHolds, noRunnerOffersLine, type Db } from "../src/db";
 import { createRunnerPlacement, itemRunnerVerdictsSteps } from "../src/runner-placement";
 import { dispatch } from "../src/scheduler";
 import { workspaceAdmission } from "./fake-workspace";
@@ -48,6 +48,11 @@ test("a turn goes only to the runner whose catalog lists the selected model", as
   expect(offered.map((runner) => runner.id)).toEqual([current]);
   expect(rejected).toContain(`${lagging}: claude does not offer ${MODEL}`);
   expect(rejected).toContain(`${empty}: claude does not offer ${MODEL}`);
+  const wide = await createRunnerPlacement({ store: db, now: () => NOW }).candidates({
+    ...request,
+    profile: { agent: "claude", model: `${MODEL}[1m]` },
+  });
+  expect(wide).toEqual([]);
 });
 
 test("with no runner offering the model the item waits queued, then starts once a catalog lists it", async () => {
@@ -115,7 +120,24 @@ test("a turn whose agent does not advertise the model drops it from that runner'
   expect(disposition).toMatchObject({ retryable: false, modelMissing: MODEL });
   const offered = await placement.candidates(request);
   expect(offered.map((runner) => runner.id)).toEqual([other]);
+  const pinned = await placement.candidates({ ...request, pinnedRunnerId: stale });
+  expect(pinned.map((runner) => runner.id)).toEqual([other]);
   await offer(db, stale, [MODEL], NOW + 3_000);
   const again = await placement.candidates(request);
   expect(again.map((runner) => runner.id).sort()).toEqual([other, stale].sort());
+});
+
+test("the model wait reason shows while another runner is offline", () => {
+  const runner = { hostConfig: null } as const;
+  expect(
+    noRunnerOffersLine({
+      repository: null,
+      agent: "claude",
+      model: MODEL,
+      runners: [
+        { ...runner, id: "a", name: "a", rejection: "offline" },
+        { ...runner, id: "b", name: "b", rejection: `claude does not offer ${MODEL}` },
+      ],
+    }),
+  ).toBe(`No runner offers claude ${MODEL}`);
 });

@@ -112,6 +112,7 @@ export class RunnerCapacityWait extends Error {
     readonly runnerIds: readonly string[],
     readonly holdMs?: number,
     rejections: readonly string[] = [],
+    readonly untimed = false,
   ) {
     super(
       runnerIds.length

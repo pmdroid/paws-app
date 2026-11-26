@@ -36,9 +36,7 @@ export function modelUnofferedReason(agent: string, model: string): string {
 
 export function noRunnerOffersLine(verdicts: ItemRunnerVerdicts): string | null {
   const { agent, model, runners } = verdicts;
-  return model &&
-    runners.length > 0 &&
-    runners.every((runner) => runner.rejection === modelUnofferedReason(agent, model))
+  return model && runners.some((runner) => runner.rejection === modelUnofferedReason(agent, model))
     ? `No runner offers ${agent} ${model}`
     : null;
 }

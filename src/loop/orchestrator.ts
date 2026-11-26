@@ -3214,13 +3214,15 @@ export class Orchestrator {
     // A busy runner is waited for without limit. Only a wait with no runner offered runs out, and
     // its clock starts when the runners stop being offered.
     const waited = previous && previous.runnerIds.length > 0 === busy ? previous : null;
-    if (!busy && waited && this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS) return null;
+    if (!busy && !error.untimed && waited && this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS)
+      return null;
     return {
       since: waited?.since ?? this.now(),
       attempt: waited ? waited.attempt + 1 : 0,
       runnerIds: error.runnerIds,
       online: waited?.online ?? (await this.store.run((q) => activeRunnerIdsSteps(q, this.now()))),
       ...(error.holdMs === undefined ? {} : { holdMs: error.holdMs }),
+      ...(error.untimed ? { untimed: true as const } : {}),
     };
   }
 
@@ -3251,7 +3253,9 @@ export class Orchestrator {
       item.cancelRequested ||
       !["running", "recovering", "verifying", "merge_queue"].includes(item.state) ||
       this.shuttingDown ||
-      (waited.runnerIds.length === 0 && this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS) ||
+      (waited.runnerIds.length === 0 &&
+        !waited.untimed &&
+        this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS) ||
       this.now() - waited.since >= (waited.holdMs ?? Infinity)
     )
       return false;

@@ -72,6 +72,7 @@ import {
   unassignedRunnerReservationsSteps,
   type Db,
   type Q,
+  modelUnofferedReason,
 } from "../db";
 import {
   ArtifactRejectedError,
@@ -427,6 +428,13 @@ export function createRemoteAgentRunner(options: {
             : undefined
           : Math.min(heldForSession ? SESSION_GRACE_MS : Infinity, Math.max(0, resetsAt - now())),
         details,
+        Boolean(
+          agent &&
+          placement.profile?.model &&
+          rejected.some((reason) =>
+            reason.endsWith(modelUnofferedReason(agent, placement.profile!.model!)),
+          ),
+        ),
       );
     const readyRunners = options.placement
       ? async () => {
@@ -541,7 +549,12 @@ export function createRemoteAgentRunner(options: {
   async function modelMissing(itemId: string, runnerId: string, model: string) {
     const name = await runnerName(runnerId);
     journal(`item ${itemId} runner ${runnerId} no longer offers model ${model}; placing again`);
-    return new RunnerCapacityWait([], undefined, [`${name}: the agent no longer offers ${model}`]);
+    return new RunnerCapacityWait(
+      [],
+      undefined,
+      [`${name}: the agent no longer offers ${model}`],
+      true,
+    );
   }
   /** Whether any runner has already run work, not just preparation, for the item. */
   function startedWork(itemId: string) {
@@ -592,7 +605,11 @@ export function createRemoteAgentRunner(options: {
         runnerOnlineSteps(q, placement.pinnedRunnerId!, now() - RUNNER_ONLINE_MS),
       )),
     );
-    if (pinnedOnline && !(options.placement && placement.role === "reviewer"))
+    if (
+      pinnedOnline &&
+      !(options.placement && placement.role === "reviewer") &&
+      (!options.placement || candidates.some((runner) => runner.id === placement.pinnedRunnerId))
+    )
       candidates = candidates.filter((runner) => runner.id === placement.pinnedRunnerId);
     else if (placement.preferRunnerId)
       candidates = [

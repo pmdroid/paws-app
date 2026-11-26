@@ -1491,6 +1491,7 @@ export type RunnerCapacityWaitState = {
   runnerIds: readonly string[];
   online?: readonly string[];
   holdMs?: number;
+  untimed?: true;
 };
 
 export function runnerCapacityWait(payload: unknown): RunnerCapacityWaitState | null {
@@ -1505,6 +1506,7 @@ export function runnerCapacityWait(payload: unknown): RunnerCapacityWaitState | 
         runnerIds: wait.runnerIds,
         ...(Array.isArray(wait.online) ? { online: wait.online } : {}),
         ...(typeof wait.holdMs === "number" ? { holdMs: wait.holdMs } : {}),
+        ...(wait.untimed === true ? { untimed: true as const } : {}),
       }
     : null;
 }
