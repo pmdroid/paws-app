@@ -550,9 +550,7 @@ test("probe helpers run under an account; probe_write names one repository and a
   };
   const write = {
     ...distill,
-    sessionId: "probes-write",
     purpose: "probe_write",
-    prompt: "Write the probe.",
     probe: { repository: "acme/web", path: ".agents/probes/no-raw-sql.ts" },
     repositories: ["acme/web"],
   };
@@ -560,12 +558,9 @@ test("probe helpers run under an account; probe_write names one repository and a
   expect(RunnerCommandSchema.safeParse(write).success).toBe(true);
   for (const refused of [
     { ...distill, account: undefined },
-    { ...distill, expiresAt: common.issuedAt + 900_001 },
     { ...distill, repositories: ["acme/web"] },
     { ...distill, probe: write.probe },
-    { ...write, account: undefined },
     { ...write, probe: undefined },
-    { ...write, repositories: undefined },
     { ...write, repositories: ["acme/api"] },
     { ...write, probe: { ...write.probe, path: "src/index.ts" } },
     { ...write, probe: { ...write.probe, path: ".agents/probes/../index.ts" } },

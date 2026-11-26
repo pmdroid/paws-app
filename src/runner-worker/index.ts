@@ -49,7 +49,7 @@ import { dirname, join, isAbsolute } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { executeRetroCommand, type RetroWorkerResult } from "./retro";
 import { missingToolchainQuestion } from "./toolchain";
-import { collectProbe, probeTree } from "./probe-write";
+import { collectProbe, probeSnapshot } from "./probe-write";
 import {
   collectOpenCodeCredential,
   migrateOpenCodeDatabase,
@@ -1452,7 +1452,7 @@ export async function executeRunnerCommand(
     const probeRoot = probe && join(worktree, "repositories", probe.repository);
     if (probeRoot && !existsSync(probeRoot))
       throw new Error("The probe's repository checkout is not on this runner");
-    const probeBefore = probeRoot ? probeTree(probeRoot) : undefined;
+    const probeBefore = probe && probeRoot ? probeSnapshot(probeRoot, probe.path) : undefined;
     let inputFiles = options.inputs?.inputFiles ?? [];
     if (command.type === "run" || command.type === "review" || command.type === "task") {
       const descriptors = command.inputFiles ?? [];
@@ -1740,8 +1740,8 @@ export async function executeRunnerCommand(
       profile:
         command.type === "login_check" ? { agent: command.agent, model: null } : command.profile,
       role: command.type === "review" ? "reviewer" : "implementer",
-      readOnly:
-        command.type === "task" ? command.purpose !== "artifact" : command.type !== "run" && !probe,
+      readOnly: command.type === "task" ? command.purpose !== "artifact" : command.type !== "run",
+      ...(probeRoot ? { writableRoot: join(probeRoot, ".agents", "probes") } : {}),
       checkpoint: command.type === "run" && command.checkpoint !== false,
       ...(command.type === "run" && command.closeoutRulesFirst ? { closeoutRulesFirst: true } : {}),
       ...(command.type === "run" && command.closeoutFocus
@@ -1809,7 +1809,7 @@ export async function executeRunnerCommand(
           }
         : {}),
       inputFiles: inputFiles.map((file) => ({ ...file, path: join(worktree, file.path) })),
-      worktreePath: worktree,
+      worktreePath: probeRoot ?? worktree,
       pawsRoot: join(task ? worktree : options.workRoot, ".paws"),
       home,
       signal: options.signal,

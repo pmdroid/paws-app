@@ -21,6 +21,7 @@ import { minimalAgentEnv } from "./env";
 import { killTree, spawnAgent, stopChild, type OwnedProcess } from "./process";
 import {
   decidePermission,
+  decideReadOnlyPermission,
   isLocalSkillPath,
   lexicalPath,
   resolveInsideWorktree,
@@ -186,7 +187,8 @@ export async function writeGuarded(
   params: WriteTextFileRequest,
   guard: GuardContext,
 ): Promise<WriteTextFileResponse> {
-  const decision = decidePermission({ kind: "edit", locations: [{ path: params.path }] }, guard);
+  const decide = guard.writableRoot ? decideReadOnlyPermission : decidePermission;
+  const decision = decide({ kind: "edit", locations: [{ path: params.path }] }, guard);
   if (!decision.allow)
     throw RequestError.invalidParams({ reason: decision.reason }, decision.reason);
   const path = resolveInsideWorktree(params.path, guard);

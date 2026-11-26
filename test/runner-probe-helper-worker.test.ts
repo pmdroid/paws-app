@@ -4,12 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  markRunnerAccountSignedIn,
-  openRunnerAccountHome,
-  publishRunnerAccountHome,
-  runnerAccountHome,
-} from "../src/runner-execution";
+import { runnerAccountHome } from "../src/runner-execution";
 import {
   RunnerCommandSchema,
   runnerHelperLifetime,
@@ -17,6 +12,7 @@ import {
   type RunnerCommand,
 } from "../src/runner-protocol";
 import { executeRunnerCommand } from "../src/runner-worker";
+import { signInRunnerAccount } from "./runner-account-home";
 
 type Helper = Extract<RunnerCommand, { type: "helper" }>;
 const roots: string[] = [];
@@ -50,12 +46,7 @@ const write: Helper = {
   probe: { repository: "acme/web", path: ".agents/probes/no-raw-sql.ts" },
   repositories: ["acme/web"],
 };
-const distill: Helper = {
-  ...base,
-  sessionId: "probes-distill",
-  purpose: "probe_distill",
-  prompt: "Distill.",
-};
+const distill: Helper = { ...base, sessionId: "d", purpose: "probe_distill", prompt: "Distill." };
 
 async function run(command: Helper, steps: (checkout: string) => unknown[], signedIn = true) {
   RunnerCommandSchema.parse(command);
@@ -64,15 +55,7 @@ async function run(command: Helper, steps: (checkout: string) => unknown[], sign
   const agentHome = join(root, "agent");
   mkdirSync(agentHome, { mode: 0o700 });
   const accountHome = runnerAccountHome(agentHome, account);
-  if (signedIn)
-    publishRunnerAccountHome(
-      openRunnerAccountHome(agentHome, account, "codex", { signIn: true }),
-      "01J00000000000000000000009",
-      () => {
-        writeFileSync(join(accountHome, ".codex", "auth.json"), "{}");
-        markRunnerAccountSignedIn(accountHome, account, "codex");
-      },
-    );
+  if (signedIn) signInRunnerAccount(agentHome, "codex", account);
   const snapshot = join(root, "snapshot");
   mkdirSync(join(snapshot, "src"), { recursive: true });
   writeFileSync(join(snapshot, "src", "index.ts"), "export {};\n");
@@ -88,11 +71,7 @@ async function run(command: Helper, steps: (checkout: string) => unknown[], sign
     workRoot: join(root, "work"),
     home: agentHome,
     resultsGid: process.getgid!(),
-    ...(command.repositories
-      ? {
-          helperRepositories: () => [{ repository: "acme/web", commit, path: snapshot }],
-        }
-      : {}),
+    helperRepositories: () => [{ repository: "acme/web", commit, path: snapshot }],
     launch: {
       command: process.execPath,
       args: [
@@ -113,35 +92,52 @@ const reply = (text: string) => ({
 });
 const put = (path: string, content = "x") => ({ type: "fs_write", path, content });
 
-test("probe_write runs under the account home and returns only the probe it wrote", async () => {
+const edit = (toolCallId: string, path: string) => ({
+  type: "permission",
+  toolCall: { toolCallId, kind: "edit", locations: [{ path }] },
+});
+
+test("probe_write may write only under .agents/probes and returns the probe and its rules entry", async () => {
   const entry = '```json\n{"failOn":"P1"}\n```';
   const { result, calls, accountHome, checkout } = await run(write, (folder) => [
-    put(join(folder, ".agents/probes/no-raw-sql.ts")),
-    put(join(folder, ".agents/probes/scratch.ts"), "y"),
+    edit("probe", ".agents/probes/no-raw-sql.ts"),
+    edit("source", "src/index.ts"),
+    put(".agents/probes/no-raw-sql.ts"),
+    put(".agents/probes/scratch.ts", "y"),
+    put("src/index.ts"),
+    put(join(folder, "../../../outside.txt")),
+    { type: "terminal", command: "touch", args: ["src/x"] },
     reply(entry),
     { type: "end" },
   ]);
-  expect(calls.fs.map((call: { ok: boolean }) => call.ok)).toEqual([true, true]);
+  expect(
+    calls.permissions.map(
+      (call: { outcome: { outcome: { optionId: string } } }) => call.outcome.outcome.optionId,
+    ),
+  ).toEqual(["allow", "deny"]);
+  expect(calls.fs.map((call: { ok: boolean }) => call.ok)).toEqual([true, true, false, false]);
   expect(calls.codexHome).toBe(join(accountHome, ".codex"));
   expect(calls.mcpServers).toEqual([]);
   expect(result.run.stopReason).toBe("end_turn");
   expect(result.text).toBe(entry);
   expect(result.probe).toEqual({ path: ".agents/probes/no-raw-sql.ts", text: "x" });
   expect(readFileSync(join(checkout, "src", "index.ts"), "utf8")).toBe("export {};\n");
+  expect(existsSync(join(checkout, "src", "x"))).toBe(false);
+  expect(existsSync(join(checkout, "../../outside.txt"))).toBe(false);
 }, 15_000);
 
-test("probe_write returns no probe when the agent changed a file outside .agents/probes", async () => {
-  const { result } = await run(write, (folder) => [
-    put(join(folder, ".agents/probes/no-raw-sql.ts")),
-    put(join(folder, "src/index.ts")),
-    reply('```json\n{"failOn":"P1"}\n```'),
-    { type: "end" },
-  ]);
-  expect(result.probe).toBeUndefined();
-  expect(result.run).toMatchObject({
-    stopReason: "error",
-    errorMessage: "The agent changed files outside .agents/probes/: src/index.ts",
-  });
+test("probe_write fails without a new probe or after a change outside .agents/probes", async () => {
+  for (const [file, error] of [
+    [".agents/probes/other.ts", "The agent did not write .agents/probes/no-raw-sql.ts"],
+    ["src/index.ts", "The agent changed files outside .agents/probes/: src/index.ts"],
+  ]) {
+    const { result } = await run(write, (folder) => [
+      { type: "write_file", path: join(folder, file!), content: "x" },
+      { type: "end" },
+    ]);
+    expect(result).toMatchObject({ run: { stopReason: "error", errorMessage: error } });
+    expect(result.probe).toBeUndefined();
+  }
 }, 15_000);
 
 test("probe_distill answers as text under the account home and writes nothing", async () => {
@@ -152,9 +148,7 @@ test("probe_distill answers as text under the account home and writes nothing", 
   ]);
   expect(calls.fs.map((call: { ok: boolean }) => call.ok)).toEqual([false]);
   expect(result.text).toBe('{"candidates":[]}');
-  expect(result.probe).toBeUndefined();
   expect(calls.codexHome).toBe(join(accountHome, ".codex"));
-  expect(calls.mcpServers).toEqual([]);
 }, 15_000);
 
 test("a probe turn without its account home is refused before the agent starts", async () => {
