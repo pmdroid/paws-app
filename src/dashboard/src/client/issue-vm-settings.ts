@@ -282,6 +282,9 @@ export function createIssueVmSettings() {
         );
         if (
           monthlyLimitUsd === null ||
+          [...form.querySelectorAll<HTMLInputElement>("input")].some(
+            (input) => input.validity?.badInput,
+          ) ||
           [monthlyLimitUsd, ...Object.values(prices)].some((value) => Number.isNaN(value))
         )
           throw new Error("Enter the monthly limit and each price in US dollars.");

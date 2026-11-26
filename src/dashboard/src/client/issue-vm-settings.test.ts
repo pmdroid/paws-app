@@ -238,6 +238,18 @@ test("an admin sees spend against the limit and saves the limit and prices", asy
   );
 });
 
+test("a price the browser could not read is refused, not skipped", async () => {
+  const root = await mount();
+  const price = root.querySelector<HTMLInputElement>("#issue-vm-price-boat")!;
+  price.value = "";
+  Object.defineProperty(price, "validity", { value: { badInput: true } });
+  await submit(root, "[data-spend]");
+  expect(root.querySelector('[role="alert"]')?.textContent).toBe(
+    "Enter the monthly limit and each price in US dollars.",
+  );
+  expect(calls.some((call) => call.method === "PUT")).toBe(false);
+});
+
 test("a member sees the spend and prices without a form", async () => {
   const root = await mount(false);
   expect(root.textContent).toContain("$40.00 of $50.00 spent in 2026-11");
