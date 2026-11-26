@@ -178,11 +178,27 @@ describePglite((connect) => {
     ]);
   });
 
-  test("members get 403 from every route", async () => {
+  test("a member reads only their own row and never another member's", async () => {
+    const db = await connected(connect);
+    await call(db, "POST", "/api/settings/issue-vm/grants", {
+      body: { memberUserId: "ada", limit: 4, endsAt: NOW + DAY },
+    });
+    const response = await call(db, "GET", "/api/settings/issue-vm/members", { role: "member" });
+    expect(response?.status).toBe(200);
+    const body = (await response!.json()) as {
+      defaultLimit: number;
+      members: { userId: string; limit: number; grant: { limit: number } | null }[];
+    };
+    expect(body.defaultLimit).toBe(2);
+    expect(body.members.map((member) => member.userId)).toEqual(["ada"]);
+    expect(body.members[0]).toMatchObject({ limit: 4, grant: { limit: 4 } });
+    expect(JSON.stringify(body)).not.toContain("Grace");
+  });
+
+  test("members get 403 from the grant routes", async () => {
     const db = await connected(connect);
     const body = { memberUserId: "ada", limit: 4, endsAt: NOW + DAY };
     for (const [method, path] of [
-      ["GET", "/api/settings/issue-vm/members"],
       ["POST", "/api/settings/issue-vm/grants"],
       ["DELETE", "/api/settings/issue-vm/grants/01HZY"],
     ] as const) {

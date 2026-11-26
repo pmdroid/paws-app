@@ -52,7 +52,7 @@ test("members see Settings and no Workspace entry", () => {
   const links = sidebar(false, "/settings");
   expect(links.map((link) => link.text)).not.toContain("Workspace");
   expect(links.map((link) => link.text)).not.toContain("Project context");
-  expect(links.at(-1)).toMatchObject({ text: "Settings", href: "/settings" });
+  expect(links.find((link) => link.text === "Settings")).toMatchObject({ href: "/settings" });
 });
 
 test("the Workspace submenu is closed away from Workspace and opens on its first page", () => {
@@ -78,14 +78,19 @@ test("admins and members see the Settings submenu on a Settings page, marking th
     });
     const settings = links.findIndex((link) => link.text === "Settings");
     expect(links[settings]).toMatchObject({ href: "/settings", current: null });
-    expect(links.slice(settings + 1)).toEqual(
-      USER_SETTINGS_PAGES.map((page) => ({
-        text: page.name,
-        href: `/settings/${page.id}`,
-        current: page.id === "agent-accounts" ? "page" : null,
-        group: "Settings pages",
-      })),
-    );
+    const own = USER_SETTINGS_PAGES.map((page) => ({
+      text: page.name,
+      href: `/settings/${page.id}`,
+      current: page.id === "agent-accounts" ? "page" : null,
+      group: "Settings pages",
+    }));
+    const issueVms = {
+      text: "Issue VMs",
+      href: "/workspace/issue-vms",
+      current: null,
+      group: "Settings pages",
+    };
+    expect(links.slice(settings + 1)).toEqual(admin ? own : [...own, issueVms]);
   }
 });
 
