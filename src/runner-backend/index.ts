@@ -45,8 +45,7 @@ import {
   fallbackHistorySteps,
   getWorkItemSteps,
   lastSuccessfulImplementationSteps,
-  agentModelSourcesSteps,
-  cachedAgentModelsSteps,
+  latestModelCatalogSteps,
   refundLostTurnAsync,
   listHooks,
   startAgentWait,
@@ -180,24 +179,43 @@ import {
   type RunnerPlacement,
 } from "../runner-placement";
 
-const UNUSABLE_FOR_ITEM = [
+const NOT_FOR_ITEM = [
   PINNED_ELSEWHERE,
   "not-yours",
   "revoked",
   "owner-not-in-team",
   "owner-inactive",
 ];
+const AGENTS = ["claude", "codex", "grok", "opencode"];
 
-const NEEDS_ANOTHER_MODEL = [REVIEWER_MODEL_MATCHES, "agent-not-signed-in", "auth-expired"];
-const reasonOf = (entry: string) => entry.slice(entry.indexOf(":") + 2);
+export type RunnerCatalogs = ReadonlyMap<string, Readonly<Record<string, string | null>>>;
 
-export function reviewerModelDeadEnd(rejected: readonly string[]): boolean {
-  return (
-    rejected.some((entry) => reasonOf(entry) === REVIEWER_MODEL_MATCHES) &&
-    rejected.every((entry) =>
-      [...NEEDS_ANOTHER_MODEL, ...UNUSABLE_FOR_ITEM].includes(reasonOf(entry)),
-    )
+export function reviewerModelAlternatives(input: {
+  rejected: readonly string[];
+  agent: string;
+  implementation: string;
+  catalogs: RunnerCatalogs;
+}): string[] | null {
+  const reasons = new Map<string, string[]>();
+  for (const entry of input.rejected) {
+    const id = entry.slice(0, entry.indexOf(":"));
+    reasons.set(id, [...(reasons.get(id) ?? []), entry.slice(entry.indexOf(":") + 2)]);
+  }
+  const usable = [...reasons].filter(
+    ([id, list]) =>
+      !list.some((reason) => NOT_FOR_ITEM.includes(reason)) &&
+      input.catalogs.get(id)?.[input.agent],
   );
+  if (!usable.length || usable.some(([, list]) => list.some((r) => r !== REVIEWER_MODEL_MATCHES)))
+    return null;
+  const alternatives = usable.flatMap(([id]) =>
+    Object.entries(input.catalogs.get(id)!).flatMap(([agent, json]) =>
+      catalogModels(json ?? undefined)
+        .filter((model) => model !== input.implementation)
+        .map((model) => `${agent} ${model}`),
+    ),
+  );
+  return [...new Set(alternatives)];
 }
 
 export function catalogModels(resultJson: string | undefined): string[] {
@@ -396,23 +414,28 @@ export function createRemoteAgentRunner(options: {
     itemId: string,
     placement: Parameters<RunnerPlacement["candidates"]>[0],
     rejected: readonly string[],
+    offered: readonly string[],
     details: readonly string[],
   ) {
-    if (placement.role !== "reviewer" || !reviewerModelDeadEnd(rejected)) return null;
+    const agent = placement.profile?.agent;
+    if (
+      placement.role !== "reviewer" ||
+      !agent ||
+      offered.length > 0 ||
+      !rejected.some((entry) => entry.endsWith(`: ${REVIEWER_MODEL_MATCHES}`))
+    )
+      return null;
     return store.run(function* (q) {
       const implementation = (yield* lastSuccessfulImplementationSteps(q, itemId))?.model;
       if (!implementation) return null;
-      const inScope = rejected
-        .filter((entry) => NEEDS_ANOTHER_MODEL.includes(reasonOf(entry)))
-        .map((entry) => entry.slice(0, entry.indexOf(":")));
-      const alternatives: string[] = [];
-      for (const source of yield* agentModelSourcesSteps(q, now()))
-        if (inScope.includes(source.runnerId)) {
-          const header = (yield* cachedAgentModelsSteps(q, source)).find((row) => !row.model);
-          for (const model of catalogModels(header?.resultJson))
-            if (model !== implementation) alternatives.push(`${source.agent} ${model}`);
-        }
-      return new ReviewerModelConflict(implementation, [...new Set(alternatives)], details);
+      const catalogs = new Map<string, Record<string, string | null>>();
+      for (const id of new Set(rejected.map((entry) => entry.slice(0, entry.indexOf(":"))))) {
+        const catalog: Record<string, string | null> = {};
+        for (const each of AGENTS) catalog[each] = yield* latestModelCatalogSteps(q, id, each);
+        catalogs.set(id, catalog);
+      }
+      const alternatives = reviewerModelAlternatives({ rejected, agent, implementation, catalogs });
+      return alternatives && new ReviewerModelConflict(implementation, alternatives, details);
     });
   }
   async function select(
@@ -450,7 +473,7 @@ export function createRemoteAgentRunner(options: {
       const need = await options.placement.setupNeed(placement);
       if (need) throw new RunnerSetupRequired(need);
     }
-    const conflict = await reviewerModelConflict(itemId, placement, rejected, details);
+    const conflict = await reviewerModelConflict(itemId, placement, rejected, offered, details);
     if (conflict) throw conflict;
     const agent = placement.profile?.agent;
     const accountCheck = untils.filter((until) => until > now()).sort((a, b) => a - b)[0];
