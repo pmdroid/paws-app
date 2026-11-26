@@ -120,7 +120,11 @@ export function verifyRunnerCommand(
   }
   if (command.expiresAt <= context.now) return { ok: false, reason: "expired" };
   const target = "repository" in command ? command.repository : undefined;
-  const repository = target ? `${target.owner}/${target.repo}` : undefined;
+  const repository = target
+    ? `${target.owner}/${target.repo}`
+    : command.type === "helper"
+      ? command.probe?.repository
+      : undefined;
   if (
     repository &&
     context.allowedRepositories &&
