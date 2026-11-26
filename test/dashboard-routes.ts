@@ -47,6 +47,7 @@ const WORKSPACE_PAGE_IDS = [
   "runner-vms",
   "brief",
   "integrations",
+  "performance",
   "members",
   "audit",
 ];
