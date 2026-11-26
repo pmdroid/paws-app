@@ -115,11 +115,13 @@ export class RunnerCapacityWait extends Error {
     readonly untimed = false,
   ) {
     super(
-      runnerIds.length
-        ? `Waiting for a free slot on runner ${runnerIds.join(", ")}`
-        : rejections.length === 0 || rejections.some((entry) => entry.endsWith(": offline"))
-          ? `Waiting for a paired runner to come online${rejections.length ? ` (${rejections.join("; ")})` : ""}`
-          : `Waiting for a paired runner that can take this run (${rejections.join("; ")})`,
+      untimed && rejections.length
+        ? rejections.join("; ")
+        : runnerIds.length
+          ? `Waiting for a free slot on runner ${runnerIds.join(", ")}`
+          : rejections.length === 0 || rejections.some((entry) => entry.endsWith(": offline"))
+            ? `Waiting for a paired runner to come online${rejections.length ? ` (${rejections.join("; ")})` : ""}`
+            : `Waiting for a paired runner that can take this run (${rejections.join("; ")})`,
     );
   }
 }

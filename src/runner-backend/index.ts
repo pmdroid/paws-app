@@ -415,6 +415,14 @@ export function createRemoteAgentRunner(options: {
           .map((reason) => reason.slice(0, reason.indexOf(":"))),
       ),
     ];
+    const model = placement.profile?.model;
+    const unoffered =
+      busy.length === 0 &&
+      agent &&
+      model &&
+      rejected.some((reason) => reason.endsWith(modelUnofferedReason(agent, model)))
+        ? `No runner offers ${agent} ${model}`
+        : null;
     if (
       (resetsAt === null || heldForSession || busy.length > 0) &&
       (busy.length > 0 ||
@@ -427,15 +435,8 @@ export function createRemoteAgentRunner(options: {
             ? SESSION_GRACE_MS
             : undefined
           : Math.min(heldForSession ? SESSION_GRACE_MS : Infinity, Math.max(0, resetsAt - now())),
-        details,
-        Boolean(
-          busy.length === 0 &&
-          agent &&
-          placement.profile?.model &&
-          rejected.some((reason) =>
-            reason.endsWith(modelUnofferedReason(agent, placement.profile!.model!)),
-          ),
-        ),
+        unoffered ? [unoffered, ...details] : details,
+        unoffered !== null,
       );
     const readyRunners = options.placement
       ? async () => {
@@ -547,13 +548,13 @@ export function createRemoteAgentRunner(options: {
     );
     return new RunnerCapacityWait([], undefined, [`${name}: ${error.message}`]);
   }
-  async function modelMissing(itemId: string, runnerId: string, model: string) {
+  async function modelMissing(itemId: string, runnerId: string, agent: string, model: string) {
     const name = await runnerName(runnerId);
     journal(`item ${itemId} runner ${runnerId} no longer offers model ${model}; placing again`);
     return new RunnerCapacityWait(
       [],
       undefined,
-      [`${name}: the agent no longer offers ${model}`],
+      [`No runner offers ${agent} ${model}`, `${name}: the agent no longer offers ${model}`],
       true,
     );
   }
@@ -1053,7 +1054,12 @@ export function createRemoteAgentRunner(options: {
                   );
                 });
                 if (disposition?.modelMissing)
-                  throw await modelMissing(itemId, selected.id, disposition.modelMissing);
+                  throw await modelMissing(
+                    itemId,
+                    selected.id,
+                    profile.agent,
+                    disposition.modelMissing,
+                  );
                 if (
                   disposition?.retryable &&
                   result.agentExited &&
@@ -1983,7 +1989,12 @@ export function createRemoteAgentRunner(options: {
               });
             if (complete && disposition?.modelMissing) {
               await cancelItem(itemId, signal);
-              throw await modelMissing(itemId, selected.id, disposition.modelMissing);
+              throw await modelMissing(
+                itemId,
+                selected.id,
+                profile.agent,
+                disposition.modelMissing,
+              );
             }
             if (complete && disposition?.retryable && input.role === "reviewer")
               throw new RetryableRunnerError(

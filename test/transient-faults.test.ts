@@ -336,6 +336,36 @@ test("a wait for a runner that offers the model puts the item back in the queue"
   expect(result.errors, result.detail).toEqual([]);
 }, 90_000);
 
+test("a reviewer with no runner offering its model waits in verifying and spends no retries", async () => {
+  const clock = new FakeClock(Date.now());
+  const result = await runWithFault({
+    error: () =>
+      new RunnerCapacityWait(
+        [],
+        undefined,
+        ["No runner offers codex m", "box: codex does not offer m"],
+        true,
+      ),
+    times: Infinity,
+    clock,
+    atReview: true,
+    untilMs: 12 * HOUR_MS,
+  });
+  expect(result.state, result.detail).toBe("verifying");
+  expect(
+    result.runs.filter((run) => run.endsWith(":active")),
+    result.detail,
+  ).toEqual([]);
+  expect(
+    result.retries.every((retry) => retry === 0),
+    result.detail,
+  ).toBe(true);
+  expect(result.states, result.detail).not.toContain("failed");
+  expect(result.states, result.detail).not.toContain("awaiting_input");
+  expect(result.errors, result.detail).toEqual([]);
+  expect(result.capacityWait, result.detail).toMatchObject({ runnerIds: [], untimed: true });
+}, 90_000);
+
 test("a busy runner wait that outlasts the hour, then loses its runners, gets a fresh hour", async () => {
   const clock = new FakeClock(Date.now());
   const start = clock.now();
@@ -443,6 +473,8 @@ async function runWithFault(fault: {
   loseJobLease?: boolean;
   /** Fails the session helper that classifies the task, before any agent turn. */
   atClassify?: boolean;
+  /** Fails Closeout's reviewer turn instead of the implement turn. */
+  atReview?: boolean;
 }): Promise<{
   state: string | null;
   states: (string | null)[];
@@ -529,7 +561,11 @@ async function runWithFault(fault: {
         }
       : {}),
     launch(input) {
-      if (fault.atClassify && input.purpose === "classify" && remaining > 0) {
+      if (
+        ((fault.atClassify && input.purpose === "classify") ||
+          (fault.atReview && input.purpose === "review")) &&
+        remaining > 0
+      ) {
         remaining -= 1;
         throw fault.error();
       }
@@ -580,6 +616,7 @@ async function runWithFault(fault: {
     if (
       !fault.tracker &&
       !fault.atClassify &&
+      !fault.atReview &&
       remaining > 0 &&
       (await stateOfPg(db, "ENG-7")) === "running"
     ) {

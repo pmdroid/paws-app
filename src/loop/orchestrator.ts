@@ -2227,6 +2227,11 @@ export class Orchestrator {
           await clearWait();
           const waitingId = readString(job.payload, "itemId");
           if (waitingId) await this.settleItemAwake(waitingId);
+          const waitingRun = waitingId
+            ? (await this.store.run((q) => getWorkItemSteps(q, waitingId)))?.currentRunId
+            : null;
+          if (wait.untimed && waitingRun)
+            await this.store.run((q) => closeActiveRunSteps(q, waitingRun, this.now(), "lost"));
           await waitForRunnerSlot(this.store, job, this.now(), this.runnerWaitMs(wait), wait);
         }
       });
@@ -2868,7 +2873,7 @@ export class Orchestrator {
           )) === "lost"
         )
           throw error;
-        capacityParked = true;
+        capacityParked = !wait.untimed;
         journalCaught(
           error,
           "orchestrator.executeRetried.executeQueued",
