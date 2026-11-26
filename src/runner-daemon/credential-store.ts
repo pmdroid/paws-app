@@ -5,13 +5,14 @@ import { join } from "node:path";
 const TMPFS_MAGIC = 0x01021994;
 const FILE = "credentials.db";
 
-export function attachCredentialStore(db: Database, directory: string): void {
+function privateTmpfs(directory: string): boolean {
   const info = lstatSync(directory);
-  if (
-    !info.isDirectory() ||
-    (info.mode & 0o077) !== 0 ||
-    Number(statfsSync(directory).type) !== TMPFS_MAGIC
-  )
+  if (!info.isDirectory() || info.mode & 0o077) return false;
+  return Number(statfsSync(directory).type) === TMPFS_MAGIC;
+}
+
+export function attachCredentialStore(db: Database, directory: string): void {
+  if (!privateTmpfs(directory))
     throw new Error("Runner credential store must be a private tmpfs folder.");
   db.run("PRAGMA main.secure_delete = ON");
   db.run("DROP TABLE IF EXISTS main.agent_credential");
@@ -24,15 +25,15 @@ export function attachCredentialStore(db: Database, directory: string): void {
   db.run("PRAGMA credentials.journal_mode = TRUNCATE");
 }
 
-export function heldCredentialsLeft(directory: string): number {
+export function heldCredentialsLeft(directory: string): number | null {
   const path = join(directory, FILE);
-  if (!existsSync(path)) return 0;
+  if (!existsSync(path) || !privateTmpfs(directory)) return null;
   const db = new Database(path, { readonly: true });
   try {
     const table = db
       .query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_credential'")
       .get();
-    if (!table) return 0;
+    if (!table) return null;
     return (db.query("SELECT count(*) AS n FROM agent_credential").get() as { n: number }).n;
   } finally {
     db.close();

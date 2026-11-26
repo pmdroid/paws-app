@@ -47,19 +47,12 @@ const PUBLISHING = ".paws-publishing";
 const ADMISSION_MS = 60_000;
 const SHARE_LIMIT = 100_000;
 export const ISSUE_VM_MARKER = "/etc/paws-runner/issue-vm";
-const ACCOUNT_CACHES = ".paws-account-caches";
+const CACHES = ".paws-account-caches";
 const RETURNED = ".paws-returned";
 const RETURN_LIMIT = 2_097_152;
 const STAGED_MS = 60_000;
 const TMPFS_MAGIC = 0x01021994;
-const SHARED_ELSEWHERE = new Set([
-  "work",
-  RUNNER_ACCOUNT_HOMES,
-  ACCOUNT_CACHES,
-  MANIFEST,
-  ACTIVE,
-  PUBLISHING,
-]);
+const SHARED = new Set(["work", RUNNER_ACCOUNT_HOMES, CACHES, MANIFEST, ACTIVE, PUBLISHING]);
 
 const HOME_FOLDERS = [
   ".claude",
@@ -176,7 +169,7 @@ export function onTmpfs(path: string): boolean {
 
 export function runnerAccountCache(agentHome: string, home: string): string | null {
   if (!onTmpfs(home)) return null;
-  const cache = join(agentHome, ACCOUNT_CACHES, basename(home));
+  const cache = join(agentHome, CACHES, basename(home));
   mkdirSync(cache, { recursive: true, mode: 0o700 });
   return cache;
 }
@@ -348,7 +341,7 @@ function credentialFolder(path: string, owners: RunnerAccountOwners): void {
 function readCredentialFile(path: string, limit = CREDENTIAL_LIMIT): Buffer | null {
   let descriptor: number;
   try {
-    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
@@ -677,7 +670,7 @@ export function shareRunnerAgentState(
     throw error;
   }
   shareAgentConfigFolders(home, owners);
-  const top = names.filter((name) => !SHARED_ELSEWHERE.has(name)).map((name) => join(home, name));
+  const top = names.filter((name) => !SHARED.has(name)).map((name) => join(home, name));
   shareRunnerPaths(top, owners, { depth: 0 });
   const unreadable = new Set<string>();
   for (const folder of AGENT_STATE) {

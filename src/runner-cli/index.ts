@@ -366,6 +366,7 @@ export async function runRunnerCli(
       throw new RunnerCliFailure("identity", "Runner service identity is invalid.");
     const config = loadConfig(args[1]!, ids.runnerUid);
     const issueVm = existsSync(ISSUE_VM_MARKER);
+    const accountHomes = join("/var/lib/paws-agent", RUNNER_ACCOUNT_HOMES);
     const daemonIds = accounts(config.agentUser);
     const sampleHost = createRunnerHostSampler({ workRoot: "/var/lib/paws-runner" });
     let healthFailure: string | null | undefined;
@@ -393,7 +394,7 @@ export async function runRunnerCli(
       ...(issueVm
         ? {
             credentialStore: ISSUE_VM_CREDENTIALS,
-            memorySignIns: () => onTmpfs(join("/var/lib/paws-agent", RUNNER_ACCOUNT_HOMES)),
+            memorySignIns: () => existsSync(accountHomes) && onTmpfs(accountHomes),
           }
         : {}),
     });

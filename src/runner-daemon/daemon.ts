@@ -222,14 +222,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       throw error;
     }
   createCommandStore(db, options.credentialStore ? "credentials" : "main");
-  const memorySignIns = () => {
-    try {
-      return Boolean(options.credentialStore && options.memorySignIns?.());
-    } catch (error) {
-      journalCaught(error, "daemon.memorySignIns", null);
-      return false;
-    }
-  };
+  const memorySignIns = options.credentialStore ? options.memorySignIns : undefined;
   const store = sqliteDb(db);
   const q = drizzle(db);
   const changes = (query: { run(): unknown }) => (query.run() as Changes).changes;
@@ -1013,7 +1006,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       attempts.unshift({
         ...(attempts[0] as object),
         accounts: RunnerAccountCapabilitySchema.parse({
-          protocol: memorySignIns() ? RUNNER_MEMORY_ACCOUNT_PROTOCOL : RUNNER_ACCOUNT_PROTOCOL,
+          protocol: memorySignIns?.() ? RUNNER_MEMORY_ACCOUNT_PROTOCOL : RUNNER_ACCOUNT_PROTOCOL,
           bindings: heldBindings(),
         }),
       });

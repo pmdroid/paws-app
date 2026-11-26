@@ -213,7 +213,7 @@ export {
   restoreCodexSessionBundle,
   restoreGrokSessionBundle,
 };
-export { openCodeCredentialLeft, purgeOpenCodeCredential } from "./opencode-credential";
+export { finishOpenCodePurge, openCodeCredentialLeft } from "./opencode-credential";
 
 export interface RunnerWorkerOptions {
   job: RunnerJob;

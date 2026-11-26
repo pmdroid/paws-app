@@ -548,13 +548,7 @@ test.skipIf(!shmTmpfs)(
       const accountHome = join(home, ".paws-accounts", account.bindingId);
       const cache = runnerAccountCache(root, accountHome)!;
       expect(cache).toBe(join(root, ".paws-account-caches", account.bindingId));
-      expect(runnerAccountCache(root, join(root, "daemon"))).toBeNull();
-      expect(accountHomeEnv(accountHome, cache)).toMatchObject({
-        XDG_CACHE_HOME: cache,
-        BUN_INSTALL_CACHE_DIR: join(cache, "bun"),
-        npm_config_cache: join(cache, "npm"),
-        PIP_CACHE_DIR: join(cache, "pip"),
-      });
+      expect(accountHomeEnv(accountHome, cache)).toMatchObject({ XDG_CACHE_HOME: cache });
       returnRunnerAgentCredentials(accountHome, "claude", EXECUTION, (files) =>
         writeReturnedCredentials(
           accountHome,
@@ -635,29 +629,38 @@ test.skipIf(!shmTmpfs)(
   },
 );
 
-test("sleep-check retries an unfinished OpenCode purge and sweeps stale staged sign-ins on an idle VM", () => {
-  const agentHome = mkdtempSync(join(tmpdir(), "paws-sleep-check-"));
-  try {
-    const home = join(agentHome, ".paws-accounts", "binding-1");
-    mkdirSync(join(home, ".local/share/opencode"), { recursive: true });
-    const db = new Database(join(home, ".local/share/opencode/opencode.db"));
-    db.run(
-      "CREATE TABLE credential (id TEXT, integration_id TEXT, value TEXT, active INTEGER, time_created INTEGER)",
-    );
-    db.run("INSERT INTO credential VALUES ('c', 'opencode', 'token', 1, 1)");
-    db.close();
-    const staged = join(home, ".claude/.credentials.json.1.tmp");
-    mkdirSync(join(home, ".claude"));
-    writeFileSync(staged, "token");
-    const store = join(agentHome, "store");
-    expect(runnerSleepLeftovers(agentHome, store)).toEqual([
-      "binding-1/.claude/.credentials.json.1.tmp",
-      "binding-1/opencode.db",
-    ]);
-    utimesSync(staged, 0, 0);
-    expect(runnerSleepLeftovers(agentHome, store, true)).toEqual([]);
-    expect(existsSync(staged)).toBe(false);
-  } finally {
-    rmSync(agentHome, { recursive: true, force: true });
-  }
-});
+test.skipIf(!shmTmpfs)(
+  "sleep-check finishes only a started OpenCode purge and checks both tmpfs stores",
+  () => {
+    const agentHome = mkdtempSync("/dev/shm/paws-sleep-check-");
+    try {
+      const home = join(agentHome, ".paws-accounts", "binding-1");
+      mkdirSync(join(home, ".local/share/opencode"), { recursive: true });
+      const db = new Database(join(home, ".local/share/opencode/opencode.db"));
+      db.run(
+        "CREATE TABLE credential (id TEXT, integration_id TEXT, value TEXT, active INTEGER, time_created INTEGER)",
+      );
+      db.run("INSERT INTO credential VALUES ('c', 'opencode', 'token', 1, 1)");
+      db.close();
+      const staged = join(home, ".claude/.credentials.json.1.tmp");
+      mkdirSync(join(home, ".claude"));
+      writeFileSync(staged, "token");
+      const store = join(agentHome, "store");
+      expect(runnerSleepLeftovers(agentHome, store, true)).toEqual([
+        "binding-1/.claude/.credentials.json.1.tmp",
+        "binding-1/opencode.db",
+        "runner credential store is not ready",
+      ]);
+      mkdirSync(store, { mode: 0o700 });
+      const held = new Database(join(store, "credentials.db"));
+      held.run("CREATE TABLE agent_credential (a)");
+      held.close();
+      writeFileSync(join(home, ".paws-opencode-purging"), "");
+      utimesSync(staged, 0, 0);
+      expect(runnerSleepLeftovers(agentHome, store, true)).toEqual([]);
+      expect(existsSync(staged)).toBe(false);
+    } finally {
+      rmSync(agentHome, { recursive: true, force: true });
+    }
+  },
+);

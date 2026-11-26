@@ -1,15 +1,15 @@
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
-  mkdirSync,
   readFileSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { RunnerCodingAgent } from "../runner-protocol";
 
 export const OPENCODE_CREDENTIAL_FILE = ".paws/opencode-credential.json";
@@ -87,7 +87,7 @@ export function collectOpenCodeCredential(home: string, placed: string): boolean
   return true;
 }
 
-const PURGING = ".paws/opencode-purging";
+const PURGING = ".paws-opencode-purging";
 
 function nonEmpty(path: string): boolean {
   try {
@@ -101,8 +101,9 @@ function nonEmpty(path: string): boolean {
 export function purgeOpenCodeCredential(home: string): void {
   if (!existsSync(join(home, OPENCODE_DATABASE)))
     return rmSync(join(home, PURGING), { force: true });
-  mkdirSync(dirname(join(home, PURGING)), { recursive: true, mode: 0o770 });
   writeFileSync(join(home, PURGING), "");
+  for (const file of ["", "-wal", "-shm"].map((end) => join(home, OPENCODE_DATABASE + end)))
+    if (existsSync(file) && statSync(file).uid === process.getuid?.()) chmodSync(file, 0o660);
   const db = open(home, false);
   try {
     db.run("PRAGMA secure_delete = ON");
@@ -117,6 +118,10 @@ export function purgeOpenCodeCredential(home: string): void {
   if (nonEmpty(join(home, `${OPENCODE_DATABASE}-wal`)))
     throw new Error("OpenCode database journal was not emptied");
   rmSync(join(home, PURGING), { force: true });
+}
+
+export function finishOpenCodePurge(home: string): void {
+  if (existsSync(join(home, PURGING))) purgeOpenCodeCredential(home);
 }
 
 export function openCodeCredentialLeft(home: string): boolean {
