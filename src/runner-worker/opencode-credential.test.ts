@@ -142,6 +142,7 @@ test("after collection the token is gone from opencode.db, its journal and the a
   wal.close();
   insert(root, "cred_xai", "xai", '{"type":"key","key":"k"}');
   const placed = await placeOpenCodeCredential(root, "opencode", migrate(root));
+  refresh(root, JSON.stringify({ ...JSON.parse(credential), access: `access-${"x".repeat(400)}` }));
   refresh(root, JSON.stringify({ ...JSON.parse(credential), access: "access-2" }));
   expect(openCodeCredentialLeft(root)).toBe(true);
   expect(collectOpenCodeCredential(root, placed!)).toBe(true);
@@ -168,6 +169,27 @@ test("after collection the token is gone from opencode.db, its journal and the a
     expect(bytes).not.toContain("access-");
   }
 });
+
+test("a purge that can't empty the journal stays visible until it finishes", async () => {
+  const root = home();
+  await migrate(root)();
+  const wal = new Database(join(root, OPENCODE_DATABASE));
+  wal.run("PRAGMA journal_mode = WAL");
+  wal.close();
+  await placeOpenCodeCredential(root, "opencode", migrate(root));
+  const reader = new Database(join(root, OPENCODE_DATABASE), { readonly: true });
+  reader.run("BEGIN");
+  reader.query("SELECT count(*) FROM credential").get();
+  try {
+    expect(() => purgeOpenCodeCredential(root)).toThrow();
+    expect(openCodeCredentialLeft(root)).toBe(true);
+  } finally {
+    reader.run("COMMIT");
+    reader.close();
+  }
+  purgeOpenCodeCredential(root);
+  expect(openCodeCredentialLeft(root)).toBe(false);
+}, 20_000);
 
 test("keeps the delivered credential when the row did not change", async () => {
   const root = home();

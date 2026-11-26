@@ -36,6 +36,7 @@ ReadWritePaths=/var/lib/paws-agent
 ReadWritePaths=/var/lib/paws-agent-results
 ReadWritePaths=/var/lib/paws-agent-tasks
 ReadWritePaths=-/run/paws-runner/agent
+ReadWritePaths=-/run/paws-runner/credentials
 
 [Install]
 WantedBy=multi-user.target

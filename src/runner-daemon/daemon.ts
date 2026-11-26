@@ -550,16 +550,26 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   function returnCredentials(commandId: string, executionId: string, written: Buffer | null) {
     const row = heldCredential(commandId);
     if (!row) return;
+    const account = { accountId: row.accountId, bindingId: row.bindingId };
     let returned = written;
     try {
-      returned =
-        options.agentCredentials?.takeReturned?.(
-          { accountId: row.accountId, bindingId: row.bindingId },
-          executionId,
-        ) ?? written;
+      returned = options.agentCredentials?.readReturned?.(account, executionId) ?? written;
     } catch (error) {
-      journalCaught(error, "daemon.returnCredentials.takeReturned", null);
+      journalCaught(error, "daemon.returnCredentials.readReturned", null);
     }
+    recordReturned(row, commandId, executionId, returned);
+    try {
+      options.agentCredentials?.dropReturned?.(account, executionId);
+    } catch (error) {
+      journalCaught(error, "daemon.returnCredentials.dropReturned", null);
+    }
+  }
+  function recordReturned(
+    row: NonNullable<ReturnType<typeof heldCredential>>,
+    commandId: string,
+    executionId: string,
+    returned: Buffer | null,
+  ) {
     const commands = JSON.stringify(
       (JSON.parse(row.commands) as string[]).filter((id) => id !== commandId),
     );

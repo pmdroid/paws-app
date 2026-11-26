@@ -613,3 +613,31 @@ test.skipIf(onTmpfs(tmpdir()))(
     }
   },
 );
+
+test.skipIf(!shmTmpfs)("switching to an issue VM store scrubs sign-ins kept in commands.db", () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-runner-scrub-"));
+  const store = mkdtempSync("/dev/shm/paws-issue-vm-store-");
+  const options = {
+    root: join(root, "daemon"),
+    controlPlaneUrl: "https://localhost:1",
+    runnerApiUrl: "https://localhost:2",
+  };
+  try {
+    chmodSync(store, 0o700);
+    openRunnerDaemon(options).close();
+    const path = join(options.root, "commands.db");
+    const disk = new Database(path);
+    disk.run(
+      "INSERT INTO agent_credential (binding_id, account_id, agent, version, digest, commands, files) VALUES ('b', 'a', 'claude', 1, 'd', '[]', ?)",
+      ["sealed-held-sign-in".repeat(20)],
+    );
+    disk.close();
+    openRunnerDaemon({ ...options, credentialStore: store }).close();
+    for (const suffix of ["", "-wal"])
+      if (existsSync(`${path}${suffix}`))
+        expect(readFileSync(`${path}${suffix}`, "latin1")).not.toContain("sealed-held-sign-in");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(store, { recursive: true, force: true });
+  }
+});

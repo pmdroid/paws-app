@@ -1162,7 +1162,9 @@ export async function executeRunnerCommand(
             ),
           ),
         false,
-        binding.agent === "opencode" ? () => purgeOpenCodeCredential(home) : undefined,
+        binding.agent === "opencode" && onTmpfs(home)
+          ? () => purgeOpenCodeCredential(home)
+          : undefined,
       );
     } catch (error) {
       journalCaught(

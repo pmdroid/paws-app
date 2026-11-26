@@ -193,7 +193,7 @@ export function writeReturnedCredentials(home: string, executionId: string, seal
   }
 }
 
-function takeReturnedCredentials(home: string, executionId: string): Buffer | null {
+function readReturnedCredentials(home: string, executionId: string): Buffer | null {
   const target = join(home, RETURNED, ExecutionIdSchema.parse(executionId));
   let descriptor: number;
   try {
@@ -209,7 +209,6 @@ function takeReturnedCredentials(home: string, executionId: string): Buffer | nu
     return readFileSync(descriptor);
   } finally {
     closeSync(descriptor);
-    rmSync(target, { force: true });
   }
 }
 
@@ -275,8 +274,15 @@ export function runnerAgentCredentials(
       }
     },
     busy: (account) => activeExecutions(runnerAccountHome(agentHome, account)).length > 0,
-    takeReturned: (account, executionId) =>
-      takeReturnedCredentials(runnerAccountHome(agentHome, account), executionId),
+    readReturned: (account, executionId) =>
+      readReturnedCredentials(runnerAccountHome(agentHome, account), executionId),
+    dropReturned: (account, executionId) =>
+      rmSync(
+        join(runnerAccountHome(agentHome, account), RETURNED, ExecutionIdSchema.parse(executionId)),
+        {
+          force: true,
+        },
+      ),
     remove(account, agent) {
       for (const { path, target } of files(account, agent))
         if (path !== CLAUDE_STATE) rmSync(target, { force: true });
