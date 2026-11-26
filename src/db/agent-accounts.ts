@@ -76,7 +76,8 @@ type AgentAccountErrorCode =
   | "removed"
   | "disabled"
   | "binding_mismatch"
-  | "runner_unsupported";
+  | "runner_unsupported"
+  | "busy";
 
 export class AgentAccountError extends Error {
   override readonly name = "AgentAccountError";
@@ -645,7 +646,7 @@ export function* agentAccountSignedInSteps(q: Q, accountId: string) {
 
 export function* lockAgentAccountSteps(q: Q, accountId: string) {
   const a = q.t.agentAccount;
-  yield* q.one(q.orm.select({ id: a.id }).from(a).where(eq(a.id, accountId)).for("update"));
+  yield* q.one(q.orm.select({ id: a.id }).from(a).where(eq(a.id, accountId)).for("no key update"));
 }
 
 export function* runnerSignInsOnDiskSteps(q: Q, runnerId: string) {
@@ -727,6 +728,23 @@ export function* recordCommandAccountSteps(
     );
   const unsupported = yield* runnerAccountUnsupportedSteps(q, command.runnerId, row.id, agent);
   if (unsupported) throw new AgentAccountError("runner_unsupported", unsupported);
+  yield* lockAgentAccountSteps(q, row.accountId);
+  const { runner: r } = q.t;
+  const target = yield* q.one(
+    q.orm.select({ isolation: r.isolation }).from(r).where(eq(r.id, command.runnerId)),
+  );
+  if (
+    (yield* accountSlotsInUseSteps(
+      q,
+      row.accountId,
+      at,
+      command.id,
+      target?.isolation === "issue_vm"
+        ? { except: command.runnerId }
+        : { except: command.runnerId, issueVm: true },
+    )) > 0
+  )
+    throw new AgentAccountError("busy", "The agent account is in use in another issue VM");
   const owner = (yield* accountRowSteps(q, row.accountId))!;
   if (row.removedAt !== null || owner.removedAt !== null)
     throw new AgentAccountError("removed", "Agent account was removed");
@@ -868,7 +886,25 @@ export function* accountSlotsInUseSteps(
         ),
       ),
   );
-  return retros!.count + usage!.count;
+  const helpers = yield* q.one(
+    q.orm
+      .select({ count: count() })
+      .from(h)
+      .innerJoin(a, eq(a.commandId, h.id))
+      .innerJoin(r, eq(r.id, h.runnerId))
+      .leftJoin(u, eq(u.commandId, h.id))
+      .where(
+        and(
+          eq(a.accountId, accountId),
+          isNull(u.commandId),
+          exceptCommandId === null ? undefined : ne(h.id, exceptCommandId),
+          onRunner(h.runnerId),
+          gt(h.expiresAt, at),
+          or(isNull(h.endedAt), isNull(h.result)),
+        ),
+      ),
+  );
+  return retros!.count + usage!.count + helpers!.count;
 }
 
 export async function accountSlotsInUse(

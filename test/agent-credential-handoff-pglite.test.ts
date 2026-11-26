@@ -150,8 +150,9 @@ describePglite((connect) => {
     await seed(db, (q) =>
       q.orm.update(q.t.runner).set({ isolation: "issue_vm" }).where(eq(q.t.runner.id, "new")),
     );
-    const [onDisk] = await work.attachCredentials("new", [envelope("new", "login_check", "disk")]);
-    expect(onDisk!.credential).toBeUndefined();
+    expect(await work.attachCredentials("new", [envelope("new", "login_check", "disk")])).toEqual(
+      [],
+    );
     await seed(db, (q) =>
       q.orm.insert(q.t.runnerAccountCapability).values({
         runnerId: "new",

@@ -16,6 +16,7 @@ import {
   holdForRunnerSetup,
   listJobs,
   recordAccountObservation,
+  recordCommandAccount,
   recordRunnerAccountCapability,
   runnerAccountUnsupportedSteps,
   removeAgentBinding,
@@ -32,7 +33,11 @@ import {
   createRunnerPlacement,
   credentialRefreshable,
 } from "../src/runner-placement";
-import { RUNNER_MEMORY_ACCOUNT_PROTOCOL, type RunnerResult } from "../src/runner-protocol";
+import {
+  RUNNER_MEMORY_ACCOUNT_PROTOCOL,
+  type RunnerCommand,
+  type RunnerResult,
+} from "../src/runner-protocol";
 import { copyMigratedPglite, tempStore } from "./pglite";
 import { currentRunnerHost } from "./pglite-fixtures";
 
@@ -130,6 +135,15 @@ async function seed(db: Db) {
       c2: await bind(c.id, "R2"),
     },
   };
+}
+
+async function rejection(promise: Promise<unknown>) {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  throw new Error("expected a rejection");
 }
 
 async function fixture() {
@@ -799,6 +813,47 @@ test("a refreshable account runs in one issue VM at a time; a second issue waits
       .where(eq(q.t.runnerExecutionUsage.commandId, "cmd-vm-1")),
   );
   expect((await readiness(bindings.a2)).ready).toBe(true);
+});
+
+test("an account command on a second issue VM waits while the account is in use", async () => {
+  const { db, bindings, accounts } = await fixture();
+  await issueVm(db, "R1", RUNNER_MEMORY_ACCOUNT_PROTOCOL);
+  await recordRunnerAccountCapability(
+    db,
+    "R2",
+    {
+      protocol: RUNNER_MEMORY_ACCOUNT_PROTOCOL,
+      bindings: [{ bindingId: bindings.a2, agent: "claude" }],
+    },
+    NOW,
+  );
+  await write(db, (q) =>
+    q.orm.update(q.t.runner).set({ isolation: "issue_vm" }).where(eq(q.t.runner.id, "R2")),
+  );
+  const check = (id: string) =>
+    recordCommandAccount(
+      db,
+      {
+        id,
+        type: "login_check",
+        runnerId: "R2",
+        workspaceId: "W1",
+        issuedAt: NOW,
+        expiresAt: NOW + 60_000,
+        agent: "claude",
+        account: { accountId: accounts.a, bindingId: bindings.a2 },
+      } as RunnerCommand,
+      NOW + 1,
+    );
+  await attempt(db, "cmd-vm-1", bindings.a1, NOW);
+  expect(await rejection(check("check-busy"))).toMatchObject({ code: "busy" });
+  await write(db, (q) =>
+    q.orm
+      .update(q.t.runnerExecutionUsage)
+      .set({ endedAt: NOW })
+      .where(eq(q.t.runnerExecutionUsage.commandId, "cmd-vm-1")),
+  );
+  expect((await check("check-free"))?.accountId).toBe(accounts.a);
 });
 
 test("an account counts as refreshable unless its stored files are a fixed token or API key", () => {

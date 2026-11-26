@@ -648,12 +648,13 @@ export function createRunnerWork(options: {
             Buffer.from(envelope.payload, "base64url").toString("utf8"),
           ) as RunnerCommand;
           const named = runnerCommandAccount(command);
+          if (named && onDisk) continue;
           const stored = named
             ? yield* readAgentCredentialSteps(q, secretsDir, named.account.accountId)
             : null;
           const central = named && (yield* readAgentAuthSteps(q, named.account.accountId));
           if (central && !pem) throw new RunnerWorkFencedError();
-          if (!named || !pem || onDisk || stored?.agent !== named.agent || stored.blob === null) {
+          if (!named || !pem || stored?.agent !== named.agent || stored.blob === null) {
             sent.push(envelope);
             continue;
           }
@@ -683,6 +684,7 @@ export function createRunnerWork(options: {
         if (!(yield* activeAccountRunnerWorkSteps(q, runnerId, accountId, now())))
           throw new RunnerWorkFencedError();
         if (!(yield* readAgentAuthSteps(q, accountId))) throw new RunnerWorkFencedError();
+        if (yield* runnerSignInsOnDiskSteps(q, runnerId)) throw new RunnerWorkFencedError();
         const stored = yield* readAgentCredentialSteps(q, secretsDir, accountId);
         const pem = yield* currentRunnerCertificatePemSteps(q, runnerId, now());
         if (!stored?.blob || !pem) throw new RunnerWorkFencedError();
