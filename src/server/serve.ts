@@ -137,7 +137,12 @@ import {
   type WorkspacePrincipal,
 } from "../workspace";
 import { createNotebookHttp, type NotebookChannelAccess } from "../notebook";
-import { handleIssueVmGrantRequest, isIssueVmGrantPath, ISSUE_VM_MEMBERS_PATH } from "../issue-vm";
+import {
+  handleIssueVmGrantRequest,
+  isIssueVmGrantPath,
+  ISSUE_VM_MEMBERS_PATH,
+  ISSUE_VM_SPEND_PATH,
+} from "../issue-vm";
 import type { WorkspaceSession } from "../db";
 import { isDashboardPage, isDashboardPath } from "../dashboard-links";
 import { handleVmHostRequest, isVmHostPath } from "../vm-hosts";
@@ -573,7 +578,10 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       }
       const privileged =
         (path.startsWith("/api/settings/") &&
-          !(path === ISSUE_VM_MEMBERS_PATH && request.method === "GET")) ||
+          !(
+            (path === ISSUE_VM_MEMBERS_PATH || path === ISSUE_VM_SPEND_PATH) &&
+            request.method === "GET"
+          )) ||
         (path === "/api/linear/sessions" && request.method !== "GET");
       const unsafe = !["GET", "HEAD", "OPTIONS"].includes(request.method);
       if (

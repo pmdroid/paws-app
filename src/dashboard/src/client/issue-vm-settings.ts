@@ -22,6 +22,13 @@ type Host = {
   slots: { slots: number; reason: string };
 };
 type Note = { text: string; failed: boolean };
+type Provider = "boat" | "instabox";
+type Spend = {
+  month: string;
+  spentUsd: number;
+  monthlyLimitUsd: number;
+  prices: Record<Provider, number | null>;
+};
 
 const LIMITS: [keyof Limits, string, number, number][] = [
   ["perMember", "Issues per member at once", 0, 50],
@@ -44,6 +51,12 @@ const REASON: Record<string, string> = {
   unknown: "the runner has not reported its CPUs and memory yet",
 };
 const DAY = 86_400_000;
+const PROVIDERS: [Provider, string][] = [
+  ["boat", "boat"],
+  ["instabox", "InstaBox"],
+];
+const NO_PRICE = "No cloud issue VMs until a price is set";
+const usd = (value: number) => `$${value.toFixed(2)}`;
 
 async function request<T>(engine: string, path: string, method = "GET", body?: unknown) {
   const response = await fetch(new URL(path, engine), {
@@ -78,6 +91,7 @@ export function createIssueVmSettings() {
   let root: HTMLElement | undefined;
   let engine: string | null = null;
   let limits: Limits | null = null;
+  let spend: Spend | null = null;
   let members: Member[] = [];
   let runners: { id: string; name: string }[] = [];
   let hosts = new Map<string, Host>();
@@ -103,6 +117,20 @@ export function createIssueVmSettings() {
           : ""
       }${note("limits")}`,
     );
+  const money = (id: string, name: string, label: string, value: number | null, hint: string) =>
+    `<div class="settings-field"><label for="${id}">${label}</label><input id="${id}" name="${name}" type="number" inputmode="decimal" min="0" max="1000000" step="0.01" value="${value === null ? "" : String(value)}"><p class="sub">${hint}</p></div>`;
+  const spendSection = () => {
+    if (!spend) return admin() ? section("Spend", note("spend")) : "";
+    const { spentUsd, monthlyLimitUsd: limit, prices } = spend;
+    const share = limit > 0 ? spentUsd / limit : 1;
+    const text = `${usd(spentUsd)} of ${usd(limit)} spent in ${spend.month}`;
+    const bar = `<div class="col"><div class="between"><span>This month</span><span class="mono">${text}</span></div><progress class="${share >= 1 ? "full" : share >= 0.8 ? "high" : ""}" max="${limit > 0 ? limit : 1}" value="${limit > 0 ? Math.min(spentUsd, limit) : 1}" aria-label="${text}"></progress></div>`;
+    const price = (value: number | null) => (value === null ? NO_PRICE : `${usd(value)} an hour`);
+    const body = admin()
+      ? `<form data-spend class="col" novalidate>${money("issue-vm-spend-limit", "monthlyLimitUsd", "Monthly limit (US dollars)", limit, "Cloud issue VMs stop starting once this month's spend reaches it.")}${PROVIDERS.map(([key, label]) => money(`issue-vm-price-${key}`, key, `${label} price per VM hour (US dollars)`, prices[key], prices[key] === null ? NO_PRICE : "0 to 1000000")).join("")}<div class="row"><button class="btn" type="submit"${off()}>Save spend</button></div></form>`
+      : `<ul class="col" aria-label="Hourly prices">${PROVIDERS.map(([key, label]) => `<li data-price="${key}">${label}: ${price(prices[key])}</li>`).join("")}</ul>`;
+    return section("Spend", `${bar}${body}${note("spend")}`);
+  };
   const grantCell = (member: Member) =>
     member.grant
       ? `${member.grant.limit} until ${day(member.grant.endsAt)}${admin() ? ` <button class="btn secondary" type="button" data-revoke="${esc(member.grant.id)}"${off()}>Revoke</button>` : ""}`
@@ -150,7 +178,9 @@ export function createIssueVmSettings() {
     if (!root) return;
     renderMarkup(
       root,
-      admin() ? `${limitsSection()}${grantsSection()}${hostsSection()}` : grantsSection(),
+      admin()
+        ? `${limitsSection()}${spendSection()}${grantsSection()}${hostsSection()}`
+        : `${spendSection()}${grantsSection()}`,
     );
   };
   const attempt = async <T>(key: string, work: () => Promise<T>) => {
@@ -193,10 +223,27 @@ export function createIssueVmSettings() {
     if (!engine) return;
     const limitsLoad = () =>
       attempt("limits", () => request<Limits>(engine!, "/api/settings/issue-vm"));
+    const spendLoad = async () => {
+      try {
+        spend = await request<Spend>(engine!, "/api/settings/issue-vm/spend");
+      } catch (error) {
+        journalCaught(error, "issue-vm-settings.spend", null);
+        if (admin())
+          notes.spend = {
+            text: error instanceof Error ? error.message : "Try again.",
+            failed: true,
+          };
+      }
+    };
     await Promise.all(
       admin()
-        ? [limitsLoad().then((next) => (limits = next ?? limits)), loadMembers(), loadHosts()]
-        : [loadMembers()],
+        ? [
+            limitsLoad().then((next) => (limits = next ?? limits)),
+            spendLoad(),
+            loadMembers(),
+            loadHosts(),
+          ]
+        : [spendLoad(), loadMembers()],
     );
     paint();
   };
@@ -226,6 +273,25 @@ export function createIssueVmSettings() {
           throw new Error("Enter a whole number for each limit.");
         limits = await request<Limits>(engine!, "/api/settings/issue-vm", "PUT", body);
         await refreshMembers("Limits saved.");
+      });
+    else if (form.matches("[data-spend]"))
+      void run("spend", "Spend settings saved.", async () => {
+        const { monthlyLimitUsd, ...entered } = numbers(form);
+        const prices = Object.fromEntries(
+          Object.entries(entered).filter(([, value]) => value !== null),
+        );
+        if (
+          monthlyLimitUsd === null ||
+          [...form.querySelectorAll<HTMLInputElement>("input")].some(
+            (input) => input.validity?.badInput,
+          ) ||
+          [monthlyLimitUsd, ...Object.values(prices)].some((value) => Number.isNaN(value))
+        )
+          throw new Error("Enter the monthly limit and each price in US dollars.");
+        spend = await request<Spend>(engine!, "/api/settings/issue-vm/spend", "PUT", {
+          monthlyLimitUsd,
+          prices,
+        });
       });
     else if (form.matches("[data-grant]")) {
       const member = form.querySelector<HTMLSelectElement>("select")!.value;
@@ -279,6 +345,7 @@ export function createIssueVmSettings() {
       root = next;
       engine = nextEngine;
       limits = null;
+      spend = null;
       members = [];
       hosts = new Map();
       notes = {};

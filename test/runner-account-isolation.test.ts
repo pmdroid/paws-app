@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   markRunnerAccountSignedIn,
+  onTmpfs,
   openRunnerAccountHome,
   publishRunnerAccountHome,
   runnerAccountCache,
@@ -20,6 +21,15 @@ afterEach(() => {
 function temporary(prefix: string) {
   const root = mkdtempSync(join(tmpdir(), prefix));
   roots.push(root);
+  return root;
+}
+
+function runnerHomeRoot(prefix: string) {
+  const parent = onTmpfs(tmpdir()) ? join(import.meta.dir, "..", "out") : tmpdir();
+  mkdirSync(parent, { recursive: true });
+  const root = mkdtempSync(join(parent, prefix));
+  roots.push(root);
+  expect(onTmpfs(root)).toBe(false);
   return root;
 }
 
@@ -101,7 +111,7 @@ async function check(root: string, account?: RunnerAccount, agent: "codex" | "cl
 }
 
 test("checks run with their binding's home and never see another account's secrets", async () => {
-  const root = temporary("paws-account-check-");
+  const root = runnerHomeRoot("paws-account-check-");
   const home = seedCodex(root, a, "synthetic-token-a");
   seedCodex(root, b, "synthetic-token-b");
   const named = await check(root, a);

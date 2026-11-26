@@ -301,6 +301,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   }),
   api("GET PUT", "/api/settings/issue-vm/spend", "preserved", "src/issue-vm", {
     sample: "/api/settings/issue-vm/spend",
+    member: 200,
   }),
   api("DELETE", "/api/settings/issue-vm/grants/:id", "preserved", "src/issue-vm", {
     sample: "/api/settings/issue-vm/grants/01HZY",

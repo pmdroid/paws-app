@@ -147,9 +147,11 @@ describePglite((connect) => {
     expect(await wake(db, "boat", at)).toEqual({ ok: true });
   });
 
-  test("only admins read or set the spend limit, and bad values are refused", async () => {
+  test("members read the spend, only admins set it, and bad values are refused", async () => {
     const db = await connected(connect);
-    expect((await call(db, "GET", { role: "member" }))?.status).toBe(403);
+    const read = await call(db, "GET", { role: "member" });
+    expect(read?.status).toBe(200);
+    expect(await read!.json()).toMatchObject({ monthlyLimitUsd: 50, spentUsd: 0 });
     expect(
       (await call(db, "PUT", { role: "member", body: { monthlyLimitUsd: 500 } }))?.status,
     ).toBe(403);
