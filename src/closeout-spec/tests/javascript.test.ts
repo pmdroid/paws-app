@@ -109,7 +109,8 @@ const FILES: Record<string, string> = {
   "test/setup.ts": "export {};\n",
   "lib/math.ts": "export const add = (a: number, b: number) => a + b;\n",
   "lib/index.ts": 'export * from "./math";\n',
-  "lib/old.ts": "export const old = 1;\n",
+  "lib/old.ts": 'import { deep } from "./deep";\nexport const old = deep;\n',
+  "lib/deep.ts": "export const deep = 1;\n",
   "lib/alias.ts": "export const viaAlias = 1;\n",
   "lib/style.css": "a {}\n",
   "packages/util/package.json": '{"name":"@fx/util","main":"src/index.ts"}',
@@ -227,17 +228,19 @@ test("over_max direct runs the change's direct tests when the selection is over 
   });
   expect(direct.selection).toEqual({
     mode: "selected",
-    targets: ["lib/math.test.ts", "test/always.test.ts"],
+    targets: ["lib/math.test.ts", "test/always.test.ts", "test/lazy.test.ts"],
     reasons: [
       "4 test files are selected, more than max_selected 1",
       "running the change's direct tests and leaving the rest to CI",
       "lib/math.test.ts is a direct test of the change",
+      "test/lazy.test.ts is a direct test of the change",
       "test/always.test.ts is in select.always",
     ],
   });
-  expect(direct.invocations[0]?.argv.slice(-2)).toEqual([
+  expect(direct.invocations[0]?.argv.slice(-3)).toEqual([
     "./lib/math.test.ts",
     "./test/always.test.ts",
+    "./test/lazy.test.ts",
   ]);
   const elsewhere = await planned(
     {
@@ -289,7 +292,7 @@ test("over_max direct also runs the direct tests when the selection can't be pro
     },
     { over_max: "direct" },
   );
-  expect(targets(docs)).toEqual(["lib/math.test.ts"]);
+  expect(targets(docs)).toEqual(["lib/math.test.ts", "test/lazy.test.ts"]);
   const shared = await planned(
     { "package.json": "{}", "lib/math.test.ts": "export {};\n" },
     { over_max: "direct" },
@@ -298,6 +301,18 @@ test("over_max direct also runs the direct tests when the selection can't be pro
   expect(shared.selection.reasons[0]).toBe("package.json changed");
   const nothing = await planned({ "README.md": "x\n" }, { over_max: "direct" });
   expect(nothing.selection.mode).toBe("full");
+});
+
+test("over_max direct picks tests that import a changed file or sit beside it, not whole folders", async () => {
+  const plan = await planned(
+    {
+      "lib/math.ts": "export const add = 2;\n",
+      "lib/math.test.ts": 'import { add } from "./math";\nadd;\n',
+      "test/fixture.ts": "export const fixture = 1;\n",
+    },
+    { max_selected: 1, over_max: "direct" },
+  );
+  expect(targets(plan)).toEqual(["lib/math.test.ts", "test/lazy.test.ts"]);
 });
 
 test("the bun runner runs the full suite when it can't prove the selection", async () => {
@@ -338,11 +353,11 @@ test("the bun runner runs the full suite when it can't prove the selection", asy
   ]);
   expect(
     await reasons(
-      { "lib/math.ts": "export const add = 2;\n" },
-      { max_selected: 1, over_max: "direct" },
+      { "lib/deep.ts": "export const deep = 2;\n" },
+      { max_selected: 0, over_max: "direct" },
     ),
   ).toEqual([
-    "2 test files are selected, more than max_selected 1",
+    "1 test files are selected, more than max_selected 0",
     "the change has no direct test, and select.always is empty",
   ]);
   const missing = await planned(math, { always: ["test/gone.test.ts"] });
