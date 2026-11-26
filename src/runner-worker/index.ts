@@ -726,7 +726,7 @@ function replaceOutputFile(
 }
 
 function returnAccountCredentials(
-  options: { outputDirectory: string; resultsGid: number },
+  options: { outputDirectory: string; resultsGid: number; owners?: RunnerAccountOwners },
   home: string,
   agent: RunnerCodingAgent,
   executionId: string,
@@ -735,17 +735,18 @@ function returnAccountCredentials(
 ): void {
   if (placedOpenCode !== null) collectOpenCodeCredential(home, placedOpenCode);
   const tmpfs = onTmpfs(home);
+  const purge = tmpfs && agent === "opencode";
+  if (purge && placedOpenCode !== null) markOpenCodePurge(home, executionId);
   returnRunnerAgentCredentials(home, agent, executionId, (files) => {
     const sealed = sealForRunner(
       recipient,
       JSON.stringify(files),
       agentCredentialReturnContext(executionId),
     );
-    if (!tmpfs) return replaceOutputFile(options, "credentials.json", sealed);
-    writeReturnedCredentials(home, executionId, sealed);
-    if (agent === "opencode") markOpenCodePurge(home, executionId, files);
+    if (tmpfs) writeReturnedCredentials(home, executionId, sealed);
+    else replaceOutputFile(options, "credentials.json", sealed);
   });
-  if (tmpfs && agent === "opencode") purgeOpenCodeCredential(home, executionId);
+  if (purge) purgeOpenCodeCredential(home, options.owners, executionId);
 }
 
 function createJournal(options: { outputDirectory: string; resultsGid: number }): number {
@@ -2984,7 +2985,7 @@ export async function runRunnerWorker(options: {
         ? {
             returnCredentials: (home: string, placed: string | null) =>
               returnAccountCredentials(
-                { outputDirectory, resultsGid: options.results.resultsGid },
+                { outputDirectory, resultsGid: options.results.resultsGid, owners },
                 home,
                 command.profile.agent,
                 job.executionId,

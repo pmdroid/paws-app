@@ -43,7 +43,6 @@ export {
 export {
   RUNNER_ACCOUNT_HOMES,
   ISSUE_VM_MARKER,
-  activeExecutions,
   accountHomeVerdict,
   RunnerAccountHomeError,
   type RunnerAccountOwners,

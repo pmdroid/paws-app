@@ -353,6 +353,7 @@ export async function runRunnerCli(
         "/var/lib/paws-agent",
         ISSUE_VM_CREDENTIALS,
         existsSync(ISSUE_VM_MARKER),
+        { runnerUid: ids.runnerUid, agentGid: ids.agentGid },
       );
       if (left.length === 0) {
         write("No agent sign-ins remain.");

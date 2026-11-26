@@ -12,8 +12,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { activeExecutions, ExecutionIdSchema, RUNNER_ACCOUNT_HOMES } from "../runner-execution";
-import type { RunnerAgentCredentialFiles, RunnerCodingAgent } from "../runner-protocol";
+import { journalCaught } from "../journal";
+import {
+  ExecutionIdSchema,
+  publishRunnerAccountHome,
+  RUNNER_ACCOUNT_HOMES,
+  RunnerAccountHomeError,
+  type RunnerAccountOwners,
+} from "../runner-execution";
+import type { RunnerCodingAgent } from "../runner-protocol";
 
 export const OPENCODE_CREDENTIAL_FILE = ".paws/opencode-credential.json";
 export const OPENCODE_DATABASE = ".local/share/opencode/opencode.db";
@@ -95,34 +102,33 @@ function names(folder: string): string[] {
   }
 }
 
-export function markOpenCodePurge(
-  home: string,
-  executionId: string,
-  returned: RunnerAgentCredentialFiles,
-): void {
-  const file = returned.find((entry) => entry.path === OPENCODE_CREDENTIAL_FILE);
-  if (!file) return;
+export function markOpenCodePurge(home: string, executionId: string): void {
+  let credential: Buffer;
+  try {
+    credential = readFileSync(join(home, OPENCODE_CREDENTIAL_FILE));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
   const folder = join(home, OPENCODE_PURGE);
   mkdirSync(folder, { recursive: true, mode: 0o770 });
-  const target = join(folder, ExecutionIdSchema.parse(executionId));
-  const temporary = `${target}.${randomUUID()}.tmp`;
+  writeFileSync(join(folder, ExecutionIdSchema.parse(executionId)), digest(credential), {
+    mode: 0o660,
+  });
+}
+
+function marked(path: string): string | null {
   try {
-    writeFileSync(temporary, digest(Buffer.from(file.data, "base64")), {
-      mode: 0o660,
-      flag: "wx",
-    });
-    renameSync(temporary, target);
-  } finally {
-    rmSync(temporary, { force: true });
+    return readFileSync(path, "utf8").trim();
+  } catch (error) {
+    journalCaught(error, "opencode-credential.marked", null, "a marker may be partly written");
+    return null;
   }
 }
 
-export function purgeOpenCodeCredential(home: string, except?: string): boolean {
+function scrubOpenCodeDatabase(home: string, markers: string[]): void {
   const folder = join(home, OPENCODE_PURGE);
-  const markers = names(folder).filter((name) => ExecutionIdSchema.safeParse(name).success);
-  if (markers.length === 0) return true;
-  if (activeExecutions(home, except).length > 0) return false;
-  const returned = new Set(markers.map((name) => readFileSync(join(folder, name), "utf8").trim()));
+  const returned = new Set(markers.map((name) => marked(join(folder, name))));
   const path = join(home, OPENCODE_DATABASE);
   if (existsSync(path)) {
     const db = open(home, false);
@@ -148,8 +154,23 @@ export function purgeOpenCodeCredential(home: string, except?: string): boolean 
     if ((lstatSync(`${path}-wal`, { throwIfNoEntry: false })?.size ?? 0) > 0)
       throw new Error("OpenCode's database journal still holds a sign-in");
   }
-  for (const name of markers) rmSync(join(folder, name), { force: true });
-  return true;
+  for (const name of markers) rmSync(join(folder, name), { recursive: true, force: true });
+}
+
+export function purgeOpenCodeCredential(
+  home: string,
+  owners?: RunnerAccountOwners,
+  except = "",
+): boolean {
+  const markers = names(join(home, OPENCODE_PURGE));
+  if (markers.length === 0 && !existsSync(join(home, OPENCODE_DATABASE))) return true;
+  try {
+    publishRunnerAccountHome(home, except, () => scrubOpenCodeDatabase(home, markers), owners);
+    return true;
+  } catch (error) {
+    if (error instanceof RunnerAccountHomeError) return false;
+    throw error;
+  }
 }
 
 function openCodeRows(path: string): number {
@@ -169,13 +190,14 @@ function openCodeRows(path: string): number {
   }
 }
 
-export function openCodeSignInsLeft(agentHome: string): string[] {
+export function openCodeSignInsLeft(agentHome: string, owners?: RunnerAccountOwners): string[] {
   const left: string[] = [];
   for (const binding of names(join(agentHome, RUNNER_ACCOUNT_HOMES))) {
     const home = join(agentHome, RUNNER_ACCOUNT_HOMES, binding);
     if (!lstatSync(home).isDirectory()) continue;
     try {
-      purgeOpenCodeCredential(home);
+      if (!purgeOpenCodeCredential(home, owners))
+        left.push(`${binding}/${OPENCODE_DATABASE} cleanup waits for work on the account`);
     } catch (error) {
       left.push(`${binding}/${OPENCODE_DATABASE}: ${(error as Error).message}`);
     }
