@@ -1340,6 +1340,9 @@ try {
       path: join(out, `settings-merging-member-${width}.png`),
       fullPage: true,
     });
+    await visit(page, width, "issue-vms-member", "/dashboard/workspace/issue-vms", "Issue VMs");
+    await expect(page.locator("#issue-vm-settings tbody tr")).toHaveCount(1);
+    await expect(page.locator("#issue-vm-settings :is(input, select, button)")).toHaveCount(0);
     await admin.route("**/api/workspaces/github-connect", (route) =>
       route.fulfill({
         json: {

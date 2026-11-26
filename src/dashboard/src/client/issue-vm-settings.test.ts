@@ -254,3 +254,13 @@ test("a rejected grant keeps the chosen member, and a saved one clears the form"
   expect(root.querySelector<HTMLInputElement>("#issue-vm-grant-limit")!.value).toBe("");
   expect(root.querySelector<HTMLInputElement>("#issue-vm-grant-ends")!.value).toBe("");
 });
+
+test("a blank limit is refused before it can reset the saved value", async () => {
+  const root = await mount();
+  type(root, "#issue-vm-workspaceMax", "");
+  await submit(root, "[data-limits]");
+  expect(root.querySelector('[role="alert"]')?.textContent).toBe(
+    "Enter a whole number for each limit.",
+  );
+  expect(calls.some((call) => call.method === "PUT")).toBe(false);
+});

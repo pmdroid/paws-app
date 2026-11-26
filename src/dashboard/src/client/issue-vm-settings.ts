@@ -133,7 +133,7 @@ export function createIssueVmSettings() {
   const hostForm = (host: Host) => {
     const name = runners.find((runner) => runner.id === host.runnerId)?.name ?? host.runnerId;
     const slots = `<p data-slots="${host.runnerId}"><strong>${host.slots.slots} slots</strong>, ${REASON[host.slots.reason] ?? host.slots.reason}</p>`;
-    return `<form data-host="${host.runnerId}" class="col" novalidate><h3>${esc(name)}</h3>${slots}${SIZE.map(([key, label, min, max]) => field(`vm-host-${host.runnerId}-${key}`, key, label, host.settings[key] === null ? "" : String(host.settings[key]), min, max)).join("")}<div class="row"><button class="btn" type="submit"${off()}>Save VM size</button><button class="btn secondary" type="button" data-unhost="${host.runnerId}"${off()}>Stop hosting VMs</button></div></form>`;
+    return `<form data-host="${host.runnerId}" class="col" novalidate><h3>${esc(name)}</h3>${slots}${SIZE.map(([key, label, min, max]) => field(`vm-host-${host.runnerId}-${key}`, key, label, host.settings[key] === null ? "" : String(host.settings[key]), min, max)).join("")}<div class="row"><button class="btn" type="submit"${off()}>Save VM size</button></div></form>`;
   };
   const hostsSection = () => {
     const shown = [...hosts.values()].filter((host) => host.vmHost);
@@ -221,7 +221,10 @@ export function createIssueVmSettings() {
     event.preventDefault();
     if (form.matches("[data-limits]"))
       void run("limits", "Limits saved.", async () => {
-        limits = await request<Limits>(engine!, "/api/settings/issue-vm", "PUT", numbers(form));
+        const body = numbers(form);
+        if (Object.values(body).some((value) => value === null || Number.isNaN(value)))
+          throw new Error("Enter a whole number for each limit.");
+        limits = await request<Limits>(engine!, "/api/settings/issue-vm", "PUT", body);
         await refreshMembers("Limits saved.");
       });
     else if (form.matches("[data-grant]")) {
@@ -259,21 +262,13 @@ export function createIssueVmSettings() {
     if (target.id === "issue-vm-grant-member") recipient = target.value;
   };
   const click = (event: Event) => {
-    const button = (event.target as HTMLElement).closest<HTMLElement>(
-      "[data-revoke],[data-unhost]",
-    );
-    if (!button || !engine || busy) return;
-    const revoke = button.dataset.revoke;
-    const unhost = button.dataset.unhost;
-    if (revoke)
-      void run("grants", "Grant revoked.", async () => {
-        await request(engine!, `/api/settings/issue-vm/grants/${revoke}`, "DELETE");
-        await refreshMembers("Grant revoked.");
-      });
-    else if (unhost)
-      void run("hosts", "Runner no longer hosts microVMs.", async () => {
-        hosts.set(unhost, await request<Host>(engine!, `/api/runners/${unhost}/vm-host`, "DELETE"));
-      });
+    const revoke = (event.target as HTMLElement).closest<HTMLElement>("[data-revoke]")?.dataset
+      .revoke;
+    if (!revoke || !engine || busy) return;
+    void run("grants", "Grant revoked.", async () => {
+      await request(engine!, `/api/settings/issue-vm/grants/${revoke}`, "DELETE");
+      await refreshMembers("Grant revoked.");
+    });
   };
   return {
     mount(next: HTMLElement, nextEngine: string | null) {
