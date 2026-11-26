@@ -3,7 +3,7 @@ import { boundHeartbeat, boundResultSubmissions } from "../bound-runner-account"
 import { migratedHome, withHomeStore } from "../helpers";
 import assert from "node:assert/strict";
 import { and, eq, inArray, isNotNull, type SQL } from "drizzle-orm";
-import { seed } from "../pglite-fixtures";
+import { offerFixtureModels, seed } from "../pglite-fixtures";
 import { generateKeyPairSync } from "node:crypto";
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -326,6 +326,8 @@ let releaseCleanup: (() => void) | undefined;
 let cleanupGate: Promise<void> | undefined;
 let cleanupEntered = false;
 await bindFixtureAccounts(paws.store, runnerId);
+await offerFixtureModels(paws.store, runnerId, "claude", ["implement-model"]);
+await offerFixtureModels(paws.store, runnerId, "codex", ["review-model"]);
 let heartbeats = 0;
 const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
   root: runnerRoot,

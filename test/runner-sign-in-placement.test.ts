@@ -16,7 +16,7 @@ import {
   type PlacementRequest,
 } from "../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { currentRunnerHost, seed, seedCredential } from "./pglite-fixtures";
+import { currentRunnerHost, offerFixtureModels, seed, seedCredential } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const open: (() => Promise<void>)[] = [];
@@ -75,6 +75,7 @@ async function acme() {
         ]),
       (q) => currentRunnerHost(q, id, now),
     );
+  for (const id of ["acme-1", "acme-2"]) await offerFixtureModels(db, id, "claude", ["opus"]);
   const placement = createRunnerPlacement({ store: db, now: () => now });
   const place = async (request: Partial<PlacementRequest> = {}) => {
     const rejected: { runnerId: string; reason: string; until?: number }[] = [];
