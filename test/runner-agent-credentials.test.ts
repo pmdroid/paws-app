@@ -8,17 +8,24 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  readdirSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { accountHomeEnv } from "../src/acp";
 import { setJournalSink } from "../src/journal";
-import { openRunnerDaemon } from "../src/runner-daemon";
+import { Database } from "bun:sqlite";
+import { runnerSleepLeftovers } from "../src/runner-cli";
+import { heldCredentialsLeft, openRunnerDaemon } from "../src/runner-daemon";
 import {
+  onTmpfs,
   openRunnerAccountHome,
   returnRunnerAgentCredentials,
+  runnerAccountCache,
   runnerAgentCredentials,
+  writeReturnedCredentials,
 } from "../src/runner-execution";
 import { initializeRunnerAuthority, startRunnerListener } from "../src/runner-identity";
 import {
@@ -32,6 +39,8 @@ import {
 import { serverIdentity } from "./local/runner-daemon";
 
 const account = { accountId: "account-1", bindingId: "binding-1" };
+const urls = { controlPlaneUrl: "https://localhost:1", runnerApiUrl: "https://localhost:2" };
+const shmTmpfs = existsSync("/dev/shm") && onTmpfs("/dev/shm");
 const stored = [
   {
     path: ".claude/.credentials.json",
@@ -58,12 +67,18 @@ async function withRunner(
       files: typeof stored;
       now: number;
       pulls: number;
+      protocols: number[];
     };
+    store?: string;
   }) => Promise<void>,
+  issueVm = false,
 ) {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-credentials-"));
-  const home = join(root, "agent-home");
+  const memory = issueVm ? mkdtempSync("/dev/shm/paws-issue-vm-") : null;
+  const home = join(memory ?? root, "agent-home");
   mkdirSync(home, { mode: 0o770 });
+  const store = memory ? join(memory, "credentials") : undefined;
+  if (store) mkdirSync(store, { mode: 0o700 });
   const authority = await initializeRunnerAuthority(join(root, "issuer"));
   const server = await serverIdentity(join(root, "server"));
   const signingKey = generateKeyPairSync("ed25519");
@@ -76,6 +91,7 @@ async function withRunner(
     files: stored,
     now: Date.now(),
     pulls: 0,
+    protocols: [] as number[],
     failUploads: false,
     receipt: "written",
     commands: (): RunnerCommand[] => [],
@@ -105,7 +121,11 @@ async function withRunner(
     authorize: (peer) => active.has(peer.fingerprint),
     async fetch(request) {
       const path = new URL(request.url).pathname;
-      if (path === "/v1/heartbeat") return Response.json({ leases: [], fenced: [] });
+      if (path === "/v1/heartbeat") {
+        const sent = (await request.json()) as { accounts?: { protocol: number } };
+        if (sent.accounts) plane.protocols.push(sent.accounts.protocol);
+        return Response.json({ leases: [], fenced: [] });
+      }
       if (path === "/v1/commands")
         return Response.json({
           commands: plane.commands().map((command) => ({
@@ -155,17 +175,19 @@ async function withRunner(
     controlPlaneUrl: `https://localhost:${address.port}`,
     runnerApiUrl: `https://localhost:${listener.port}`,
     serverCa: server.cert,
-    agentCredentials: runnerAgentCredentials(home),
+    agentCredentials: runnerAgentCredentials(home, undefined, issueVm),
+    ...(store ? { credentialStore: store, memorySignIns: () => onTmpfs(home) } : {}),
     now: () => Math.max(plane.now, Date.now()),
   });
   try {
     await daemon.enroll("credential-proof", "t".repeat(43));
-    await run({ daemon, home, root, uploads, plane });
+    await run({ daemon, home, root, uploads, plane, ...(store ? { store } : {}) });
   } finally {
     daemon.close();
     await listener.stop();
     enrollment.close();
     rmSync(root, { recursive: true, force: true });
+    if (memory) rmSync(memory, { recursive: true, force: true });
   }
 }
 
@@ -450,7 +472,7 @@ test("central Codex credentials are access-only, replaced ten minutes before exp
 });
 
 test("Claude OAuth accounts use the token environment and never return refreshed credentials", async () => {
-  const { accountAgentEnv, accountHomeEnv, minimalAgentEnv } = await import("../src/acp");
+  const { accountAgentEnv, minimalAgentEnv } = await import("../src/acp");
   const { claudeTokenHealth } = await import("../src/runner-protocol");
   const root = mkdtempSync(join(tmpdir(), "paws-oauth-"));
   const createdAt = Date.now();
@@ -503,3 +525,160 @@ test("Claude OAuth accounts use the token environment and never return refreshed
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test.skipIf(!shmTmpfs)(
+  "on an issue VM the sign-in stays in the tmpfs, its refresh reaches Paws and nothing is left after the turn",
+  async () => {
+    await withRunner(async ({ daemon, home, root, uploads, plane, store }) => {
+      plane.commands = () => [command("check-vm", "login_check")];
+      expect((await daemon.pollCommands()).rejected).toEqual([]);
+      const credentials = join(
+        openRunnerAccountHome(home, account, "claude"),
+        ".claude/.credentials.json",
+      );
+      expect(readFileSync(credentials, "utf8")).toContain("r1");
+      expect(heldCredentialsLeft(store!)).toBe(1);
+      expect(runnerSleepLeftovers(home, store!)).toEqual([
+        "binding-1/.claude/.credentials.json",
+        "1 held or pending sign-in uploads",
+      ]);
+
+      rmSync(credentials);
+      writeFileSync(credentials, '{"claudeAiOauth":{"refreshToken":"r2"}}', { mode: 0o600 });
+      const accountHome = join(home, ".paws-accounts", account.bindingId);
+      const cache = runnerAccountCache(root, accountHome)!;
+      expect(cache).toBe(join(root, ".paws-account-caches", account.bindingId));
+      expect(accountHomeEnv(accountHome, cache)).toMatchObject({ XDG_CACHE_HOME: cache });
+      returnRunnerAgentCredentials(accountHome, "claude", EXECUTION, (files) =>
+        writeReturnedCredentials(
+          accountHome,
+          EXECUTION,
+          sealForRunner(
+            daemon.credentialRecipient(),
+            JSON.stringify(files),
+            agentCredentialReturnContext(EXECUTION),
+          ),
+        ),
+      );
+      expect(existsSync(credentials)).toBe(false);
+      const returned = join(accountHome, ".paws-returned", EXECUTION);
+      expect(existsSync(returned)).toBe(true);
+      expect(runnerSleepLeftovers(home, store!)).toContain(`binding-1/.paws-returned/${EXECUTION}`);
+      const envelope = readFileSync(returned);
+      rmSync(returned);
+      mkdirSync(returned);
+      daemon.returnCredentials("check-vm", EXECUTION, null);
+      expect(existsSync(returned)).toBe(true);
+      rmSync(returned, { recursive: true });
+      writeFileSync(returned, envelope);
+      daemon.returnCredentials("check-vm", EXECUTION, null);
+      expect(existsSync(returned)).toBe(false);
+      expect(runnerSleepLeftovers(home, store!)).toEqual(["1 held or pending sign-in uploads"]);
+      await daemon.acknowledgeCommand("check-vm");
+      await sync(daemon);
+      expect(sent(uploads)).toEqual([[4, token("r2")]]);
+      await sync(daemon);
+      expect(heldCredentialsLeft(store!)).toBe(0);
+      expect(runnerSleepLeftovers(home, store!)).toEqual([]);
+      expect(plane.protocols).toContain(2);
+      expect(plane.protocols).not.toContain(1);
+      expect(readFileSync(join(store!, "credentials.db"), "latin1")).not.toMatch(
+        /[A-Za-z0-9_-]{100}/,
+      );
+    }, true);
+  },
+  30_000,
+);
+
+test.skipIf(onTmpfs(tmpdir()))(
+  "an issue VM refuses a sign-in whose account homes are on disk",
+  () => {
+    const home = mkdtempSync(join(tmpdir(), "paws-issue-vm-disk-"));
+    try {
+      chmodSync(home, 0o770);
+      expect(() =>
+        runnerAgentCredentials(home, undefined, true).write(account, "claude", stored),
+      ).toThrow("Agent sign-ins on an issue VM need a tmpfs account root");
+      expect(() =>
+        openRunnerDaemon({ root: join(home, "daemon"), ...urls, credentialStore: home }),
+      ).toThrow("Runner credential store must be a private tmpfs folder.");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  },
+);
+
+test.skipIf(!shmTmpfs)(
+  "an issue VM store resumes an interrupted scrub of commands.db while its marker exists",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "paws-runner-scrub-"));
+    const store = mkdtempSync("/dev/shm/paws-issue-vm-store-");
+    const options = { root: join(root, "daemon"), ...urls };
+    try {
+      chmodSync(store, 0o700);
+      openRunnerDaemon(options).close();
+      const path = join(options.root, "commands.db");
+      const disk = new Database(path);
+      disk.run(
+        "INSERT INTO agent_credential (binding_id, account_id, agent, version, digest, commands, files) VALUES ('b', 'a', 'claude', 1, 'd', '[]', ?)",
+        ["sealed-held-sign-in".repeat(20)],
+      );
+      disk.run("DROP TABLE agent_credential");
+      disk.close();
+      writeFileSync(`${path}.scrubbing`, "");
+      openRunnerDaemon({ ...options, credentialStore: store }).close();
+      expect(existsSync(`${path}.scrubbing`)).toBe(false);
+      for (const suffix of ["", "-wal"])
+        if (existsSync(`${path}${suffix}`))
+          expect(readFileSync(`${path}${suffix}`, "latin1")).not.toContain("sealed-held-sign-in");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(store, { recursive: true, force: true });
+    }
+  },
+);
+
+test("an issue VM refuses OpenCode sign-ins", () => {
+  const home = mkdtempSync(join(tmpdir(), "paws-issue-vm-opencode-"));
+  try {
+    expect(() =>
+      runnerAgentCredentials(home, undefined, true).write(account, "opencode", stored),
+    ).toThrow("OpenCode sign-ins are refused on an issue VM");
+    expect(existsSync(join(home, ".paws-accounts"))).toBe(false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test.skipIf(!shmTmpfs)(
+  "sleep-check fails closed and keeps staged sign-ins while their writer runs",
+  () => {
+    const agentHome = mkdtempSync("/dev/shm/paws-sleep-check-");
+    try {
+      const store = join(agentHome, "store");
+      expect(runnerSleepLeftovers(agentHome, store, true)).toEqual([
+        "runner credential store is not ready",
+        "account homes are not on a tmpfs",
+      ]);
+      const claude = join(agentHome, ".paws-accounts/binding-1/.claude");
+      mkdirSync(claude, { recursive: true });
+      const id = "00000000-0000-0000-0000-000000000000";
+      const live = `.credentials.json.${process.pid}-${id}.tmp`;
+      writeFileSync(join(claude, live), "token");
+      writeFileSync(
+        join(claude, `.credentials.json.${Bun.spawnSync(["true"]).pid}-${id}.tmp`),
+        "t",
+      );
+      mkdirSync(store, { mode: 0o700 });
+      const held = new Database(join(store, "credentials.db"));
+      held.run("CREATE TABLE agent_credential (a)");
+      held.close();
+      expect(runnerSleepLeftovers(agentHome, store, true)).toEqual([`binding-1/.claude/${live}`]);
+      rmSync(join(claude, live));
+      expect(runnerSleepLeftovers(agentHome, store, true)).toEqual([]);
+      expect(readdirSync(claude)).toEqual([]);
+    } finally {
+      rmSync(agentHome, { recursive: true, force: true });
+    }
+  },
+);

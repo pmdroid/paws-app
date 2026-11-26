@@ -4,6 +4,7 @@ import type { RunnerCommand } from "./commands";
 import type { RunnerRetroCommand } from "./retro";
 
 export const RUNNER_ACCOUNT_PROTOCOL = 1;
+export const RUNNER_MEMORY_ACCOUNT_PROTOCOL = 2;
 
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
 

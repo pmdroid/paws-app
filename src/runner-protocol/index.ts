@@ -202,6 +202,7 @@ export {
 
 export {
   RUNNER_ACCOUNT_PROTOCOL,
+  RUNNER_MEMORY_ACCOUNT_PROTOCOL,
   RunnerAccountCapabilitySchema,
   RunnerAccountSchema,
   runnerAccountAgentUnsupported,

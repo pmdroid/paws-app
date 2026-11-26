@@ -8,6 +8,7 @@ import type { Changes } from "bun:sqlite";
 import { and, desc, eq, gt, inArray, lt, notInArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { createCommandStore } from "./commands-ddl";
+import { attachCredentialStore } from "./credential-store";
 import { IssueVmHostViewSchema, type IssueVmHostView } from "./issue-vm-machines";
 import {
   agentCredential,
@@ -19,6 +20,7 @@ import {
 import { describeRunnerCertificate } from "../runner-identity";
 import {
   RUNNER_ACCOUNT_PROTOCOL,
+  RUNNER_MEMORY_ACCOUNT_PROTOCOL,
   RunnerAccountCapabilitySchema,
   RunnerAgentCredentialSchema,
   accessCredentialExpiry,
@@ -170,6 +172,8 @@ export type RunnerDaemonOptions = {
   sampleHost?: () => RunnerHostStatus;
   accountBindings?: () => RunnerAccountCapability["bindings"];
   agentCredentials?: RunnerAgentCredentialStore;
+  credentialStore?: string;
+  memorySignIns?: () => boolean;
   log?: (line: string) => void;
 };
 
@@ -210,7 +214,15 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   const dbPath = join(options.root, "commands.db");
   const db = openDatabase(dbPath);
   chmodSync(dbPath, 0o600);
-  createCommandStore(db);
+  if (options.credentialStore)
+    try {
+      attachCredentialStore(db, options.credentialStore, `${dbPath}.scrubbing`);
+    } catch (error) {
+      db.close();
+      throw error;
+    }
+  createCommandStore(db, options.credentialStore ? "credentials" : "main");
+  const memorySignIns = options.credentialStore ? options.memorySignIns : undefined;
   const store = sqliteDb(db);
   const q = drizzle(db);
   const changes = (query: { run(): unknown }) => (query.run() as Changes).changes;
@@ -527,9 +539,30 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       journalCaught(error, "daemon.restoreCredentials", null);
     }
   }
-  function returnCredentials(commandId: string, executionId: string, returned: Buffer | null) {
+  function returnCredentials(commandId: string, executionId: string, written: Buffer | null) {
     const row = heldCredential(commandId);
     if (!row) return;
+    const account = { accountId: row.accountId, bindingId: row.bindingId };
+    let returned = written;
+    try {
+      returned = options.agentCredentials?.readReturned?.(account, executionId) ?? written;
+    } catch (error) {
+      journalCaught(error, "daemon.returnCredentials.readReturned", null);
+      return;
+    }
+    recordReturned(row, commandId, executionId, returned);
+    try {
+      options.agentCredentials?.dropReturned?.(account, executionId);
+    } catch (error) {
+      journalCaught(error, "daemon.returnCredentials.dropReturned", null);
+    }
+  }
+  function recordReturned(
+    row: NonNullable<ReturnType<typeof heldCredential>>,
+    commandId: string,
+    executionId: string,
+    returned: Buffer | null,
+  ) {
     const commands = JSON.stringify(
       (JSON.parse(row.commands) as string[]).filter((id) => id !== commandId),
     );
@@ -974,7 +1007,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       attempts.unshift({
         ...(attempts[0] as object),
         accounts: RunnerAccountCapabilitySchema.parse({
-          protocol: RUNNER_ACCOUNT_PROTOCOL,
+          protocol: memorySignIns?.() ? RUNNER_MEMORY_ACCOUNT_PROTOCOL : RUNNER_ACCOUNT_PROTOCOL,
           bindings: heldBindings(),
         }),
       });

@@ -42,6 +42,7 @@ export {
 } from "./skills";
 export {
   RUNNER_ACCOUNT_HOMES,
+  ISSUE_VM_MARKER,
   accountHomeVerdict,
   RunnerAccountHomeError,
   type RunnerAccountOwners,
@@ -49,7 +50,11 @@ export {
   openRunnerAccountHome,
   publishRunnerAccountHome,
   runnerAccountBindings,
+  runnerAccountCache,
   runnerAccountHome,
+  runnerSignInsLeft,
+  onTmpfs,
+  writeReturnedCredentials,
   returnRunnerAgentCredentials,
   runnerAgentCredentials,
   shareAgentConfigFolders,
