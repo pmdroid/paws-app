@@ -10,15 +10,13 @@ import {
   saveRunResult,
   type Db,
 } from "../db";
-import { answerSteps, findOpenQuestion } from "../questions";
+import { answerSteps } from "../questions";
 import { askSteps } from "./operations";
 import { questionEffects } from "./question-effects";
 import { AGENT_HUNG_REASON, AGENT_HUNG_RETRY, AGENT_HUNG_STOP } from "./runner-wait";
 import { seed } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
-const MODEL = "reviewer_model_conflict";
-const offered = ["codex gpt-other", "Stop"];
 const open: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const close of open.splice(0)) await close();
@@ -72,7 +70,7 @@ async function askHung(answer: string, reason = AGENT_HUNG_REASON) {
   const { run } = await beginImplementRun(db, item.id, clock.now());
   await db.transaction((q) =>
     askSteps(q, { itemId: item.id, runId: run.id, sessionId: "ses" }, "runner-wait", "Hung.", {
-      options: reason === MODEL ? offered : [AGENT_HUNG_RETRY, AGENT_HUNG_STOP],
+      options: [AGENT_HUNG_RETRY, AGENT_HUNG_STOP],
       reason,
       now: clock.now(),
     }),
@@ -97,7 +95,6 @@ async function askHung(answer: string, reason = AGENT_HUNG_REASON) {
   return {
     state: (await getWorkItem(db, item.id))?.state,
     jobs: await listJobs(db),
-    open: await findOpenQuestion(db, "ses"),
   };
 }
 
@@ -125,19 +122,4 @@ test("Stop after the runner ran out of memory ends the item as stopped", async (
   const { state, jobs } = await askHung("Stop", OUT_OF_MEMORY_REASON);
   expect(state).toBe("failed");
   expect(jobs.filter((job) => job.status === "pending")).toEqual([]);
-});
-
-test("a reviewer model answer always queues its own re-verification", async () => {
-  const { state, jobs } = await askHung("codex gpt-other", MODEL);
-  expect(state).toBe("verifying");
-  const keys = jobs.filter((job) => job.queue === JOB_KIND.reverify).map((job) => job.jobKey);
-  expect(keys).toEqual([expect.stringMatching(/^reviewer-model:/)]);
-});
-
-test("a reviewer model answer that was not offered asks again", async () => {
-  const { state, jobs, open: asked } = await askHung("codex gpt-othr", MODEL);
-  expect(state).toBe("awaiting_input");
-  expect(jobs.filter((job) => job.status === "pending")).toEqual([]);
-  expect(asked?.body).toStartWith("codex gpt-othr is not one of the options.");
-  expect(asked?.options).toEqual(offered);
 });

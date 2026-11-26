@@ -115,7 +115,9 @@ import {
   activateLinearItemSteps,
   answeredItemQuestionSteps,
   lastSuccessfulImplementationSteps,
-  workspaceModelCatalogsSteps,
+  workspaceAgentRunnersSteps,
+  latestModelCatalogSteps,
+  runnerRepositoryRefusalSteps,
   bindLinearSessionTaskSteps,
   configureWorkItemSteps,
   discardLinearTurnsSteps,
@@ -770,6 +772,7 @@ import {
   MOVE_TO_ANOTHER_RUNNER,
   REVIEWER_MODEL_REASON,
   reviewerModelAlternatives,
+  type ReviewerRunner,
   waitForRunner,
   type RunnerWaitQuestion,
 } from "./runner-wait";
@@ -2205,10 +2208,7 @@ export class Orchestrator {
             if (held) await this.waitForVerification(job, context, held);
             return;
           }
-          const asking =
-            itemId === null ? null : await this.store.run((q) => getWorkItemSteps(q, itemId));
-          if (asking && (await context.isCurrent()) && (await this.askReviewerModel(asking, error)))
-            return;
+          if ((await context.isCurrent()) && (await this.askReviewerModel(item, error))) return;
           const wait = await this.nextRunnerWait(job, error);
           if (!wait || !(await context.isCurrent())) throw error;
           journalCaught(
@@ -5397,15 +5397,24 @@ export class Orchestrator {
 
   private async checkReviewerModel(item: WorkItemRecord, runId: string): Promise<void> {
     const { reviewer } = await this.profileSnapshot(runId);
+    const repository = await this.repositoryForItem(item);
+    const repo = repository && `${repository.owner}/${repository.repo}`;
     const found = await this.store.run(function* (q) {
       const implementation = (yield* lastSuccessfulImplementationSteps(q, item.id))?.model;
-      if (!implementation || implementation !== reviewer.model) return null;
+      if (!implementation) return null;
       const session = item.sessionKey ? yield* getLinearSessionSteps(q, item.sessionKey) : null;
       const workspace = session?.organizationId
         ? yield* workspaceForOrganizationSteps(q, session.organizationId)
         : null;
-      const catalogs = yield* workspaceModelCatalogsSteps(q, workspace?.id ?? null);
-      return { implementation, alternatives: reviewerModelAlternatives(implementation, catalogs) };
+      const runners: ReviewerRunner[] = [];
+      for (const runner of workspace ? yield* workspaceAgentRunnersSteps(q, workspace.id) : [])
+        if (!repo || !(yield* runnerRepositoryRefusalSteps(q, runner.runnerId, repo)))
+          runners.push({
+            ...runner,
+            catalog: yield* latestModelCatalogSteps(q, runner.runnerId, runner.agent),
+          });
+      const alternatives = reviewerModelAlternatives(implementation, reviewer, runners);
+      return alternatives && { implementation, alternatives };
     });
     if (found) throw new ReviewerModelConflict(found.implementation, found.alternatives);
   }
@@ -11453,14 +11462,10 @@ export class Orchestrator {
       const itemId = (yield* getRunSteps(q, runId))?.itemId;
       return itemId ? yield* answeredItemQuestionSteps(q, itemId, REVIEWER_MODEL_REASON) : null;
     });
-    const choice = /^\s*(claude|codex|grok|opencode)\s+(\S+)\s*$/i.exec(answer ?? "");
-    if (!choice) return profiles;
-    const agent = choice[1]!.toLowerCase() as AgentProfile["agent"];
-    const same = agent === profiles.reviewer.agent;
-    return {
-      ...profiles,
-      reviewer: { ...(same ? profiles.reviewer : {}), agent, model: choice[2]! },
-    };
+    const [agent, model] = (answer ?? "").split(" ") as [AgentProfile["agent"], string?];
+    if (!model) return profiles;
+    const kept = agent === profiles.reviewer.agent ? profiles.reviewer : {};
+    return { ...profiles, reviewer: { ...kept, agent, model } };
   }
 
   private async storedProfiles(runId: string): Promise<AgentProfiles> {

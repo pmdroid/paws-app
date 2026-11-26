@@ -409,14 +409,11 @@ export function questionEffects(
         return;
       }
       if (question.reason === REVIEWER_MODEL_REASON) {
-        const offered = question.options.map((o) => (typeof o === "string" ? o : o.value));
-        const chosen = offered.find((option) => option === (question.answer ?? "").trim());
-        if (chosen && chosen !== "Stop")
+        if (!/^\s*stop\s*$/i.test(question.answer ?? ""))
           return yield* verifyAgainSteps(q, question, { now: input.now, key: "reviewer-model" });
         yield* consumeTurn(q, question);
         const item = yield* getWorkItemSteps(q, question.itemId);
-        if (item?.state !== "awaiting_input") return;
-        if (chosen)
+        if (item?.state === "awaiting_input")
           yield* failWorkItemSteps(
             q,
             item,
@@ -424,14 +421,6 @@ export function questionEffects(
             `Stopped because the reviewer model matched the implementation model, as asked in Linear. The work is on branch \`${item.branchName || worktreeBranch(item)}\`.`,
             input.now,
             { stoppedByAnswer: true },
-          );
-        else
-          yield* askSteps(
-            q,
-            { itemId: item.id, runId: item.currentRunId, sessionId: question.sessionId },
-            "runner-wait",
-            `${question.answer} is not one of the options. ${question.body}`,
-            { options: offered, reason: REVIEWER_MODEL_REASON, now: input.now },
           );
         return;
       }
