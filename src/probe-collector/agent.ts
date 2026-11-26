@@ -4,7 +4,7 @@ import type { AgentTurn } from "./types";
 /** Run one turn and keep the text of the agent's reply. Throws when the turn did not finish. */
 export async function replyOf(
   turn: AgentTurn,
-  options: RunAgentOptions,
+  options: RunAgentOptions & { probe?: string },
 ): Promise<{ result: RunAgentResult; text: string }> {
   let text = "";
   const result = await turn({

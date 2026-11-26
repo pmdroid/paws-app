@@ -64,6 +64,7 @@ export async function writeProbe(input: {
       itemId: "probes",
       runId: input.runId,
       prompt: writePrompt(input),
+      probe: path,
       worktreePath: input.worktree,
       pawsRoot: input.pawsRoot,
       checkpoint: false,
