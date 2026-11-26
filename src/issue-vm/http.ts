@@ -202,6 +202,8 @@ export async function handleIssueVmGrantRequest(
       members: listing.members.filter((member) => member.userId === principal.userId),
     });
   }
+  if (path === ISSUE_VM_SPEND_PATH && request.method === "GET")
+    return handleSpend(request, options, now);
   if (!admin) return json({ error: "Only workspace admins can see and grant issue VMs." }, 403);
   if (path === ISSUE_VM_SPEND_PATH) return handleSpend(request, options, now);
   const revoking = GRANT_PATH.exec(path)?.[1];
