@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
 import {
+  agentsSection,
   parseAgentSettings,
-  parseAgentSettingsToml,
-  renderAgentSettingsText,
+  parseAgentSettingsSection,
   resolveAgentProfiles,
 } from "./agents";
-import { parseConfigToml } from "./file";
+import { configFromSections, parseConfigToml } from "./file";
 
 const settings = {
   defaults: {
@@ -25,14 +25,13 @@ const settings = {
   },
 } as const;
 const input = () => parseAgentSettings(settings);
-const config = () => parseConfigToml(renderAgentSettingsText("", input()));
+const config = () => configFromSections({ agents: agentsSection(undefined, input()) });
 
 test("presets round trip with both roles and replace old preset sections", () => {
-  const text = renderAgentSettingsText("", input());
-  expect(text).toContain('[agents.presets."Opus".implementer]');
-  expect(text).toContain('[agents.presets."Opus".reviewer]');
-  expect(parseAgentSettingsToml(text, "claude")).toEqual(input());
-  expect(parseAgentSettingsToml(renderAgentSettingsText(text, input()), "claude")).toEqual(input());
+  const section = agentsSection(undefined, input());
+  expect(Object.keys(section["presets"] as object)).toEqual(["Opus", "Codex"]);
+  expect(parseAgentSettingsSection(section, "claude")).toEqual(input());
+  expect(parseAgentSettingsSection(agentsSection(section, input()), "claude")).toEqual(input());
 });
 
 test("fast = true parses, renders and round trips on a profile", () => {
@@ -45,14 +44,14 @@ test("fast = true parses, renders and round trips on a profile", () => {
       },
     },
   });
-  const text = renderAgentSettingsText("", fast);
-  expect(text).toContain(
-    '[agents.presets."Fast".implementer]\nagent = "codex"\nmodel = "codex"\nfast = true',
-  );
-  expect(parseAgentSettingsToml(text, "claude")).toEqual(fast);
+  const section = agentsSection(undefined, fast);
+  expect((section["presets"] as Record<string, unknown>)["Fast"]).toMatchObject({
+    implementer: { agent: "codex", model: "codex", fast: true },
+  });
+  expect(parseAgentSettingsSection(section, "claude")).toEqual(fast);
   expect(
-    parseAgentSettingsToml(
-      '[agents.defaults.implementer]\nagent = "claude"\nfast = true\n[agents.defaults.reviewer]\nagent = "codex"',
+    parseAgentSettingsSection(
+      { defaults: { implementer: { agent: "claude", fast: true }, reviewer: { agent: "codex" } } },
       "claude",
     )?.defaults.implementer,
   ).toEqual({ agent: "claude", model: null, fast: true });
@@ -116,8 +115,7 @@ test("a preset whose two roles match is refused with its name", () => {
   ).toThrow("Preset Twin: Implementer and reviewer must use different agents or different models");
   expect(() =>
     parseConfigToml(
-      renderAgentSettingsText("", { defaults: settings.defaults }) +
-        '[agents.presets.Twin.implementer]\nagent = "codex"\n[agents.presets.Twin.reviewer]\nagent = "codex"\n',
+      '[agents.defaults.implementer]\nagent = "claude"\n[agents.defaults.reviewer]\nagent = "codex"\n[agents.presets.Twin.implementer]\nagent = "codex"\n[agents.presets.Twin.reviewer]\nagent = "codex"\n',
     ),
   ).toThrow("Preset Twin");
 });

@@ -6,12 +6,8 @@ import { chromium, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  loadConfigFile,
-  readConfigText,
-  readMergeSettings,
-  useMemorySettings,
-} from "../src/config";
+import { loadConfigFile, readMergeSettings, useMemorySettings } from "../src/config";
+import { readConfigText } from "../test/saved-settings";
 import { handleMergeSettingsRequest } from "../src/settings";
 import { handleStatusRequest } from "../src/dashboard";
 import { openPawsStore } from "../src/db";

@@ -5,12 +5,12 @@ import {
   loadConfigFile,
   parseAgentSettings,
   readAgentSettings,
-  readConfigText,
   resolveAgentProfiles,
   useMemorySettings,
   writeAgentSettings,
   type AgentSettings,
 } from "../src/config";
+import { readConfigText } from "./saved-settings";
 import { tempHome } from "./helpers";
 
 const settings: AgentSettings = {
@@ -73,13 +73,6 @@ describe("agent settings config", () => {
     expect(resolveAgentProfiles(config)).toEqual(settings.defaults);
     await writeAgentSettings(path, settings);
     expect(Bun.TOML.parse(readConfigText(path))).toEqual(Bun.TOML.parse(text));
-  });
-
-  test("keeps inline comments on the legacy implementer setting", async () => {
-    const path = join(tempHome(), "config.toml");
-    useMemorySettings(path, '[agents]\nimplementer = "grok" # selected locally\n');
-    await writeAgentSettings(path, settings);
-    expect(readConfigText(path)).toContain('implementer = "claude" # selected locally');
   });
 
   test("validates model values and reviewer independence before writing", async () => {

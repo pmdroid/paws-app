@@ -1,4 +1,5 @@
-import { readConfigText, useMemorySettings } from "../../src/config";
+import { useMemorySettings } from "../../src/config";
+import { readConfigText } from "../saved-settings";
 import { join } from "node:path";
 import { ACME, type Proof } from "./harness";
 

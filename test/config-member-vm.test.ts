@@ -4,11 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   boatTokenPath,
+  configFromSections,
   ensureLayout,
   memberVmKeyReadable,
   parseConfigToml,
   pawsPaths,
-  renderMemberVmSettings,
+  memberVmSection,
   vmProviderTokenStatus,
   vmSizeFor,
 } from "../src/config";
@@ -17,7 +18,7 @@ import { removeSecret, writeSecretFile } from "../src/credentials";
 describe("[vm_sizes]", () => {
   test("each provider keeps its own size, and the settings round-trip", () => {
     expect(parseConfigToml("").vmSizes).toBeUndefined();
-    expect(renderMemberVmSettings({ offProviders: [], sizes: {} })).toBe("");
+    expect(memberVmSection({ offProviders: [], sizes: {} })).toBeUndefined();
     const text =
       '[vm_sizes]\nprovider = "boat"\noff_providers = ["instabox"]\n\n[vm_sizes.exe-dev]\ncpu = 8 # vCPUs\nmemory_gb = 16\ndisk_gb = 100\nimage = "ubuntu:24.04"\npool = "build-eu_2"\n\n[vm_sizes.boat]\ncpu = 4\nmemory_gb = 8\n\n[vm_sizes.instabox]\ncpu = 2\nmemory_gb = 4\n';
     const settings = parseConfigToml(text).vmSizes;
@@ -31,17 +32,17 @@ describe("[vm_sizes]", () => {
       },
     });
     expect(vmSizeFor(settings, "boat")).toEqual({ cpu: 4, memoryGb: 8 });
-    expect(parseConfigToml(renderMemberVmSettings(settings)).vmSizes).toEqual(settings);
+    expect(configFromSections({ vm_sizes: memberVmSection(settings) }).vmSizes).toEqual(settings);
   });
 
-  test("invalid values are refused with their line", () => {
+  test("invalid values are refused with their key", () => {
     const cases: [string, string, string][] = [
-      ["exe-dev", "cpu = 0", "line 3 vm_sizes.cpu must be a whole number from 1 to 512"],
-      ["exe-dev", "cpus = 4", "line 3 has an unknown key: vm_sizes.exe-dev.cpus"],
-      ["instabox", "disk_gb = 20", "line 3 has an unknown key: vm_sizes.instabox.disk_gb"],
+      ["exe-dev", "cpu = 0", "vm_sizes.cpu must be a whole number from 1 to 512"],
+      ["exe-dev", "cpus = 4", "have an unknown key: vm_sizes.exe-dev.cpus"],
+      ["instabox", "disk_gb = 20", "have an unknown key: vm_sizes.instabox.disk_gb"],
     ];
     for (const [provider, line, message] of cases)
-      expect(() => parseConfigToml(`[vm_sizes.${provider}]\ncpu = 2\n${line}\n`)).toThrow(
+      expect(() => parseConfigToml(`[vm_sizes.${provider}]\n${line}\n`)).toThrow(
         `Saved settings ${message}`,
       );
     expect(() => parseConfigToml('[vm_sizes]\nprovider = "aws"\n')).toThrow(

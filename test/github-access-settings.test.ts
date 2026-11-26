@@ -8,9 +8,9 @@ import {
   loadConfigFile,
   useActiveGitHubMirrors,
   useSettingsStore,
-  renderSettingsToml,
   settingsSectionsOf,
 } from "../src/config";
+import { renderSettingsToml } from "./saved-settings";
 import { setJournalSink } from "../src/journal";
 import {
   handleGitHubAccessSettingsRequest,

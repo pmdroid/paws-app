@@ -16,10 +16,10 @@ import { workspaceId } from "../src/workspace";
 import {
   loadConfigFile,
   readAgentSettings,
-  readConfigText,
   useMemorySettings,
   type AgentSettings,
 } from "../src/config";
+import { readConfigText } from "./saved-settings";
 import { startServer } from "../src/server";
 import { seed } from "./pglite-fixtures";
 import { tempHome } from "./helpers";

@@ -1,4 +1,4 @@
-import { issueVmSettings, parseConfigToml, renderSettingsToml } from "../config";
+import { configFromSections, issueVmSettings } from "../config";
 import {
   activeIssueVmGrantLimitSteps,
   issueVmsInUseSteps,
@@ -18,7 +18,7 @@ export function* issueVmAdmissionSteps(
   input: { workspaceId: string; memberUserId: string; provider: IssueVmProvider; at: number },
 ) {
   const sections = yield* readSettingSectionsSteps(q, ["issue_vm"]);
-  const settings = issueVmSettings(parseConfigToml(renderSettingsToml(sections)).issueVm);
+  const settings = issueVmSettings(configFromSections(sections).issueVm);
   const granted = yield* activeIssueVmGrantLimitSteps(q, input);
   const memberLimit = granted ?? settings.perMember;
   const memberInUse = yield* issueVmsInUseSteps(q, input);

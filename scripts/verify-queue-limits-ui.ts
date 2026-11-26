@@ -2,7 +2,8 @@ import { chromium, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readConfigText, useMemorySettings } from "../src/config";
+import { useMemorySettings } from "../src/config";
+import { readConfigText } from "../test/saved-settings";
 import { openDatabase, migrate, sqliteDb } from "../src/db";
 import {
   handleAgentSettingsRequest,

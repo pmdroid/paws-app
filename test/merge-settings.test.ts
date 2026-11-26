@@ -15,10 +15,10 @@ import {
   reviewApps,
   storedMerge,
   suggestedFindingsMode,
-  readConfigText,
   useMemorySettings,
   writeMergePolicy,
 } from "../src/config";
+import { readConfigText } from "./saved-settings";
 import { createFakeMergeQueue, repositoriesWithMergeQueue, type GitHubClient } from "../src/github";
 import { handleMergeSettingsRequest, type MergeSettingsOptions } from "../src/settings";
 import { tempHome } from "./helpers";

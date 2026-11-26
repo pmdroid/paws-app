@@ -8,7 +8,8 @@ import {
   parseMergeSettings,
   parseQueueSettings,
   readAgentSettings,
-  readConfigText,
+  readSettingSections,
+  SETTINGS_SECTIONS,
   readMergeSettings,
   readQueueSettings,
   storedMerge,
@@ -34,7 +35,8 @@ export type AgentSettingsOptions = {
 };
 
 function settingsRevision(configPath: string): string {
-  const text = readConfigText(configPath);
+  const sections = readSettingSections(configPath);
+  const text = JSON.stringify(SETTINGS_SECTIONS.map((name) => sections[name] ?? null));
   return createHash("sha256").update(text).digest("hex").slice(0, 32);
 }
 

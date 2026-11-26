@@ -1,4 +1,4 @@
-import { updateConfigText, withoutConfigSection } from "./settings-store";
+import { saveSettingsSection } from "./file";
 
 export type IssueVmSettings = {
   perMember: number;
@@ -33,16 +33,13 @@ export function assignIssueVmKey(
   settings: StoredIssueVmSettings,
   key: string,
   value: string | number | boolean | string[],
-  line: number,
 ): void {
   if (!isIssueVmKey(key))
-    throw new Error(
-      `Saved settings line ${line} has an unknown key: issue_vm.${key} (use ${KEYS.join(", ")})`,
-    );
+    throw new Error(`Saved settings have an unknown key: issue_vm.${key} (use ${KEYS.join(", ")})`);
   try {
     settings[ISSUE_VM_KEYS[key].field] = checkIssueVmValue(key, value);
   } catch (error) {
-    throw new Error(`Saved settings line ${line} ${(error as Error).message}`, { cause: error });
+    throw new Error(`Saved settings ${(error as Error).message}`, { cause: error });
   }
 }
 
@@ -71,18 +68,12 @@ export function parseIssueVmSettings(value: unknown): StoredIssueVmSettings {
   return settings;
 }
 
-function renderIssueVmSettings(settings: StoredIssueVmSettings): string {
-  const lines = KEYS.flatMap((key) => {
-    const value = settings[ISSUE_VM_KEYS[key].field];
-    return value === undefined ? [] : [`${key} = ${value}`];
-  });
-  return lines.length ? `\n[issue_vm]\n${lines.join("\n")}\n` : "";
-}
-
 export function writeIssueVmSettings(path: string, settings: StoredIssueVmSettings): Promise<void> {
-  return updateConfigText(path, (text) => {
-    const retained = withoutConfigSection(text, "issue_vm");
-    const table = renderIssueVmSettings(settings);
-    return retained === "" ? table.trimStart() : `${retained}\n${table}`;
-  });
+  const section = Object.fromEntries(
+    KEYS.flatMap((key) => {
+      const value = settings[ISSUE_VM_KEYS[key].field];
+      return value === undefined ? [] : [[key, value]];
+    }),
+  );
+  return saveSettingsSection(path, "issue_vm", Object.keys(section).length ? section : undefined);
 }

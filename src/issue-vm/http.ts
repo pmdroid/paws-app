@@ -1,4 +1,4 @@
-import { issueVmSettings, parseConfigToml, renderSettingsToml } from "../config";
+import { configFromSections, issueVmSettings } from "../config";
 import {
   activeIssueVmGrantsSteps,
   auditWorkspaceAccessSteps,
@@ -62,9 +62,7 @@ function view({ workspaceId: _workspaceId, ...grant }: IssueVmGrant): IssueVmGra
 
 function* membersSteps(q: Q, workspaceId: string, at: number) {
   const sections = yield* readSettingSectionsSteps(q, ["issue_vm"]);
-  const defaultLimit = issueVmSettings(
-    parseConfigToml(renderSettingsToml(sections)).issueVm,
-  ).perMember;
+  const defaultLimit = issueVmSettings(configFromSections(sections).issueVm).perMember;
   const members = (yield* listWorkspaceMembersSteps(q, workspaceId)).filter(workspaceMemberUsable);
   const grants = yield* activeIssueVmGrantsSteps(q, { workspaceId, at });
   const counts = yield* issueVmStateCountsSteps(q, workspaceId);

@@ -1,4 +1,4 @@
-import { withoutConfigSection, type SettingSections } from "./settings-store";
+import type { SettingSections } from "./settings-store";
 
 export const MEMBER_VM_PROVIDERS = ["exe-dev", "boat", "instabox"] as const;
 export type MemberVmProviderName = (typeof MEMBER_VM_PROVIDERS)[number];
@@ -63,18 +63,17 @@ export function assignMemberVmKey(
   section: string,
   key: string,
   value: string | number | boolean | string[],
-  line: number,
 ): void {
   const keys = SECTION_KEYS[section] ?? [];
   if (!(keys as readonly string[]).includes(key))
     throw new Error(
-      `Saved settings line ${line} has an unknown key: ${section}.${key} (use ${keys.join(", ")})`,
+      `Saved settings have an unknown key: ${section}.${key} (use ${keys.join(", ")})`,
     );
   let checked: number | string | MemberVmProviderName[];
   try {
     checked = checkMemberVmValue(key as MemberVmKey, value);
   } catch (error) {
-    throw new Error(`Saved settings line ${line} ${(error as Error).message}`, { cause: error });
+    throw new Error(`Saved settings ${(error as Error).message}`, { cause: error });
   }
   if (key === "provider") settings.provider = checked as MemberVmProviderName;
   else if (key === "off_providers") settings.offProviders = checked as MemberVmProviderName[];
@@ -123,23 +122,22 @@ function positive(value: string | number | boolean | string[], key: string, max:
   return value;
 }
 
-export function renderMemberVmSettings(settings: VmSizes | undefined): string {
-  const top = [
-    ...(settings?.provider === undefined ? [] : [`provider = "${settings.provider}"`]),
-    ...(settings?.offProviders?.length
-      ? [`off_providers = [${settings.offProviders.map((id) => `"${id}"`).join(", ")}]`]
-      : []),
-  ];
-  const tables = MEMBER_VM_PROVIDERS.flatMap((provider) => {
+export function memberVmSection(
+  settings: VmSizes | undefined,
+): Record<string, unknown> | undefined {
+  const section: Record<string, unknown> = {
+    ...(settings?.provider === undefined ? {} : { provider: settings.provider }),
+    ...(settings?.offProviders?.length ? { off_providers: settings.offProviders } : {}),
+  };
+  for (const provider of MEMBER_VM_PROVIDERS) {
     const size = settings?.sizes?.[provider] ?? {};
-    const lines = SECTION_KEYS[`vm_sizes.${provider}`]!.flatMap((key) => {
+    const values = SECTION_KEYS[`vm_sizes.${provider}`]!.flatMap((key) => {
       const value = size[field(key) as keyof MemberVmSize];
-      return value === undefined ? [] : [`${key} = ${JSON.stringify(value)}`];
+      return value === undefined ? [] : [[key, value]];
     });
-    return lines.length ? [`\n[vm_sizes.${provider}]\n${lines.join("\n")}\n`] : [];
-  });
-  if (top.length === 0 && tables.length === 0) return "";
-  return `\n[vm_sizes]\n${top.length ? `${top.join("\n")}\n` : ""}${tables.join("")}`;
+    if (values.length) section[provider] = Object.fromEntries(values);
+  }
+  return Object.keys(section).length ? section : undefined;
 }
 
 function record(value: unknown, name: string, fields: readonly string[]): Record<string, unknown> {
@@ -220,15 +218,6 @@ export function checkVmSizeIn(
         ? `${size.cpu} vCPU size without memory_gb`
         : `${size.cpu} vCPU / ${size.memoryGb} GB size`;
   throw new Error(`${name} has no ${asked}. Use ${allowed}.`);
-}
-
-export function setMemberVmText(current: string, settings: VmSizes): string {
-  const retained = MEMBER_VM_PROVIDERS.reduce(
-    (text, provider) => withoutConfigSection(text, `vm_sizes.${provider}`),
-    withoutConfigSection(current, "vm_sizes"),
-  );
-  const table = renderMemberVmSettings(settings);
-  return retained === "" ? table.trimStart() : `${retained}\n${table}`;
 }
 
 export function upgradeSettingSections(sections: SettingSections): SettingSections {

@@ -5,12 +5,12 @@ import {
   ignoredCommentMarkers,
   loadConfigFile,
   parseConfigToml,
-  readConfigText,
   readMergeSettings,
   storedMerge,
   useMemorySettings,
   writeMergePolicy,
 } from "../src/config";
+import { readConfigText } from "./saved-settings";
 import {
   beginImplementRun,
   bindWorkItemRepository,

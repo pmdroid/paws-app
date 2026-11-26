@@ -1,6 +1,5 @@
 import { briefTemplateProblem } from "../core";
-import { updateConfigText } from "./settings-store";
-import type { PawsConfigFile } from "./file";
+import { saveSettingsSection, type PawsConfigFile } from "./file";
 
 /** The workspace template. Null means the built-in brief. */
 export type BriefTemplates = { template: string | null };
@@ -9,10 +8,8 @@ function emptyBriefTemplates(): BriefTemplates {
   return { template: null };
 }
 
-export function parseBriefTemplates(text: string): BriefTemplates {
-  if (!/^\s*\[brief(?:\.|\s*\])/m.test(text)) return emptyBriefTemplates();
-  const root = Bun.TOML.parse(text) as { brief?: { template?: unknown } };
-  const brief = root.brief;
+export function parseBriefTemplates(section: unknown): BriefTemplates {
+  const brief = section as { template?: unknown } | null | undefined;
   if (brief === undefined) return emptyBriefTemplates();
   if (brief === null || typeof brief !== "object" || Array.isArray(brief))
     throw new Error("brief must be a table");
@@ -31,38 +28,9 @@ export function resolveBriefTemplate(config: PawsConfigFile): string | null {
   return config.briefTemplate ?? null;
 }
 
-export function renderBriefTemplates(templates: BriefTemplates): string {
-  if (templates.template === null) return "";
-  return `\n[brief]\ntemplate = ${tomlBasic(templates.template)}\n`;
-}
-
-/** Replace every `[brief]` table and keep the rest of the file. */
-export function setBriefTemplatesText(current: string, templates: BriefTemplates): string {
-  let section = "";
-  let skipping = false;
-  const retained = current
-    .split(/\r?\n/)
-    .filter((line) => {
-      const heading = /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
-      if (heading?.[1]) {
-        section = heading[1].trim().toLowerCase();
-        skipping = section === "brief" || section.startsWith("brief.");
-      }
-      return !skipping;
-    })
-    .join("\n")
-    .replace(/\s*$/, "");
-  const tables = renderBriefTemplates(templates);
-  if (retained === "") return tables.trimStart();
-  return `${retained}\n${tables}`;
-}
-
 export function writeBriefTemplates(path: string, templates: BriefTemplates): Promise<void> {
-  return updateConfigText(path, (current) => {
-    const next = setBriefTemplatesText(current, normalizeTemplates(templates));
-    parseBriefTemplates(next);
-    return next.endsWith("\n") || next === "" ? next : `${next}\n`;
-  });
+  const { template } = normalizeTemplates(templates);
+  return saveSettingsSection(path, "brief", template === null ? undefined : { template });
 }
 
 function normalizeTemplates(templates: BriefTemplates): BriefTemplates {
@@ -71,19 +39,4 @@ function normalizeTemplates(templates: BriefTemplates): BriefTemplates {
     if (problem) throw new Error(problem);
   }
   return { template: templates.template };
-}
-
-function tomlBasic(value: string): string {
-  let out = "";
-  for (const char of value) {
-    const code = char.codePointAt(0)!;
-    if (char === "\\") out += "\\\\";
-    else if (char === '"') out += '\\"';
-    else if (char === "\n") out += "\\n";
-    else if (char === "\r") out += "\\r";
-    else if (char === "\t") out += "\\t";
-    else if (code < 32 || code === 127) out += `\\u${code.toString(16).padStart(4, "0")}`;
-    else out += char;
-  }
-  return `"${out}"`;
 }

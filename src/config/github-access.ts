@@ -1,6 +1,10 @@
 import { z } from "zod";
-import { agentReadAllowed, githubMirrorsOn, type PawsConfigFile } from "./file";
-import { updateConfigText } from "./settings-store";
+import {
+  agentReadAllowed,
+  githubMirrorsOn,
+  saveSettingsSection,
+  type PawsConfigFile,
+} from "./file";
 
 export type GitHubAccessSettings = { agentRead: boolean; mirrors: boolean };
 
@@ -33,21 +37,9 @@ export function parseGitHubAccessSettings(value: unknown): GitHubAccessSettings 
   );
 }
 
-export function setGitHubAccessText(current: string, settings: GitHubAccessSettings): string {
-  let section = "";
-  const retained = current
-    .split(/\r?\n/)
-    .filter((line) => {
-      const heading = /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
-      if (heading?.[1]) section = heading[1].toLowerCase();
-      return section !== "github_access";
-    })
-    .join("\n")
-    .trimEnd();
-  const table = `[github_access]\nagent_read = ${settings.agentRead}\nmirrors = ${settings.mirrors}\n`;
-  return retained === "" ? table : `${retained}\n\n${table}`;
-}
-
 export function writeGitHubAccess(path: string, settings: GitHubAccessSettings): Promise<void> {
-  return updateConfigText(path, (text) => setGitHubAccessText(text, settings));
+  return saveSettingsSection(path, "github_access", {
+    agent_read: settings.agentRead,
+    mirrors: settings.mirrors,
+  });
 }

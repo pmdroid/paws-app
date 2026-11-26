@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { HIGH_RISK_GLOBS_MAX, highRiskGlobError } from "../core";
-import { updateConfigText } from "./settings-store";
-import type { PawsConfigFile } from "./file";
+import { saveSettingsSection, type PawsConfigFile } from "./file";
 
 export const DEFAULT_CI_FIX_ATTEMPTS = 3;
 export const MAX_CI_FIX_ATTEMPTS = 10;
@@ -564,10 +563,10 @@ export function repositoryPackages(settings: MergeSettings, repository: string):
  * and `[[merge.rules]]` load and are ignored. The flat `[merge]` keys are read in `file.ts`.
  */
 export function parseMergeTables(
-  text: string,
+  section: unknown,
 ): Pick<PawsConfigFile, "mergeProjectLanes" | "mergeRepositories" | "ignoredMergeOverrides"> {
-  if (!/^\s*\[\[?\s*merge\.(projects|rules|repositories)/m.test(text)) return {};
-  const parsed = tomlSchema.safeParse(Bun.TOML.parse(text));
+  if (section === undefined) return {};
+  const parsed = tomlSchema.safeParse({ merge: section });
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     throw new Error(
@@ -647,101 +646,58 @@ export function parseMergeSettings(value: unknown): { ciFixAttempts?: number } {
   return ciFixAttempts === undefined ? {} : { ciFixAttempts };
 }
 
-function choiceLines(value: Partial<MergeChoice>): string[] {
-  return [
-    ...(value.order === undefined ? [] : [`order = ${JSON.stringify(value.order)}`]),
-    ...(value.mainMoved === undefined ? [] : [`main_moved = ${JSON.stringify(value.mainMoved)}`]),
-  ];
+export function mergeSection(settings: StoredMerge): Record<string, unknown> | undefined {
+  const projects = Object.entries(settings.projectLanes ?? {});
+  const repositories = Object.entries(settings.repositories ?? {});
+  const section = {
+    ...defined({
+      order: settings.order,
+      main_moved: settings.mainMoved,
+      lanes: settings.lanes,
+      no_project: settings.noProject,
+      auto_approve_high_risk: settings.autoApproveHighRisk,
+      overlap_hold: settings.overlapHold === false ? false : undefined,
+      ci_fix_attempts: settings.ciFixAttempts,
+      parallel: settings.parallel,
+      conflict_prone_after:
+        settings.conflictProneAfter === DEFAULT_CONFLICT_PRONE_AFTER
+          ? undefined
+          : settings.conflictProneAfter,
+      conflict_prone_days:
+        settings.conflictProneDays === DEFAULT_CONFLICT_PRONE_DAYS
+          ? undefined
+          : settings.conflictProneDays,
+      comment_quiet_seconds: settings.commentQuietSeconds,
+      comment_max_wait_seconds: settings.commentMaxWaitSeconds,
+      review_wait_max_seconds: settings.reviewWaitMaxSeconds,
+    }),
+    ...(projects.length
+      ? { projects: Object.fromEntries(projects.map(([id, lane]) => [id, { lane }])) }
+      : {}),
+    ...(repositories.length
+      ? {
+          repositories: Object.fromEntries(
+            repositories.map(([repository, value]) => [
+              repository,
+              defined({
+                packages: value.packages,
+                ignore_comment_bots: value.ignoreCommentBots,
+                ignore_comment_markers: value.ignoreCommentMarkers,
+                review_apps: value.reviewApps,
+                high_risk_paths: value.highRiskPaths,
+                suggested_findings: value.suggestedFindings,
+                parallel_files: value.parallelFiles,
+              }),
+            ]),
+          ),
+        }
+      : {}),
+  };
+  return Object.keys(section).length ? section : undefined;
 }
 
-export function renderMergeSettings(settings: StoredMerge): string {
-  const projectLanes = settings.projectLanes ?? {};
-  const lines = [
-    ...choiceLines(settings),
-    ...(settings.lanes === undefined
-      ? []
-      : [`lanes = [${settings.lanes.map((split) => JSON.stringify(split)).join(", ")}]`]),
-    ...(settings.noProject === undefined
-      ? []
-      : [`no_project = ${JSON.stringify(settings.noProject)}`]),
-    ...(settings.autoApproveHighRisk === undefined
-      ? []
-      : [`auto_approve_high_risk = ${settings.autoApproveHighRisk}`]),
-    ...(settings.overlapHold === false ? ["overlap_hold = false"] : []),
-    ...(settings.ciFixAttempts === undefined
-      ? []
-      : [`ci_fix_attempts = ${settings.ciFixAttempts}`]),
-    ...(settings.parallel === undefined ? [] : [`parallel = ${settings.parallel}`]),
-    ...(settings.conflictProneAfter === undefined ||
-    settings.conflictProneAfter === DEFAULT_CONFLICT_PRONE_AFTER
-      ? []
-      : [`conflict_prone_after = ${settings.conflictProneAfter}`]),
-    ...(settings.conflictProneDays === undefined ||
-    settings.conflictProneDays === DEFAULT_CONFLICT_PRONE_DAYS
-      ? []
-      : [`conflict_prone_days = ${settings.conflictProneDays}`]),
-    ...(settings.commentQuietSeconds === undefined
-      ? []
-      : [`comment_quiet_seconds = ${settings.commentQuietSeconds}`]),
-    ...(settings.commentMaxWaitSeconds === undefined
-      ? []
-      : [`comment_max_wait_seconds = ${settings.commentMaxWaitSeconds}`]),
-    ...(settings.reviewWaitMaxSeconds === undefined
-      ? []
-      : [`review_wait_max_seconds = ${settings.reviewWaitMaxSeconds}`]),
-  ];
-  return [
-    lines.length === 0 ? "" : `\n[merge]\n${lines.join("\n")}\n`,
-    ...Object.entries(projectLanes).map(
-      ([id, lane]) => `\n[merge.projects.${JSON.stringify(id)}]\nlane = ${JSON.stringify(lane)}\n`,
-    ),
-    ...Object.entries(settings.repositories ?? {}).map(
-      ([repository, value]) =>
-        `\n[merge.repositories.${JSON.stringify(repository)}]\npackages = [${value.packages
-          .map((root) => JSON.stringify(root))
-          .join(", ")}]\n${
-          value.ignoreCommentBots === undefined
-            ? ""
-            : `ignore_comment_bots = [${value.ignoreCommentBots.map((login) => JSON.stringify(login)).join(", ")}]\n`
-        }${
-          value.ignoreCommentMarkers === undefined
-            ? ""
-            : `ignore_comment_markers = [${value.ignoreCommentMarkers.map((marker) => JSON.stringify(marker)).join(", ")}]\n`
-        }${
-          value.reviewApps === undefined
-            ? ""
-            : `review_apps = [${value.reviewApps.map((slug) => JSON.stringify(slug)).join(", ")}]\n`
-        }${
-          value.highRiskPaths === undefined
-            ? ""
-            : `high_risk_paths = [${value.highRiskPaths.map((glob) => JSON.stringify(glob)).join(", ")}]\n`
-        }${
-          value.suggestedFindings === undefined
-            ? ""
-            : `suggested_findings = ${JSON.stringify(value.suggestedFindings)}\n`
-        }${
-          value.parallelFiles === undefined
-            ? ""
-            : `parallel_files = [${value.parallelFiles.map((path) => JSON.stringify(path)).join(", ")}]\n`
-        }`,
-    ),
-  ].join("");
-}
-
-/** Replace every `[merge…]` table, keeping every other line. */
-export function setMergeSettingsText(current: string, settings: StoredMerge): string {
-  let section = "";
-  const retained = current
-    .split(/\r?\n/)
-    .filter((line) => {
-      const heading = /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
-      if (heading?.[1]) section = heading[1].toLowerCase();
-      return section !== "merge" && !section.startsWith("merge.");
-    })
-    .join("\n")
-    .trimEnd();
-  const table = renderMergeSettings(settings);
-  return retained === "" ? table.trimStart() : `${retained}\n${table}`;
+function defined(values: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined));
 }
 
 /**
@@ -808,8 +764,10 @@ export function writeMergePolicy(
     parallel === undefined
       ? withIgnored
       : withRepositoryLists(withIgnored ?? {}, "parallelFiles", parallel);
-  return updateConfigText(path, (text) =>
-    setMergeSettingsText(text, {
+  return saveSettingsSection(
+    path,
+    "merge",
+    mergeSection({
       ...policy.default,
       ...(current.lanes === undefined ? {} : { lanes: current.lanes }),
       ...(current.noProject === undefined ? {} : { noProject: current.noProject }),

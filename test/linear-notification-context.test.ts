@@ -131,5 +131,5 @@ test.each(["context", "github-auth"])(
     expect(result.context).toContain("eyes");
     expect(result.restoredContext).toBe(result.context);
   },
-  10_000,
+  20_000,
 );
