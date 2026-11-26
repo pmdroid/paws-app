@@ -11,7 +11,7 @@ import {
 import { issueVmSpendLimitSteps, priced } from "./spend";
 
 export function* recordIssueVmSteps(q: Q, input: NewIssueVm) {
-  yield* insertIssueVmSteps(q, input);
+  return yield* insertIssueVmSteps(q, input);
 }
 
 export type IssueVmStateChange =
@@ -20,6 +20,12 @@ export type IssueVmStateChange =
   | { ok: false; reason: "ended"; state: IssueVmState };
 
 const CLOSES_AWAKE: IssueVmState[] = ["asleep", "deleted", "failed"];
+const OPENS_AWAKE: IssueVmState[] = ["creating", "waking", "awake"];
+
+export function* followIssueVmSpendSteps(q: Q, id: string, state: IssueVmState, now: number) {
+  if (OPENS_AWAKE.includes(state)) yield* openAwakeSteps(q, id, now);
+  if (CLOSES_AWAKE.includes(state)) yield* closeIssueVmAwakeSteps(q, { issueVmId: id, now });
+}
 
 function* openAwakeSteps(q: Q, id: string, now: number) {
   const vm = yield* issueVmByIdSteps(q, id);

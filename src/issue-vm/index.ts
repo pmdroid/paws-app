@@ -28,3 +28,26 @@ export type { InstaBoxIssueVmCreate, InstaBoxIssueVms } from "./instabox";
 export { createStartQueue } from "./start-queue";
 export type { StartQueue, StartQueueOptions } from "./start-queue";
 export { ISSUE_VM_SLEEP_CHECK } from "./sleep-check";
+export {
+  armUnsettledIssueVmsSteps,
+  createFakeIssueVmDriver,
+  createIssueVmLifecycleHandler,
+  ISSUE_VM_CREATE_MS,
+  ISSUE_VM_LIFECYCLE_QUEUE,
+  ISSUE_VM_SLEEP_MS,
+  ISSUE_VM_SWEEP_QUEUE,
+  ISSUE_VM_WAKE_MS,
+  IssueVmLostError,
+  registerIssueVmLifecycle,
+  requestIssueVmAsleepSteps,
+  requestIssueVmAwakeSteps,
+} from "./lifecycle";
+export type {
+  FakeIssueVm,
+  FakeIssueVmDriver,
+  IssueVmDriver,
+  IssueVmLifecycleOptions,
+  IssueVmReadiness,
+  IssueVmRefusal,
+  IssueVmRequest,
+} from "./lifecycle";

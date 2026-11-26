@@ -33,6 +33,12 @@ export const issueVm = pgTable(
     createdAt: bigint("created_at", { mode: "number" }).notNull(),
     stateAt: bigint("state_at", { mode: "number" }).notNull(),
     deletedAt: bigint("deleted_at", { mode: "number" }),
+    want: text().notNull().default("awake"),
+    deadlineAt: bigint("deadline_at", { mode: "number" }),
+    attempts: integer().notNull().default(0),
+    failure: text(),
+    providerRef: text("provider_ref"),
+    replaces: text(),
   },
   (table) => [
     uniqueIndex("issue_vm_item_live")
@@ -42,8 +48,9 @@ export const issueVm = pgTable(
     check("issue_vm_provider", sql`provider IN ('exe-dev','boat','instabox','host')`),
     check(
       "issue_vm_state",
-      sql`state IN ('creating','awake','asleep','deleting','deleted','failed')`,
+      sql`state IN ('creating','awake','sleeping','asleep','waking','deleting','deleted','failed')`,
     ),
+    check("issue_vm_want", sql`want IN ('awake','asleep')`),
   ],
 );
 
