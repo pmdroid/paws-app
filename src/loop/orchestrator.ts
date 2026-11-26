@@ -5399,7 +5399,11 @@ export class Orchestrator {
     if (!(conflict instanceof ReviewerModelConflict) || sessionId === null || !runId) return false;
     const { reviewer } = await this.profileSnapshot(runId);
     const configured = `${reviewer.agent} ${reviewer.model ?? conflict.implementation}`;
-    const body = `${item.linearIdentifier} was implemented with ${conflict.implementation}, and its reviewer model is ${configured}. The reviewer must be a different model, so no runner can review it. Pick another reviewer model for this item (or reply with an agent and model), or stop.`;
+    const choices = conflict.alternatives.length ? conflict.alternatives : ["Retry"];
+    const next = conflict.alternatives.length
+      ? "Pick another reviewer model for this item, or stop."
+      : "No runner can run another reviewer model now: change the reviewer in Settings and choose Retry, or stop.";
+    const body = `${item.linearIdentifier} was implemented with ${conflict.implementation}, and its reviewer model is ${configured}. The reviewer must be a different model, so no runner can review it. ${next}`;
     const now = this.now();
     await this.store.transaction(function* (q) {
       const current = yield* getWorkItemSteps(q, item.id);
@@ -5409,7 +5413,7 @@ export class Orchestrator {
         { itemId: item.id, runId, sessionId, version: current.version },
         "runner-wait",
         body,
-        { options: [...conflict.alternatives, "Stop"], reason: REVIEWER_MODEL_REASON, now },
+        { options: [...choices, "Stop"], reason: REVIEWER_MODEL_REASON, now },
       );
     });
     await this.flush();

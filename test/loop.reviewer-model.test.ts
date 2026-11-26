@@ -16,7 +16,7 @@ import { tempStore } from "./pglite";
 
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 const issue = { linearIssueId: "issue", identifier: "ENG-9", title: "Ok", subIssues: [] };
-const created = { dedupeKey: "c", source: "webhook", action: "created", payload: "{}" };
+const created = { dedupeKey: "c", action: "created", sessionId: "ses_1", issueId: "issue" };
 
 async function checksRun(input: RunAgentOptions): Promise<RunAgentResult> {
   const session = createCloseoutSession(input.worktreePath, {
@@ -33,8 +33,7 @@ test("a reviewer model equal to the implementer's asks once, then reviews with t
   const layout = await h.repoLayout("paws-reviewer-model-");
   const { db, close } = await tempStore();
   const tracker = createFakeTracker([{ ...issue, description: null }]);
-  const jobs = new JobLoop(db, systemClock);
-  const outbox = new OutboxDispatcher(db, systemClock);
+  const [jobs, outbox] = [new JobLoop(db, systemClock), new OutboxDispatcher(db, systemClock)];
   const repository = { owner: "pmdroid", repo: "paws-demo" };
   const reviewed: (string | null | undefined)[] = [];
   const runner = h.cloneRunnerPg(
@@ -71,11 +70,7 @@ test("a reviewer model equal to the implementer's asks once, then reviews with t
     for (let index = 0; index < 20; index++) await outbox.tick().then(() => outbox.idle());
   };
   try {
-    await orchestrator.onLinearEvent({
-      ...created,
-      sessionId: "ses_1",
-      issueId: "issue",
-    } as AcceptedLinearEvent);
+    await orchestrator.onLinearEvent({ ...created, payload: "{}" } as AcceptedLinearEvent);
     await until(async () => (await state()) === "awaiting_input");
     expect(tracker.questions[0]!.body).toStartWith("ENG-9 was implemented with test-claude-model");
     expect(tracker.questions[0]!.options).toEqual(["codex gpt-other", "Stop"]);

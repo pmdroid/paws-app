@@ -133,26 +133,29 @@ export function* answeredRunQuestionSteps(
   runId: string,
   reason: string,
 ): Steps<string | null> {
-  return yield* latestAnswerSteps(q, eq(q.t.question.runId, runId), reason);
-}
-
-export function* answeredItemQuestionSteps(
-  q: Q,
-  itemId: string,
-  reason: string,
-): Steps<string | null> {
-  return yield* latestAnswerSteps(q, eq(q.t.question.itemId, itemId), reason);
-}
-
-function* latestAnswerSteps(q: Q, owner: SQL, reason: string): Steps<string | null> {
   const { question } = q.t;
   const row = yield* q.one(
     q.orm
       .select({ answer: question.answer })
       .from(question)
-      .where(and(owner, eq(question.reason, reason), eq(question.status, "answered")))
+      .where(
+        and(
+          eq(question.runId, runId),
+          eq(question.reason, reason),
+          eq(question.status, "answered"),
+        ),
+      )
       .orderBy(desc(question.answeredAt), desc(question.id))
       .limit(1),
+  );
+  return row?.answer ?? null;
+}
+
+export function* answeredItemQuestionSteps(q: Q, itemId: string, reason: string) {
+  const { question: x } = q.t;
+  const answered = and(eq(x.itemId, itemId), eq(x.reason, reason), eq(x.status, "answered"));
+  const row = yield* q.one(
+    q.orm.select({ answer: x.answer }).from(x).where(answered).orderBy(desc(x.answeredAt)).limit(1),
   );
   return row?.answer ?? null;
 }

@@ -174,41 +174,29 @@ import {
   SESSION_GRACE_MS,
   type PlacementAccount,
   type PlacementDisposition,
+  type PlacementProfile,
   type RunnerPlacement,
 } from "../runner-placement";
 
-const REVIEWER_MODEL_MATCHES = "reviewer model matches implementation model";
 const AGENTS = ["claude", "codex", "grok", "opencode"];
-const NOT_FOR_ITEM = /^(not-yours|revoked|owner-|repository |run pinned to another)/;
 
-export function reviewerModelAlternatives(input: {
-  rejected: readonly string[];
-  agent: string;
+export async function reviewerModelAlternatives(input: {
   implementation: string;
-  catalogs: ReadonlyMap<string, Readonly<Record<string, string | null | undefined>>>;
-}): string[] | null {
-  const reasons = new Map<string, string[]>();
-  for (const entry of input.rejected) {
-    const id = entry.slice(0, entry.indexOf(":"));
-    reasons.set(id, [...(reasons.get(id) ?? []), entry.slice(entry.indexOf(":") + 2)]);
+  catalogs: Iterable<Readonly<Record<string, string | null>>>;
+  runs: (agent: string, model: string) => Promise<boolean>;
+}): Promise<string[]> {
+  const choices = new Set<string>();
+  for (const catalog of input.catalogs)
+    for (const [agent, json] of Object.entries(catalog))
+      for (const { id } of (JSON.parse(json ?? "{}") as { models?: { id: string }[] }).models ?? [])
+        if (![input.implementation, "default", "auto", ...AGENTS].includes(id))
+          choices.add(`${agent} ${id}`);
+  const runnable: string[] = [];
+  for (const choice of choices) {
+    const [agent, model] = choice.split(" ") as [string, string];
+    if (await input.runs(agent, model)) runnable.push(choice);
   }
-  const placeable = [...reasons].filter(
-    ([, list]) => !list.some((reason) => NOT_FOR_ITEM.test(reason)),
-  );
-  const usable = placeable.filter(
-    ([id, list]) => list.includes(REVIEWER_MODEL_MATCHES) || input.catalogs.get(id)?.[input.agent],
-  );
-  if (!usable.length || usable.some(([, list]) => list.some((r) => r !== REVIEWER_MODEL_MATCHES)))
-    return null;
-  const alternatives = placeable.flatMap(([id]) =>
-    Object.entries(input.catalogs.get(id) ?? {}).flatMap(([agent, json]) =>
-      ((JSON.parse(json ?? "{}") as { models?: { id: string }[] }).models ?? [])
-        .map((entry) => entry.id)
-        .filter((model) => ![input.implementation, "default", "auto", ...AGENTS].includes(model))
-        .map((model) => `${agent} ${model}`),
-    ),
-  );
-  return [...new Set(alternatives)];
+  return runnable;
 }
 
 class RunnerUnavailableError extends Error {
@@ -396,29 +384,30 @@ export function createRemoteAgentRunner(options: {
     itemId: string,
     placement: Parameters<RunnerPlacement["candidates"]>[0],
     rejected: readonly string[],
-    offered: readonly string[],
     details: readonly string[],
   ) {
-    const agent = placement.profile?.agent;
-    if (
-      placement.role !== "reviewer" ||
-      !agent ||
-      offered.length > 0 ||
-      !rejected.some((entry) => entry.endsWith(`: ${REVIEWER_MODEL_MATCHES}`))
-    )
-      return null;
-    return store.run(function* (q) {
-      const implementation = (yield* lastSuccessfulImplementationSteps(q, itemId))?.model;
-      if (!implementation) return null;
-      const catalogs = new Map<string, Record<string, string | null>>();
+    const model = placement.profile?.model;
+    if (placement.role !== "reviewer" || placement.purpose === "prepare" || !model) return null;
+    const catalogs = await store.run(function* (q) {
+      if ((yield* lastSuccessfulImplementationSteps(q, itemId))?.model !== model) return null;
+      const found: Record<string, string | null>[] = [];
       for (const id of new Set(rejected.map((entry) => entry.slice(0, entry.indexOf(":"))))) {
         const catalog: Record<string, string | null> = {};
-        for (const each of AGENTS) catalog[each] = yield* latestModelCatalogSteps(q, id, each);
-        catalogs.set(id, catalog);
+        for (const agent of AGENTS) catalog[agent] = yield* latestModelCatalogSteps(q, id, agent);
+        found.push(catalog);
       }
-      const alternatives = reviewerModelAlternatives({ rejected, agent, implementation, catalogs });
-      return alternatives && new ReviewerModelConflict(implementation, alternatives, details);
+      return found;
     });
+    if (!catalogs) return null;
+    const runs = async (agent: string, choice: string) =>
+      (
+        (await options.placement?.candidates({
+          ...placement,
+          profile: { agent: agent as PlacementProfile["agent"], model: choice },
+        })) ?? []
+      ).length > 0;
+    const alternatives = await reviewerModelAlternatives({ implementation: model, catalogs, runs });
+    return new ReviewerModelConflict(model, alternatives, details);
   }
   async function select(
     itemId: string,
@@ -455,7 +444,7 @@ export function createRemoteAgentRunner(options: {
       const need = await options.placement.setupNeed(placement);
       if (need) throw new RunnerSetupRequired(need);
     }
-    const conflict = await reviewerModelConflict(itemId, placement, rejected, offered, details);
+    const conflict = await reviewerModelConflict(itemId, placement, rejected, details);
     if (conflict) throw conflict;
     const agent = placement.profile?.agent;
     const accountCheck = untils.filter((until) => until > now()).sort((a, b) => a - b)[0];
