@@ -20,3 +20,4 @@ export {
 } from "./store";
 export type { MetricPoint, MetricSeries, MetricStep } from "./store";
 export { QUEUE_DEPTH_EVERY_MS, QUEUE_DEPTH_JOB, recordQueueDepths } from "./queues";
+export { STAGE_WINDOW_MAX_MS, readStageTimes } from "./stages";

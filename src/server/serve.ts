@@ -95,6 +95,7 @@ import {
   handleStorageCleanupRequest,
   handleStorageUsageRequest,
   handleMetricsRequest,
+  METRICS_STAGES_PATH,
   METRICS_PATH,
   STORAGE_CLEANUP_PATH,
   STORAGE_USAGE_PATH,
@@ -827,7 +828,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     }))!;
   }
-  if (path === METRICS_PATH && secrets.store)
+  if ((path === METRICS_PATH || path === METRICS_STAGES_PATH) && secrets.store)
     return (await handleMetricsRequest(request, {
       store: secrets.store,
       ...(principal === undefined ? {} : { role: principal.role }),

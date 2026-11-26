@@ -19,7 +19,9 @@ import {
   type Db,
   type NewOutbox,
 } from "../src/db";
+import { sql } from "drizzle-orm";
 import { describePglite, insertWorkItem } from "./pglite-fixtures";
+import { rows as queryRows } from "./pglite";
 
 function enqueue(db: Db, row: Omit<NewOutbox, "target"> & { target?: NewOutbox["target"] }) {
   return db.transaction((q) => enqueueOutboxSteps(q, { target: "linear", now: 1_000, ...row }));
@@ -135,7 +137,7 @@ describePglite((open) => {
     }
   });
 
-  test("a claim past 400 dead and 30k sent rows stays fast without statistics", async () => {
+  test("a claim past 400 dead and 30k sent rows uses the terminal-row index without statistics", async () => {
     const { db, close } = await open();
     try {
       const row = (key: string, orderingKey: string, extra: Record<string, unknown> = {}) => ({
@@ -164,17 +166,37 @@ describePglite((open) => {
               .values(rows.slice(start, start + 2_000) as (typeof q.t.outbox.$inferInsert)[]),
           );
       });
-      const timings: number[] = [];
+      let claim: { toSQL(): { sql: string; params: unknown[] } } | undefined;
       for (const now of [1, 2, 3]) {
-        const started = performance.now();
-        const claimed = await db.run((q) => claimOutboxHeadsSteps(q, { now, leaseMs: 1 }));
-        timings.push(performance.now() - started);
+        const claimed = await db.run((q) =>
+          claimOutboxHeadsSteps(
+            {
+              ...q,
+              all: (query) => {
+                claim = query as unknown as typeof claim;
+                return q.all(query);
+              },
+            },
+            { now, leaseMs: 1 },
+          ),
+        );
         expect(claimed.map((entry) => entry.idempotencyKey).sort()).toEqual([
           "pending-0",
           "pending-1",
         ]);
       }
-      expect(Math.min(...timings)).toBeLessThan(100);
+      const { sql: text, params } = claim!.toSQL();
+      const parts = text.split(/\$(\d+)/);
+      const explain = sql.join([
+        sql.raw("EXPLAIN "),
+        ...parts.map((part, index) =>
+          index % 2 ? sql`${params[Number(part) - 1]}` : sql.raw(part),
+        ),
+      ]);
+      const plan = (await queryRows<{ "QUERY PLAN": string }>(db, explain))
+        .map((line) => line["QUERY PLAN"])
+        .join("\n");
+      expect(plan).toMatch(/Index (Only )?Scan using outbox_terminal_lookup on outbox terminal/);
     } finally {
       await close();
     }

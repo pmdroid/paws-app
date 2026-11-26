@@ -21,6 +21,7 @@ import {
   rebaseReturnedForSteps,
   recordCiRoundSteps,
   recordConfirmedRemoteMergeSteps,
+  recordMergeWaitMarkSteps,
   recordPullCiFailureSteps,
   recordRebaseReturnSteps,
   resetOtherLaneCiFailuresSteps,
@@ -30,6 +31,7 @@ import {
   type CiRound,
   type CiRoundCheck,
   type Db,
+  type MergeWaitMarkKind,
   type PullFeedbackWait,
   type Q,
   type Steps,
@@ -596,6 +598,13 @@ export async function mergeThroughGitHubQueue(
     signal: published.signal,
   });
   if (await caps.stopped()) return { kind: "obsolete" };
+  if (
+    watch.reviewSince !== undefined &&
+    (result.outcome === "queued" || result.outcome === "merged")
+  )
+    await markMergeWait(store, item.id, head, "review_ended", caps.now());
+  if (result.outcome === "queued" && !watch.queued)
+    await markMergeWait(store, item.id, head, "enqueued", caps.now());
   // The review job may take the pull request out of GitHub's queue meanwhile; that removal is
   // the review's, not a person's or a failed check's.
   if (result.outcome !== "merged") {
@@ -750,6 +759,20 @@ export async function mergeThroughGitHubQueue(
   }
 }
 
+async function markMergeWait(
+  store: Db,
+  itemId: string,
+  head: string,
+  kind: MergeWaitMarkKind,
+  at: number,
+): Promise<void> {
+  try {
+    await store.run((q) => recordMergeWaitMarkSteps(q, { itemId, head, kind, at }));
+  } catch (error) {
+    journalCaught(error, "merge.markMergeWait", itemId);
+  }
+}
+
 const REVIEW_REFUSAL =
   /\b(?:code owners? review|approving reviews?|reviews? (?:is |are )?required|changes (?:were |are )?requested)\b/i;
 
@@ -774,6 +797,7 @@ async function waitForGitHubReview(
   const name = `${repository.owner}/${repository.repo}`;
   const link = pull.url ?? `pull request #${pull.number}`;
   const since = watch.reviewSince ?? caps.now();
+  await markMergeWait(store, item.id, head, "review_started", since);
   const message = `${review.wait} Paws adds ${link} to the ${name} GitHub merge queue once it is approved.`;
   await store.run((q) =>
     caps.voice.status(q, item, message, `${item.id}:github-queue:review:${head}`),
