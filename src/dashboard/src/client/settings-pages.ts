@@ -178,6 +178,16 @@ export type WorkspacePage = (typeof WORKSPACE_PAGES)[number]["id"];
 export type SettingsPage = UserSettingsPage | WorkspacePage;
 
 let settingsAdmin = false;
+const MEMBER_PAGE = "issue-vms";
+
+function memberCanOpen(page: string | null | undefined): boolean {
+  return isUserSettingsPage(page) || page === MEMBER_PAGE;
+}
+
+export function ownSettingsPages(): readonly { id: SettingsPage; name: string }[] {
+  if (settingsAdmin) return USER_SETTINGS_PAGES;
+  return [...USER_SETTINGS_PAGES, WORKSPACE_PAGES.find((page) => page.id === MEMBER_PAGE)!];
+}
 export function settingsAreEditable(): boolean {
   return settingsAdmin;
 }
@@ -201,7 +211,8 @@ export function settingsPageRoute(page: SettingsPage): Route {
 export function shownSettingsPage(route: Route): SettingsPage | null {
   if (route.view === "settings") return route.page ?? "account";
   if (route.view !== "workspace") return null;
-  return settingsAdmin ? (route.page ?? "agents") : "account";
+  if (settingsAdmin) return route.page ?? "agents";
+  return route.page === MEMBER_PAGE ? MEMBER_PAGE : "account";
 }
 
 export type SettingsMatch = { id: SettingsPage; name: string; section: string | null };
@@ -212,7 +223,9 @@ export function settingsQuery(search: string): string {
 
 export function searchSettings(query: string): SettingsMatch[] {
   const needle = query.trim().toLowerCase();
-  const pages = settingsAdmin ? SETTINGS_PAGES : USER_SETTINGS_PAGES;
+  const pages = settingsAdmin
+    ? SETTINGS_PAGES
+    : SETTINGS_PAGES.filter((page) => memberCanOpen(page.id));
   const has = (text: string) => text.toLowerCase().includes(needle);
   return pages.flatMap((page) => {
     const section = (page.sections as readonly string[]).find(has) ?? null;
@@ -240,12 +253,14 @@ export function settingsRedirect(path: string): string | null {
   if ((head === "settings" || head === "workspace") && page === "workspace")
     return settingsAdmin ? "/workspace/integrations" : "/settings/account";
   if (head === "settings" && isWorkspacePage(page))
-    return settingsAdmin ? `/workspace/${page}` : "/settings/account";
-  return head === "workspace" && !settingsAdmin ? "/settings/account" : null;
+    return settingsAdmin || page === MEMBER_PAGE ? `/workspace/${page}` : "/settings/account";
+  return head === "workspace" && !settingsAdmin && page !== MEMBER_PAGE
+    ? "/settings/account"
+    : null;
 }
 
 export function renderSettingsPage(requested: SettingsPage = "account"): string {
-  const page = settingsAdmin || isUserSettingsPage(requested) ? requested : "account";
+  const page = settingsAdmin || memberCanOpen(requested) ? requested : "account";
   const current = SETTINGS_PAGES.find((entry) => entry.id === page)!;
   return `<h1>${current.name}</h1><div class="settings-body min-w-0 space-y-4"><p class="sub">${current.description}</p>${page === "repositories" || page === "linear" ? `<div id="${page}-settings"></div>` : page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div>' : page === "agent-accounts" ? '<div id="agent-account-settings" class="agent-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "storage" ? '<div id="storage-settings" class="agent-settings"></div><div id="storage-disk-settings" class="agent-settings"></div>' : page === "member-vm" ? '<div id="member-vm-settings" class="agent-settings"></div>' : page === "issue-vms" ? '<div id="issue-vm-settings" class="agent-settings"></div>' : page === "runner-vms" ? '<div id="runner-vm-keys" class="agent-settings"></div>' : page === "closeout" ? '<div id="closeout-settings" class="agent-settings"></div>' : page === "performance" ? '<div id="performance-settings"></div>' : page === "limits" ? '<div id="queue-settings" class="skill-settings"></div><div id="time-limit-settings" class="skill-settings"></div>' : ""}</div>`;
 }

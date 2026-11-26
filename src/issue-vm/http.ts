@@ -111,14 +111,19 @@ export async function handleIssueVmGrantRequest(
   if (!isIssueVmGrantPath(path)) return null;
   if (!localRequest(request, options.trustedOrigin))
     return json({ error: "Issue VM grants are only available on the local Paws origin" }, 403);
-  if (!isWorkspaceAdmin(options.principal.role))
-    return json({ error: "Only workspace admins can see and grant issue VMs." }, 403);
   const { db, principal } = options;
+  const admin = isWorkspaceAdmin(principal.role);
   const now = (options.now ?? Date.now)();
   if (path === ISSUE_VM_MEMBERS_PATH) {
     if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
-    return json(await db.run((q) => membersSteps(q, principal.workspaceId, now)));
+    const listing = await db.run((q) => membersSteps(q, principal.workspaceId, now));
+    if (admin) return json(listing);
+    return json({
+      defaultLimit: listing.defaultLimit,
+      members: listing.members.filter((member) => member.userId === principal.userId),
+    });
   }
+  if (!admin) return json({ error: "Only workspace admins can grant issue VMs." }, 403);
   const revoking = GRANT_PATH.exec(path)?.[1];
   if (request.method !== (revoking === undefined ? "POST" : "DELETE"))
     return json({ error: "Method not allowed" }, 405);

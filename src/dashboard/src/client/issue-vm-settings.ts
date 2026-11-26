@@ -14,14 +14,7 @@ type Member = {
   limit: number;
   grant: Grant | null;
 };
-type HostSize = {
-  vmVcpus: number;
-  vmMemoryGb: number;
-  vmDiskGb: number;
-  reserveVcpus: number;
-  reserveMemoryGb: number;
-  slotCap: number | null;
-};
+type HostSize = Record<string, number | null>;
 type Host = {
   runnerId: string;
   vmHost: boolean;
@@ -35,7 +28,7 @@ const LIMITS: [keyof Limits, string, number, number][] = [
   ["workspaceMax", "Workspace ceiling", 1, 500],
   ["deleteAfterDays", "Delete after days asleep", 1, 60],
 ];
-const SIZE: [keyof HostSize, string, number, number][] = [
+const SIZE: [string, string, number, number][] = [
   ["vmVcpus", "vCPUs per VM", 1, 32],
   ["vmMemoryGb", "Memory per VM (GB)", 1, 128],
   ["vmDiskGb", "Disk per VM (GB)", 10, 500],
@@ -86,7 +79,6 @@ export function createIssueVmSettings() {
   let engine: string | null = null;
   let limits: Limits | null = null;
   let members: Member[] = [];
-  let me: string | null = null;
   let runners: { id: string; name: string }[] = [];
   let hosts = new Map<string, Host>();
   let notes: Record<string, Note> = {};
@@ -115,14 +107,13 @@ export function createIssueVmSettings() {
       ? `${member.grant.limit} until ${day(member.grant.endsAt)}${admin() ? ` <button class="btn secondary" type="button" data-revoke="${esc(member.grant.id)}"${off()}>Revoke</button>` : ""}`
       : "None";
   const grantsSection = () => {
-    const shown = admin() ? members : members.filter((member) => member.userId === me);
-    const rows = shown
+    const rows = members
       .map(
         (member) =>
           `<tr><td>${esc(member.name ?? member.userId)}</td><td>${member.inUse.total}</td><td>${member.limit}</td><td>${grantCell(member)}</td></tr>`,
       )
       .join("");
-    const table = shown.length
+    const table = members.length
       ? `<div class="min-w-0 overflow-x-auto [overflow-wrap:normal] [&_td]:whitespace-nowrap [&_th]:whitespace-nowrap"><table aria-label="Issue VM limits per member"><thead><tr><th scope="col">Member</th><th scope="col">In use</th><th scope="col">Limit</th><th scope="col">Extra usage</th></tr></thead><tbody>${rows}</tbody></table></div>`
       : "";
     const now = Date.now();
@@ -155,9 +146,7 @@ export function createIssueVmSettings() {
     if (!root) return;
     renderMarkup(
       root,
-      admin()
-        ? `${limitsSection()}${grantsSection()}${hostsSection()}`
-        : `${grantsSection()}${note("member")}`,
+      admin() ? `${limitsSection()}${grantsSection()}${hostsSection()}` : grantsSection(),
     );
   };
   const attempt = async <T>(key: string, work: () => Promise<T>) => {
@@ -198,24 +187,13 @@ export function createIssueVmSettings() {
   };
   const load = async () => {
     if (!engine) return;
-    if (admin()) {
-      await Promise.all([
-        attempt("limits", () => request<Limits>(engine!, "/api/settings/issue-vm")).then((next) => {
-          if (next) limits = next;
-        }),
-        loadMembers(),
-        loadHosts(),
-      ]);
-    } else {
-      const session = await attempt("member", () =>
-        request<{ userId: string }>(engine!, "/api/auth/session"),
-      );
-      me = session?.userId ?? null;
-      const listed = await attempt("member", () =>
-        request<{ members: Member[] }>(engine!, "/api/settings/issue-vm/members"),
-      );
-      if (listed) members = listed.members;
-    }
+    const limitsLoad = () =>
+      attempt("limits", () => request<Limits>(engine!, "/api/settings/issue-vm"));
+    await Promise.all(
+      admin()
+        ? [limitsLoad().then((next) => (limits = next ?? limits)), loadMembers(), loadHosts()]
+        : [loadMembers()],
+    );
     paint();
   };
   const run = async (key: string, done: string, work: () => Promise<unknown>) => {

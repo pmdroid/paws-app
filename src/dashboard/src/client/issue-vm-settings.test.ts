@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { createIssueVmSettings } from "./issue-vm-settings";
-import { renderSettingsPage, setSettingsAdmin } from "./settings-pages";
+import {
+  renderSettingsPage,
+  setSettingsAdmin,
+  settingsRedirect,
+  shownSettingsPage,
+} from "./settings-pages";
 import { settleReactWork } from "./settle-react";
 
 const ENGINE = "http://127.0.0.1:8787";
@@ -57,7 +62,6 @@ beforeEach(() => {
     calls.push({ method, path, body });
     if (failing.has(`${method} ${path}`))
       return Response.json({ error: "Paws is restarting." }, { status: 503 });
-    if (path === "/api/auth/session") return Response.json({ userId: "user-2" });
     if (path === "/api/settings/issue-vm") {
       if (method === "PUT") {
         if (body.workspaceMax > 500)
@@ -106,9 +110,9 @@ const settle = async () => {
 
 async function mount(admin = true) {
   setSettingsAdmin(admin);
-  window.document.body.innerHTML = admin
-    ? renderSettingsPage("issue-vms")
-    : '<div id="issue-vm-settings"></div>';
+  window.document.body.innerHTML = renderSettingsPage(
+    shownSettingsPage({ view: "workspace", page: "issue-vms" })!,
+  );
   const root = window.document.querySelector("#issue-vm-settings") as unknown as HTMLElement;
   createIssueVmSettings().mount(root, ENGINE);
   await settle();
@@ -208,4 +212,14 @@ test("a runner whose VM host lookup failed is not offered as a new host", async 
   const root = await mount();
   expect(root.querySelector("[data-add-host]")).toBeNull();
   expect(root.querySelector('[role="alert"]')?.textContent).toContain("Paws is restarting.");
+});
+
+test("members may open Issue VMs but no other workspace page", () => {
+  setSettingsAdmin(false);
+  expect(shownSettingsPage({ view: "workspace", page: "issue-vms" })).toBe("issue-vms");
+  expect(shownSettingsPage({ view: "workspace", page: "merging" })).toBe("account");
+  expect(settingsRedirect("/workspace/issue-vms")).toBeNull();
+  expect(settingsRedirect("/settings/issue-vms")).toBe("/workspace/issue-vms");
+  expect(settingsRedirect("/workspace/merging")).toBe("/settings/account");
+  expect(renderSettingsPage("issue-vms")).toContain('id="issue-vm-settings"');
 });

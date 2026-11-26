@@ -356,21 +356,13 @@ try {
       if (body) issueVmLimits = body;
       await route.fulfill({ json: issueVmLimits });
     });
-    await admin.route("**/api/settings/issue-vm/members", (route) =>
-      route.fulfill({
-        json: {
-          defaultLimit: issueVmLimits.perMember,
-          members: [
-            {
-              ...{ userId: "user-2", name: "Robin Example", role: "member" },
-              inUse: { creating: 0, awake: 1, asleep: 1, total: 2 },
-              limit: (vmGrant?.limit as number | undefined) ?? issueVmLimits.perMember,
-              grant: vmGrant,
-            },
-          ],
-        },
-      }),
-    );
+    await admin.route("**/api/settings/issue-vm/members", (route) => {
+      const limit = (vmGrant?.limit as number | undefined) ?? issueVmLimits.perMember;
+      const robin = { userId: "user-2", name: "Robin Example", role: "member", limit };
+      const inUse = { creating: 0, awake: 1, asleep: 1, total: 2 };
+      const members = [{ ...robin, inUse, grant: vmGrant }];
+      return route.fulfill({ json: { defaultLimit: issueVmLimits.perMember, members } });
+    });
     await admin.route("**/api/settings/issue-vm/grants**", async (route) => {
       const body = route.request().method() === "POST" ? route.request().postDataJSON() : null;
       vmGrant = body && { id: "01GRANT", ...body, endsAt: Date.parse(body.endsAt) };
