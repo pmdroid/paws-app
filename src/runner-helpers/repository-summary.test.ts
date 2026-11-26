@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import {
   consumeWorkspaceBootstrap,
+  listAgentBindings,
   putWorkspaceUser,
   recordLinearInstallation,
   recordRunnerCapacity,
@@ -44,20 +45,55 @@ async function fixture(withAuthority: boolean) {
   await recordRunnerCapacity(db, "runner", 1, 1, 2);
   await signInFixtureRunner(db, "runner", "codex");
   const authority = { allowed: true, asked: [] as unknown[] };
+  const allow = (_q: unknown, input: unknown) =>
+    syncSteps(() => {
+      authority.asked.push(input);
+      return authority.allowed;
+    });
   const helpers = createRunnerHelpers({
     store: db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
-    ...(withAuthority
-      ? {
-          summary: (_q, input) =>
-            syncSteps(() => {
-              authority.asked.push(input);
-              return authority.allowed;
-            }),
-        }
-      : {}),
+    repositoryAccess: {
+      github: {
+        mintInstallationToken: async (input) => ({
+          token: "t",
+          expiresAt: Date.now() + 9e5,
+          ...input,
+        }),
+      },
+      installationForRepository: async () => "installation-1",
+    },
+    ...(withAuthority ? { summary: allow, probes: allow } : {}),
   });
+  const binding = (await listAgentBindings(db, workspace.id)).find(
+    (row) => row.runnerId === "runner",
+  )!;
+  const account = { accountId: binding.accountId, bindingId: binding.id };
+  const probe = (purpose: "probe_distill" | "probe_write") =>
+    helpers.dispatch({
+      runnerId: "runner",
+      sessionId: `probes-${crypto.randomUUID()}`,
+      purpose,
+      profile: { agent: "codex", model: null },
+      prompt: "Collect the probe.",
+      account,
+      ...(purpose === "probe_write"
+        ? {
+            probe: { repository: "acme/web", path: ".agents/probes/no-raw-sql.ts" },
+            repositories: ["acme/web"],
+          }
+        : {}),
+    });
+  const credential = async (id: string, repository: string) =>
+    (await helpers.fetch(
+      new Request(`http://paws/v1/helper-commands/${id}/repository-credential`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ repository }),
+      }),
+      "runner",
+    ))!;
   const dispatch = () =>
     helpers.dispatch({
       runnerId: "runner",
@@ -67,7 +103,8 @@ async function fixture(withAuthority: boolean) {
       prompt: "Summarise this README.",
       summary: { repository: "acme/web" },
     });
-  return { db, now, userId, workspace, authority, helpers, dispatch };
+  const probes = { account, probe, credential };
+  return { db, now, userId, workspace, authority, helpers, dispatch, ...probes };
 }
 
 test("a repository summary is delivered only while its authority allows the runner's owner", async () => {
@@ -94,13 +131,46 @@ test("a repository summary is delivered only while its authority allows the runn
   await expect(dispatch()).rejects.toBeInstanceOf(HelperFencedError);
 });
 
-test("a repository summary is fenced when no authority is configured", async () => {
-  const { helpers, dispatch } = await fixture(false);
+test("a repository summary and probe helpers are fenced when no authority is configured", async () => {
+  const { helpers, dispatch, probe } = await fixture(false);
   await expect(dispatch()).rejects.toBeInstanceOf(HelperFencedError);
+  await expect(probe("probe_distill")).rejects.toBeInstanceOf(HelperFencedError);
+  await expect(probe("probe_write")).rejects.toBeInstanceOf(HelperFencedError);
   expect(await helpers.commands("runner")).toEqual([]);
 });
 
-test("only Slack replies and repository summaries are stored without a Linear session", async () => {
+test("probe helpers run under the bound account, and only probe_write reads its own repository", async () => {
+  const { userId, workspace, authority, helpers, account, probe, credential } = await fixture(true);
+  const commit = "a".repeat(40);
+  const distilled = (await probe("probe_distill")).command;
+  expect(distilled.expiresAt - distilled.issuedAt).toBe(900_000);
+  expect(distilled.account).toEqual(account);
+  expect(authority.asked[0]).toEqual({ workspaceId: workspace.id, userId, repository: null });
+  helpers.handle(distilled.id, undefined, async () => ({ commit }));
+  expect((await credential(distilled.id, "acme/web")).status).toBe(403);
+  await helpers.finish(distilled.id);
+  const written = (await probe("probe_write")).command;
+  expect(authority.asked.at(-1)).toMatchObject({ repository: "acme/web" });
+  const delivered = await helpers.commands("runner");
+  expect(
+    RunnerCommandSchema.parse(
+      JSON.parse(Buffer.from(delivered.at(-1)!.payload, "base64url").toString("utf8")),
+    ),
+  ).toMatchObject({ purpose: "probe_write", account, probe: { repository: "acme/web" } });
+  helpers.handle(written.id, undefined, async () => ({ commit }));
+  expect((await credential(written.id, "acme/api")).status).toBe(403);
+  const granted = await credential(written.id, "acme/web");
+  expect(granted.status).toBe(200);
+  expect(await granted.json()).toMatchObject({
+    remoteUrl: "https://github.com/acme/web.git",
+    commit,
+  });
+  authority.allowed = false;
+  expect(await helpers.commands("runner")).toEqual([]);
+  await expect(probe("probe_distill")).rejects.toBeInstanceOf(HelperFencedError);
+});
+
+test("only Slack replies, repository summaries and probe helpers are stored without a Linear session", async () => {
   const { db, now, workspace } = await fixture(true);
   await recordLinearInstallation(db, {
     organizationId: "org",
@@ -119,10 +189,14 @@ test("only Slack replies and repository summaries are stored without a Linear se
     );
   await insert("repository_summary", null);
   await insert("slack_reply", null);
+  await insert("probe_distill", null);
+  await insert("probe_write", null);
   await insert("classify", "session-1");
   for (const [purpose, sessionId] of [
     ["repository_summary", "session-1"],
     ["slack_reply", "session-1"],
+    ["probe_distill", "session-1"],
+    ["probe_write", "session-1"],
     ["classify", null],
   ] as const)
     await expect(insert(purpose, sessionId)).rejects.toThrow();

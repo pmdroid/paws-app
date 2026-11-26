@@ -271,7 +271,7 @@ export const runnerHelper = pgTable(
     index("runner_helper_pending").on(table.runnerId, table.acknowledgedAt, table.expiresAt),
     check(
       "runner_helper_session",
-      sql`(purpose IN ('slack_reply', 'repository_summary')) = (session_id IS NULL)`,
+      sql`(purpose IN ('slack_reply', 'repository_summary', 'probe_distill', 'probe_write')) = (session_id IS NULL)`,
     ),
   ],
 );
