@@ -114,6 +114,8 @@ import {
   type RestartHandoff,
   activateLinearItemSteps,
   answeredItemQuestionSteps,
+  lastSuccessfulImplementationSteps,
+  workspaceModelCatalogsSteps,
   bindLinearSessionTaskSteps,
   configureWorkItemSteps,
   discardLinearTurnsSteps,
@@ -767,6 +769,7 @@ import {
   KEEP_WAITING,
   MOVE_TO_ANOTHER_RUNNER,
   REVIEWER_MODEL_REASON,
+  reviewerModelAlternatives,
   waitForRunner,
   type RunnerWaitQuestion,
 } from "./runner-wait";
@@ -5392,18 +5395,28 @@ export class Orchestrator {
     await this.flush();
   }
 
+  private async checkReviewerModel(item: WorkItemRecord, runId: string): Promise<void> {
+    const { reviewer } = await this.profileSnapshot(runId);
+    const found = await this.store.run(function* (q) {
+      const implementation = (yield* lastSuccessfulImplementationSteps(q, item.id))?.model;
+      if (!implementation || implementation !== reviewer.model) return null;
+      const session = item.sessionKey ? yield* getLinearSessionSteps(q, item.sessionKey) : null;
+      const workspace = session?.organizationId
+        ? yield* workspaceForOrganizationSteps(q, session.organizationId)
+        : null;
+      const catalogs = yield* workspaceModelCatalogsSteps(q, workspace?.id ?? null);
+      return { implementation, alternatives: reviewerModelAlternatives(implementation, catalogs) };
+    });
+    if (found) throw new ReviewerModelConflict(found.implementation, found.alternatives);
+  }
+
   private async askReviewerModel(item: WorkItemRecord, error: unknown): Promise<boolean> {
     const conflict = capacityWaitIn(error);
     const sessionId = this.activitySession(item);
     const runId = item.currentRunId;
     if (!(conflict instanceof ReviewerModelConflict) || sessionId === null || !runId) return false;
-    const { reviewer } = await this.profileSnapshot(runId);
-    const configured = `${reviewer.agent} ${reviewer.model ?? conflict.implementation}`;
     const choices = conflict.alternatives.length ? conflict.alternatives : ["Retry"];
-    const next = conflict.alternatives.length
-      ? "Pick another reviewer model for this item, or stop."
-      : "No runner can run another reviewer model now: change the reviewer in Settings and choose Retry, or stop.";
-    const body = `${item.linearIdentifier} was implemented with ${conflict.implementation}, and its reviewer model is ${configured}. The reviewer must be a different model, so no runner can review it. ${next}`;
+    const body = `${item.linearIdentifier} was implemented with ${conflict.implementation}, and its reviewer is set to the same model. The reviewer must be a different model, so no runner can review it. ${conflict.alternatives.length ? "Pick another reviewer model for this item, or stop." : "No runner offers another model: change the reviewer in Settings and choose Retry, or stop."}`;
     const now = this.now();
     await this.store.transaction(function* (q) {
       const current = yield* getWorkItemSteps(q, item.id);
@@ -11211,6 +11224,7 @@ export class Orchestrator {
       repository: repository ? `${repository.owner}/${repository.repo}` : undefined,
       pawsRoot: this.options.pawsRoot,
       profiles: () => this.profileSnapshot(runId),
+      checkReviewer: () => this.checkReviewerModel(item, runId),
       publishArtifact: await this.artifactPublisher(item),
       prepareInputFiles: this.prepareInputFiles(item, runId),
       onCandidate: async (identity) => {

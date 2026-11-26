@@ -11,6 +11,17 @@ export const AGENT_HUNG_RETRY = "Retry";
 export const AGENT_HUNG_STOP = "Stop";
 export const REVIEWER_MODEL_REASON = "reviewer_model_conflict";
 
+export function reviewerModelAlternatives(
+  implementation: string,
+  catalogs: readonly { agent: string; resultJson: string }[],
+): string[] {
+  const choices = new Set<string>();
+  for (const { agent, resultJson } of catalogs)
+    for (const { id } of (JSON.parse(resultJson) as { models?: { id: string }[] }).models ?? [])
+      if (![implementation, "default", "auto"].includes(id)) choices.add(`${agent} ${id}`);
+  return [...choices];
+}
+
 export function runnerWaitReason(runner: RunnerAvailability | null, now: number): string | null {
   if (runner === null) return null;
   if (runner.revoked || runner.status === "revoked")

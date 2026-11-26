@@ -127,9 +127,8 @@ export class ReviewerModelConflict extends RunnerCapacityWait {
   constructor(
     readonly implementation: string,
     readonly alternatives: readonly string[],
-    rejections: readonly string[],
   ) {
-    super([], undefined, rejections);
+    super([], undefined, []);
   }
 }
 

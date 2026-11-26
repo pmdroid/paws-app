@@ -84,6 +84,18 @@ export function* latestModelCatalogSteps(q: Q, runnerId: string, agent: string) 
   return row?.resultJson ?? null;
 }
 
+export function* workspaceModelCatalogsSteps(q: Q, workspaceId: string | null) {
+  const { agentModelCatalog: c, runner: r } = q.t;
+  const workspace = workspaceId === null ? undefined : eq(r.workspaceId, workspaceId);
+  return yield* q.all(
+    q.orm
+      .select({ agent: c.agent, resultJson: jsonText(q, c.resultJson) })
+      .from(c)
+      .innerJoin(r, eq(r.id, c.runnerId))
+      .where(and(eq(c.model, ""), ne(r.status, "revoked"), isNull(r.revokedAt), workspace)),
+  );
+}
+
 export function* runnerUsageListSteps(
   q: Q,
   input: { workspaceId: string; all: boolean; userId: string; runnerId: string },
