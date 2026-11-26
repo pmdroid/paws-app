@@ -44,6 +44,7 @@ const WORKSPACE_PAGE_IDS = [
   "storage",
   "limits",
   "member-vm",
+  "issue-vms",
   "runner-vms",
   "brief",
   "integrations",
