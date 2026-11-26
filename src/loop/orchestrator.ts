@@ -108,6 +108,11 @@ import { acceptedResumeNeedsTurn, mergeAcceptedWork, settleRejectedPush } from "
 import { restartForPushConflict } from "./push-conflict";
 import { arrivalsPrompt, arrivalsThought, branchMovedHandoff } from "./branch-arrivals";
 import {
+  NOTHING_TO_PUBLISH_OPTIONS,
+  NOTHING_TO_PUBLISH_REASON,
+  nothingToPublishQuestion,
+} from "./nothing-to-publish";
+import {
   saveHumanRetryWindowSteps,
   checkTriggers,
   type FixRound,
@@ -480,6 +485,7 @@ import {
   readBranchWork,
   type BranchArrival,
   BranchMovedError,
+  NothingToPublishError,
   UPSTREAM_MAIN_REF,
   pushOutageCause,
   GitHubHttpError,
@@ -6738,7 +6744,11 @@ export class Orchestrator {
       gitExec: github.gitExec,
       remoteUrl: repository.remoteUrl,
       ...this.gitHubCredentials(github),
-    }).catch((error: unknown) => this.branchMoved(item, error));
+    }).catch((error: unknown) =>
+      error instanceof NothingToPublishError ? error : this.branchMoved(item, error),
+    );
+    if (published instanceof NothingToPublishError)
+      return this.askNothingToPublish(item, published, live.controller.signal);
     if (published === null) return { kind: "returned" };
     const refused = published.published ? published.pull.memberRefused : undefined;
     if (refused && published.published)
@@ -12071,6 +12081,26 @@ export class Orchestrator {
     if (known.includes(moved.tip) || (await this.descends(item, moved.read, head, moved.tip)))
       return { expected: moved.tip };
     return this.branchMoved(item, new BranchMovedError(moved.read.branch, moved.tip));
+  }
+
+  private async askNothingToPublish(
+    item: WorkItemRecord,
+    error: NothingToPublishError,
+    signal: AbortSignal,
+  ): Promise<MergeStep> {
+    this.options.journal?.(`item ${item.linearIdentifier}: ${error.message} (${error.reason})`);
+    const asked = await askMergeHelp(this.store, {
+      itemId: item.id,
+      body: nothingToPublishQuestion(error.branch),
+      reason: NOTHING_TO_PUBLISH_REASON,
+      options: NOTHING_TO_PUBLISH_OPTIONS,
+      now: this.now(),
+      session: (current) => this.activitySession(current),
+      ask: askSteps,
+    });
+    if (!asked) return { kind: "obsolete" };
+    await this.flush(signal);
+    return { kind: "asked" };
   }
 
   private async branchMoved(item: WorkItemRecord, error: unknown): Promise<null> {

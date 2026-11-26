@@ -15,6 +15,7 @@ import { PushOutageError, isPushOutage, pushOutageCause } from "./transport";
 import {
   GitCommandError,
   INSTALLATION_PERMISSIONS,
+  NothingToPublishError,
   type GitExec,
   type GitHubClient,
   type GitHubResponse,
@@ -201,7 +202,8 @@ describe("pull requests", () => {
       async request(req) {
         if (req.path.endsWith("/access_tokens")) return { status: 201, body: tokenBody("ghs_1") };
         requests.push({ method: req.method, body: req.body });
-        if (req.method === "POST") return { status: 422, body: {} };
+        if (req.method === "POST")
+          return { status: 422, body: { message: "A pull request already exists" } };
         if (req.method === "GET") return { status: 200, body: [{ number: 9 }] };
         return { status: 200, body: { number: 9, body: (req.body as { body: string }).body } };
       },
@@ -225,6 +227,45 @@ describe("pull requests", () => {
         body: "Fixes ENG-123\n\nAdds exportRows.\n\nbun test: 3 pass\n\nCloseout: accepted\n",
       },
     });
+  });
+
+  const refusedWith = (errors: unknown[]) => {
+    const methods: string[] = [];
+    const client: GitHubClient = {
+      async request(req) {
+        if (req.path.endsWith("/access_tokens")) return { status: 201, body: tokenBody("ghs_1") };
+        methods.push(req.method);
+        return { status: 422, body: { message: "Validation Failed", errors } };
+      },
+    };
+    const opened = openPullRequest({
+      issue: "ENG-123",
+      owner: "pmdroid",
+      repo: "paws-demo",
+      evidence: "Closeout: accepted",
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: PRIVATE_KEY,
+      client,
+    });
+    return { opened, methods };
+  };
+
+  test("tells a branch with no commits ahead of main apart from an existing pull request", async () => {
+    const message = `No commits between main and ${branchForIssue("ENG-123")}`;
+    const { opened, methods } = refusedWith([{ resource: "PullRequest", code: "custom", message }]);
+    const error = await opened.catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(NothingToPublishError);
+    expect(error).toMatchObject({ branch: branchForIssue("ENG-123"), reason: message });
+    expect(methods).toEqual(["POST"]);
+  });
+
+  test("fails another 422 with GitHub's message", async () => {
+    const { opened, methods } = refusedWith([
+      { resource: "PullRequest", code: "invalid", field: "base", message: "base is invalid" },
+    ]);
+    await expect(opened).rejects.toThrow("opening the pull request failed: base is invalid");
+    expect(methods).toEqual(["POST"]);
   });
 
   test("does not open a pull request when Closeout did not accept", async () => {

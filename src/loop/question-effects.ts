@@ -61,6 +61,11 @@ import { answerRunnerRepositorySteps } from "./runner-repository";
 import { AGENT_HUNG_REASON, AGENT_HUNG_STOP, REVIEWER_MODEL_REASON } from "./runner-wait";
 import { recordVisualReviewOutcomeSteps, visualReviewHandoffSteps } from "./visual-review";
 import { replyListSection } from "./review-replies";
+import {
+  NOTHING_TO_PUBLISH_REASON,
+  completeWithoutPullSteps,
+  completesWithoutPull,
+} from "./nothing-to-publish";
 
 function* consumeTurnSteps(q: Q, question: StoredQuestion): Steps<void> {
   if (
@@ -220,6 +225,11 @@ export function questionEffects(
         input.now,
         { stoppedByAnswer: true },
       );
+      return;
+    }
+    if (question.reason === NOTHING_TO_PUBLISH_REASON && completesWithoutPull(question)) {
+      yield* consumeTurn(q, question);
+      yield* completeWithoutPullSteps(q, question.itemId, input.now);
       return;
     }
     if (!retriesMerge(question)) {

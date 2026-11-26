@@ -2698,7 +2698,7 @@ test.each(["pending", "merged"] as const)(
                 req.path.endsWith("/pulls") &&
                 openPulls.some((pull) => pull.head === (req.body as { head: string }).head)
               )
-                return { status: 422, body: {} };
+                return { status: 422, body: { message: "A pull request already exists" } };
               if (req.method === "GET" && req.path.includes("/pulls?"))
                 return { status: 200, body: openPulls };
               if (req.method === "PATCH" && req.path.includes("/pulls/")) {

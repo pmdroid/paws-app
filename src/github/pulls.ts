@@ -8,6 +8,7 @@ import { pushDenial, pushWithLease } from "./push";
 import {
   BranchMovedError,
   GitCommandError,
+  NothingToPublishError,
   type GitExec,
   type GitHubClient,
   type OpenedPull,
@@ -129,6 +130,10 @@ export async function openPullRequest(
       });
     return pull;
   }
+  const refusal = created.status === 422 ? validationMessage(created.body) : "";
+  if (/no commits between/i.test(refusal)) throw new NothingToPublishError(branch, refusal);
+  if (created.status === 422 && !/pull request already exists/i.test(refusal))
+    throw new Error(`opening the pull request failed: ${refusal || "GitHub answered 422"}`);
   if (created.status === 422) {
     const existing = await findOpenPull(input, token, branch);
     if (!existing) throw new Error("pull request already exists but could not be read");
@@ -268,6 +273,16 @@ export async function publishAccepted(
   const pushed = await pushBranch(input);
   const pull = await openPullRequest(input);
   return { published: true, branch: pushed.branch, head: pushed.head, pull };
+}
+
+function validationMessage(body: unknown): string {
+  if (!isRecord(body)) return "";
+  const errors = Array.isArray(body.errors) ? body.errors : [];
+  const details = errors.flatMap((entry) =>
+    isRecord(entry) && typeof entry.message === "string" ? [entry.message] : [],
+  );
+  if (details.length > 0) return details.join("; ");
+  return typeof body.message === "string" ? body.message : "";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

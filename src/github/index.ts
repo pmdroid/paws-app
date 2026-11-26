@@ -134,6 +134,7 @@ export {
   GitCommandError,
   GitHubTokenError,
   GitHubHttpError,
+  NothingToPublishError,
   SquashServerError,
   AGENT_READ_PERMISSIONS,
   INSTALLATION_PERMISSIONS,
