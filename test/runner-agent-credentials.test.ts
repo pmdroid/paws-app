@@ -14,11 +14,13 @@ import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setJournalSink } from "../src/journal";
-import { openRunnerDaemon } from "../src/runner-daemon";
+import { Database } from "bun:sqlite";
+import { heldCredentialCount, openRunnerDaemon } from "../src/runner-daemon";
 import {
   openRunnerAccountHome,
   returnRunnerAgentCredentials,
   runnerAgentCredentials,
+  runnerCredentialsLeft,
 } from "../src/runner-execution";
 import { initializeRunnerAuthority, startRunnerListener } from "../src/runner-identity";
 import {
@@ -59,11 +61,16 @@ async function withRunner(
       now: number;
       pulls: number;
     };
+    store?: string;
   }) => Promise<void>,
+  issueVm = false,
 ) {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-credentials-"));
-  const home = join(root, "agent-home");
+  const memory = issueVm ? mkdtempSync("/dev/shm/paws-issue-vm-") : null;
+  const home = join(memory ?? root, "agent-home");
   mkdirSync(home, { mode: 0o770 });
+  const store = memory ? join(memory, "credentials") : undefined;
+  if (store) mkdirSync(store, { mode: 0o700 });
   const authority = await initializeRunnerAuthority(join(root, "issuer"));
   const server = await serverIdentity(join(root, "server"));
   const signingKey = generateKeyPairSync("ed25519");
@@ -155,17 +162,19 @@ async function withRunner(
     controlPlaneUrl: `https://localhost:${address.port}`,
     runnerApiUrl: `https://localhost:${listener.port}`,
     serverCa: server.cert,
-    agentCredentials: runnerAgentCredentials(home),
+    agentCredentials: runnerAgentCredentials(home, undefined, issueVm),
+    ...(store ? { credentialStore: store } : {}),
     now: () => Math.max(plane.now, Date.now()),
   });
   try {
     await daemon.enroll("credential-proof", "t".repeat(43));
-    await run({ daemon, home, root, uploads, plane });
+    await run({ daemon, home, root, uploads, plane, ...(store ? { store } : {}) });
   } finally {
     daemon.close();
     await listener.stop();
     enrollment.close();
     rmSync(root, { recursive: true, force: true });
+    if (memory) rmSync(memory, { recursive: true, force: true });
   }
 }
 
@@ -501,5 +510,56 @@ test("Claude OAuth accounts use the token environment and never return refreshed
     expect(claudeTokenHealth(expiresAt, expiresAt - 14 * 86400000 - 1)).toBe("healthy");
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("on an issue VM the sign-in stays in the tmpfs, its refresh reaches Paws and nothing is left after the turn", async () => {
+  await withRunner(async ({ daemon, home, root, uploads, plane, store }) => {
+    plane.commands = () => [command("check-vm", "login_check")];
+    expect((await daemon.pollCommands()).rejected).toEqual([]);
+    const credentials = join(
+      openRunnerAccountHome(home, account, "claude"),
+      ".claude/.credentials.json",
+    );
+    expect(readFileSync(credentials, "utf8")).toContain("r1");
+    expect(runnerCredentialsLeft(home)).toEqual([`${account.bindingId}/.claude/.credentials.json`]);
+    expect(heldCredentialCount(store!)).toBe(1);
+    const disk = new Database(join(root, "daemon", "commands.db"), { readonly: true });
+    expect(
+      disk.query("SELECT name FROM sqlite_master WHERE name = 'agent_credential'").all(),
+    ).toEqual([]);
+    disk.close();
+
+    rmSync(credentials);
+    writeFileSync(credentials, '{"claudeAiOauth":{"refreshToken":"r2"}}', { mode: 0o600 });
+    agentTurn(daemon, home, "check-vm");
+    expect(runnerCredentialsLeft(home)).toEqual([]);
+    await daemon.acknowledgeCommand("check-vm");
+    await sync(daemon);
+    expect(sent(uploads)).toEqual([[4, token("r2")]]);
+    await sync(daemon);
+    expect(heldCredentialCount(store!)).toBe(0);
+    expect(runnerCredentialsLeft(home)).toEqual([]);
+  }, true);
+}, 30_000);
+
+test("an issue VM refuses a sign-in whose account homes are on disk", () => {
+  const home = mkdtempSync(join(tmpdir(), "paws-issue-vm-disk-"));
+  try {
+    chmodSync(home, 0o770);
+    expect(() =>
+      runnerAgentCredentials(home, undefined, true).write(account, "claude", stored),
+    ).toThrow("Agent sign-ins on an issue VM need a tmpfs account root");
+    expect(runnerCredentialsLeft(home)).toEqual([]);
+    expect(() =>
+      openRunnerDaemon({
+        root: join(home, "daemon"),
+        controlPlaneUrl: "https://localhost:1",
+        runnerApiUrl: "https://localhost:2",
+        credentialStore: home,
+      }),
+    ).toThrow("Runner credential store must be a private tmpfs folder.");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });

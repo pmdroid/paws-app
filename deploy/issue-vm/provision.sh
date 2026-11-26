@@ -60,3 +60,17 @@ until runuser -u paws-agent -- docker --host unix:///run/paws-agent-docker/docke
   [ "$tries" -lt 30 ] || die "paws-agent could not reach its rootless Docker daemon"
   sleep 1
 done
+
+install -d -m 0755 /etc/paws-runner /etc/systemd/system/paws-runner.service.d
+install -m 0644 /dev/null /etc/paws-runner/issue-vm
+accounts=/var/lib/paws-agent/.paws-accounts
+install -d -m 2770 -o paws-runner -g paws-agent "$accounts"
+printf 'tmpfs %s tmpfs rw,nosuid,nodev,size=1g,mode=2770,uid=%s,gid=%s 0 0\n' \
+  "$accounts" "$(id -u paws-runner)" "$(getent group paws-agent | cut -d: -f3)" >> /etc/fstab
+printf 'd /run/paws-runner/credentials 0700 paws-runner paws-runner -\n' > /etc/tmpfiles.d/paws-issue-vm.conf
+printf '[Unit]\nRequiresMountsFor=%s\n\n[Service]\nReadWritePaths=-/run/paws-runner/credentials\n' \
+  "$accounts" > /etc/systemd/system/paws-runner.service.d/issue-vm.conf
+systemctl daemon-reload
+mount "$accounts"
+systemd-tmpfiles --create /etc/tmpfiles.d/paws-issue-vm.conf
+[ "$(stat -f -c %T "$accounts")" = tmpfs ] || die "The agent account homes are not on a tmpfs"

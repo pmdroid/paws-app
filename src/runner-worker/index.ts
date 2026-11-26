@@ -97,6 +97,7 @@ import {
   createRunnerResultDirectory,
   openRunnerAccountHome,
   returnRunnerAgentCredentials,
+  runnerAccountCache,
   openRunnerCheckoutToGroup,
   openRunnerRunStatesToGroup,
   readRunnerJob,
@@ -1150,7 +1151,7 @@ export async function executeRunnerCommand(
       );
     }
   };
-  const homeEnv = accountHomeEnv(home);
+  const homeEnv = accountHomeEnv(home, runnerAccountCache(options.home, home));
   for (const provider of [".codex", ".claude", ".grok"]) {
     const folder = join(home, provider);
     mkdirSync(folder, { recursive: true, mode: 0o700 });

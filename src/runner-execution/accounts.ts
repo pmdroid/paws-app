@@ -19,11 +19,12 @@ import {
   renameSync,
   rmSync,
   rmdirSync,
+  statfsSync,
   unlinkSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { z } from "zod";
 import {
   RUNNER_AGENT_CREDENTIAL_FILES,
@@ -45,7 +46,17 @@ const ACTIVE = ".paws-active";
 const PUBLISHING = ".paws-publishing";
 const ADMISSION_MS = 60_000;
 const SHARE_LIMIT = 100_000;
-const SHARED_ELSEWHERE = new Set(["work", RUNNER_ACCOUNT_HOMES, MANIFEST, ACTIVE, PUBLISHING]);
+export const ISSUE_VM_MARKER = "/etc/paws-runner/issue-vm";
+const ACCOUNT_CACHES = ".paws-account-caches";
+const TMPFS_MAGIC = 0x01021994;
+const SHARED_ELSEWHERE = new Set([
+  "work",
+  RUNNER_ACCOUNT_HOMES,
+  ACCOUNT_CACHES,
+  MANIFEST,
+  ACTIVE,
+  PUBLISHING,
+]);
 
 const HOME_FOLDERS = [
   ".claude",
@@ -153,9 +164,38 @@ export function markRunnerAccountSignedIn(
 const CLAUDE_STATE = ".claude/.claude.json";
 const CREDENTIAL_LIMIT = 196_608;
 
+export function onTmpfs(path: string): boolean {
+  return Number(statfsSync(path).type) === TMPFS_MAGIC;
+}
+
+export function runnerAccountCache(agentHome: string, home: string): string | null {
+  if (!onTmpfs(home)) return null;
+  const cache = join(agentHome, ACCOUNT_CACHES, basename(home));
+  mkdirSync(cache, { recursive: true, mode: 0o700 });
+  return cache;
+}
+
+export function runnerCredentialsLeft(agentHome: string): string[] {
+  const root = join(agentHome, RUNNER_ACCOUNT_HOMES);
+  let names: string[];
+  try {
+    names = readdirSync(root).sort();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const paths = [...new Set(Object.values(RUNNER_AGENT_CREDENTIAL_FILES).flat())];
+  return names.flatMap((name) =>
+    paths
+      .filter((path) => path !== CLAUDE_STATE && present(join(root, name, path)))
+      .map((path) => join(name, path)),
+  );
+}
+
 export function runnerAgentCredentials(
   agentHome: string,
   owners: RunnerAccountOwners = processOwners(),
+  tmpfs = false,
 ): RunnerAgentCredentialStore {
   const files = (account: RunnerAccount, agent: RunnerCodingAgent) =>
     RUNNER_AGENT_CREDENTIAL_FILES[agent].map((path) => ({
@@ -165,6 +205,8 @@ export function runnerAgentCredentials(
   return {
     write(account, agent, written) {
       const home = openRunnerAccountHome(agentHome, account, agent, { signIn: true, owners });
+      if (tmpfs && !onTmpfs(dirname(home)))
+        throw new RunnerAccountHomeError("Agent sign-ins on an issue VM need a tmpfs account root");
       markRunnerAccountSignedIn(home, account, agent, owners);
       const busy = activeExecutions(home).length > 0;
       const oauth =

@@ -8,6 +8,7 @@ import type { Changes } from "bun:sqlite";
 import { and, desc, eq, gt, inArray, lt, notInArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { createCommandStore } from "./commands-ddl";
+import { attachCredentialStore } from "./credential-store";
 import { IssueVmHostViewSchema, type IssueVmHostView } from "./issue-vm-machines";
 import {
   agentCredential,
@@ -170,6 +171,7 @@ export type RunnerDaemonOptions = {
   sampleHost?: () => RunnerHostStatus;
   accountBindings?: () => RunnerAccountCapability["bindings"];
   agentCredentials?: RunnerAgentCredentialStore;
+  credentialStore?: string;
   log?: (line: string) => void;
 };
 
@@ -210,7 +212,14 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   const dbPath = join(options.root, "commands.db");
   const db = openDatabase(dbPath);
   chmodSync(dbPath, 0o600);
-  createCommandStore(db);
+  if (options.credentialStore)
+    try {
+      attachCredentialStore(db, options.credentialStore);
+    } catch (error) {
+      db.close();
+      throw error;
+    }
+  createCommandStore(db, options.credentialStore ? "credentials" : "main");
   const store = sqliteDb(db);
   const q = drizzle(db);
   const changes = (query: { run(): unknown }) => (query.run() as Changes).changes;

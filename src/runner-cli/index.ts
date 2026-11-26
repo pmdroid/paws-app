@@ -1,22 +1,31 @@
 import { journalCaught } from "../journal";
 import { execFileSync } from "node:child_process";
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
-import { createRunnerHostSampler, EnrollmentTokenSchema, openRunnerDaemon } from "../runner-daemon";
+import {
+  createRunnerHostSampler,
+  EnrollmentTokenSchema,
+  heldCredentialCount,
+  openRunnerDaemon,
+} from "../runner-daemon";
 import {
   ExecutionIdSchema,
+  ISSUE_VM_MARKER,
   RUNNER_AGENT_USER_ENV,
   RUNNER_AGENT_USERS,
   type RunnerAgentUser,
   RUNNER_SKILLS_ENV,
   runnerAccountBindings,
   runnerAgentCredentials,
+  runnerCredentialsLeft,
 } from "../runner-execution";
 import { runRunnerWorker } from "../runner-worker";
 import { describeRunnerFailure, RunnerCliFailure, journalRunnerFailure } from "../runner-failure";
 import { RUNNER_WORK_ROOT, runPairedDaemon } from "./daemon";
 import { hostResources, runnerConcurrency } from "./slots";
+
+const ISSUE_VM_CREDENTIALS = "/run/paws-runner/credentials";
 
 export {
   CAUSE_LIMIT,
@@ -339,11 +348,23 @@ export async function runRunnerCli(
         daemon.close();
       }
     }
+    if (operation === "sleep-check" && args.length === 0) {
+      if (process.getuid?.() !== ids.runnerUid)
+        throw new RunnerCliFailure("identity", "Runner service identity is invalid.");
+      const files = runnerCredentialsLeft("/var/lib/paws-agent");
+      const held = existsSync(ISSUE_VM_CREDENTIALS) ? heldCredentialCount(ISSUE_VM_CREDENTIALS) : 0;
+      if (files.length === 0 && held === 0) return 0;
+      error(
+        `Agent credentials are still in this VM: ${files.length} sign-in files and ${held} held copies. Sleep refused.`,
+      );
+      return 1;
+    }
     if (operation !== "daemon" || args.length !== 2 || args[0] !== "--config" || !args[1])
       throw new RunnerCliFailure("usage", "Invalid daemon command.");
     if (process.getuid?.() !== ids.runnerUid)
       throw new RunnerCliFailure("identity", "Runner service identity is invalid.");
     const config = loadConfig(args[1]!, ids.runnerUid);
+    const issueVm = existsSync(ISSUE_VM_MARKER);
     const daemonIds = accounts(config.agentUser);
     const sampleHost = createRunnerHostSampler({ workRoot: "/var/lib/paws-runner" });
     let healthFailure: string | null | undefined;
@@ -363,11 +384,12 @@ export async function runRunnerCli(
           runnerUid: ids.runnerUid,
           agentGid: ids.agentGid,
         }),
-      agentCredentials: runnerAgentCredentials("/var/lib/paws-agent", {
-        runnerUid: ids.runnerUid,
-        agentGid: ids.agentGid,
-        agentUid: ids.pawsAgentUid,
-      }),
+      agentCredentials: runnerAgentCredentials(
+        "/var/lib/paws-agent",
+        { runnerUid: ids.runnerUid, agentGid: ids.agentGid, agentUid: ids.pawsAgentUid },
+        issueVm,
+      ),
+      ...(issueVm ? { credentialStore: ISSUE_VM_CREDENTIALS } : {}),
     });
     try {
       await runPairedDaemon(
