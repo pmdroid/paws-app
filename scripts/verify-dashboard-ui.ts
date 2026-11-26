@@ -311,29 +311,33 @@ try {
     await admin.route("**/api/runners", (route) =>
       route.fulfill({ json: { runners: [], serverVersion: null, workspaceReady: true } }),
     );
-    let vmSize = { cpu: 4, memoryGb: 8 };
+    let vmSizes: Record<string, unknown> = { "exe-dev": {}, boat: {}, instabox: {} };
     await admin.route("**/api/settings/vm-sizes", async (route) => {
-      if (route.request().method() === "PUT") {
-        const body = route.request().postDataJSON().sizes["exe-dev"];
-        if (body.cpu < 1) {
-          await route.fulfill({ status: 400, json: { error: "CPUs must be a positive integer." } });
-          return;
-        }
-        vmSize = body;
+      const body = route.request().method() === "PUT" ? route.request().postDataJSON() : null;
+      if (body?.sizes?.["exe-dev"]?.cpu < 1) {
+        await route.fulfill({ status: 400, json: { error: "cpu must be a positive integer" } });
+        return;
       }
-      await route.fulfill({ json: { providers: { "exe-dev": { size: vmSize } } } });
+      if (body) vmSizes = { ...vmSizes, ...body.sizes };
+      const size = (key: string) => vmSizes[key];
+      const pairs = [
+        [2, 4],
+        [4, 8],
+        [8, 16],
+      ];
+      await route.fulfill({
+        json: {
+          offProviders: [],
+          providers: {
+            "exe-dev": { size: size("exe-dev") },
+            boat: { size: size("boat"), allowed: pairs },
+            instabox: { size: size("instabox"), allowed: pairs.slice(0, 2) },
+          },
+        },
+      });
     });
     await visit(admin, width, "runners-editable", "/dashboard/runners", "Runners");
     await expect(admin.locator("[data-vm-size]")).toHaveCount(0);
-    await visit(admin, width, "member-vm", "/dashboard/workspace/member-vm", "Member VMs");
-    await admin.locator("#vm-size-cpu").fill("6");
-    await admin.getByRole("button", { name: "Save VM size", exact: true }).click();
-    await expect(admin.locator("#content")).toContainText("Member VM size saved.");
-    await admin.locator("#vm-size-cpu").fill("-1");
-    await admin.getByRole("button", { name: "Save VM size", exact: true }).click();
-    await expect(admin.getByRole("alert")).toContainText("CPUs must be a positive integer.");
-    await expect(admin.locator("#vm-size-cpu")).toHaveValue("-1");
-    await admin.screenshot({ path: join(out, `member-vm-${width}.png`), fullPage: true });
     const vmRunner = "01JRRNNER0000000000000000A";
     let issueVmLimits = { perMember: 2, workspaceMax: 10, deleteAfterDays: 7 };
     let vmGrant: Record<string, unknown> | null = null;
@@ -400,7 +404,30 @@ try {
     await expect(admin.locator(`[data-slots="${vmRunner}"]`)).toHaveText(
       "3 slots, limited by vCPUs",
     );
+    await admin.locator("#vm-size-boat").selectOption("4/8");
+    await admin.getByRole("button", { name: "Save boat size", exact: true }).click();
+    await expect(admin.locator("#content")).toContainText("boat size saved.");
+    await admin.locator("#vm-size-instabox").selectOption("2/4");
+    await admin.getByRole("button", { name: "Save InstaBox size", exact: true }).click();
+    await expect(admin.locator("#content")).toContainText("InstaBox size saved.");
+    await admin.locator("#vm-size-cpu").fill("6");
+    await admin.locator("#vm-size-memoryGb").fill("12");
+    await admin.getByRole("button", { name: "Save exe.dev size", exact: true }).click();
+    await expect(admin.locator("#content")).toContainText("exe.dev size saved.");
+    expect(vmSizes).toEqual({
+      "exe-dev": { cpu: 6, memoryGb: 12 },
+      boat: { cpu: 4, memoryGb: 8 },
+      instabox: { cpu: 2, memoryGb: 4 },
+    });
+    await expect(admin.locator("#vm-size-boat")).toHaveValue("4/8");
     await admin.screenshot({ path: join(out, `issue-vms-${width}.png`), fullPage: true });
+    await admin.locator("#vm-size-cpu").fill("-1");
+    await admin.getByRole("button", { name: "Save exe.dev size", exact: true }).click();
+    await expect(admin.getByRole("alert")).toHaveText("cpu must be a positive integer");
+    await visit(admin, width, "member-vm", "/dashboard/workspace/member-vm", "Issue VMs");
+    await expect(admin).toHaveURL(/\/dashboard\/workspace\/issue-vms#vm-sizes$/);
+    await expect(admin.locator("#vm-sizes")).toBeInViewport();
+    await admin.screenshot({ path: join(out, `vm-sizes-${width}.png`) });
     await admin.getByRole("button", { name: "Revoke", exact: true }).click();
     await expect(admin.locator("#content")).toContainText("Grant revoked.");
     await expect(admin.getByRole("button", { name: "Revoke", exact: true })).toHaveCount(0);
@@ -946,7 +973,7 @@ try {
       .getByRole("navigation", { name: "Main navigation" })
       .getByRole("list", { name: "Workspace pages" })
       .getByRole("link");
-    await expect(submenu).toHaveCount(15);
+    await expect(submenu).toHaveCount(14);
     await expect(submenu.and(admin.locator('[aria-current="page"]'))).toHaveText("Agents");
     await admin.screenshot({
       path: join(out, `workspace-submenu-${width}.png`),

@@ -151,7 +151,7 @@ export function createRunnerVmKeys() {
         : step(
             3,
             "Turn it on",
-            `${saved ? toggle(name, entry) : '<p class="muted">Save the key first.</p>'}<p class="muted">New VMs use the default size in <a href="${routeHref({ view: "workspace", page: "member-vm" })}">Settings › Member VMs</a>.</p>`,
+            `${saved ? toggle(name, entry) : '<p class="muted">Save the key first.</p>'}<p class="muted">New VMs use the size in <a href="${routeHref({ view: "workspace", page: "issue-vms" })}#vm-sizes">Workspace › Issue VMs</a>.</p>`,
           );
     return `<ol class="m-0 col list-none p-0" data-connect="${name}">${step(1, "Paste the key", saved ? '<p class="muted">Key saved.</p>' : keyForm(name, "Save and check"))}${step(2, "See what Paws found", result)}${on}</ol>${saved ? '<div class="row"><button class="btn" type="button" data-cancel>Done</button></div>' : ""}`;
   };

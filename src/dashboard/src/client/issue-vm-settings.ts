@@ -23,6 +23,12 @@ type Host = {
 };
 type Note = { text: string; failed: boolean };
 type Provider = "boat" | "instabox";
+type VmProvider = "exe-dev" | Provider;
+type VmSize = { cpu?: number; memoryGb?: number; diskGb?: number; image?: string; pool?: string };
+type VmSizes = {
+  offProviders?: VmProvider[];
+  providers: Record<VmProvider, { size: VmSize; allowed?: [number, number][]; note?: string }>;
+};
 type Spend = {
   month: string;
   spentUsd: number;
@@ -54,6 +60,14 @@ const DAY = 86_400_000;
 const PROVIDERS: [Provider, string][] = [
   ["boat", "boat"],
   ["instabox", "InstaBox"],
+];
+const VM_PROVIDERS: [VmProvider, string][] = [["exe-dev", "exe.dev"], ...PROVIDERS];
+const EXE_FIELDS: [keyof VmSize, string][] = [
+  ["cpu", "CPUs"],
+  ["memoryGb", "Memory (GB)"],
+  ["diskGb", "Disk (GB)"],
+  ["image", "Image"],
+  ["pool", "Default pool"],
 ];
 const NO_PRICE = "No cloud issue VMs until a price is set";
 const usd = (value: number) => `$${value.toFixed(2)}`;
@@ -96,6 +110,7 @@ export function createIssueVmSettings() {
   let runners: { id: string; name: string }[] = [];
   let hosts = new Map<string, Host>();
   let notes: Record<string, Note> = {};
+  let vm: VmSizes | null = null;
   let busy = false;
   let recipient = "";
   const admin = () => settingsAreEditable();
@@ -105,8 +120,8 @@ export function createIssueVmSettings() {
       ? `<p class="settings-message${entry.failed ? " err" : ""}" role="${entry.failed ? "alert" : "status"}" data-note="${key}">${esc(entry.text)}</p>`
       : "";
   };
-  const section = (title: string, body: string) =>
-    `<section class="settings-section"><div class="settings-label"><h2>${title}</h2></div><div class="col min-w-0">${body}</div></section>`;
+  const section = (title: string, body: string, id = "") =>
+    `<section class="settings-section${id ? ` scroll-mt-28" id="${id}` : ""}"><div class="settings-label"><h2>${title}</h2></div><div class="col min-w-0">${body}</div></section>`;
   const off = () => (busy ? " disabled" : "");
   const limitsSection = () =>
     section(
@@ -174,14 +189,61 @@ export function createIssueVmSettings() {
       `<p class="sub">Each VM host runs issue VMs of one size. Leave the slot cap blank for no cap.</p>${shown.length ? shown.map(hostForm).join("") : '<p class="sub">No runner hosts microVMs yet.</p>'}${add}${note("hosts")}`,
     );
   };
+  const sizeText = (size: VmSize) =>
+    size.cpu === undefined && size.memoryGb === undefined
+      ? "Provider default"
+      : `${size.cpu ?? "default"} vCPUs · ${size.memoryGb ?? "default"} GB`;
+  const vmRow = ([key, label]: [VmProvider, string]) => {
+    const { size, allowed, note: hint } = vm!.providers[key];
+    const on = !vm!.offProviders?.includes(key);
+    if (!admin()) {
+      const extra =
+        key === "exe-dev"
+          ? EXE_FIELDS.slice(2)
+              .filter(([name]) => size[name] !== undefined)
+              .map(([name, text]) => ` · ${text} ${esc(String(size[name]))}`)
+              .join("")
+          : "";
+      return `<li data-vm-row="${key}">${label}: ${esc(sizeText(size))}${extra}, ${on ? "on" : "off"}</li>`;
+    }
+    const toggle = `<label class="settings-inherit"><input type="checkbox" role="switch" data-vm-on="${key}"${on ? " checked" : ""}${off()}><span class="min-w-0 flex-1">Make new VMs on ${label}</span></label>`;
+    const fields =
+      key === "exe-dev"
+        ? EXE_FIELDS.map(([name, text]) => {
+            const value = esc(size[name] === undefined ? "" : String(size[name]));
+            const kind =
+              name === "image" || name === "pool" ? "" : ' type="number" inputmode="numeric"';
+            return `<div class="settings-field"><label for="vm-size-${name}">${text}</label><input id="vm-size-${name}" name="${name}"${kind} value="${value}" placeholder="exe.dev default"></div>`;
+          }).join("")
+        : allowed
+          ? `<div class="settings-field"><label for="vm-size-${key}">Size</label><select id="vm-size-${key}" name="size"><option value="">Provider default</option>${allowed.map(([cpu, memory]) => `<option value="${cpu}/${memory}"${size.cpu === cpu && size.memoryGb === memory ? " selected" : ""}>${cpu} vCPUs · ${memory} GB</option>`).join("")}</select></div>`
+          : `<p class="sub" data-vm-note="${key}">${esc(hint ?? "")}</p>`;
+    const save =
+      key === "exe-dev" || allowed
+        ? `<div class="row"><button class="btn" type="submit"${off()}>Save ${label} size</button></div>`
+        : "";
+    return `<form data-vm-size="${key}" class="col" novalidate><h3>${label}</h3>${toggle}${fields}${save}</form>`;
+  };
+  const vmSection = () => {
+    if (!vm) return admin() ? section("VM sizes", note("vm"), "vm-sizes") : "";
+    const rows = VM_PROVIDERS.map(vmRow).join("");
+    return section(
+      "VM sizes",
+      `<p class="sub">The size each provider gives new issue VMs. Existing VMs keep their size.</p>${admin() ? rows : `<ul class="col" aria-label="VM sizes">${rows}</ul>`}${note("vm")}`,
+      "vm-sizes",
+    );
+  };
   const paint = () => {
     if (!root) return;
     renderMarkup(
       root,
       admin()
-        ? `${limitsSection()}${spendSection()}${grantsSection()}${hostsSection()}`
-        : `${spendSection()}${grantsSection()}`,
+        ? `${limitsSection()}${spendSection()}${grantsSection()}${vmSection()}${hostsSection()}`
+        : `${spendSection()}${grantsSection()}${vmSection()}`,
     );
+  };
+  const vmRequest = async (body?: unknown) => {
+    vm = await request<VmSizes>(engine!, "/api/settings/vm-sizes", body ? "PUT" : "GET", body);
   };
   const attempt = async <T>(key: string, work: () => Promise<T>) => {
     try {
@@ -235,17 +297,29 @@ export function createIssueVmSettings() {
           };
       }
     };
+    const vmLoad = async () => {
+      try {
+        await vmRequest();
+      } catch (error) {
+        journalCaught(error, "issue-vm-settings.vm", null);
+        if (admin())
+          notes.vm = { text: error instanceof Error ? error.message : "Try again.", failed: true };
+      }
+    };
     await Promise.all(
       admin()
         ? [
+            vmLoad(),
             limitsLoad().then((next) => (limits = next ?? limits)),
             spendLoad(),
             loadMembers(),
             loadHosts(),
           ]
-        : [spendLoad(), loadMembers()],
+        : [spendLoad(), loadMembers(), vmLoad()],
     );
     paint();
+    if (root?.ownerDocument.location?.hash === "#vm-sizes")
+      root.querySelector("#vm-sizes")?.scrollIntoView();
   };
   const run = async (key: string, done: string, work: () => Promise<unknown>) => {
     busy = true;
@@ -316,6 +390,20 @@ export function createIssueVmSettings() {
         if (body.slotCap === null) delete body.slotCap;
         hosts.set(id, await request<Host>(engine!, `/api/runners/${id}/vm-host`, "PUT", body));
       });
+    } else if (form.matches("[data-vm-size]")) {
+      const key = form.dataset.vmSize as VmProvider;
+      const label = VM_PROVIDERS.find(([id]) => id === key)![1];
+      const size: Record<string, string | number> = {};
+      const select = form.querySelector<HTMLSelectElement>("select");
+      if (select?.value) {
+        const [cpu, memoryGb] = select.value.split("/").map(Number);
+        Object.assign(size, { cpu, memoryGb });
+      }
+      for (const input of form.querySelectorAll<HTMLInputElement>("input[name]")) {
+        const value = input.value.trim();
+        if (value) size[input.name] = input.type === "number" ? Number(value) : value;
+      }
+      void run("vm", `${label} size saved.`, () => vmRequest({ sizes: { [key]: size } }));
     } else if (form.matches("[data-add-host]")) {
       const id = form.querySelector<HTMLSelectElement>("select")!.value;
       void run("hosts", "Runner now hosts microVMs.", async () => {
@@ -326,6 +414,14 @@ export function createIssueVmSettings() {
   const change = (event: Event) => {
     const target = event.target as HTMLSelectElement;
     if (target.id === "issue-vm-grant-member") recipient = target.value;
+    const provider = target.dataset.vmOn as VmProvider | undefined;
+    if (!provider || !vm || !engine || busy) return;
+    const on = (target as unknown as HTMLInputElement).checked;
+    const others = (vm.offProviders ?? []).filter((name) => name !== provider);
+    const label = VM_PROVIDERS.find(([id]) => id === provider)![1];
+    void run("vm", `${label} is ${on ? "on" : "off"} for new VMs.`, () =>
+      vmRequest({ offProviders: on ? others : [...others, provider] }),
+    );
   };
   const click = (event: Event) => {
     const revoke = (event.target as HTMLElement).closest<HTMLElement>("[data-revoke]")?.dataset
@@ -346,6 +442,7 @@ export function createIssueVmSettings() {
       engine = nextEngine;
       limits = null;
       spend = null;
+      vm = null;
       members = [];
       hosts = new Map();
       notes = {};
