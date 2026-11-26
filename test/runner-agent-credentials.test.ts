@@ -546,7 +546,7 @@ test.skipIf(!shmTmpfs)(
       rmSync(credentials);
       writeFileSync(credentials, '{"claudeAiOauth":{"refreshToken":"r2"}}', { mode: 0o600 });
       const accountHome = join(home, ".paws-accounts", account.bindingId);
-      const cache = runnerAccountCache(root, accountHome)!;
+      const cache = runnerAccountCache(root, accountHome, true)!;
       expect(cache).toBe(join(root, ".paws-account-caches", account.bindingId));
       expect(accountHomeEnv(accountHome, cache)).toMatchObject({ XDG_CACHE_HOME: cache });
       returnRunnerAgentCredentials(accountHome, "claude", EXECUTION, (files) =>
