@@ -83,6 +83,7 @@ export function createIssueVmSettings() {
   let hosts = new Map<string, Host>();
   let notes: Record<string, Note> = {};
   let busy = false;
+  let recipient = "";
   const admin = () => settingsAreEditable();
   const note = (key: string) => {
     const entry = notes[key];
@@ -117,9 +118,12 @@ export function createIssueVmSettings() {
       ? `<div class="min-w-0 overflow-x-auto [overflow-wrap:normal] [&_td]:whitespace-nowrap [&_th]:whitespace-nowrap"><table aria-label="Issue VM limits per member"><thead><tr><th scope="col">Member</th><th scope="col">In use</th><th scope="col">Limit</th><th scope="col">Extra usage</th></tr></thead><tbody>${rows}</tbody></table></div>`
       : "";
     const now = Date.now();
+    const open = members.filter((member) => member.grant === null);
+    const option = (member: Member) =>
+      `<option value="${esc(member.userId)}"${member.userId === recipient ? " selected" : ""}>${esc(member.name ?? member.userId)}</option>`;
     const form =
-      admin() && members.length
-        ? `<form data-grant class="col" novalidate><div class="settings-field"><label for="issue-vm-grant-member">Member</label><select id="issue-vm-grant-member" name="memberUserId">${members.map((member) => `<option value="${esc(member.userId)}">${esc(member.name ?? member.userId)}</option>`).join("")}</select></div>${field("issue-vm-grant-limit", "limit", "Issues at once", "", 1, 50)}<div class="settings-field"><label for="issue-vm-grant-ends">Ends on</label><input id="issue-vm-grant-ends" name="endsAt" type="date" min="${day(now + DAY)}" max="${day(now + 89 * DAY)}"><p class="sub">At most 90 days ahead</p></div><div class="row"><button class="btn" type="submit"${off()}>Add grant</button></div></form>`
+      admin() && open.length
+        ? `<form data-grant class="col" novalidate><div class="settings-field"><label for="issue-vm-grant-member">Member</label><select id="issue-vm-grant-member" name="memberUserId">${open.map(option).join("")}</select><p class="sub">Revoke a member's grant before giving them a new one.</p></div>${field("issue-vm-grant-limit", "limit", "Issues at once", "", 1, 50)}<div class="settings-field"><label for="issue-vm-grant-ends">Ends on</label><input id="issue-vm-grant-ends" name="endsAt" type="date" min="${day(now + DAY)}" max="${day(now + 89 * DAY)}"><p class="sub">At most 90 days ahead</p></div><div class="row"><button class="btn" type="submit"${off()}>Add grant</button></div></form>`
         : "";
     return section(
       "Extra usage",
@@ -224,12 +228,16 @@ export function createIssueVmSettings() {
       const member = form.querySelector<HTMLSelectElement>("select")!.value;
       const limit = form.querySelector<HTMLInputElement>("[name=limit]")!.value;
       const ends = form.querySelector<HTMLInputElement>("[name=endsAt]")!.value;
+      recipient = member;
       void run("grants", "Grant added.", async () => {
         await request(engine!, "/api/settings/issue-vm/grants", "POST", {
           memberUserId: member,
           limit: limit.trim() === "" ? null : Number(limit),
           endsAt: ends === "" ? null : `${ends}T23:59:59Z`,
         });
+        recipient = "";
+        for (const input of root!.querySelectorAll<HTMLInputElement>("[data-grant] input"))
+          input.value = "";
         await refreshMembers("Grant added.");
       });
     } else if (form.matches("[data-host]")) {
@@ -245,6 +253,10 @@ export function createIssueVmSettings() {
         hosts.set(id, await request<Host>(engine!, `/api/runners/${id}/vm-host`, "PUT", {}));
       });
     }
+  };
+  const change = (event: Event) => {
+    const target = event.target as HTMLSelectElement;
+    if (target.id === "issue-vm-grant-member") recipient = target.value;
   };
   const click = (event: Event) => {
     const button = (event.target as HTMLElement).closest<HTMLElement>(
@@ -268,6 +280,7 @@ export function createIssueVmSettings() {
       if (root === next && engine === nextEngine) return;
       root?.removeEventListener("submit", submit);
       root?.removeEventListener("click", click);
+      root?.removeEventListener("change", change);
       root = next;
       engine = nextEngine;
       limits = null;
@@ -276,6 +289,7 @@ export function createIssueVmSettings() {
       notes = {};
       root.addEventListener("submit", submit);
       root.addEventListener("click", click);
+      root.addEventListener("change", change);
       paint();
       void load();
     },

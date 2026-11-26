@@ -20,6 +20,7 @@ let limits: Record<string, number>;
 let grant: Record<string, unknown> | null;
 let host: Record<string, unknown>;
 let failing: Set<string>;
+let others: Record<string, unknown>[];
 
 const member = () => ({
   userId: "user-2",
@@ -42,6 +43,7 @@ beforeEach(() => {
   limits = { perMember: 2, workspaceMax: 10, deleteAfterDays: 7 };
   grant = null;
   failing = new Set();
+  others = [];
   host = {
     runnerId: RUNNER,
     vmHost: true,
@@ -74,10 +76,16 @@ beforeEach(() => {
       return Response.json(limits);
     }
     if (path === "/api/settings/issue-vm/members")
-      return Response.json({ defaultLimit: limits.perMember, members: [member()] });
+      return Response.json({ defaultLimit: limits.perMember, members: [member(), ...others] });
     if (path === "/api/settings/issue-vm/grants") {
-      grant = { id: "grant1", ...body, endsAt: Date.parse(body.endsAt) };
-      return Response.json({ grant }, { status: 201 });
+      if (body.limit > 50)
+        return Response.json(
+          { error: "limit must be a whole number from 1 to 50" },
+          { status: 400 },
+        );
+      const created = { id: "grant1", ...body, endsAt: Date.parse(body.endsAt) };
+      if (body.memberUserId === "user-2") grant = created;
+      return Response.json({ grant: created }, { status: 201 });
     }
     if (path === "/api/settings/issue-vm/grants/grant1") {
       grant = null;
@@ -156,6 +164,7 @@ test("an admin adds and revokes a grant", async () => {
     endsAt: "2099-01-31T23:59:59Z",
   });
   expect(root.textContent).toContain("5 until 2099-01-31");
+  expect(root.querySelector("#issue-vm-grant-member")).toBeNull();
   root
     .querySelector("[data-revoke]")!
     .dispatchEvent(new window.Event("click", { bubbles: true }) as never);
@@ -222,4 +231,26 @@ test("members may open Issue VMs but no other workspace page", () => {
   expect(settingsRedirect("/settings/issue-vms")).toBe("/workspace/issue-vms");
   expect(settingsRedirect("/workspace/merging")).toBe("/settings/account");
   expect(renderSettingsPage("issue-vms")).toContain('id="issue-vm-settings"');
+});
+
+test("a rejected grant keeps the chosen member, and a saved one clears the form", async () => {
+  others = [{ ...member(), userId: "user-3", name: "Sam" }];
+  const root = await mount();
+  const select = () => root.querySelector<HTMLSelectElement>("#issue-vm-grant-member")!;
+  select().value = "user-3";
+  select().dispatchEvent(new window.Event("change", { bubbles: true }) as never);
+  type(root, "#issue-vm-grant-limit", "99");
+  type(root, "#issue-vm-grant-ends", "2099-01-31");
+  await submit(root, "[data-grant]");
+  expect(root.querySelector('[role="alert"]')?.textContent).toContain("from 1 to 50");
+  expect(select().value).toBe("user-3");
+  type(root, "#issue-vm-grant-limit", "5");
+  await submit(root, "[data-grant]");
+  const posts = calls.filter((call) => call.method === "POST");
+  expect(posts.map((call) => (call.body as { memberUserId: string }).memberUserId)).toEqual([
+    "user-3",
+    "user-3",
+  ]);
+  expect(root.querySelector<HTMLInputElement>("#issue-vm-grant-limit")!.value).toBe("");
+  expect(root.querySelector<HTMLInputElement>("#issue-vm-grant-ends")!.value).toBe("");
 });
