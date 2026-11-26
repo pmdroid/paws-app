@@ -585,11 +585,6 @@ def docker_check():
 
 
 def agent_linger(agent_user=None):
-    """Keep a systemd user manager for the account agents run as (agentUser), whether or not it has Docker.
-
-    Sandboxed helper turns start with systemd-run --user, which needs that manager. Linger starts it at
-    boot without a login. The other Paws account loses the linger an earlier configuration gave it.
-    """
     served, unserved = ("paws-runner", "paws-agent") if (agent_user or configured_agent_user(RUNNER_CONFIG)) == "runner" else ("paws-agent", "paws-runner")
     try:
         pwd.getpwnam(served)
@@ -610,7 +605,6 @@ def agent_linger(agent_user=None):
 
 
 def configure_agent_linger():
-    """`agent_linger` for an installer: a failed step is reported, not raised."""
     try:
         report = agent_linger()
     except (OSError, ValueError, subprocess.SubprocessError) as error:
