@@ -33,7 +33,7 @@ import {
 } from "../core";
 import { git } from "./git";
 import { assertSafeSegment, runDir } from "./paths";
-import { sandboxedLaunch } from "./sandbox";
+import { sandboxedLaunch, writeSandboxed } from "./sandbox";
 import {
   GROK_LOGIN_MESSAGE,
   rejectAutoApprove,
@@ -249,6 +249,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         cwd: options.worktreePath,
         scratch: directory,
         home,
+        ...(options.sandbox.writable ? { writable: options.sandbox.writable } : {}),
       })
     : undefined;
   const child = sandboxed
@@ -365,11 +366,14 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     .onRequest(methods.client.fs.writeTextFile, (ctx) => {
       assertRunning();
       if (options.readOnly) throw new Error("This agent session is read-only");
+      if (options.sandbox)
+        return writeSandboxed(ctx.params, options.worktreePath, options.sandbox.writable);
       return writeGuarded(ctx.params, guard);
     })
     .onRequest(methods.client.terminal.create, (ctx) => {
       assertRunning();
-      if (options.readOnly) throw new Error("This agent session is read-only");
+      if (options.readOnly || options.sandbox)
+        throw new Error("This agent session has no terminals");
       return terminals.create(ctx.params);
     })
     .onRequest(methods.client.terminal.output, (ctx) => terminals.output(ctx.params))
@@ -476,7 +480,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           ctx.request(methods.agent.initialize, {
             protocolVersion: PROTOCOL_VERSION,
             clientInfo: CLIENT_INFO,
-            clientCapabilities: clientCapabilities(),
+            clientCapabilities: clientCapabilities(!options.sandbox),
           }),
           30_000,
           phaseSignal,
@@ -963,10 +967,10 @@ function selectOption(options: PermissionOption[], allow: boolean): PermissionOp
   return undefined;
 }
 
-function clientCapabilities() {
+function clientCapabilities(terminal = true) {
   return {
     fs: { readTextFile: true, writeTextFile: true },
-    terminal: true,
+    terminal,
   };
 }
 

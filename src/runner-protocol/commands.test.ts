@@ -6,6 +6,7 @@ import {
   RUNNER_SLACK_REPLY_ACCEPTED_MS,
   RUNNER_SLACK_REPLY_ACCEPTED_PROMPT_BYTES,
   RUNNER_SLACK_REPLY_MS,
+  RunnerHelperResultSchema,
   signRunnerCommand,
   verifyRunnerCommand,
   type RunnerCommand,
@@ -557,6 +558,78 @@ test("a probe_distill helper runs under an account and carries no repositories o
     { ...distill, tools: [{ name: "linear_issue", description: "Read.", inputSchema: {} }] },
   ])
     expect(RunnerCommandSchema.safeParse(refused).success).toBe(false);
+});
+
+test("a signed probe_write helper names one repository and its probe path under an account", () => {
+  const write: RunnerCommand = {
+    ...common,
+    type: "helper",
+    expiresAt: common.issuedAt + 900_000,
+    sessionGeneration: 0,
+    sessionId: "probes-write",
+    purpose: "probe_write",
+    profile,
+    prompt: "x".repeat(300_000),
+    account: { accountId: "account-ada", bindingId: "binding-ada" },
+    probe: { repository: "acme/web", path: ".agents/probes/no-raw-sql.ts" },
+  };
+  const bound = { now: 2000, accountBindings: new Set(["binding-ada"]) };
+  expect(
+    verifyRunnerCommand(signed(write), context({ ...bound, allowedRepositories: ["ACME/WEB"] })),
+  ).toEqual({ ok: true, command: write });
+  expect(verifyRunnerCommand(signed(write), context(bound))).toEqual({
+    ok: false,
+    reason: "repository_denied",
+    repository: "acme/web",
+  });
+  for (const refused of [
+    { ...write, account: undefined },
+    { ...write, probe: undefined },
+    { ...write, expiresAt: common.issuedAt + 900_001 },
+    { ...write, repositories: ["acme/web"] },
+    { ...write, probe: { repository: "acme/web", path: "src/no-raw-sql.ts" } },
+    { ...write, probe: { repository: "acme/web", path: ".agents/probes/../x.ts" } },
+    { ...write, probe: { repository: "acme/web", path: ".agents/probes/Rule.ts" } },
+    { ...write, purpose: "probe_distill" },
+    { ...write, purpose: "repository_summary", summary: { repository: "acme/web" } },
+  ])
+    expect(RunnerCommandSchema.safeParse(refused).success).toBe(false);
+});
+
+test("a probe_write result carries a rules entry that matches the probe entry schema", () => {
+  const result = {
+    executionId: "01J00000000000000000000001",
+    commandId: "command-1",
+    role: "implementer" as const,
+    stopReason: "end_turn" as const,
+    timedOut: false,
+    cancelled: false,
+    authRequired: false,
+    agentExited: true,
+    text: "done",
+    probe: {
+      path: ".agents/probes/no-raw-sql.ts",
+      content: Buffer.from("export {};").toString("base64"),
+      entry: { paths: ["src/**"], failOn: "P1", onFail: "fix" },
+    },
+  };
+  expect(RunnerHelperResultSchema.safeParse(result).success).toBe(true);
+  for (const entry of [
+    { failOn: "P9" },
+    { paths: [], failOn: "P1" },
+    { failOn: "P1", onFail: "ignore" },
+    { failOn: "P1", extra: true },
+    { exec: [""], failOn: "P1" },
+  ])
+    expect(
+      RunnerHelperResultSchema.safeParse({ ...result, probe: { ...result.probe, entry } }).success,
+    ).toBe(false);
+  expect(
+    RunnerHelperResultSchema.safeParse({
+      ...result,
+      probe: { ...result.probe, content: "x".repeat(65_540) },
+    }).success,
+  ).toBe(false);
 });
 
 test("run commands parse a Closeout focus with and without since", () => {

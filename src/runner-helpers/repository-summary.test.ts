@@ -55,6 +55,16 @@ async function fixture(withAuthority: boolean) {
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     ...(withAuthority ? { summary: allow, probes: allow } : {}),
+    repositoryAccess: {
+      github: {
+        mintInstallationToken: async (input) => ({
+          token: "ghs_fixture",
+          expiresAt: Date.now() + 600_000,
+          repository: input.repository,
+        }),
+      },
+      installationForRepository: async () => "installation",
+    },
   });
   const binding = (await listAgentBindings(db, workspace.id)).find(
     (row) => row.runnerId === "runner",
@@ -78,7 +88,17 @@ async function fixture(withAuthority: boolean) {
       prompt: "Summarise this README.",
       summary: { repository: "acme/web" },
     });
-  return { db, now, userId, workspace, authority, helpers, dispatch, account, distill };
+  const write = () =>
+    helpers.dispatch({
+      runnerId: "runner",
+      sessionId: `probes-${crypto.randomUUID()}`,
+      purpose: "probe_write",
+      profile: { agent: "codex", model: null },
+      prompt: "Write this probe.",
+      account,
+      probe: { repository: "acme/web", path: ".agents/probes/no-raw-sql.ts" },
+    });
+  return { db, now, userId, workspace, authority, helpers, dispatch, account, distill, write };
 }
 
 test("a repository summary is delivered only while its authority allows the runner's owner", async () => {
@@ -126,7 +146,39 @@ test("probe_distill dispatches without a Linear session under the bound account 
   await expect(distill()).rejects.toBeInstanceOf(HelperFencedError);
 });
 
-test("only Slack replies, repository summaries and probe_distill are stored without a Linear session", async () => {
+test("probe_write dispatches without a Linear session and gets a read credential only for its repository", async () => {
+  const { db, userId, workspace, authority, helpers, account, write } = await fixture(true);
+  const { command } = await write();
+  expect(command.expiresAt - command.issuedAt).toBe(900_000);
+  expect(command.account).toEqual(account);
+  expect(command.probe).toEqual({ repository: "acme/web", path: ".agents/probes/no-raw-sql.ts" });
+  expect(authority.asked[0]).toEqual({ workspaceId: workspace.id, userId, repository: "acme/web" });
+  expect(
+    await sqlRows(db, "SELECT session_id, purpose FROM runner_helper WHERE id=?", [command.id]),
+  ).toEqual([{ session_id: null, purpose: "probe_write" }]);
+  const credential = (repository: string) =>
+    helpers.fetch(
+      new Request(`http://paws/v1/helper-commands/${command.id}/repository-credential`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ repository }),
+      }),
+      "runner",
+    );
+  const granted = await credential("acme/web");
+  expect(granted?.status).toBe(200);
+  expect(await granted?.json()).toMatchObject({
+    token: "ghs_fixture",
+    remoteUrl: "https://github.com/acme/web.git",
+    branch: null,
+  });
+  expect((await credential("acme/other"))?.status).toBe(403);
+  authority.allowed = false;
+  expect((await credential("acme/web"))?.status).toBe(409);
+  await expect(write()).rejects.toBeInstanceOf(HelperFencedError);
+});
+
+test("only Slack replies, repository summaries and probe helpers are stored without a Linear session", async () => {
   const { db, now, workspace } = await fixture(true);
   await recordLinearInstallation(db, {
     organizationId: "org",
@@ -146,11 +198,13 @@ test("only Slack replies, repository summaries and probe_distill are stored with
   await insert("repository_summary", null);
   await insert("slack_reply", null);
   await insert("probe_distill", null);
+  await insert("probe_write", null);
   await insert("classify", "session-1");
   for (const [purpose, sessionId] of [
     ["repository_summary", "session-1"],
     ["slack_reply", "session-1"],
     ["probe_distill", "session-1"],
+    ["probe_write", "session-1"],
     ["classify", null],
   ] as const)
     await expect(insert(purpose, sessionId)).rejects.toThrow();

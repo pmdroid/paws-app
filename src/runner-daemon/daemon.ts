@@ -1532,6 +1532,27 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         throw new Error("Paws returned an unusable helper repository credential.");
       return credential;
     },
+    async helperProbeCredential(id: string) {
+      const command = helperCommand(id);
+      const repository = command.purpose === "probe_write" ? command.probe?.repository : undefined;
+      if (!repository) throw new Error("Runner helper takes no repository.");
+      const credential = RunnerRepositoryCredentialSchema.parse(
+        await authenticated(
+          `/v1/helper-commands/${encodeURIComponent(id)}/repository-credential`,
+          "POST",
+          { repository },
+        ),
+      );
+      const current = now();
+      if (
+        credential.expiresAt <= current ||
+        credential.expiresAt > current + 60 * 60_000 ||
+        credential.remoteUrl !== `https://github.com/${repository}.git` ||
+        credential.branch !== null
+      )
+        throw new Error("Paws returned an unusable helper repository credential.");
+      return { ...credential, repository };
+    },
     async postHelperResult(result: RunnerHelperResult) {
       const valid = RunnerHelperResultSchema.parse(result);
       helperCommand(valid.commandId, true);

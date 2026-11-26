@@ -1,12 +1,12 @@
 import { journalCaught, journalRejection } from "../journal";
-import { chmodSync, statSync } from "node:fs";
+import { chmodSync, mkdirSync, statSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { openDatabase, readRunnerToolRequests, type RunnerToolRequest } from "../runner-journal";
 import { publishRunnerAnswer } from "../runner-answers";
-import { prepareRepositorySnapshot } from "../acp";
+import { git, prepareRepositorySnapshot } from "../acp";
 import { runGitHubGit } from "../github";
 import { eq, notInArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
@@ -82,10 +82,12 @@ const helperWorker = z.object({
     text: true,
     replies: true,
     startWork: true,
+    probe: true,
   }).strip(),
   text: RunnerHelperResultSchema.shape.text,
   replies: RunnerHelperResultSchema.shape.replies,
   startWork: RunnerHelperResultSchema.shape.startWork,
+  probe: RunnerHelperResultSchema.shape.probe,
 });
 
 function executionId(now: number) {
@@ -118,6 +120,7 @@ export async function openRunnerHealthRuntime(options: {
         | "helperLease"
         | "helperRequest"
         | "helperRepositoryCredential"
+        | "helperProbeCredential"
         | "postHelperResult"
         | "carriesCredential"
         | "credentialRecipient"
@@ -332,6 +335,40 @@ export async function openRunnerHealthRuntime(options: {
       throw error;
     }
   }
+  async function probeBundle(entry: Entry) {
+    if (!options.daemon.helperProbeCredential)
+      throw new Error("Runner helper repositories are unavailable");
+    const signal = AbortSignal.timeout(HELPER_REPOSITORY_MS);
+    const credential = await options.daemon.helperProbeCredential(entry.command.id);
+    const directory = join(options.root, "repositories", entry.id);
+    const mirror = join(directory, "probe.git");
+    const bundle = join(directory, "probe.bundle");
+    const env = {
+      PATH: "/usr/bin:/bin",
+      HOME: options.root,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_TERMINAL_PROMPT: "0",
+    };
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    await git(["init", "-q", "--bare", mirror], { env, signal });
+    await (options.networkGit ?? runGitHubGit)({
+      operation: "fetch",
+      remoteUrl: credential.remoteUrl,
+      token: credential.token,
+      cwd: options.root,
+      dest: mirror,
+      refspec: "+refs/heads/main:refs/heads/main",
+      env,
+      signal,
+    });
+    await git(["--git-dir", mirror, "bundle", "create", "-q", bundle, "refs/heads/main"], {
+      env,
+      signal,
+    });
+    chmodSync(bundle, 0o600);
+    return bundle;
+  }
   async function removeSnapshot(workspace: string) {
     await Promise.all(
       [workspace, `${workspace}.repository.json`].map((target) =>
@@ -502,6 +539,9 @@ export async function openRunnerHealthRuntime(options: {
             text: result.text,
             ...(result.replies ? { replies: result.replies } : {}),
             ...(result.startWork ? { startWork: result.startWork } : {}),
+            ...(result.probe && entry.command.purpose === "probe_write"
+              ? { probe: result.probe }
+              : {}),
           });
           markPublishing(entry.id, JSON.stringify(entry.result));
         } else {
@@ -619,14 +659,28 @@ export async function openRunnerHealthRuntime(options: {
             check(entry);
           }
         }
+        const bundle =
+          command.type === "helper" && command.purpose === "probe_write"
+            ? await probeBundle(entry)
+            : undefined;
+        if (bundle) {
+          await pulse(entry);
+          check(entry);
+        }
         options.daemon.restoreCredentials?.(command.id);
-        publishRunnerJob(options.spool, {
-          executionId: id,
-          command,
-          ...(options.daemon.credentialRecipient && options.daemon.carriesCredential?.(command.id)
-            ? { credentials: { certificate: options.daemon.credentialRecipient() } }
-            : {}),
-        });
+        publishRunnerJob(
+          options.spool,
+          {
+            executionId: id,
+            command,
+            ...(options.daemon.credentialRecipient && options.daemon.carriesCredential?.(command.id)
+              ? { credentials: { certificate: options.daemon.credentialRecipient() } }
+              : {}),
+          },
+          bundle ? { repositoryBundle: bundle } : {},
+        );
+        if (bundle)
+          await rm(join(options.root, "repositories", id), { recursive: true, force: true });
         for (const repository of prepared) {
           try {
             repository.publish();

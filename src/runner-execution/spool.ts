@@ -383,7 +383,7 @@ function readJob(fd: number, spool: RunnerSpool, executionId: string): RunnerJob
       throw new Error("Unsafe runner job file");
     const job = RunnerJobSchema.parse(JSON.parse(readBounded(file, 524_288).toString("utf8")));
     if (job.executionId !== executionId) throw new Error("Runner job identity mismatch");
-    if (job.command.type === "run" || job.command.type === "review") {
+    if (carriesBundle(job.command)) {
       const bundle = openSync(
         `/proc/self/fd/${fd}/repository.bundle`,
         constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -437,6 +437,11 @@ export function readRunnerJobInputs(spool: RunnerSpool, executionId: string): Ru
     closeSync(root);
   }
 }
+const carriesBundle = (command: RunnerJob["command"]) =>
+  command.type === "run" ||
+  command.type === "review" ||
+  (command.type === "helper" && command.purpose === "probe_write");
+
 function validateBundle(file: number, spool: RunnerSpool): void {
   const info = fstatSync(file);
   if (
@@ -453,8 +458,7 @@ function validateBundle(file: number, spool: RunnerSpool): void {
 
 export function runnerRepositoryBundlePath(spool: RunnerSpool, executionId: string): string {
   const job = readRunnerJob(spool, executionId);
-  if (job.command.type !== "run" && job.command.type !== "review")
-    throw new Error("Job has no repository");
+  if (!carriesBundle(job.command)) throw new Error("Job has no repository");
   return join(spool.root, executionId, "repository.bundle");
 }
 
@@ -681,7 +685,7 @@ export function publishRunnerJob(
         !Buffer.from(promptContext.toString("utf8"), "utf8").equals(promptContext)))
   )
     throw new Error("Runner prompt context must match signed job");
-  const needsBundle = job.command.type === "run" || job.command.type === "review";
+  const needsBundle = carriesBundle(job.command);
   if (needsBundle !== (options.repositoryBundle !== undefined))
     throw new Error("Repository bundle must match job type");
   if (options.repositoryBlobs !== undefined && options.repositoryBundle === undefined)

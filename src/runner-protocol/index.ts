@@ -89,6 +89,14 @@ export {
 } from "./events";
 
 export {
+  RUNNER_PROBE_BYTES,
+  RUNNER_PROBE_DIRECTORY,
+  RunnerProbeEntrySchema,
+  RunnerProbeResultSchema,
+  type RunnerProbeEntry,
+  type RunnerProbeResult,
+} from "./probes";
+export {
   AGENT_SIGNED_OUT,
   withSignedOutAuth,
   RUNNER_RESULT_BODY_LIMIT,
