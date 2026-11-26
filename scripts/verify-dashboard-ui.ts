@@ -1318,7 +1318,8 @@ try {
         .getByRole("navigation", { name: "Main navigation" })
         .getByRole("list", { name: "Settings pages" })
         .getByRole("link");
-      await expect(settingsMenu).toHaveText(["Your account", "Agent accounts"]);
+      const own = ["Your account", "Agent accounts"];
+      await expect(settingsMenu).toHaveText(viewer === admin ? own : [...own, "Issue VMs"]);
       await expect(settingsMenu.and(viewer.locator('[aria-current="page"]'))).toHaveText(
         "Your account",
       );
