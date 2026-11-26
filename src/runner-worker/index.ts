@@ -1702,8 +1702,11 @@ export async function executeRunnerCommand(
       ...options.launch,
       hostAccess: !(
         command.type === "helper" &&
-        (command.purpose === "slack_reply" || command.purpose === "repository_summary")
+        ["slack_reply", "repository_summary", "probe_distill"].includes(command.purpose)
       ),
+      ...(command.type === "helper" && command.purpose === "probe_distill"
+        ? { sandbox: true }
+        : {}),
       skillsRoot,
       ...(options.skills && (repository || task)
         ? {

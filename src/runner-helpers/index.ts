@@ -98,6 +98,8 @@ type RepositorySummaryAuthority = (
   input: { workspaceId: string; userId: string; repository: string },
 ) => Steps<boolean>;
 
+type ProbeAuthority = (q: Q, input: { workspaceId: string; userId: string }) => Steps<boolean>;
+
 export class HelperFencedError extends Error {
   override readonly name = "HelperFencedError";
 }
@@ -122,6 +124,7 @@ export function createRunnerHelpers(options: {
   ) => Promise<SignedRunnerCommand[]>;
   slack?: SlackReplyAuthority;
   summary?: RepositorySummaryAuthority;
+  probes?: ProbeAuthority;
   repositoryAccess?: {
     github: {
       mintInstallationToken(input: {
@@ -223,6 +226,14 @@ export function createRunnerHelpers(options: {
     summary?: HelperCommand["summary"],
   ) {
     const runner = yield* identitySteps(q, runnerId);
+    if (purpose === "probe_distill") {
+      if (
+        !options.probes ||
+        !(yield* options.probes(q, { workspaceId: runner.workspaceId, userId: runner.userId }))
+      )
+        throw new HelperFencedError("Probe collector authority changed");
+      return runner;
+    }
     if (purpose === "repository_summary") {
       if (
         !summary ||
@@ -309,7 +320,8 @@ export function createRunnerHelpers(options: {
   }
   function* dispatchSteps(q: Q, input: HelperDispatch) {
     const slack = input.purpose === "slack_reply";
-    const sessionless = slack || input.purpose === "repository_summary";
+    const sessionless =
+      slack || input.purpose === "repository_summary" || input.purpose === "probe_distill";
     const session = sessionless ? null : yield* getLinearSessionSteps(q, input.sessionId);
     if (!sessionless && !session)
       throw new HelperFencedError("Linear helper session is unavailable");

@@ -112,6 +112,7 @@ export interface RunAgentOptions {
     fallbackProfile?: AgentProfile;
   }>;
   readOnly?: boolean;
+  sandbox?: boolean;
   closeoutRulesFirst?: boolean;
   closeoutFocus?: CloseoutFocus;
   pullRequestDraft?: PullRequestDraft;

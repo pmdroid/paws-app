@@ -535,6 +535,30 @@ test("a repository summary helper names one repository and carries no tools or S
     expect(RunnerCommandSchema.safeParse(refused).success).toBe(false);
 });
 
+test("a probe_distill helper runs under an account and carries no repositories or tools", () => {
+  const distill = {
+    ...common,
+    type: "helper",
+    expiresAt: common.issuedAt + 900_000,
+    sessionGeneration: 0,
+    sessionId: "probes-distill",
+    purpose: "probe_distill",
+    profile,
+    prompt: "x".repeat(300_000),
+    account: { accountId: "account-ada", bindingId: "binding-ada" },
+  };
+  expect(RunnerCommandSchema.safeParse(distill).success).toBe(true);
+  for (const refused of [
+    { ...distill, account: undefined },
+    { ...distill, expiresAt: common.issuedAt + 900_001 },
+    { ...distill, prompt: "x".repeat(393_217) },
+    { ...distill, repositories: ["acme/web"] },
+    { ...distill, purpose: "probe_write" },
+    { ...distill, tools: [{ name: "linear_issue", description: "Read.", inputSchema: {} }] },
+  ])
+    expect(RunnerCommandSchema.safeParse(refused).success).toBe(false);
+});
+
 test("run commands parse a Closeout focus with and without since", () => {
   const closeoutFocus = {
     scope: "failed" as const,

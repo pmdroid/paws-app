@@ -360,6 +360,7 @@ export const RunnerCommandSchema = z
         "conversation",
         "slack_reply",
         "repository_summary",
+        "probe_distill",
       ]),
       profile: RunnerProfileSchema,
       prompt: z.string().min(1).max(393_216),
@@ -465,7 +466,7 @@ export const RunnerCommandSchema = z
   .refine(
     (command) =>
       command.type !== "helper" ||
-      (command.purpose === "slack_reply"
+      (command.purpose === "slack_reply" || command.purpose === "probe_distill"
         ? Buffer.byteLength(command.prompt) <= RUNNER_SLACK_REPLY_ACCEPTED_PROMPT_BYTES
         : command.prompt.length <= 65_536),
     { path: ["prompt"], message: "prompt is too long" },
@@ -494,6 +495,13 @@ export const RunnerCommandSchema = z
   .refine(
     (command) =>
       command.type !== "helper" ||
+      command.purpose !== "probe_distill" ||
+      command.account !== undefined,
+    { path: ["account"], message: "probe helpers run under an agent account" },
+  )
+  .refine(
+    (command) =>
+      command.type !== "helper" ||
       command.purpose === "slack_reply" ||
       command.repositories === undefined,
     { path: ["repositories"], message: "only slack_reply carries repositories" },
@@ -505,12 +513,14 @@ type HelperPurpose =
   | "finding_groups"
   | "conversation"
   | "slack_reply"
-  | "repository_summary";
+  | "repository_summary"
+  | "probe_distill";
 
 export function runnerHelperLifetime(purpose: HelperPurpose): number {
   if (purpose === "conversation") return RUNNER_CONVERSATION_MS;
   if (purpose === "slack_reply") return RUNNER_SLACK_REPLY_MS;
   if (purpose === "repository_summary") return 120_000;
+  if (purpose === "probe_distill") return 900_000;
   return purpose === "finding_groups" ? 600_000 : 60_000;
 }
 
