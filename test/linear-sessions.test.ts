@@ -224,15 +224,14 @@ describe("Linear session mutations", () => {
     const { sessionId: _sessionId, ...expected } = input;
     expect(calls[0]?.variables).toEqual({ id: "session", input: expected });
     expect(calls[0]?.query).toContain("$input: AgentSessionUpdateInput!");
-    await tracker.updateSession({
-      sessionId: "session",
-      plan: [],
-      externalUrls: [],
-      summary: null,
-    });
+    await expect(tracker.updateSession({ sessionId: "session", plan: [] })).rejects.toThrow(
+      "Invalid plan",
+    );
+    await tracker.updateSession({ sessionId: "session", externalUrls: [], summary: null });
+    expect(calls).toHaveLength(2);
     expect(calls[1]?.variables).toEqual({
       id: "session",
-      input: { plan: [], externalUrls: [], summary: null },
+      input: { externalUrls: [], summary: null },
     });
   });
 

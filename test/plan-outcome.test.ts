@@ -255,6 +255,12 @@ test("a planning request proposes sub-issues, takes an edit, and files them once
     expect(trace.fs[1]).toMatchObject({ op: "write", ok: false });
     expect(readFileSync(join(source, "app.txt"), "utf8")).toBe("Application source");
     expect(tracker.progress.filter((update) => update.kind === "response")).toEqual([]);
+    await outbox.idle();
+    expect(
+      (await listOutbox(db)).filter(
+        (row) => (row.payload as { plan?: unknown[] }).plan?.length === 0,
+      ),
+    ).toEqual([]);
 
     // A bare Edit asks what to change; the reply is the next planning turn.
     await reply("edit", "Edit");
