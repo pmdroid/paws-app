@@ -13,7 +13,10 @@ export function runnerSleepLeftovers(
   owners?: RunnerAccountOwners,
 ) {
   const accounts = join(agentHome, ".paws-accounts");
-  const left = [...openCodeSignInsLeft(agentHome, owners), ...runnerSignInsLeft(agentHome)];
+  const left = [
+    ...(issueVm ? openCodeSignInsLeft(agentHome, owners) : []),
+    ...runnerSignInsLeft(agentHome),
+  ];
   const held = heldCredentialsLeft(credentials);
   if (held) left.push(`${held} held or pending sign-in uploads`);
   if (issueVm && held === null) left.push("runner credential store is not ready");

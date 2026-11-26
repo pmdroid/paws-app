@@ -736,8 +736,8 @@ function returnAccountCredentials(
   if (placedOpenCode !== null) collectOpenCodeCredential(home, placedOpenCode);
   const tmpfs = onTmpfs(home);
   const purge = tmpfs && agent === "opencode";
-  if (purge && placedOpenCode !== null) markOpenCodePurge(home, executionId);
   returnRunnerAgentCredentials(home, agent, executionId, (files) => {
+    if (purge) markOpenCodePurge(home, executionId, files);
     const sealed = sealForRunner(
       recipient,
       JSON.stringify(files),

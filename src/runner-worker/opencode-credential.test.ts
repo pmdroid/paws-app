@@ -7,6 +7,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -186,9 +187,14 @@ function accountHome(): { agentHome: string; root: string } {
 }
 
 function returnAndMark(root: string, execution = EXECUTION) {
-  markOpenCodePurge(root, execution);
-  returnRunnerAgentCredentials(root, "opencode", execution, () => {});
+  returnRunnerAgentCredentials(root, "opencode", execution, (files) =>
+    markOpenCodePurge(root, execution, files),
+  );
 }
+
+const staged = (value: string) => [
+  { path: OPENCODE_CREDENTIAL_FILE, data: Buffer.from(value).toString("base64") },
+];
 
 function leaked(root: string, secret: string): string[] {
   const folder = dirname(join(root, OPENCODE_DATABASE));
@@ -252,7 +258,7 @@ test("a purge waits for other turns on the account and sleep-check finishes it",
 test("a worker stopped before publishing leaves the file copy, so its marked row can go", async () => {
   const { agentHome, root } = accountHome();
   await placeOpenCodeCredential(root, "opencode", migrate(root));
-  markOpenCodePurge(root, EXECUTION);
+  markOpenCodePurge(root, EXECUTION, staged(credential));
   expect(openCodeSignInsLeft(agentHome)).toEqual([]);
   expect(rows(root)).toEqual([]);
   expect(readFileSync(join(root, OPENCODE_CREDENTIAL_FILE), "utf8")).toBe(credential);
@@ -293,4 +299,40 @@ test("a purge takes the account's publish lock, so no turn is admitted while it 
   expect(rows(root)).toHaveLength(1);
   expect(purgeOpenCodeCredential(root)).toBe(true);
   expect(rows(root)).toEqual([]);
+});
+
+test("the marker digests the files being returned, not a later read of the credential file", async () => {
+  const { agentHome, root } = accountHome();
+  await placeOpenCodeCredential(root, "opencode", migrate(root));
+  const newer = JSON.stringify({ ...JSON.parse(credential), access: "access-4" });
+  writeFileSync(join(root, OPENCODE_CREDENTIAL_FILE), newer);
+  markOpenCodePurge(root, EXECUTION, staged(credential));
+  expect(openCodeSignInsLeft(agentHome)).toEqual([]);
+  expect(rows(root)).toEqual([]);
+});
+
+test("cleanup never follows a symlinked folder out of the account home", async () => {
+  const { agentHome, root } = accountHome();
+  const outside = mkdtempSync(join(tmpdir(), "paws-opencode-outside-"));
+  roots.push(outside);
+  writeFileSync(join(outside, EXECUTION), "keep");
+  symlinkSync(outside, join(root, OPENCODE_PURGE));
+  await migrate(outside)();
+  insert(outside, "cred_outside", "opencode", credential);
+  mkdirSync(join(root, ".local/share"), { recursive: true });
+  symlinkSync(join(outside, ".local/share/opencode"), join(root, ".local/share/opencode"));
+  const left = openCodeSignInsLeft(agentHome);
+  expect(left.length).toBeGreaterThan(0);
+  expect(left.every((entry) => entry.includes("is not a folder in the account home"))).toBe(true);
+  expect(readFileSync(join(outside, EXECUTION), "utf8")).toBe("keep");
+  expect(rows(outside)).toHaveLength(1);
+});
+
+test("a journal left without its database is removed", () => {
+  const { agentHome, root } = accountHome();
+  mkdirSync(dirname(join(root, OPENCODE_DATABASE)), { recursive: true });
+  writeFileSync(`${join(root, OPENCODE_DATABASE)}-wal`, "access-1");
+  writeFileSync(`${join(root, OPENCODE_DATABASE)}-journal`, "access-1");
+  expect(openCodeSignInsLeft(agentHome)).toEqual([]);
+  expect(readdirSync(dirname(join(root, OPENCODE_DATABASE)))).toEqual([]);
 });

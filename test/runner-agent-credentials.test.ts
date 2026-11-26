@@ -638,24 +638,38 @@ test.skipIf(!shmTmpfs)(
   },
 );
 
-test.skipIf(!shmTmpfs)("an issue VM accepts OpenCode sign-ins into its tmpfs", () => {
-  const home = mkdtempSync("/dev/shm/paws-issue-vm-opencode-");
-  try {
-    chmodSync(home, 0o770);
-    const opencode = [
-      {
-        path: ".paws/opencode-credential.json",
-        data: Buffer.from('{"type":"oauth","refresh":"r1"}').toString("base64"),
-      },
-    ];
-    runnerAgentCredentials(home, undefined, true).write(account, "opencode", opencode);
-    expect(runnerSleepLeftovers(home, join(home, "store"))).toEqual([
-      "binding-1/.paws/opencode-credential.json",
-    ]);
-  } finally {
-    rmSync(home, { recursive: true, force: true });
-  }
-});
+test.skipIf(!shmTmpfs)(
+  "an issue VM accepts OpenCode sign-ins, and only an issue VM checks opencode.db before sleep",
+  () => {
+    const home = mkdtempSync("/dev/shm/paws-issue-vm-opencode-");
+    try {
+      chmodSync(home, 0o770);
+      const opencode = [
+        {
+          path: ".paws/opencode-credential.json",
+          data: Buffer.from('{"type":"oauth","refresh":"r1"}').toString("base64"),
+        },
+      ];
+      runnerAgentCredentials(home, undefined, true).write(account, "opencode", opencode);
+      expect(runnerSleepLeftovers(home, join(home, "store"))).toEqual([
+        "binding-1/.paws/opencode-credential.json",
+      ]);
+      rmSync(join(home, ".paws-accounts/binding-1/.paws/opencode-credential.json"));
+      const folder = join(home, ".paws-accounts/binding-1/.local/share/opencode");
+      mkdirSync(folder, { recursive: true });
+      const db = new Database(join(folder, "opencode.db"));
+      db.run("CREATE TABLE credential (integration_id text, value text)");
+      db.run("INSERT INTO credential VALUES ('opencode', 'kept')");
+      db.close();
+      expect(runnerSleepLeftovers(home, join(home, "store"))).toEqual([]);
+      expect(runnerSleepLeftovers(home, join(home, "store"), true)).toContain(
+        "binding-1/.local/share/opencode/opencode.db holds 1 OpenCode sign-ins",
+      );
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  },
+);
 
 test.skipIf(!shmTmpfs)(
   "sleep-check fails closed and keeps staged sign-ins while their writer runs",
