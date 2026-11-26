@@ -249,7 +249,7 @@ test("over_max direct runs the change's direct tests when the selection is over 
     },
     { max_selected: 1, over_max: "direct" },
   );
-  expect(targets(elsewhere)).toEqual(["test/new.test.ts"]);
+  expect(targets(elsewhere)).toEqual(["test/lazy.test.ts", "test/new.test.ts"]);
   const fullOn = await planned(colocated, {
     max_selected: 1,
     over_max: "direct",

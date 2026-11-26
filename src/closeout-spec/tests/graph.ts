@@ -36,7 +36,9 @@ export function testFilesOf(snapshot: Snapshot): string[] {
 
 export type GraphResult = { affected: string[]; problems: string[] };
 
-export function affectedTests(snapshot: Snapshot, changed: ReadonlySet<string>): GraphResult {
+type Graph = { tests: string[]; edges: Map<string, string[]>; problems: string[] };
+
+function importGraph(snapshot: Snapshot, changed: ReadonlySet<string>): Graph {
   const config = repositoryConfig(snapshot);
   const tests = testFilesOf(snapshot);
   const edges = new Map<string, string[]>();
@@ -70,6 +72,18 @@ export function affectedTests(snapshot: Snapshot, changed: ReadonlySet<string>):
       pending.push(target);
     }
   }
+  return { tests, edges, problems };
+}
+
+export function directTests(snapshot: Snapshot, changed: ReadonlySet<string>): string[] {
+  const { tests, edges } = importGraph(snapshot, changed);
+  return tests.filter(
+    (test) => changed.has(test) || (edges.get(test) ?? []).some((target) => changed.has(target)),
+  );
+}
+
+export function affectedTests(snapshot: Snapshot, changed: ReadonlySet<string>): GraphResult {
+  const { tests, edges, problems } = importGraph(snapshot, changed);
   const users = new Map<string, string[]>();
   for (const [path, targets] of edges) {
     for (const target of targets) users.set(target, [...(users.get(target) ?? []), path]);
