@@ -303,7 +303,14 @@ import {
   POLICY_BLOCK_CHECK_MS,
   repositoryGrant,
   recordMissingProjectTeams,
+  createRepositoryGit,
 } from "./loop";
+import {
+  PROBE_COLLECT_JOB,
+  createProbeCollection,
+  handleProbeCollectionRequest,
+  probeCollectionAllowedSteps,
+} from "./probe-collector";
 import { handleLinkAskAnswer, handleQuestionAnswer } from "./questions";
 import { createFindingIssueRoute } from "./finding-issues";
 import { dashboardUrl } from "./dashboard-links";
@@ -745,6 +752,30 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     helpers: async () => (await runnerReady)?.helpers,
     placement: createRunnerPlacement({ store }),
     profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
+  });
+  const probeCollection = createProbeCollection({
+    store,
+    pawsRoot: paths.home,
+    helpers: async () => (await runnerReady)?.helpers,
+    placement: createRunnerPlacement({ store }),
+    profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
+    locate: (name) => {
+      const binding = repositoryBinding(name);
+      const provider = binding && authProvider(runtime, binding, "read", resolveApp);
+      const github = githubBinding(provider);
+      if (!binding || !provider || !github?.tokenProvider) return null;
+      return {
+        repository: binding,
+        github: { client: github.client, tokenProvider: github.tokenProvider },
+        networkGit: createRepositoryGit({
+          remoteUrl: binding.remoteUrl,
+          token: () => provider.token(),
+          signal: abort.signal,
+          assert: async () => abort.signal.throwIfAborted(),
+          onCleanupFailure: () => undefined,
+        }),
+      };
+    },
   });
   if (options?.refreshRepositories)
     periodic.push({
@@ -1241,6 +1272,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           issueVms: (request, runnerId) => handleVmHostRunnerRequest(request, runnerId, store),
           slackReplyAuthority: (q, input) => slackReplyAllowedSteps(q, paths.home, input),
           repositorySummaryAuthority: repositorySummaryAllowedSteps,
+          probeAuthority: probeCollectionAllowedSteps,
         }).then(async (value) => {
           if (runnerStopping) {
             await value.stop();
@@ -1563,6 +1595,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         nextCheckAt: () => store.run((q) => jobRunAtByKeySteps(q, VM_PROVIDER_CHECK_JOB)),
       },
       storageCleanup,
+      probeCollection: (request, context) =>
+        handleProbeCollectionRequest(request, { ...context, collection: probeCollection }),
       server: options?.server,
       linearUsage: linear === null ? undefined : () => linear.usage(),
       riskApproval: async (itemId) => orchestrator?.riskDisplay(itemId) ?? null,
@@ -2582,6 +2616,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       });
       await maintainPglite(store, created.jobs, journal);
       created.jobs.register(STORAGE_CLEANUP_JOB, () => storageCleanup.tick());
+      created.jobs.register(PROBE_COLLECT_JOB, async (job, context) => {
+        await probeCollection.run(job.payload, AbortSignal.any([context.signal, abort.signal]));
+      });
       await enqueueJobOnce(store, {
         queue: STORAGE_CLEANUP_JOB,
         jobKey: STORAGE_CLEANUP_JOB,

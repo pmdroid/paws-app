@@ -127,6 +127,7 @@ export async function openRunnerCoordinator(options: {
   hostWarnings?: (runnerId: string) => readonly string[];
   slackReplyAuthority?: SlackReplyAuthority;
   repositorySummaryAuthority?: Parameters<typeof createRunnerHelpers>[0]["summary"];
+  probeAuthority?: Parameters<typeof createRunnerHelpers>[0]["probes"];
 }) {
   if (!isAbsolute(options.root)) throw new Error("Runner identity path must be absolute.");
   const authority = openRunnerAuthority(options.root);
@@ -168,6 +169,7 @@ export async function openRunnerCoordinator(options: {
     now: options.now,
     ...(options.slackReplyAuthority ? { slack: options.slackReplyAuthority } : {}),
     ...(options.repositorySummaryAuthority ? { summary: options.repositorySummaryAuthority } : {}),
+    ...(options.probeAuthority ? { probes: options.probeAuthority } : {}),
     ...(options.repositoryAccess ? { repositoryAccess: options.repositoryAccess } : {}),
   });
   const results = createRunnerResults({ store: options.db, work, now: options.now });

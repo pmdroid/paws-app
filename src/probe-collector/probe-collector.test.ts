@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -12,6 +13,13 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { RunAgentOptions, RunAgentResult } from "../acp";
+import { consumeWorkspaceBootstrap, putWorkspaceUser, recordRunnerCapacity } from "../db";
+import { createRunnerHelpers } from "../runner-helpers";
+import { createRunnerPlacement } from "../runner-placement";
+import type { RunnerCommand } from "../runner-protocol";
+import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../workspace";
+import { sqlRows, sqlRun, tempStore } from "../../test/pglite";
+import { signInFixtureRunner } from "../../test/pglite-fixtures";
 import {
   createFakeReviewThreads,
   type FakeReviewThread,
@@ -25,13 +33,18 @@ import {
   checkNotes,
   proposalScripts,
   collectPullSources,
+  createProbeCollection,
+  handleProbeCollectionRequest,
+  probeCollectionAllowedSteps,
   type AgentTurn,
   type CollectOptions,
   type StoredFinding,
 } from "./index";
 
 const temps: string[] = [];
-afterEach(() => {
+const closers: Array<() => Promise<void>> = [];
+afterEach(async () => {
+  for (const close of closers.splice(0)) await close();
   for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -574,5 +587,143 @@ describe("check status", () => {
     expect(checkNotes({ check: { main, breaks: [], status: "unverified" } })).toContain(
       "no source names a commit that broke the rule",
     );
+  });
+});
+
+type HelperCommand = Extract<RunnerCommand, { type: "helper" }>;
+
+async function runnerFixture(signedIn: boolean) {
+  const { db, close } = await tempStore();
+  closers.push(close);
+  const now = Date.now();
+  const userId = await putWorkspaceUser(db, {
+    id: workspaceId(),
+    linearUserId: "owner",
+    name: "Owner",
+    email: "owner@example.invalid",
+  });
+  const workspace = await consumeWorkspaceBootstrap(db, {
+    id: workspaceId(),
+    organizationId: "org",
+    name: "Acme",
+    userId,
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    now,
+  });
+  await sqlRun(db, "INSERT INTO workspace_repository VALUES(?,'acme/widgets','team')", [
+    workspace.id,
+  ]);
+  await sqlRun(
+    db,
+    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner',?,?,'box','active',?,?)",
+    [workspace.id, userId, now, now],
+  );
+  await recordRunnerCapacity(db, "runner", 1, 1, 2);
+  if (signedIn) await signInFixtureRunner(db, "runner", "codex");
+  const helpers = createRunnerHelpers({
+    store: db,
+    keyId: "fixture",
+    privateKey: generateKeyPairSync("ed25519").privateKey,
+    probes: probeCollectionAllowedSteps,
+  });
+  const fixture = fixtureRepository();
+  const pawsRoot = tempDir();
+  const options = collectOptions({
+    remote: fixture.path,
+    broke: fixture.broke,
+    pawsRoot,
+    out: "",
+    turn: fakeTurn(fixture.broke),
+  });
+  const collection = createProbeCollection({
+    store: db,
+    pawsRoot,
+    helpers: async () => helpers,
+    placement: createRunnerPlacement({ store: db }),
+    profile: () => ({ agent: "codex", model: null }),
+    locate: () => ({ repository: options.repository, github: options.github }),
+    pollIntervalMs: 1,
+  });
+  const agent = fakeTurn(fixture.broke);
+  const answered = new Set<string>();
+  const answer = async () => {
+    for (const { id } of await sqlRows<{ id: string }>(
+      db,
+      "SELECT id FROM runner_helper WHERE ended_at IS NULL AND result IS NULL",
+    )) {
+      if (answered.has(id)) continue;
+      answered.add(id);
+      const command = (await helpers.current(id)).command as HelperCommand;
+      const scratch = tempDir();
+      let text = "";
+      await agent({
+        role: "implementer",
+        prompt: command.prompt,
+        worktreePath: scratch,
+        onEvent: (event) =>
+          void (text = (event as { update: { content: { text: string } } }).update.content.text),
+      } as RunAgentOptions);
+      const probe = command.probe
+        ? {
+            path: command.probe.path,
+            content: readFileSync(join(scratch, command.probe.path)).toString("base64"),
+            entry: JSON.parse(/```json\n([\s\S]*?)```/.exec(text)![1]!),
+          }
+        : undefined;
+      await helpers.acknowledge("runner", id);
+      await helpers.submit("runner", {
+        ...{ executionId: workspaceId(), commandId: id, account: command.account },
+        ...{ role: "implementer", stopReason: "end_turn", agentExited: true },
+        ...{ cancelled: false, timedOut: false, authRequired: false, text },
+        ...(probe ? { probe } : {}),
+      });
+    }
+  };
+  const start = { workspaceId: workspace.id, userId, repository: "acme/widgets" };
+  return { db, collection, answer, start, pawsRoot };
+}
+
+describe("probe collection on a runner", () => {
+  test("with no signed-in account it stops before any turn and names the account", async () => {
+    const { db, collection, start } = await runnerFixture(false);
+    const refusal = "No signed-in codex account on box";
+    expect(await collection.start(start)).toEqual({ status: 409, body: { error: refusal } });
+    await expect(collection.run(start, new AbortController().signal)).rejects.toThrow(refusal);
+    expect(await sqlRows(db, "SELECT id FROM runner_helper")).toEqual([]);
+  });
+
+  test("a bound account runs probe_distill then probe_write on its runner and stores the probe", async () => {
+    const { db, collection, answer, start, pawsRoot } = await runnerFixture(true);
+    expect((await collection.start(start)).status).toBe(202);
+    const timer = setInterval(() => void answer().catch(() => undefined), 5);
+    closers.push(async () => clearInterval(timer));
+    const result = await collection.run(start, new AbortController().signal);
+    expect(result.rules.map((rule) => [rule.candidate.id, rule.check.status])).toEqual([
+      ["migrations-append-only", "checked"],
+      ["api-fields-stay", "misses_bug"],
+    ]);
+    const yaml = readFileSync(join(pawsRoot, "probes/acme/widgets/probes.proposed.yaml"), "utf8");
+    expect(proposalScripts(yaml).get(".agents/probes/migrations-append-only.ts")).toBe(
+      MIGRATIONS_PROBE,
+    );
+    expect(yaml).toContain('    paths: ["migrations/**"]\n    failOn: P0\n');
+    expect(await sqlRows(db, "SELECT runner_id, purpose FROM runner_helper ORDER BY id")).toEqual([
+      { runner_id: "runner", purpose: "probe_distill" },
+      { runner_id: "runner", purpose: "probe_write" },
+      { runner_id: "runner", purpose: "probe_write" },
+    ]);
+  });
+
+  test("a non-admin gets 403 and nothing starts", async () => {
+    const started: unknown[] = [];
+    const request = new Request("http://127.0.0.1:8787/api/settings/probes/collect", {
+      method: "POST",
+      headers: { "x-paws-csrf": "token" },
+      body: JSON.stringify({ repository: "acme/widgets" }),
+    });
+    const start = async (input: unknown) => (started.push(input), { status: 202, body: {} });
+    const context = { collection: { start }, csrfToken: "token", workspaceId: "w", role: "member" };
+    expect((await handleProbeCollectionRequest(request, context)).status).toBe(403);
+    expect(started).toEqual([]);
   });
 });

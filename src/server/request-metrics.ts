@@ -22,7 +22,8 @@ const ROUTES = `
 /api/settings/storage/check
 /api/metrics /api/metrics/stages /api/settings/storage-usage /api/settings/storage-usage/refresh
 /api/settings/storage-cleanup /api/settings/storage-cleanup/preview
-/api/settings/storage-cleanup/run /api/settings/storage-cleanup/history /api/retros/settings
+/api/settings/storage-cleanup/run /api/settings/storage-cleanup/history
+/api/settings/probes/collect /api/retros/settings
 /api/retros/schedule /api/retros/runs /api/retros/preview /api/retros/history
 /api/retros/reports/:id /api/retros/reports/:id/digest /api/retros/reports/:id/report
 /api/retros/reports/:id/prompt /api/retros/reports/:id/settings

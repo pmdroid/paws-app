@@ -166,6 +166,12 @@ export type ServerOptions = {
   ) => Promise<Response | null>;
   storageUsage?: StorageUsageSettingsOptions["usage"];
   storageCleanup?: StorageCleanupSettingsOptions["cleanup"];
+  probeCollection?: (
+    request: Request,
+    context: { csrfToken: string; workspaceId: string } & {
+      [key in "role" | "userId" | "trustedOrigin"]?: string;
+    },
+  ) => Promise<Response>;
   vmProviderChecks?: VmProviderCheckService;
   doctor?: () => Promise<readonly DoctorCheck[]>;
   retros?: (
@@ -363,6 +369,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(options.vmProviderChecks ? { vmProviderChecks: options.vmProviderChecks } : {}),
           ...(options.doctor ? { doctor: options.doctor } : {}),
           ...(options.storageCleanup ? { storageCleanup: options.storageCleanup } : {}),
+          ...(options.probeCollection ? { probeCollection: options.probeCollection } : {}),
           ...(options.improvements ? { improvements: options.improvements } : {}),
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
           ...(options.blockerChecks ? { blockerChecks: options.blockerChecks } : {}),
@@ -426,6 +433,7 @@ type Secrets = {
   retros?: ServerOptions["retros"];
   storageUsage?: ServerOptions["storageUsage"];
   storageCleanup?: ServerOptions["storageCleanup"];
+  probeCollection?: ServerOptions["probeCollection"];
   vmProviderChecks?: ServerOptions["vmProviderChecks"];
   doctor?: ServerOptions["doctor"];
   improvements?: ServerOptions["improvements"];
@@ -864,6 +872,16 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     });
     if (response) return response;
+  }
+  if (path === "/api/settings/probes/collect" && secrets.probeCollection && secrets.store) {
+    const workspaceId = principal?.workspaceId ?? (await secrets.store.run(firstWorkspaceIdSteps));
+    if (!workspaceId) return Response.json({ error: "Connect Linear first." }, { status: 404 });
+    return secrets.probeCollection(request, {
+      csrfToken,
+      workspaceId,
+      ...(principal === undefined ? {} : { role: principal.role, userId: principal.userId }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    });
   }
   if ((path === STORAGE_SETTINGS_PATH || path === STORAGE_CHECK_PATH) && secrets.store) {
     const store = secrets.store;
