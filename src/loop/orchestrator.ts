@@ -113,6 +113,7 @@ import {
   type FixRound,
   type RestartHandoff,
   activateLinearItemSteps,
+  answeredItemQuestionSteps,
   bindLinearSessionTaskSteps,
   configureWorkItemSteps,
   discardLinearTurnsSteps,
@@ -293,6 +294,7 @@ import {
   MAX_TRANSIENT_RETRIES,
   RUNNER_CAPACITY_WAIT_MS,
   RunnerCapacityWait,
+  ReviewerModelConflict,
   RunnerSetupRequired,
   RunnerRepositoryRefused,
   SavedWorkRewritten,
@@ -764,6 +766,9 @@ import {
   AGENT_HUNG_STOP,
   KEEP_WAITING,
   MOVE_TO_ANOTHER_RUNNER,
+  REVIEWER_MODEL_REASON,
+  REVIEWER_MODEL_STOP,
+  reviewerModelChoice,
   waitForRunner,
   type RunnerWaitQuestion,
 } from "./runner-wait";
@@ -2199,6 +2204,10 @@ export class Orchestrator {
             if (held) await this.waitForVerification(job, context, held);
             return;
           }
+          const asking =
+            itemId === null ? null : await this.store.run((q) => getWorkItemSteps(q, itemId));
+          if (asking && (await context.isCurrent()) && (await this.askReviewerModel(asking, error)))
+            return;
           const wait = await this.nextRunnerWait(job, error);
           if (!wait || !(await context.isCurrent())) throw error;
           journalCaught(
@@ -2826,6 +2835,7 @@ export class Orchestrator {
         );
         return;
       }
+      if (await this.askReviewerModel(item, error)) return;
       const wait = await this.nextRunnerWait(job, error);
       if (wait) {
         // Settle the attempt before the park. The parked interval is waiting, not a lease expiry,
@@ -5382,6 +5392,37 @@ export class Orchestrator {
       );
     });
     await this.flush();
+  }
+
+  private async askReviewerModel(item: WorkItemRecord, error: unknown): Promise<boolean> {
+    const conflict = capacityWaitIn(error);
+    const sessionId = this.activitySession(item);
+    const runId = item.currentRunId;
+    if (!(conflict instanceof ReviewerModelConflict) || sessionId === null || !runId) return false;
+    const { reviewer } = await this.profileSnapshot(runId);
+    const configured = `${reviewer.agent} ${reviewer.model ?? conflict.implementation}`;
+    const cause = `${item.linearIdentifier} was implemented with ${conflict.implementation}, and its reviewer model is ${configured}. The reviewer must be a different model, so no runner can review it.`;
+    const body = conflict.alternatives.length
+      ? `${cause} Pick another reviewer model for this item, or stop.`
+      : `${cause} No runner offers another model: reply with an agent and model, for example \`codex gpt-6.2-sol\`, or stop.`;
+    const now = this.now();
+    await this.store.transaction(function* (q) {
+      const current = yield* getWorkItemSteps(q, item.id);
+      if (!current || current.state === "awaiting_input") return;
+      yield* askSteps(
+        q,
+        { itemId: item.id, runId, sessionId, version: current.version },
+        "runner-wait",
+        body,
+        {
+          options: [...conflict.alternatives, REVIEWER_MODEL_STOP],
+          reason: REVIEWER_MODEL_REASON,
+          now,
+        },
+      );
+    });
+    await this.flush();
+    return true;
   }
 
   private async askOutOfMemory(
@@ -11398,6 +11439,19 @@ export class Orchestrator {
   }
 
   private async profileSnapshot(runId: string): Promise<AgentProfiles> {
+    const profiles = await this.storedProfiles(runId);
+    const choice = reviewerModelChoice(
+      await this.store.run(function* (q) {
+        const itemId = (yield* getRunSteps(q, runId))?.itemId;
+        return itemId ? yield* answeredItemQuestionSteps(q, itemId, REVIEWER_MODEL_REASON) : null;
+      }),
+    );
+    if (!choice) return profiles;
+    const same = choice.agent === profiles.reviewer.agent;
+    return { ...profiles, reviewer: { ...(same ? profiles.reviewer : {}), ...choice } };
+  }
+
+  private async storedProfiles(runId: string): Promise<AgentProfiles> {
     const saved = this.readProfileSnapshot(runId);
     if (saved) return saved.profiles;
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));

@@ -123,6 +123,18 @@ export class RunnerCapacityWait extends Error {
   }
 }
 
+export const REVIEWER_MODEL_MATCHES = "reviewer model matches implementation model";
+
+export class ReviewerModelConflict extends RunnerCapacityWait {
+  constructor(
+    readonly implementation: string,
+    readonly alternatives: readonly string[],
+    rejections: readonly string[],
+  ) {
+    super([], undefined, rejections);
+  }
+}
+
 export const HANG_ASK_AFTER = 3;
 
 export class AgentHungError extends Error {

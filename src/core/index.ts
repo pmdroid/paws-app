@@ -147,6 +147,8 @@ export {
   MAX_TRANSIENT_RETRIES,
   RUNNER_CAPACITY_WAIT_MS,
   RunnerCapacityWait,
+  REVIEWER_MODEL_MATCHES,
+  ReviewerModelConflict,
   RunnerSetupRequired,
   RunnerRepositoryRefused,
   type RunnerRepositoryRefusal,

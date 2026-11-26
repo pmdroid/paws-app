@@ -44,6 +44,8 @@ import {
   closeFallbackAttemptsSteps,
   fallbackHistorySteps,
   getWorkItemSteps,
+  lastSuccessfulImplementationSteps,
+  workspaceAgentModelsSteps,
   refundLostTurnAsync,
   listHooks,
   startAgentWait,
@@ -157,6 +159,8 @@ import {
   RunnerCapacityWait,
   RunnerSetupRequired,
   RunnerRepositoryRefused,
+  REVIEWER_MODEL_MATCHES,
+  ReviewerModelConflict,
   RunnerSlotsBusyError,
   SavedWorkRewritten,
   WORKSPACE_HOOK_LIMIT,
@@ -166,6 +170,7 @@ import {
 import {
   sessionHolderSteps,
   runRunnerSteps,
+  PINNED_ELSEWHERE,
   PlacementRaceError,
   RUNNER_ONLINE_MS,
   SESSION_GRACE_MS,
@@ -173,6 +178,14 @@ import {
   type PlacementDisposition,
   type RunnerPlacement,
 } from "../runner-placement";
+
+export function reviewerModelDeadEnd(rejected: readonly string[]): boolean {
+  const reason = (entry: string) => entry.slice(entry.indexOf(":") + 2);
+  return (
+    rejected.some((entry) => reason(entry) === REVIEWER_MODEL_MATCHES) &&
+    rejected.every((entry) => [REVIEWER_MODEL_MATCHES, PINNED_ELSEWHERE].includes(reason(entry)))
+  );
+}
 
 class RunnerUnavailableError extends Error {
   override readonly name = "RunnerUnavailableError";
@@ -355,6 +368,23 @@ export function createRemoteAgentRunner(options: {
     );
     return hooks.length ? { hooks: hooks.slice(0, WORKSPACE_HOOK_LIMIT) } : {};
   }
+  async function reviewerModelConflict(
+    itemId: string,
+    placement: Parameters<RunnerPlacement["candidates"]>[0],
+    rejected: readonly string[],
+    details: readonly string[],
+  ) {
+    if (placement.role !== "reviewer" || !reviewerModelDeadEnd(rejected)) return null;
+    return store.run(function* (q) {
+      const implementation = (yield* lastSuccessfulImplementationSteps(q, itemId))?.model;
+      if (!implementation) return null;
+      const runnerIds = rejected.map((entry) => entry.slice(0, entry.indexOf(":")));
+      const alternatives = (yield* workspaceAgentModelsSteps(q, runnerIds))
+        .filter((entry) => entry.model !== implementation)
+        .map((entry) => `${entry.agent} ${entry.model}`);
+      return new ReviewerModelConflict(implementation, [...new Set(alternatives)], details);
+    });
+  }
   async function select(
     itemId: string,
     placement: Parameters<RunnerPlacement["candidates"]>[0],
@@ -390,6 +420,8 @@ export function createRemoteAgentRunner(options: {
       const need = await options.placement.setupNeed(placement);
       if (need) throw new RunnerSetupRequired(need);
     }
+    const conflict = await reviewerModelConflict(itemId, placement, rejected, details);
+    if (conflict) throw conflict;
     const agent = placement.profile?.agent;
     const accountCheck = untils.filter((until) => until > now()).sort((a, b) => a - b)[0];
     const resetsAt = agent

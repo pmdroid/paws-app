@@ -58,7 +58,7 @@ import { RETRY_CLOSEOUT, retriesCloseout, rewrittenRestart } from "./closeout-re
 import { retriesMerge } from "../merge";
 import { worktreeBranch } from "./sources";
 import { answerRunnerRepositorySteps } from "./runner-repository";
-import { AGENT_HUNG_REASON, AGENT_HUNG_STOP } from "./runner-wait";
+import { AGENT_HUNG_REASON, AGENT_HUNG_STOP, REVIEWER_MODEL_REASON } from "./runner-wait";
 import { recordVisualReviewOutcomeSteps, visualReviewHandoffSteps } from "./visual-review";
 import { replyListSection } from "./review-replies";
 
@@ -406,6 +406,20 @@ export function questionEffects(
       }
       if (question.reason === AGENT_HUNG_REASON) {
         yield* agentHung(q, question);
+        return;
+      }
+      if (question.reason === REVIEWER_MODEL_REASON && /^\s*stop\b/i.test(question.answer ?? "")) {
+        yield* consumeTurn(q, question);
+        const item = yield* getWorkItemSteps(q, question.itemId);
+        if (item?.state === "awaiting_input")
+          yield* failWorkItemSteps(
+            q,
+            item,
+            "reverify",
+            `Stopped because the reviewer model matched the implementation model, as asked in Linear. The work is on branch \`${item.branchName || worktreeBranch(item)}\`.`,
+            input.now,
+            { stoppedByAnswer: true },
+          );
         return;
       }
       yield* consumeTurn(q, question);

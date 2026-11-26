@@ -133,18 +133,24 @@ export function* answeredRunQuestionSteps(
   runId: string,
   reason: string,
 ): Steps<string | null> {
+  return yield* latestAnswerSteps(q, eq(q.t.question.runId, runId), reason);
+}
+
+export function* answeredItemQuestionSteps(
+  q: Q,
+  itemId: string,
+  reason: string,
+): Steps<string | null> {
+  return yield* latestAnswerSteps(q, eq(q.t.question.itemId, itemId), reason);
+}
+
+function* latestAnswerSteps(q: Q, owner: SQL, reason: string): Steps<string | null> {
   const { question } = q.t;
   const row = yield* q.one(
     q.orm
       .select({ answer: question.answer })
       .from(question)
-      .where(
-        and(
-          eq(question.runId, runId),
-          eq(question.reason, reason),
-          eq(question.status, "answered"),
-        ),
-      )
+      .where(and(owner, eq(question.reason, reason), eq(question.status, "answered")))
       .orderBy(desc(question.answeredAt), desc(question.id))
       .limit(1),
   );
