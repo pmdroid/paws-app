@@ -218,6 +218,7 @@ import {
   githubBlobCache,
   memberVmProviderId,
   observeDb,
+  readAgentAuthSteps,
 } from "./db";
 import {
   METRICS_FLUSH_EVERY_MS,
@@ -347,6 +348,7 @@ import { createAdmission, registerScheduler, saveSchedulingContextSteps } from "
 import {
   createRunnerPlacement,
   createRunnerPlacementBrowser,
+  credentialRefreshable,
   itemOwnerEligibleRunnerSteps,
   itemOwnerHasEligibleRunnerSteps,
   itemRunnerVerdictsSteps,
@@ -1372,6 +1374,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         requiresOAuthSteps: function* (q, accountId) {
           const stored = yield* readAgentCredentialSteps(q, paths.secretsDir, accountId);
           return stored?.blob?.includes(".claude/paws-oauth.json") ?? false;
+        },
+        refreshableSteps: function* (q, accountId) {
+          if ((yield* readAgentAuthSteps(q, accountId)) !== null) return false;
+          const stored = yield* readAgentCredentialSteps(q, paths.secretsDir, accountId);
+          return credentialRefreshable(stored?.blob);
         },
         ...(parents ? { sessionActorSteps: parents.actorSteps } : {}),
       })

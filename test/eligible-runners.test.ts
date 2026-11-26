@@ -1,10 +1,11 @@
-import { MINIMUM_RUNNER_VERSION } from "../src/runner-protocol";
+import { MINIMUM_RUNNER_VERSION, RUNNER_MEMORY_ACCOUNT_PROTOCOL } from "../src/runner-protocol";
 import { expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import {
   bindAgentAccount,
   createAgentAccount,
   recordAccountObservation,
+  recordRunnerAccountCapability,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
   putWorkspaceUser,
@@ -116,6 +117,15 @@ async function workspace(runners: Record<string, Runner>) {
         runnerId: id,
         now,
       });
+      await recordRunnerAccountCapability(
+        db,
+        id,
+        {
+          protocol: RUNNER_MEMORY_ACCOUNT_PROTOCOL,
+          bindings: [{ bindingId: binding.id, agent: "codex" }],
+        },
+        now,
+      );
       if (runner.authExpired === 1)
         await recordAccountObservation(db, {
           bindingId: binding.id,

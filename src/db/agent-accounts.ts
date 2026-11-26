@@ -789,20 +789,28 @@ export function* accountSlotsInUseSteps(
   accountId: string,
   at: number,
   exceptCommandId: string | null = null,
+  runners: { except?: string; issueVm?: boolean } = {},
 ) {
   const { retroDispatch: d, runnerCommandAccount: a, runnerExecutionUsage: u } = q.t;
-  const { runnerHelper: h, runnerCommand: c } = q.t;
+  const { runnerHelper: h, runnerCommand: c, runner: r } = q.t;
   const w = aliasedTable(q.t.runnerWork, "w");
+  const onRunner = (id: AnyColumn) =>
+    and(
+      runners.except === undefined ? undefined : ne(id, runners.except),
+      runners.issueVm ? eq(r.isolation, "issue_vm") : undefined,
+    );
   const retros = yield* q.one(
     q.orm
       .select({ count: count() })
       .from(d)
       .innerJoin(a, eq(a.commandId, d.commandId))
+      .innerJoin(r, eq(r.id, d.runnerId))
       .where(
         and(
           eq(a.accountId, accountId),
           exceptCommandId === null ? undefined : ne(d.commandId, exceptCommandId),
           isNull(d.releasedAt),
+          onRunner(d.runnerId),
         ),
       ),
   );
@@ -811,6 +819,7 @@ export function* accountSlotsInUseSteps(
       .select({ count: count() })
       .from(u)
       .innerJoin(a, eq(a.commandId, u.commandId))
+      .innerJoin(r, eq(r.id, u.runnerId))
       .leftJoin(h, eq(h.id, u.commandId))
       .leftJoin(c, eq(c.id, u.commandId))
       .leftJoin(w, and(eq(w.runId, c.runId), eq(w.commandId, u.commandId)))
@@ -818,6 +827,7 @@ export function* accountSlotsInUseSteps(
         and(
           eq(a.accountId, accountId),
           exceptCommandId === null ? undefined : ne(u.commandId, exceptCommandId),
+          onRunner(u.runnerId),
           or(
             and(isNotNull(h.id), gt(h.expiresAt, at), or(isNull(h.endedAt), isNull(h.result))),
             and(

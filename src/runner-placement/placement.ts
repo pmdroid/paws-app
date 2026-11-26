@@ -106,6 +106,7 @@ const sessionWaitsByDatabase = new WeakMap<Db, Map<string, SessionWait>>();
 export function createRunnerPlacement(options: {
   store: Db;
   requiresOAuthSteps?: (q: Q, accountId: string) => Steps<boolean>;
+  refreshableSteps?: (q: Q, accountId: string) => Steps<boolean>;
   sessionActorSteps?: (q: Q, sessionId: string) => Steps<string | undefined>;
   now?: () => number;
 }): RunnerPlacement {
@@ -326,7 +327,7 @@ export function createRunnerPlacement(options: {
         bindingId: account.bindingId,
         role: input.role,
       },
-      options.requiresOAuthSteps,
+      options,
     );
     if ("reason" in fit)
       throw new PlacementRaceError(`default sign-in: ${fit.reason} before assignment`);
@@ -403,7 +404,7 @@ export function createRunnerPlacement(options: {
               role: "reviewer",
               at,
             },
-            options.requiresOAuthSteps,
+            options,
           )
         : null;
     const pinnedOnline =
@@ -487,7 +488,7 @@ export function createRunnerPlacement(options: {
           role: input.role,
           at,
         },
-        options.requiresOAuthSteps,
+        options,
       );
       if ("reason" in fit) {
         for (const refusal of fit.refusals?.length ? fit.refusals : [fit])
