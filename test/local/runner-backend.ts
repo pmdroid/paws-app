@@ -1,4 +1,8 @@
-import { bindFixtureAccounts, CURRENT_RUNNER_RELEASE } from "../pglite-fixtures";
+import {
+  bindFixtureAccounts,
+  CURRENT_RUNNER_RELEASE,
+  offerFixtureModels,
+} from "../pglite-fixtures";
 import { boundHeartbeat, boundResultSubmissions } from "../bound-runner-account";
 import assert from "node:assert/strict";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
@@ -2475,6 +2479,13 @@ export async function probeRunnerBackend(
       );
     }
     await bindFixtureAccounts(db);
+    for (const id of hostIds)
+      await offerFixtureModels(db, id, "codex", [
+        "model",
+        "new-model",
+        "review-model",
+        "independent-model",
+      ]);
     const placement = createRunnerPlacement({
       store: db,
       now: () => now,
