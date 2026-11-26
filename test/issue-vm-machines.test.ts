@@ -140,10 +140,6 @@ test("a runner that is no VM host stops its VM units; the daemon reconciles ever
       if (failures-- > 0) throw new Error("Paws is unreachable");
       return { vmHost: false };
     },
-    async issueVmEnrollment() {
-      await Promise.resolve();
-      return { token: null };
-    },
   };
   let now = 0;
   const tick = issueVmReconciler(daemon, fake.units, () => now);
@@ -158,26 +154,17 @@ test("a runner that is no VM host stops its VM units; the daemon reconciles ever
   await issueVmReconciler(daemon, null)();
 });
 
-test("the host stages an unenrolled VM's bootstrap token before starting it, and waits when Paws can't give one", async () => {
+test("the host stages the bootstrap token Paws hands it for a VM before starting it", async () => {
   const fake = createFakeIssueVmUnits();
   const dir = mkdtempSync(join(tmpdir(), "paws-issue-vm-enroll-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const enrollDir = join(dir, "enroll");
-  const tokens: Record<string, string | null | Error> = {
-    [A]: "bootstrap-token-0123456789",
-    [B]: null,
-    [C]: new Error("Paws is unreachable"),
-  };
+  const listed = view(3, { [A]: "awake", [B]: "awake" });
+  if (listed.vmHost) listed.vms[0]!.token = "bootstrap-token-0123456789";
   const daemon = {
     async issueVmHost(): Promise<IssueVmHostView> {
       await Promise.resolve();
-      return view(3, { [A]: "awake", [B]: "awake", [C]: "awake" });
-    },
-    async issueVmEnrollment(id: string) {
-      await Promise.resolve();
-      const token = tokens[id]!;
-      if (token instanceof Error) throw token;
-      return { token };
+      return listed;
     },
   };
   await issueVmReconciler(daemon, fake.units, () => 0, enrollDir)();

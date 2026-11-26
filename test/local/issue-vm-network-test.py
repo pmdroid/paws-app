@@ -129,7 +129,7 @@ class Rules(unittest.TestCase):
         for rule in ('iifname "pawsvm*" ip daddr 10.199.0.1 tcp dport 8787 dnat ip to 100.90.1.2', "ip saddr 10.199.0.0/16 ip daddr 100.90.1.2 tcp dport 8788 masquerade", 'iifname "pawsvm*" drop'):
             self.assertIn(rule, lines)
         self.assertEqual(sum("dport" in line for line in lines), 8)
-        self.assertLess(lines.index('iifname "pawsvm*" ct status dnat ip daddr 100.90.1.2 tcp dport 8787 accept'), lines.index('iifname "pawsvm*" drop'))
+        self.assertLess(lines.index('iifname "pawsvm*" ip daddr 100.90.1.2 tcp dport 8787 accept'), lines.index('iifname "pawsvm*" drop'))
         self.assertNotIn("100.64.0.0/10 accept", ruleset)
 
     def test_two_https_servers_on_443_each_keep_their_own_forward(self):

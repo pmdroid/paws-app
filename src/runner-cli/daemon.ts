@@ -31,18 +31,13 @@ const ISSUE_VM_EVERY_MS = 30_000;
 const ISSUE_VM_ENROLL_DIR = "/var/lib/paws-runner/issue-vm-enroll";
 
 export function issueVmReconciler(
-  daemon: {
-    issueVmHost(): Promise<IssueVmHostView>;
-    issueVmEnrollment(id: string): Promise<{ token: string | null }>;
-  },
+  daemon: { issueVmHost(): Promise<IssueVmHostView> },
   units: IssueVmUnits | null,
   now: () => number = Date.now,
   enrollDir = ISSUE_VM_ENROLL_DIR,
 ) {
   let at = 0;
-  const enroll = async (id: string) => {
-    const { token } = await daemon.issueVmEnrollment(id);
-    if (token === null) return;
+  const stage = (id: string, token: string) => {
     mkdirSync(enrollDir, { recursive: true, mode: 0o700 });
     const staged = join(enrollDir, `.${id}`);
     writeFileSync(staged, token, { mode: 0o600 });
@@ -52,7 +47,7 @@ export function issueVmReconciler(
     if (units === null || now() < at) return;
     at = now() + ISSUE_VM_EVERY_MS;
     try {
-      await reconcileIssueVms(units, await daemon.issueVmHost(), enroll);
+      await reconcileIssueVms(units, await daemon.issueVmHost(), stage);
     } catch (error) {
       journalCaught(error, "runner-cli/daemon.issueVmReconciler", null);
     }

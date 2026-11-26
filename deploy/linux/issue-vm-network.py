@@ -169,7 +169,7 @@ def render(slots, links, routes, relay=()):
         "  chain input {",
         "    type filter hook input priority -10; policy accept;",
         f'    iifname "{TAP_PREFIX}*" ct state established,related accept',
-        *(f'    iifname "{TAP_PREFIX}*" ct status dnat ip daddr {address} tcp dport {port} accept' for address, port in targets),
+        *(f'    iifname "{TAP_PREFIX}*" ip daddr {address} tcp dport {port} accept' for address, port in targets),
         f'    iifname "{TAP_PREFIX}*" drop',
         "  }",
         "  chain forward {",
