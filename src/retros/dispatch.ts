@@ -124,6 +124,10 @@ export type RetroGenerationView = {
 };
 
 export type RetroCommandSigner = (command: RunnerRetroCommand) => SignedRunnerCommand;
+export type RetroCommandCredentials = (
+  runnerId: string,
+  envelopes: SignedRunnerCommand[],
+) => Promise<SignedRunnerCommand[]>;
 
 class RetroFencedError extends Error {}
 
@@ -373,6 +377,7 @@ export function createRetroDispatcher(options: {
   store: Db;
   artifactRoot: string;
   sign: RetroCommandSigner;
+  credentials?: RetroCommandCredentials;
   now?: () => number;
 }) {
   const { store, artifactRoot: root } = options;
@@ -929,7 +934,7 @@ export function createRetroDispatcher(options: {
           journalCaught(error, "retros.dispatch.commands", null);
         }
       }
-      return envelopes;
+      return options.credentials ? await options.credentials(runnerId, envelopes) : envelopes;
     },
     async acknowledge(runnerId: string, commandId: string) {
       await store.transaction(function* (q) {

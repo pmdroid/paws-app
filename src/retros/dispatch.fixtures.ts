@@ -17,7 +17,7 @@ import {
   signRunnerRetroCommand,
   type RunnerRetroCommand,
 } from "../runner-protocol";
-import { collectRetroDigest, createRetroDispatcher } from "./index";
+import { collectRetroDigest, createRetroDispatcher, type RetroCommandCredentials } from "./index";
 import { FIXTURE_END, FIXTURE_REPO, FIXTURE_START } from "./result.fixtures";
 
 export const keys = generateKeyPairSync("ed25519");
@@ -231,8 +231,14 @@ export async function worldPg(
   });
   if (!collected.ok) throw new Error(collected.reason);
   const clock = { now: FIXTURE_END + 10_000 };
-  const open = (database: Db) =>
-    createRetroDispatcher({ store: database, artifactRoot: root, sign, now: () => clock.now });
+  const open = (database: Db, credentials?: RetroCommandCredentials) =>
+    createRetroDispatcher({
+      store: database,
+      artifactRoot: root,
+      sign,
+      now: () => clock.now,
+      ...(credentials ? { credentials } : {}),
+    });
   const restart = async () => {
     await store.close();
     store = await (stores.reopen ?? stores.open)(root);
