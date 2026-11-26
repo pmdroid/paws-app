@@ -158,7 +158,6 @@ export {
   createRunnerPlacement,
   LOAD_HALF_LIFE_MS,
   LOAD_HISTORY_MS,
-  PINNED_ELSEWHERE,
   PlacementRaceError,
   SESSION_GRACE_MS,
 } from "./placement";

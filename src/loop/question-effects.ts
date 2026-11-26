@@ -408,10 +408,17 @@ export function questionEffects(
         yield* agentHung(q, question);
         return;
       }
-      if (question.reason === REVIEWER_MODEL_REASON && /^\s*stop\b/i.test(question.answer ?? "")) {
+      if (question.reason === REVIEWER_MODEL_REASON) {
+        const answer = (question.answer ?? "").trim();
+        const offered = question.options.map((o) => (typeof o === "string" ? o : o.value));
+        const stop = /^stop\b/i.test(answer);
+        const known = offered.some((option) => option.toLowerCase() === answer.toLowerCase());
+        if (!stop && (known || offered.length < 2))
+          return yield* verifyAgainSteps(q, question, { now: input.now, key: "reviewer-model" });
         yield* consumeTurn(q, question);
         const item = yield* getWorkItemSteps(q, question.itemId);
-        if (item?.state === "awaiting_input")
+        if (item?.state !== "awaiting_input") return;
+        if (stop)
           yield* failWorkItemSteps(
             q,
             item,
@@ -420,10 +427,14 @@ export function questionEffects(
             input.now,
             { stoppedByAnswer: true },
           );
-        return;
-      }
-      if (question.reason === REVIEWER_MODEL_REASON) {
-        yield* verifyAgainSteps(q, question, { now: input.now, key: "reviewer-model" });
+        else
+          yield* askSteps(
+            q,
+            { itemId: item.id, runId: item.currentRunId, sessionId: question.sessionId },
+            "runner-wait",
+            `${answer} is not one of the offered models. ${question.body}`,
+            { options: offered, reason: REVIEWER_MODEL_REASON, now: input.now },
+          );
         return;
       }
       yield* consumeTurn(q, question);

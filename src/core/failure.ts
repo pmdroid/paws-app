@@ -123,8 +123,6 @@ export class RunnerCapacityWait extends Error {
   }
 }
 
-export const REVIEWER_MODEL_MATCHES = "reviewer model matches implementation model";
-
 export class ReviewerModelConflict extends RunnerCapacityWait {
   constructor(
     readonly implementation: string,

@@ -10,7 +10,7 @@ import {
   saveRunResult,
   type Db,
 } from "../db";
-import { answerSteps } from "../questions";
+import { answerSteps, findOpenQuestion } from "../questions";
 import { askSteps } from "./operations";
 import { questionEffects } from "./question-effects";
 import {
@@ -69,13 +69,17 @@ test("hang losses count across runs until a turn completes", async () => {
   expect(await db.run((q) => consecutiveHangsSteps(q, item.id))).toMatchObject({ count: 1 });
 });
 
-async function askHung(answer: string, reason = AGENT_HUNG_REASON) {
+async function askHung(
+  answer: string,
+  reason = AGENT_HUNG_REASON,
+  options = [AGENT_HUNG_RETRY, AGENT_HUNG_STOP],
+) {
   const clock = new FakeClock(20_000);
   const { db, item } = await hungItem(clock);
   const { run } = await beginImplementRun(db, item.id, clock.now());
   await db.transaction((q) =>
     askSteps(q, { itemId: item.id, runId: run.id, sessionId: "ses" }, "runner-wait", "Hung.", {
-      options: [AGENT_HUNG_RETRY, AGENT_HUNG_STOP],
+      options,
       reason,
       now: clock.now(),
     }),
@@ -100,6 +104,7 @@ async function askHung(answer: string, reason = AGENT_HUNG_REASON) {
   return {
     state: (await getWorkItem(db, item.id))?.state,
     jobs: await listJobs(db),
+    open: await findOpenQuestion(db, "ses"),
   };
 }
 
@@ -130,8 +135,22 @@ test("Stop after the runner ran out of memory ends the item as stopped", async (
 });
 
 test("a reviewer model answer always queues its own re-verification", async () => {
-  const { state, jobs } = await askHung("codex gpt-other", REVIEWER_MODEL_REASON);
+  const { state, jobs } = await askHung("codex gpt-other", REVIEWER_MODEL_REASON, offered);
   expect(state).toBe("verifying");
   const keys = jobs.filter((job) => job.queue === JOB_KIND.reverify).map((job) => job.jobKey);
   expect(keys).toEqual([expect.stringMatching(/^reviewer-model:/)]);
+});
+
+const offered = ["codex gpt-other", "Stop"];
+
+test("a reviewer model answer that was not offered asks again", async () => {
+  const {
+    state,
+    jobs,
+    open: asked,
+  } = await askHung("codex gpt-othr", REVIEWER_MODEL_REASON, offered);
+  expect(state).toBe("awaiting_input");
+  expect(jobs.filter((job) => job.status === "pending")).toEqual([]);
+  expect(asked?.body).toStartWith("codex gpt-othr is not one of the offered models.");
+  expect(asked?.options).toEqual(offered);
 });

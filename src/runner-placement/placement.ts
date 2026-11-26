@@ -43,7 +43,6 @@ import {
   type Steps,
 } from "../db";
 import { REVIEW_COMMAND_OAUTH_RUNNER_VERSION, type RunnerCodingAgent } from "../runner-protocol";
-import { REVIEWER_MODEL_MATCHES } from "../core";
 import type {
   EligibleRunner,
   PlacementAccount,
@@ -505,7 +504,7 @@ export function createRunnerPlacement(options: {
         lastImplementation?.model &&
         (input.profile?.model ?? runner.resolvedModel) === lastImplementation.model
       ) {
-        reject(REVIEWER_MODEL_MATCHES);
+        reject("reviewer model matches implementation model");
         continue;
       }
       const reviewRank =

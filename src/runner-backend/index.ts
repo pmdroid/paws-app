@@ -159,7 +159,6 @@ import {
   RunnerCapacityWait,
   RunnerSetupRequired,
   RunnerRepositoryRefused,
-  REVIEWER_MODEL_MATCHES,
   ReviewerModelConflict,
   RunnerSlotsBusyError,
   SavedWorkRewritten,
@@ -170,7 +169,6 @@ import {
 import {
   sessionHolderSteps,
   runRunnerSteps,
-  PINNED_ELSEWHERE,
   PlacementRaceError,
   RUNNER_ONLINE_MS,
   SESSION_GRACE_MS,
@@ -179,54 +177,38 @@ import {
   type RunnerPlacement,
 } from "../runner-placement";
 
-const NOT_FOR_ITEM = [
-  PINNED_ELSEWHERE,
-  "not-yours",
-  "revoked",
-  "owner-not-in-team",
-  "owner-inactive",
-];
+const REVIEWER_MODEL_MATCHES = "reviewer model matches implementation model";
 const AGENTS = ["claude", "codex", "grok", "opencode"];
-
-export type RunnerCatalogs = ReadonlyMap<string, Readonly<Record<string, string | null>>>;
+const NOT_FOR_ITEM = /^(not-yours|revoked|owner-|repository |run pinned to another)/;
 
 export function reviewerModelAlternatives(input: {
   rejected: readonly string[];
   agent: string;
   implementation: string;
-  catalogs: RunnerCatalogs;
+  catalogs: ReadonlyMap<string, Readonly<Record<string, string | null | undefined>>>;
 }): string[] | null {
   const reasons = new Map<string, string[]>();
   for (const entry of input.rejected) {
     const id = entry.slice(0, entry.indexOf(":"));
     reasons.set(id, [...(reasons.get(id) ?? []), entry.slice(entry.indexOf(":") + 2)]);
   }
-  const usable = [...reasons].filter(
-    ([id, list]) =>
-      !list.some((reason) => NOT_FOR_ITEM.includes(reason)) &&
-      input.catalogs.get(id)?.[input.agent],
+  const placeable = [...reasons].filter(
+    ([, list]) => !list.some((reason) => NOT_FOR_ITEM.test(reason)),
+  );
+  const usable = placeable.filter(
+    ([id, list]) => list.includes(REVIEWER_MODEL_MATCHES) || input.catalogs.get(id)?.[input.agent],
   );
   if (!usable.length || usable.some(([, list]) => list.some((r) => r !== REVIEWER_MODEL_MATCHES)))
     return null;
-  const alternatives = usable.flatMap(([id]) =>
-    Object.entries(input.catalogs.get(id)!).flatMap(([agent, json]) =>
-      catalogModels(json ?? undefined)
-        .filter((model) => model !== input.implementation)
+  const alternatives = placeable.flatMap(([id]) =>
+    Object.entries(input.catalogs.get(id) ?? {}).flatMap(([agent, json]) =>
+      ((JSON.parse(json ?? "{}") as { models?: { id: string }[] }).models ?? [])
+        .map((entry) => entry.id)
+        .filter((model) => ![input.implementation, "default", "auto", ...AGENTS].includes(model))
         .map((model) => `${agent} ${model}`),
     ),
   );
   return [...new Set(alternatives)];
-}
-
-export function catalogModels(resultJson: string | undefined): string[] {
-  const result = JSON.parse(resultJson ?? "{}") as {
-    models?: { id: string }[];
-    identity?: { model?: string };
-  };
-  return [result.identity?.model, ...(result.models ?? []).map((model) => model.id)].filter(
-    (id): id is string =>
-      !!id && !["default", "auto", "claude", "codex", "grok", "opencode"].includes(id),
-  );
 }
 
 class RunnerUnavailableError extends Error {
