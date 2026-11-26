@@ -8,7 +8,11 @@ import {
   type Db,
   type Q,
 } from "../src/db";
-import { MINIMUM_RUNNER_VERSION, type RunnerCodingAgent } from "../src/runner-protocol";
+import {
+  MINIMUM_RUNNER_VERSION,
+  RUNNER_MEMORY_ACCOUNT_PROTOCOL,
+  type RunnerCodingAgent,
+} from "../src/runner-protocol";
 import { rows, tempStore } from "./pglite";
 
 export type PgliteTestDb = { db: Db; close(): Promise<void> };
@@ -209,7 +213,7 @@ export async function bindFixtureAccounts(db: Db, runnerId?: string, agent?: str
       db,
       row.runnerId,
       {
-        protocol: 1,
+        protocol: RUNNER_MEMORY_ACCOUNT_PROTOCOL,
         bindings: (await listAgentBindings(db, row.workspaceId))
           .filter((b) => b.runnerId === row.runnerId && b.removedAt === null)
           .map((b) => ({ bindingId: b.id, agent: b.agent })),

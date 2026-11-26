@@ -9,6 +9,7 @@ import {
   type ExeDevVmSize,
   type VmState,
 } from "../provisioning";
+import { ISSUE_VM_SLEEP_CHECK } from "./sleep-check";
 import type { StartQueue } from "./start-queue";
 
 export const BOAT_PREPARE_COMMAND = [
@@ -171,6 +172,17 @@ export function createBoatIssueVms(options: BoatIssueVmOptions): BoatIssueVms {
     },
 
     async sleep(name) {
+      const seen = await state(name);
+      if (seen === "stopped") return;
+      if (seen === "stopping") return reach(name, "stopped", options.sleepMs ?? 60_000, "stopping");
+      if (seen !== "running")
+        throw new BoatIssueVmError("failed", `${name} can't sleep while it is ${seen}.`);
+      const checked = await boat.execVm(name, ISSUE_VM_SLEEP_CHECK, { timeoutMs: 60_000 });
+      if (checked.exitCode !== 0)
+        throw new BoatIssueVmError(
+          "failed",
+          `${name} can't sleep yet: ${checked.stderr.trim().slice(0, 300) || "the sign-in check failed"}`,
+        );
       await stop(name, options.sleepMs ?? 60_000);
     },
 

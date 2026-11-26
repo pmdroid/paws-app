@@ -18,6 +18,7 @@ import {
 } from "drizzle-orm";
 import {
   RUNNER_ACCOUNT_PROTOCOL,
+  RUNNER_MEMORY_ACCOUNT_PROTOCOL,
   RunnerAccountCapabilitySchema,
   runnerAccountAgentUnsupported,
   type RunnerAccountCapability,
@@ -75,7 +76,8 @@ type AgentAccountErrorCode =
   | "removed"
   | "disabled"
   | "binding_mismatch"
-  | "runner_unsupported";
+  | "runner_unsupported"
+  | "busy";
 
 export class AgentAccountError extends Error {
   override readonly name = "AgentAccountError";
@@ -642,6 +644,23 @@ export function* agentAccountSignedInSteps(q: Q, accountId: string) {
   return stored !== undefined && stored.ciphertext !== "";
 }
 
+export function* lockAgentAccountSteps(q: Q, accountId: string) {
+  const a = q.t.agentAccount;
+  yield* q.one(q.orm.select({ id: a.id }).from(a).where(eq(a.id, accountId)).for("no key update"));
+}
+
+export function* runnerSignInsOnDiskSteps(q: Q, runnerId: string) {
+  const { runner: r, runnerAccountCapability: c } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ isolation: r.isolation, protocol: c.protocol })
+      .from(r)
+      .leftJoin(c, eq(c.runnerId, r.id))
+      .where(eq(r.id, runnerId)),
+  );
+  return row?.isolation === "issue_vm" && (row.protocol ?? 0) < RUNNER_MEMORY_ACCOUNT_PROTOCOL;
+}
+
 export function* runnerAccountUnsupportedSteps(
   q: Q,
   runnerId: string,
@@ -658,6 +677,8 @@ export function* runnerAccountUnsupportedSteps(
   );
   if (!row || row.protocol < RUNNER_ACCOUNT_PROTOCOL)
     return "The runner has not reported agent account support";
+  if (yield* runnerSignInsOnDiskSteps(q, runnerId))
+    return "The issue VM runner can't keep agent sign-ins in memory only";
   const agentUnsupported = runnerAccountAgentUnsupported(agent);
   if (agentUnsupported) return agentUnsupported;
   if (!options.reported && (yield* bindingHasControlPlaneAuthSteps(q, bindingId))) return null;
@@ -694,6 +715,7 @@ export function* recordCommandAccountSteps(
   q: Q,
   command: RunnerCommand | RunnerRetroCommand,
   at: number,
+  options: { placed?: boolean } = {},
 ) {
   const agent = commandAgent(command);
   if (!agent) return null;
@@ -707,6 +729,24 @@ export function* recordCommandAccountSteps(
     );
   const unsupported = yield* runnerAccountUnsupportedSteps(q, command.runnerId, row.id, agent);
   if (unsupported) throw new AgentAccountError("runner_unsupported", unsupported);
+  yield* lockAgentAccountSteps(q, row.accountId);
+  const { runner: r } = q.t;
+  const target = yield* q.one(
+    q.orm.select({ isolation: r.isolation }).from(r).where(eq(r.id, command.runnerId)),
+  );
+  if (
+    !options.placed &&
+    (yield* accountSlotsInUseSteps(
+      q,
+      row.accountId,
+      at,
+      command.id,
+      target?.isolation === "issue_vm"
+        ? { except: command.runnerId }
+        : { except: command.runnerId, issueVm: true },
+    )) > 0
+  )
+    throw new AgentAccountError("busy", "The agent account is in use in another issue VM");
   const owner = (yield* accountRowSteps(q, row.accountId))!;
   if (row.removedAt !== null || owner.removedAt !== null)
     throw new AgentAccountError("removed", "Agent account was removed");
@@ -731,8 +771,9 @@ export async function recordCommandAccount(
   store: Db,
   command: RunnerCommand | RunnerRetroCommand,
   at: number,
+  options: { placed?: boolean } = {},
 ): Promise<CommandAccount | null> {
-  return store.transaction((q) => recordCommandAccountSteps(q, command, at));
+  return store.transaction((q) => recordCommandAccountSteps(q, command, at, options));
 }
 
 export function* commandAccountSteps(q: Q, commandId: string) {
@@ -789,20 +830,28 @@ export function* accountSlotsInUseSteps(
   accountId: string,
   at: number,
   exceptCommandId: string | null = null,
+  runners: { except?: string; issueVm?: boolean } = {},
 ) {
   const { retroDispatch: d, runnerCommandAccount: a, runnerExecutionUsage: u } = q.t;
-  const { runnerHelper: h, runnerCommand: c } = q.t;
+  const { runnerHelper: h, runnerCommand: c, runner: r } = q.t;
   const w = aliasedTable(q.t.runnerWork, "w");
+  const onRunner = (id: AnyColumn) =>
+    and(
+      runners.except === undefined ? undefined : ne(id, runners.except),
+      runners.issueVm ? eq(r.isolation, "issue_vm") : undefined,
+    );
   const retros = yield* q.one(
     q.orm
       .select({ count: count() })
       .from(d)
       .innerJoin(a, eq(a.commandId, d.commandId))
+      .innerJoin(r, eq(r.id, d.runnerId))
       .where(
         and(
           eq(a.accountId, accountId),
           exceptCommandId === null ? undefined : ne(d.commandId, exceptCommandId),
           isNull(d.releasedAt),
+          onRunner(d.runnerId),
         ),
       ),
   );
@@ -811,6 +860,7 @@ export function* accountSlotsInUseSteps(
       .select({ count: count() })
       .from(u)
       .innerJoin(a, eq(a.commandId, u.commandId))
+      .innerJoin(r, eq(r.id, u.runnerId))
       .leftJoin(h, eq(h.id, u.commandId))
       .leftJoin(c, eq(c.id, u.commandId))
       .leftJoin(w, and(eq(w.runId, c.runId), eq(w.commandId, u.commandId)))
@@ -818,6 +868,7 @@ export function* accountSlotsInUseSteps(
         and(
           eq(a.accountId, accountId),
           exceptCommandId === null ? undefined : ne(u.commandId, exceptCommandId),
+          onRunner(u.runnerId),
           or(
             and(isNotNull(h.id), gt(h.expiresAt, at), or(isNull(h.endedAt), isNull(h.result))),
             and(
@@ -838,7 +889,25 @@ export function* accountSlotsInUseSteps(
         ),
       ),
   );
-  return retros!.count + usage!.count;
+  const helpers = yield* q.one(
+    q.orm
+      .select({ count: count() })
+      .from(h)
+      .innerJoin(a, eq(a.commandId, h.id))
+      .innerJoin(r, eq(r.id, h.runnerId))
+      .leftJoin(u, eq(u.commandId, h.id))
+      .where(
+        and(
+          eq(a.accountId, accountId),
+          isNull(u.commandId),
+          exceptCommandId === null ? undefined : ne(h.id, exceptCommandId),
+          onRunner(h.runnerId),
+          gt(h.expiresAt, at),
+          or(isNull(h.endedAt), isNull(h.result)),
+        ),
+      ),
+  );
+  return retros!.count + usage!.count + helpers!.count;
 }
 
 export async function accountSlotsInUse(

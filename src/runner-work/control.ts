@@ -72,6 +72,7 @@ import {
   type RunnerHostSample,
   currentRunnerCertificatePemSteps,
   getAgentAccountSteps,
+  runnerSignInsOnDiskSteps,
 } from "../db";
 import { readAgentCredentialSteps, writeAgentCredentialSteps } from "../credentials";
 import { journalCaught } from "../journal";
@@ -392,7 +393,11 @@ export function createRunnerWork(options: {
       privateKey: options.privateKey,
       command,
     });
-    yield* q.transaction((savepoint) => recordCommandAccountSteps(savepoint, command, now()));
+    yield* q.transaction((savepoint) =>
+      recordCommandAccountSteps(savepoint, command, now(), {
+        placed: command.type === "run" || command.type === "review" || command.type === "task",
+      }),
+    );
     yield* insertRunnerCommandSteps(q, {
       id: command.id,
       runnerId: command.runnerId,
@@ -640,12 +645,14 @@ export function createRunnerWork(options: {
       if (!secretsDir || envelopes.length === 0) return Promise.resolve(envelopes);
       return store.transaction(function* (q) {
         const pem = yield* currentRunnerCertificatePemSteps(q, runnerId, now());
+        const onDisk = yield* runnerSignInsOnDiskSteps(q, runnerId);
         const sent: SignedRunnerCommand[] = [];
         for (const envelope of envelopes) {
           const command = JSON.parse(
             Buffer.from(envelope.payload, "base64url").toString("utf8"),
           ) as RunnerCommand;
           const named = runnerCommandAccount(command);
+          if (named && onDisk) continue;
           const stored = named
             ? yield* readAgentCredentialSteps(q, secretsDir, named.account.accountId)
             : null;
@@ -681,6 +688,7 @@ export function createRunnerWork(options: {
         if (!(yield* activeAccountRunnerWorkSteps(q, runnerId, accountId, now())))
           throw new RunnerWorkFencedError();
         if (!(yield* readAgentAuthSteps(q, accountId))) throw new RunnerWorkFencedError();
+        if (yield* runnerSignInsOnDiskSteps(q, runnerId)) throw new RunnerWorkFencedError();
         const stored = yield* readAgentCredentialSteps(q, secretsDir, accountId);
         const pem = yield* currentRunnerCertificatePemSteps(q, runnerId, now());
         if (!stored?.blob || !pem) throw new RunnerWorkFencedError();

@@ -11,6 +11,7 @@ import {
 } from "../db";
 import {
   CENTRAL_CREDENTIAL_AGENTS,
+  RUNNER_MEMORY_ACCOUNT_PROTOCOL,
   type RunnerHelperResult,
   type RunnerResult,
 } from "../runner-protocol";
@@ -58,6 +59,7 @@ export type BindingUnavailableReason =
   | "offline"
   | "paused"
   | "busy"
+  | "sign-ins-on-disk"
   | "auth-required"
   | "exhausted"
   | "provider-restricted"
@@ -106,6 +108,7 @@ export function* bindingReadinessSteps(
     runnerCapacity?: boolean;
     purpose?: "prepare" | "work" | "helper";
     exceptCommandId?: string;
+    refreshable?: boolean;
   },
 ): Steps<BindingReadiness> {
   const binding = yield* bindingReadinessRowSteps(q, input.bindingId);
@@ -119,6 +122,11 @@ export function* bindingReadinessSteps(
   if ((binding.lastSeenAt ?? 0) <= input.now - RUNNER_ONLINE_MS) return unavailable("offline");
   if (CENTRAL_CREDENTIAL_AGENTS.includes(binding.agent) && !binding.credential)
     return unavailable("auth-required");
+  if (
+    binding.isolation === "issue_vm" &&
+    (binding.accountProtocol ?? 0) < RUNNER_MEMORY_ACCOUNT_PROTOCOL
+  )
+    return unavailable("sign-ins-on-disk");
   const rows = yield* bindingAccountHealthSteps(q, input.bindingId, input.model);
   const blocked = yield* accountHealthBlockSteps(
     q,
@@ -138,6 +146,19 @@ export function* bindingReadinessSteps(
     binding.concurrency !== null &&
     (yield* accountSlotsInUseSteps(q, binding.accountId, input.now, input.exceptCommandId)) >=
       binding.concurrency
+  )
+    return unavailable("busy");
+  if (
+    input.refreshable !== false &&
+    (yield* accountSlotsInUseSteps(
+      q,
+      binding.accountId,
+      input.now,
+      input.exceptCommandId,
+      binding.isolation === "issue_vm"
+        ? { except: binding.runnerId }
+        : { except: binding.runnerId, issueVm: true },
+    )) > 0
   )
     return unavailable("busy");
   return {
@@ -169,6 +190,7 @@ export const BINDING_REASON_TEXT: Record<BindingUnavailableReason, string> = {
   offline: "runner offline",
   paused: "runner paused",
   busy: RUNNER_FULL,
+  "sign-ins-on-disk": "issue VM runner can't keep agent sign-ins in memory only",
   "auth-required": "agent account sign-in needs repair",
   exhausted: "agent account quota cooldown",
   "provider-restricted": "agent provider restricted",

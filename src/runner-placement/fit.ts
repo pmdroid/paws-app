@@ -60,13 +60,34 @@ export function* repositoryRejectionSteps(
     : "repository not allowed in the runner's host config";
 }
 
+const FIXED_CREDENTIAL_FILES = [".claude/paws-oauth.json", ".paws/api-key.json"];
+
+export function credentialRefreshable(blob: string | null | undefined): boolean {
+  try {
+    const files = JSON.parse(blob ?? "") as unknown;
+    if (!Array.isArray(files) || files.length === 0) return true;
+    return !files.some(
+      (file) =>
+        typeof file === "object" &&
+        file !== null &&
+        FIXED_CREDENTIAL_FILES.includes((file as { path?: unknown }).path as string),
+    );
+  } catch {
+    return true;
+  }
+}
+
 export function* signInFitSteps(
   q: Q,
   runner: SignInRunner,
   workspaceId: string,
   input: SignInInput,
-  requiresOAuthSteps?: (q: Q, accountId: string) => Steps<boolean>,
+  checks: {
+    requiresOAuthSteps?: (q: Q, accountId: string) => Steps<boolean>;
+    refreshableSteps?: (q: Q, accountId: string) => Steps<boolean>;
+  } = {},
 ): Steps<AccountFit | AccountRefusal> {
+  const { requiresOAuthSteps, refreshableSteps } = checks;
   const bindings = (yield* listAgentBindingsSteps(q, workspaceId)).filter(
     (binding) => binding.runnerId === runner.id && binding.agent === input.agent,
   );
@@ -99,6 +120,7 @@ export function* signInFitSteps(
       purpose: input.purpose,
       runnerCapacity: false,
       exceptCommandId: input.exceptCommandId,
+      refreshable: refreshableSteps ? yield* refreshableSteps(q, binding.accountId) : true,
     });
     if (readiness.ready)
       return {
@@ -127,9 +149,12 @@ export function* signInFitSteps(
   return { ...(first ?? { reason: "agent not signed in" }), refusals };
 }
 
+type SignInChecks = Parameters<typeof signInFitSteps>[4];
+
 function* runnerVerdictsSteps(
   q: Q,
   input: { itemId: string; agent: string; model?: string | null; now: number },
+  checks: SignInChecks = {},
 ) {
   const scope = yield* itemOwnerScopeSteps(q, input.itemId);
   if (!scope) return null;
@@ -173,12 +198,18 @@ function* runnerVerdictsSteps(
       );
       continue;
     }
-    const fit = yield* signInFitSteps(q, runner, scope.workspaceId, {
-      agent: input.agent as RunnerCodingAgent,
-      model: input.model,
-      purpose: "work",
-      at: input.now,
-    });
+    const fit = yield* signInFitSteps(
+      q,
+      runner,
+      scope.workspaceId,
+      {
+        agent: input.agent as RunnerCodingAgent,
+        model: input.model,
+        purpose: "work",
+        at: input.now,
+      },
+      checks,
+    );
     if (!("reason" in fit)) {
       runners.push(verdict(null, null));
       continue;
@@ -205,8 +236,9 @@ export function* itemRunnerVerdictsSteps(
   q: Q,
   store: Db,
   input: { itemId: string; agent: string; model?: string | null; now: number },
+  checks: SignInChecks = {},
 ): Steps<ItemRunnerVerdicts | null> {
-  const found = yield* runnerVerdictsSteps(q, input);
+  const found = yield* runnerVerdictsSteps(q, input, checks);
   if (!found) return null;
   const { repository, runners } = found;
   let order: string[];
@@ -214,16 +246,19 @@ export function* itemRunnerVerdictsSteps(
   const pinned = new Set<string>();
   try {
     // A new instance is safe here: session grace is kept per database, so this does not restart it.
-    order = (yield* createRunnerPlacement({ store, now: () => input.now }).previewSteps!(q, {
-      itemId: input.itemId,
-      profile: { agent: input.agent as RunnerCodingAgent, model: input.model },
-      role: "implementer",
-      purpose: "work",
-      ...placement,
-      onRejected: (runnerId, reason) => {
-        if (reason === PINNED_ELSEWHERE) pinned.add(runnerId);
+    order = (yield* createRunnerPlacement({ store, now: () => input.now, ...checks }).previewSteps!(
+      q,
+      {
+        itemId: input.itemId,
+        profile: { agent: input.agent as RunnerCodingAgent, model: input.model },
+        role: "implementer",
+        purpose: "work",
+        ...placement,
+        onRejected: (runnerId, reason) => {
+          if (reason === PINNED_ELSEWHERE) pinned.add(runnerId);
+        },
       },
-    })).map((r) => r.id);
+    )).map((r) => r.id);
   } catch (error) {
     if (error instanceof PlacementUnavailableError) return null;
     throw error;

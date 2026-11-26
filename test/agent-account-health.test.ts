@@ -16,6 +16,9 @@ import {
   holdForRunnerSetup,
   listJobs,
   recordAccountObservation,
+  recordCommandAccount,
+  recordRunnerAccountCapability,
+  runnerAccountUnsupportedSteps,
   removeAgentBinding,
   resumeAccountHealthNow,
   setAgentAccountConcurrency,
@@ -28,8 +31,13 @@ import {
   classifyAgentFailure,
   eligibleRunnersSteps,
   createRunnerPlacement,
+  credentialRefreshable,
 } from "../src/runner-placement";
-import type { RunnerResult } from "../src/runner-protocol";
+import {
+  RUNNER_MEMORY_ACCOUNT_PROTOCOL,
+  type RunnerCommand,
+  type RunnerResult,
+} from "../src/runner-protocol";
 import { copyMigratedPglite, tempStore } from "./pglite";
 import { currentRunnerHost } from "./pglite-fixtures";
 
@@ -129,6 +137,15 @@ async function seed(db: Db) {
   };
 }
 
+async function rejection(promise: Promise<unknown>) {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  throw new Error("expected a rejection");
+}
+
 async function fixture() {
   const { db, close } = await tempStore();
   closers.push(close);
@@ -146,6 +163,14 @@ const setRunner = (
   });
 
 const seen = (db: Db, at: number) => setRunner(db, { lastSeenAt: at });
+
+async function issueVm(db: Db, runnerId: string, protocol: number | null) {
+  await write(db, (q) =>
+    q.orm.update(q.t.runner).set({ isolation: "issue_vm" }).where(eq(q.t.runner.id, runnerId)),
+  );
+  if (protocol !== null)
+    await recordRunnerAccountCapability(db, runnerId, { protocol, bindings: [] }, NOW);
+}
 
 async function exhaust(
   db: Db,
@@ -724,3 +749,123 @@ for (const source of ["login_check", "sign_in"] as const)
     await success(NOW + 1);
     expect(await checks()).toMatchObject([{ payload: { ownerUserId: "U1" }, status: "pending" }]);
   });
+
+test("an issue VM runner gets account work only while it keeps sign-ins in memory", async () => {
+  const { db, bindings } = await fixture();
+  const reason = async (bindingId: string) => {
+    const readiness = await bindingReadiness(db, { bindingId, now: NOW + 1 });
+    return readiness.ready ? "ready" : readiness.reason;
+  };
+  await issueVm(db, "R1", null);
+  expect(await reason(bindings.a1)).toBe("sign-ins-on-disk");
+  await issueVm(db, "R1", RUNNER_MEMORY_ACCOUNT_PROTOCOL - 1);
+  expect(await reason(bindings.a1)).toBe("sign-ins-on-disk");
+  expect(await reason(bindings.a2)).toBe("ready");
+  await issueVm(db, "R1", RUNNER_MEMORY_ACCOUNT_PROTOCOL);
+  expect(await reason(bindings.a1)).toBe("ready");
+});
+
+test("an account command on an issue VM runner that keeps sign-ins on disk is refused", async () => {
+  const { db, bindings } = await fixture();
+  const unsupported = () =>
+    db.run((q) =>
+      runnerAccountUnsupportedSteps(q, "R1", bindings.a1, "claude", { reported: true }),
+    );
+  const report = (protocol: number) =>
+    recordRunnerAccountCapability(
+      db,
+      "R1",
+      { protocol, bindings: [{ bindingId: bindings.a1, agent: "claude" }] },
+      NOW,
+    );
+  await report(RUNNER_MEMORY_ACCOUNT_PROTOCOL - 1);
+  expect(await unsupported()).toBeNull();
+  await issueVm(db, "R1", null);
+  expect(await unsupported()).toContain("memory only");
+  await report(RUNNER_MEMORY_ACCOUNT_PROTOCOL);
+  expect(await unsupported()).toBeNull();
+});
+
+test("a refreshable account runs in one issue VM at a time; a second issue waits", async () => {
+  const { db, bindings } = await fixture();
+  const readiness = (bindingId: string, refreshable?: boolean) =>
+    bindingReadiness(db, {
+      bindingId,
+      now: NOW + 1,
+      ...(refreshable === undefined ? {} : { refreshable }),
+    });
+  await issueVm(db, "R1", RUNNER_MEMORY_ACCOUNT_PROTOCOL);
+  await issueVm(db, "R2", RUNNER_MEMORY_ACCOUNT_PROTOCOL);
+  await attempt(db, "cmd-vm-1", bindings.a1, NOW);
+  expect(await readiness(bindings.a2)).toMatchObject({ ready: false, reason: "busy" });
+  expect(await readiness(bindings.a2, true)).toMatchObject({ ready: false, reason: "busy" });
+  expect((await readiness(bindings.a2, false)).ready).toBe(true);
+  expect((await readiness(bindings.a1)).ready).toBe(true);
+  expect((await readiness(bindings.b1)).ready).toBe(true);
+  await write(db, (q) =>
+    q.orm.update(q.t.runner).set({ isolation: "none" }).where(eq(q.t.runner.id, "R2")),
+  );
+  expect(await readiness(bindings.a2)).toMatchObject({ ready: false, reason: "busy" });
+  await write(db, (q) =>
+    q.orm
+      .update(q.t.runnerExecutionUsage)
+      .set({ endedAt: NOW })
+      .where(eq(q.t.runnerExecutionUsage.commandId, "cmd-vm-1")),
+  );
+  expect((await readiness(bindings.a2)).ready).toBe(true);
+});
+
+test("an account command on a second issue VM waits while the account is in use", async () => {
+  const { db, bindings, accounts } = await fixture();
+  await issueVm(db, "R1", RUNNER_MEMORY_ACCOUNT_PROTOCOL);
+  await recordRunnerAccountCapability(
+    db,
+    "R2",
+    {
+      protocol: RUNNER_MEMORY_ACCOUNT_PROTOCOL,
+      bindings: [{ bindingId: bindings.a2, agent: "claude" }],
+    },
+    NOW,
+  );
+  await write(db, (q) =>
+    q.orm.update(q.t.runner).set({ isolation: "issue_vm" }).where(eq(q.t.runner.id, "R2")),
+  );
+  const check = (id: string, placed?: boolean) =>
+    recordCommandAccount(
+      db,
+      {
+        id,
+        type: "login_check",
+        runnerId: "R2",
+        workspaceId: "W1",
+        issuedAt: NOW,
+        expiresAt: NOW + 60_000,
+        agent: "claude",
+        account: { accountId: accounts.a, bindingId: bindings.a2 },
+      } as RunnerCommand,
+      NOW + 1,
+      placed === undefined ? {} : { placed },
+    );
+  await attempt(db, "cmd-vm-1", bindings.a1, NOW);
+  expect(await rejection(check("check-busy"))).toMatchObject({ code: "busy" });
+  expect((await check("check-placed", true))?.accountId).toBe(accounts.a);
+  await write(db, (q) =>
+    q.orm
+      .update(q.t.runnerExecutionUsage)
+      .set({ endedAt: NOW })
+      .where(eq(q.t.runnerExecutionUsage.commandId, "cmd-vm-1")),
+  );
+  expect((await check("check-free"))?.accountId).toBe(accounts.a);
+});
+
+test("an account counts as refreshable unless its stored files are a fixed token or API key", () => {
+  const files = (...paths: string[]) => JSON.stringify(paths.map((path) => ({ path })));
+  expect(credentialRefreshable(files(".claude/.credentials.json"))).toBe(true);
+  expect(credentialRefreshable(files(".claude/.claude.json", ".claude/paws-oauth.json"))).toBe(
+    false,
+  );
+  expect(credentialRefreshable(files(".paws/api-key.json"))).toBe(false);
+  expect(credentialRefreshable(null)).toBe(true);
+  expect(credentialRefreshable("not json")).toBe(true);
+  expect(credentialRefreshable("[]")).toBe(true);
+});

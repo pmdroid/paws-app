@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,6 +15,7 @@ import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identi
 import {
   agentCredentialContext,
   openForRunner,
+  RUNNER_MEMORY_ACCOUNT_PROTOCOL,
   signRunnerCommand,
   type RunnerCommand,
 } from "../src/runner-protocol";
@@ -144,6 +146,23 @@ describePglite((connect) => {
         agentCredentialContext("other", stored, 1),
       ),
     ).toThrow();
+
+    await seed(db, (q) =>
+      q.orm.update(q.t.runner).set({ isolation: "issue_vm" }).where(eq(q.t.runner.id, "new")),
+    );
+    expect(await work.attachCredentials("new", [envelope("new", "login_check", "disk")])).toEqual(
+      [],
+    );
+    await seed(db, (q) =>
+      q.orm.insert(q.t.runnerAccountCapability).values({
+        runnerId: "new",
+        protocol: RUNNER_MEMORY_ACCOUNT_PROTOCOL,
+        bindings: [],
+        reportedAt: NOW,
+      }),
+    );
+    const [memory] = await work.attachCredentials("new", [envelope("new", "login_check", "mem")]);
+    expect(memory!.credential?.version).toBe(1);
 
     expect(await work.storeCredential("new", { accountId: stored, version: 2, files })).toBe(
       "written",
