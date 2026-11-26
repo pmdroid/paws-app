@@ -16,3 +16,4 @@ export {
 export type { InstaBoxIssueVmCreate, InstaBoxIssueVms } from "./instabox";
 export { createStartQueue } from "./start-queue";
 export type { StartQueue, StartQueueOptions } from "./start-queue";
+export { ISSUE_VM_SLEEP_CHECK } from "./sleep-check";

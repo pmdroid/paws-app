@@ -15,6 +15,8 @@ export function attachCredentialStore(db: Database, directory: string): void {
     throw new Error("Runner credential store must be a private tmpfs folder.");
   db.run("DROP TABLE IF EXISTS main.agent_credential");
   db.run("ATTACH DATABASE ? AS credentials", [join(directory, FILE)]);
+  db.run("PRAGMA credentials.secure_delete = ON");
+  db.run("PRAGMA credentials.journal_mode = TRUNCATE");
 }
 
 export function heldCredentialCount(directory: string): number {

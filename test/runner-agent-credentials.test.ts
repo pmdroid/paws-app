@@ -21,6 +21,7 @@ import {
   returnRunnerAgentCredentials,
   runnerAgentCredentials,
   runnerCredentialsLeft,
+  writeReturnedCredentials,
 } from "../src/runner-execution";
 import { initializeRunnerAuthority, startRunnerListener } from "../src/runner-identity";
 import {
@@ -532,7 +533,22 @@ test("on an issue VM the sign-in stays in the tmpfs, its refresh reaches Paws an
 
     rmSync(credentials);
     writeFileSync(credentials, '{"claudeAiOauth":{"refreshToken":"r2"}}', { mode: 0o600 });
-    agentTurn(daemon, home, "check-vm");
+    const accountHome = join(home, ".paws-accounts", account.bindingId);
+    returnRunnerAgentCredentials(accountHome, "claude", EXECUTION, (files) =>
+      writeReturnedCredentials(
+        accountHome,
+        EXECUTION,
+        sealForRunner(
+          daemon.credentialRecipient(),
+          JSON.stringify(files),
+          agentCredentialReturnContext(EXECUTION),
+        ),
+      ),
+    );
+    expect(runnerCredentialsLeft(home)).toEqual([
+      `${account.bindingId}/.paws-returned/${EXECUTION}`,
+    ]);
+    daemon.returnCredentials("check-vm", EXECUTION, null);
     expect(runnerCredentialsLeft(home)).toEqual([]);
     await daemon.acknowledgeCommand("check-vm");
     await sync(daemon);
@@ -540,6 +556,9 @@ test("on an issue VM the sign-in stays in the tmpfs, its refresh reaches Paws an
     await sync(daemon);
     expect(heldCredentialCount(store!)).toBe(0);
     expect(runnerCredentialsLeft(home)).toEqual([]);
+    expect(readFileSync(join(store!, "credentials.db"), "latin1")).not.toMatch(
+      /[A-Za-z0-9_-]{100}/,
+    );
   }, true);
 }, 30_000);
 

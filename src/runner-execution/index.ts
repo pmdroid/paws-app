@@ -53,6 +53,8 @@ export {
   runnerAccountCache,
   runnerAccountHome,
   runnerCredentialsLeft,
+  onTmpfs,
+  writeReturnedCredentials,
   returnRunnerAgentCredentials,
   runnerAgentCredentials,
   shareAgentConfigFolders,

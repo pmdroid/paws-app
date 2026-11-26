@@ -52,6 +52,7 @@ export type RunnerAgentCredential = z.infer<typeof RunnerAgentCredentialSchema>;
 export type RunnerAgentCredentialStore = {
   write(account: RunnerAccount, agent: RunnerCodingAgent, files: RunnerAgentCredentialFiles): void;
   busy(account: RunnerAccount): boolean;
+  takeReturned?(account: RunnerAccount, executionId: string): Buffer | null;
   remove(account: RunnerAccount, agent: RunnerCodingAgent): void;
 };
 

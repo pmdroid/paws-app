@@ -15,9 +15,11 @@ The boat and InstaBox snapshots run the same `provision.sh` and `seal.sh` with t
 
 ## Agent sign-ins
 
-An issue VM never writes an agent's sign-in to its disk. `provision.sh` mounts a 1 GiB tmpfs over the agent account homes in `/var/lib/paws-agent/.paws-accounts` and marks the image with `/etc/paws-runner/issue-vm`. On a marked VM the runner refuses a sign-in when the account homes aren't on a tmpfs. It keeps its sealed copies of sign-ins in `/run/paws-runner/credentials`, and agent caches (`XDG_CACHE_HOME`, Bun, npm, pip, Go modules) go to `/var/lib/paws-agent/.paws-account-caches` on disk. Each turn's command brings the sign-in. After the turn the runner uploads a refreshed sign-in to Paws, then deletes the files and its copy. Paws runs a refreshable account in one issue VM at a time, so a second issue using the same account waits.
+An issue VM never writes an agent's sign-in to its disk. `provision.sh` mounts a 1 GiB tmpfs over the agent account homes in `/var/lib/paws-agent/.paws-accounts` and marks the image with `/etc/paws-runner/issue-vm`. On a marked VM the runner refuses a sign-in when the account homes aren't on a tmpfs. It keeps its sealed copies of sign-ins in `/run/paws-runner/credentials`, with SQLite's `secure_delete` on so a deleted copy leaves no bytes behind. Agent caches (`XDG_CACHE_HOME`, Bun, npm, pip, Go modules) go to `/var/lib/paws-agent/.paws-account-caches` on disk.
 
-Before a VM sleeps or is snapshotted, run `paws-runner runner sleep-check` as `paws-runner` inside it. The command fails while any sign-in file or held copy is still there.
+Each turn's command brings the sign-in. When the account home is on a tmpfs, the worker hands the refreshed sign-in back through a sealed file in `.paws-returned` in the account home, not through the results folder. The runner uploads it to Paws, then deletes the files and its copy. Paws runs a refreshable account in one issue VM at a time, so a second issue using the same account waits.
+
+`paws-runner runner sleep-check`, run as `paws-runner`, fails while any sign-in file, returned sign-in or held copy is still in the VM. The boat and InstaBox sleep steps run it inside the VM before they stop or suspend it, and refuse to sleep when it fails. `provision.sh` runs it too, so the image build fails when `image.env` pins a runner release that doesn't have it.
 
 ## Build
 

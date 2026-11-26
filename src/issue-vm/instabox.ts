@@ -9,6 +9,7 @@ import {
   type InstaBoxPlan,
   type ProviderVm,
 } from "../provisioning";
+import { ISSUE_VM_SLEEP_CHECK } from "./sleep-check";
 import type { StartQueue } from "./start-queue";
 
 export const INSTABOX_BOOT_HOOK = "/usr/local/lib/instabox/data-init.d/50-paws-runner";
@@ -225,9 +226,10 @@ export function createInstaBoxIssueVms(options: InstaBoxIssueVmOptions): InstaBo
     },
 
     async sleep(name) {
-      await reach(name, "stopped", options.sleepMs ?? 60_000, "suspending", () =>
-        instaBox.suspendVm(name),
-      );
+      await reach(name, "stopped", options.sleepMs ?? 60_000, "suspending", async () => {
+        await exec(name, ISSUE_VM_SLEEP_CHECK, "The sign-in check before sleep");
+        await instaBox.suspendVm(name);
+      });
     },
 
     wake,

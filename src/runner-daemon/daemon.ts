@@ -536,9 +536,19 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       journalCaught(error, "daemon.restoreCredentials", null);
     }
   }
-  function returnCredentials(commandId: string, executionId: string, returned: Buffer | null) {
+  function returnCredentials(commandId: string, executionId: string, written: Buffer | null) {
     const row = heldCredential(commandId);
     if (!row) return;
+    let returned = written;
+    try {
+      returned =
+        options.agentCredentials?.takeReturned?.(
+          { accountId: row.accountId, bindingId: row.bindingId },
+          executionId,
+        ) ?? written;
+    } catch (error) {
+      journalCaught(error, "daemon.returnCredentials.takeReturned", null);
+    }
     const commands = JSON.stringify(
       (JSON.parse(row.commands) as string[]).filter((id) => id !== commandId),
     );
