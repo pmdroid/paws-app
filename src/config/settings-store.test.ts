@@ -79,7 +79,7 @@ test("every section the settings writer emits parses again", async () => {
   );
   const saved = stored() ?? "";
   expect(Object.keys(settingsSectionsOf(saved)).sort()).toEqual(
-    [...new Set(WRITER_SECTIONS.map((name) => name.split(".")[0]))].sort(),
+    [...new Set(WRITER_SECTIONS.map((name) => name.replace(/\..*/, "")))].sort(),
   );
   expect(saved).not.toContain("[agents.grok]");
   expect(() => parseConfigToml(saved)).not.toThrow();
