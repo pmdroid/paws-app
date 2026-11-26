@@ -1,5 +1,5 @@
 import { journalCaught, journalRejection } from "../journal";
-import { existsSync, lstatSync, mkdirSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -28,18 +28,26 @@ export const RUNNER_WORK_ROOT = "/var/lib/paws-agent/work";
 
 const ISSUE_VM_UNIT = "/etc/systemd/system/paws-issue-vm@.service";
 const ISSUE_VM_EVERY_MS = 30_000;
+const ISSUE_VM_ENROLL_DIR = "/var/lib/paws-runner/issue-vm-enroll";
 
 export function issueVmReconciler(
   daemon: { issueVmHost(): Promise<IssueVmHostView> },
   units: IssueVmUnits | null,
   now: () => number = Date.now,
+  enrollDir = ISSUE_VM_ENROLL_DIR,
 ) {
   let at = 0;
+  const stage = (id: string, token: string) => {
+    mkdirSync(enrollDir, { recursive: true, mode: 0o700 });
+    const staged = join(enrollDir, `.${id}`);
+    writeFileSync(staged, token, { mode: 0o600 });
+    renameSync(staged, join(enrollDir, id));
+  };
   return async () => {
     if (units === null || now() < at) return;
     at = now() + ISSUE_VM_EVERY_MS;
     try {
-      await reconcileIssueVms(units, await daemon.issueVmHost());
+      await reconcileIssueVms(units, await daemon.issueVmHost(), stage);
     } catch (error) {
       journalCaught(error, "runner-cli/daemon.issueVmReconciler", null);
     }

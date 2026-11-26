@@ -45,6 +45,7 @@ function machine(unit: string): IssueVmMachine | null {
 export async function reconcileIssueVms(
   units: IssueVmUnits,
   host: IssueVmHostView,
+  stage?: (id: string, token: string) => void,
 ): Promise<IssueVmReconcile> {
   const known = host.vmHost ? host.vms : [];
   const states = new Map(known.map((row) => [row.id, row.state]));
@@ -90,6 +91,7 @@ export async function reconcileIssueVms(
     while (used.has(slot)) slot += 1;
     const started = { id: row.id, slot, ...host.size, unit: issueVmUnit(row.id, slot, host.size) };
     try {
+      if (row.token !== undefined) stage?.(row.id, row.token);
       await units.start(started.unit);
     } catch (error) {
       journalCaught(error, "runner-daemon.reconcileIssueVms.start", null);
@@ -174,7 +176,16 @@ export const IssueVmHostViewSchema = z.discriminatedUnion("vmHost", [
     vmHost: z.literal(true),
     slots: z.number().int().min(0),
     size: z.strictObject({ vcpus: z.number().int().min(1), memoryGb: z.number().int().min(1) }),
-    vms: z.array(z.strictObject({ id: VmId, state: z.string() })),
+    vms: z.array(
+      z.strictObject({
+        id: VmId,
+        state: z.string(),
+        token: z
+          .string()
+          .regex(/^[A-Za-z0-9_-]{16,256}$/)
+          .optional(),
+      }),
+    ),
   }),
 ]);
 

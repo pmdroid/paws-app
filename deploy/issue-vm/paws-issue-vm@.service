@@ -11,6 +11,7 @@ Group=paws-issue-vm
 SupplementaryGroups=kvm
 ExecStartPre=+/usr/local/sbin/paws-issue-vm prepare %i
 ExecStart=/usr/local/sbin/paws-issue-vm run %i
+ExecStartPost=+/usr/local/sbin/paws-issue-vm unseed %i
 ExecStopPost=+/usr/local/sbin/paws-issue-vm clean %i
 AmbientCapabilities=CAP_NET_ADMIN
 CapabilityBoundingSet=CAP_NET_ADMIN
