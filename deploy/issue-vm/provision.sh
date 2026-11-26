@@ -74,5 +74,3 @@ systemctl daemon-reload
 mount "$accounts"
 systemd-tmpfiles --create /etc/tmpfiles.d/paws-issue-vm.conf
 [ "$(stat -f -c %T "$accounts")" = tmpfs ] || die "The agent account homes are not on a tmpfs"
-runuser -u paws-runner -- /opt/paws-runner/bin/paws-runner runner sleep-check \
-  || die "The pinned runner can't keep agent sign-ins in a tmpfs; pin a runner release that has 'runner sleep-check'"

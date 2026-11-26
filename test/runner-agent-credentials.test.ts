@@ -61,6 +61,7 @@ async function withRunner(
       files: typeof stored;
       now: number;
       pulls: number;
+      protocols: number[];
     };
     store?: string;
   }) => Promise<void>,
@@ -84,6 +85,7 @@ async function withRunner(
     files: stored,
     now: Date.now(),
     pulls: 0,
+    protocols: [] as number[],
     failUploads: false,
     receipt: "written",
     commands: (): RunnerCommand[] => [],
@@ -113,7 +115,11 @@ async function withRunner(
     authorize: (peer) => active.has(peer.fingerprint),
     async fetch(request) {
       const path = new URL(request.url).pathname;
-      if (path === "/v1/heartbeat") return Response.json({ leases: [], fenced: [] });
+      if (path === "/v1/heartbeat") {
+        const sent = (await request.json()) as { accounts?: { protocol: number } };
+        if (sent.accounts) plane.protocols.push(sent.accounts.protocol);
+        return Response.json({ leases: [], fenced: [] });
+      }
       if (path === "/v1/commands")
         return Response.json({
           commands: plane.commands().map((command) => ({
@@ -556,6 +562,8 @@ test("on an issue VM the sign-in stays in the tmpfs, its refresh reaches Paws an
     await sync(daemon);
     expect(heldCredentialCount(store!)).toBe(0);
     expect(runnerCredentialsLeft(home)).toEqual([]);
+    expect(plane.protocols).toContain(2);
+    expect(plane.protocols).not.toContain(1);
     expect(readFileSync(join(store!, "credentials.db"), "latin1")).not.toMatch(
       /[A-Za-z0-9_-]{100}/,
     );

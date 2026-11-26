@@ -8,7 +8,11 @@ import {
   type Db,
   type Q,
 } from "../src/db";
-import { MINIMUM_RUNNER_VERSION, type RunnerCodingAgent } from "../src/runner-protocol";
+import {
+  MINIMUM_RUNNER_VERSION,
+  RUNNER_MEMORY_ACCOUNT_PROTOCOL,
+  type RunnerCodingAgent,
+} from "../src/runner-protocol";
 import { rows, tempStore } from "./pglite";
 
 export type PgliteTestDb = { db: Db; close(): Promise<void> };
@@ -158,6 +162,14 @@ export function currentRunnerHost(q: Q, runnerId: string, reportedAt = 0) {
     .insert(q.t.runnerHostStatus)
     .values({ runnerId, runnerVersion: CURRENT_RUNNER_RELEASE, reportedAt })
     .onConflictDoNothing();
+}
+
+export function memorySignIns(q: Q, runnerId: string, reportedAt = 0) {
+  const { runnerAccountCapability: c } = q.t;
+  return q.orm
+    .insert(c)
+    .values({ runnerId, protocol: RUNNER_MEMORY_ACCOUNT_PROTOCOL, bindings: [], reportedAt })
+    .onConflictDoUpdate({ target: c.runnerId, set: { protocol: RUNNER_MEMORY_ACCOUNT_PROTOCOL } });
 }
 
 export async function bindFixtureAccounts(db: Db, runnerId?: string, agent?: string) {

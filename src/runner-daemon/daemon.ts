@@ -20,6 +20,7 @@ import {
 import { describeRunnerCertificate } from "../runner-identity";
 import {
   RUNNER_ACCOUNT_PROTOCOL,
+  RUNNER_MEMORY_ACCOUNT_PROTOCOL,
   RunnerAccountCapabilitySchema,
   RunnerAgentCredentialSchema,
   accessCredentialExpiry,
@@ -993,7 +994,9 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       attempts.unshift({
         ...(attempts[0] as object),
         accounts: RunnerAccountCapabilitySchema.parse({
-          protocol: RUNNER_ACCOUNT_PROTOCOL,
+          protocol: options.credentialStore
+            ? RUNNER_MEMORY_ACCOUNT_PROTOCOL
+            : RUNNER_ACCOUNT_PROTOCOL,
           bindings: heldBindings(),
         }),
       });

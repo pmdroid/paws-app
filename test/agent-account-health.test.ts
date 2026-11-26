@@ -31,7 +31,7 @@ import {
 } from "../src/runner-placement";
 import type { RunnerResult } from "../src/runner-protocol";
 import { copyMigratedPglite, tempStore } from "./pglite";
-import { currentRunnerHost } from "./pglite-fixtures";
+import { currentRunnerHost, memorySignIns } from "./pglite-fixtures";
 
 const NOW = 1_800_000_000_000;
 const bindingReadiness = (db: Db, input: Parameters<typeof bindingReadinessSteps>[1]) =>
@@ -731,10 +731,12 @@ test("a refreshable account in use on an issue VM waits for that issue elsewhere
     const readiness = await bindingReadiness(db, { bindingId, now: NOW + 1, refreshable });
     return readiness.ready ? "ready" : readiness.reason;
   };
-  const isolate = (runnerId: string, isolation: "none" | "issue_vm") =>
-    write(db, (q) =>
+  const isolate = async (runnerId: string, isolation: "none" | "issue_vm") => {
+    await write(db, (q) =>
       q.orm.update(q.t.runner).set({ isolation }).where(eq(q.t.runner.id, runnerId)),
     );
+    await write(db, (q) => memorySignIns(q, runnerId));
+  };
   await attempt(db, "cmd-first-issue", bindings.a1, NOW);
   expect(await reason(bindings.a2, true)).toBe("ready");
   await isolate("R1", "issue_vm");
@@ -745,4 +747,24 @@ test("a refreshable account in use on an issue VM waits for that issue elsewhere
   await isolate("R2", "issue_vm");
   expect(await reason(bindings.a2, true)).toBe("busy");
   expect(await reason(bindings.b1, true)).toBe("ready");
+});
+
+test("an issue VM runner that keeps sign-ins on disk gets no account work", async () => {
+  const { db, bindings } = await fixture();
+  await write(db, (q) =>
+    q.orm.update(q.t.runner).set({ isolation: "issue_vm" }).where(eq(q.t.runner.id, "R1")),
+  );
+  const reason = async () => {
+    const readiness = await bindingReadiness(db, { bindingId: bindings.a1, now: NOW + 1 });
+    return readiness.ready ? "ready" : readiness.reason;
+  };
+  expect(await reason()).toBe("sign-ins-on-disk");
+  await write(db, (q) =>
+    q.orm
+      .insert(q.t.runnerAccountCapability)
+      .values({ runnerId: "R1", protocol: 1, bindings: [], reportedAt: NOW }),
+  );
+  expect(await reason()).toBe("sign-ins-on-disk");
+  await write(db, (q) => memorySignIns(q, "R1"));
+  expect(await reason()).toBe("ready");
 });

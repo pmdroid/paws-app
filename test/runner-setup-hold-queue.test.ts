@@ -30,7 +30,7 @@ import {
   itemOwnerRunnerSetupNeedSteps,
 } from "../src/runner-placement";
 import { and, eq } from "drizzle-orm";
-import { currentRunnerHost, seed } from "./pglite-fixtures";
+import { currentRunnerHost, memorySignIns, seed } from "./pglite-fixtures";
 import { tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempStore } from "./pglite";
@@ -131,8 +131,11 @@ async function signIn(db: Db, runnerId: string, agent?: string) {
 }
 
 function isolate(db: Db, runnerId: string) {
-  return seed(db, (q) =>
-    q.orm.update(q.t.runner).set({ isolation: "issue_vm" }).where(eq(q.t.runner.id, runnerId)),
+  return seed(
+    db,
+    (q) =>
+      q.orm.update(q.t.runner).set({ isolation: "issue_vm" }).where(eq(q.t.runner.id, runnerId)),
+    (q) => memorySignIns(q, runnerId),
   );
 }
 

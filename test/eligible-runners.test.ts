@@ -20,7 +20,7 @@ import {
   type EligibleRunnersInput,
 } from "../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { seed, seedCredential } from "./pglite-fixtures";
+import { memorySignIns, seed, seedCredential } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 type Member = { role: "member" | "admin"; active: boolean; teamIds: string[] };
@@ -92,6 +92,7 @@ async function workspace(runners: Record<string, Runner>) {
         }),
       (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: id, agent: "codex" }),
     );
+    if (runner.isolation === "issue_vm") await seed(db, (q) => memorySignIns(q, id));
     await seed(db, (q) =>
       q.orm.insert(q.t.runnerHostStatus).values({
         runnerId: id,

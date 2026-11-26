@@ -140,6 +140,7 @@ export function* runnerUsageListSteps(
 
 export function* bindingReadinessRowSteps(q: Q, bindingId: string) {
   const { agentAccountBinding: b, agentAccount: a, agentAccountCredential: c, runner: r } = q.t;
+  const { runnerAccountCapability: k } = q.t;
   return yield* q.one(
     q.orm
       .select({
@@ -153,6 +154,7 @@ export function* bindingReadinessRowSteps(q: Q, bindingId: string) {
         concurrency: a.concurrency,
         status: r.status,
         isolation: r.isolation,
+        accountProtocol: k.protocol,
         revokedAt: r.revokedAt,
         lastSeenAt: r.lastSeenAt,
       })
@@ -160,6 +162,7 @@ export function* bindingReadinessRowSteps(q: Q, bindingId: string) {
       .innerJoin(a, eq(a.id, b.accountId))
       .innerJoin(r, eq(r.id, b.runnerId))
       .leftJoin(c, eq(c.accountId, b.accountId))
+      .leftJoin(k, eq(k.runnerId, b.runnerId))
       .where(eq(b.id, bindingId)),
   );
 }

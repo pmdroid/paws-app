@@ -1,9 +1,16 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { accountHomeEnv, minimalAgentEnv } from "../src/acp";
-import { runnerAccountCache } from "../src/runner-execution";
+import {
+  markRunnerAccountSignedIn,
+  openRunnerAccountHome,
+  returnRunnerAgentCredentials,
+  runnerAccountCache,
+  runnerCredentialsLeft,
+} from "../src/runner-execution";
 
 test("an account home on a tmpfs keeps the agent caches on disk", () => {
   const agentHome = mkdtempSync(join(tmpdir(), "paws-agent-home-"));
@@ -31,6 +38,37 @@ test("an account home on a tmpfs keeps the agent caches on disk", () => {
     });
   } finally {
     rmSync(agentHome, { recursive: true, force: true });
+    rmSync(memory, { recursive: true, force: true });
+  }
+});
+
+test("an OpenCode turn on a tmpfs leaves no credential in opencode.db", () => {
+  const memory = mkdtempSync("/dev/shm/paws-opencode-home-");
+  try {
+    chmodSync(memory, 0o770);
+    const account = { accountId: "account-1", bindingId: "binding-1" };
+    const home = openRunnerAccountHome(memory, account, "opencode", { signIn: true });
+    markRunnerAccountSignedIn(home, account, "opencode");
+    const path = join(home, ".local/share/opencode/opencode.db");
+    mkdirSync(dirname(path), { recursive: true });
+    const db = new Database(path);
+    db.run("PRAGMA journal_mode = WAL");
+    db.run(
+      "CREATE TABLE credential (id TEXT PRIMARY KEY, integration_id TEXT, label TEXT, value TEXT, active INTEGER, time_created INTEGER, time_updated INTEGER)",
+    );
+    db.run("INSERT INTO credential VALUES ('cred_1', 'opencode', 'OAuth', ?, 1, 1, 1)", [
+      "opencode-refresh-secret-".repeat(20),
+    ]);
+    db.close();
+    expect(runnerCredentialsLeft(memory)).toEqual(["binding-1/.local/share/opencode/opencode.db"]);
+
+    returnRunnerAgentCredentials(home, "opencode", "01J0000000000000000000EXE1", () => {});
+
+    expect(runnerCredentialsLeft(memory)).toEqual([]);
+    for (const file of [path, `${path}-wal`])
+      if (existsSync(file))
+        expect(readFileSync(file).includes("opencode-refresh-secret-")).toBe(false);
+  } finally {
     rmSync(memory, { recursive: true, force: true });
   }
 });

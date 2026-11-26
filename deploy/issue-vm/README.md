@@ -19,7 +19,7 @@ An issue VM never writes an agent's sign-in to its disk. `provision.sh` mounts a
 
 Each turn's command brings the sign-in. When the account home is on a tmpfs, the worker hands the refreshed sign-in back through a sealed file in `.paws-returned` in the account home, not through the results folder. The runner uploads it to Paws, then deletes the files and its copy. Paws runs a refreshable account in one issue VM at a time, so a second issue using the same account waits.
 
-`paws-runner runner sleep-check`, run as `paws-runner`, fails while any sign-in file, returned sign-in or held copy is still in the VM. The boat and InstaBox sleep steps run it inside the VM before they stop or suspend it, and refuse to sleep when it fails. `provision.sh` runs it too, so the image build fails when `image.env` pins a runner release that doesn't have it.
+A runner on a marked VM tells Paws that it keeps sign-ins in memory only. Paws gives no agent account work to an issue VM runner that doesn't, including runners older than this change and VMs whose image lacks the tmpfs. `paws-runner runner sleep-check`, run as `paws-runner`, fails while any sign-in file, returned sign-in, held copy or OpenCode credential row is still in the VM. The boat and InstaBox sleep steps run it inside the VM before they stop or suspend it, and refuse to sleep when it fails.
 
 ## Build
 

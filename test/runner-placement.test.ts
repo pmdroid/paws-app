@@ -35,7 +35,7 @@ import { saveSchedulingContextSteps } from "../src/scheduler";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { probeRunnerPlacement } from "./local/runner-placement";
 import { tempStore } from "./pglite";
-import { seed } from "./pglite-fixtures";
+import { memorySignIns, seed } from "./pglite-fixtures";
 
 type Runner = {
   id: string;
@@ -135,8 +135,10 @@ async function setAgentPolicy(
 }
 
 function setIsolation(db: Db, runnerId: string, isolation: "none" | "issue_vm") {
-  return seed(db, (q) =>
-    q.orm.update(q.t.runner).set({ isolation }).where(eq(q.t.runner.id, runnerId)),
+  return seed(
+    db,
+    (q) => q.orm.update(q.t.runner).set({ isolation }).where(eq(q.t.runner.id, runnerId)),
+    (q) => memorySignIns(q, runnerId),
   );
 }
 
