@@ -367,7 +367,7 @@ import {
   loadRunnerTls,
   publicTlsProxy,
   validatePublicTls,
-  validateTlsRenewal,
+  reloadPublicTls,
   PUBLIC_TLS_RESTART_EXIT,
 } from "./deployment";
 import {
@@ -3039,8 +3039,6 @@ Commands:
   paws login slack              connect Slack
   paws setup-link               print the browser setup link
   paws runner <command>         enroll and run a remote runner
-  paws runner-authority init    create the runner command key
-  paws public-tls validate      check the public HTTPS certificate
 
 GitHub access uses the GitHub App only. See docs/github-app.md.`;
 
@@ -3153,40 +3151,6 @@ if (import.meta.main || compiled()) {
         runRunnerTranscriptStorageCli(argv.slice(1), loadEnv(process.env).home),
       ),
     );
-  if (command === "runner-authority") {
-    try {
-      if (argv.length !== 2 || argv[1] !== "init") throw new Error("Invalid command");
-      const paths = pawsPaths(loadEnv(process.env).home);
-      ensureLayout(paths);
-      const ensured = await withSecretStore(process.env, () =>
-        ensureRunnerCoordinator(join(paths.secretsDir, "runner-identity")),
-      );
-      console.log(
-        `Runner authority ${ensured.created ? "initialized" : "already initialized"}. Command key: ${ensured.signingKeys[0].keyId}`,
-      );
-      process.exit(0);
-    } catch (caughtError2) {
-      journalCaught(caughtError2, "Runner authority initialization failed.", null);
-
-      process.exit(1);
-    }
-  }
-  if (command === "public-tls") {
-    try {
-      if (argv.length !== 2 || argv[1] !== "validate") throw new Error("Invalid command");
-      if (publicTlsProxy(process.env)) {
-        console.log("Public HTTPS is terminated by the proxy; no certificate to validate.");
-        process.exit(0);
-      }
-      validatePublicTls(process.env);
-      console.log("Public HTTPS certificate is valid.");
-      process.exit(0);
-    } catch (caughtError3) {
-      journalCaught(caughtError3, "Public HTTPS certificate validation failed.", null);
-
-      process.exit(1);
-    }
-  }
   if (command === "--help" || command === "-h" || command === "help") {
     console.log(CLI_HELP);
     process.exit(0);
@@ -3254,14 +3218,10 @@ if (import.meta.main || compiled()) {
   if (process.env.PAWS_PUBLIC_DASHBOARD === "1")
     process.on("SIGHUP", () => {
       if (exiting) return;
-      try {
-        validateTlsRenewal(process.env);
-      } catch (caughtError4) {
-        journalCaught(caughtError4, "public TLS certificate renewal rejected", null);
-
-        return;
-      }
-      shutdown(PUBLIC_TLS_RESTART_EXIT);
+      reloadPublicTls(process.env, {
+        restart: () => shutdown(PUBLIC_TLS_RESTART_EXIT),
+        rejected: (error) => journalCaught(error, "public TLS certificate renewal rejected", null),
+      });
     });
   const paws = await starting.catch((error: unknown) => {
     if (!(error instanceof UnknownDatabaseError)) throw error;

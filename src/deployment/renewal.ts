@@ -42,3 +42,16 @@ export function validateTlsRenewal(source: EnvSource): void {
   const control = loadRunnerControl(source, loadRuntime(source).env);
   if (control !== null) loadRunnerTls(control, publicTls, proxy);
 }
+
+export function reloadPublicTls(
+  source: EnvSource,
+  handlers: { restart: () => void; rejected: (error: unknown) => void },
+): void {
+  try {
+    validateTlsRenewal(source);
+  } catch (error) {
+    handlers.rejected(error);
+    return;
+  }
+  handlers.restart();
+}

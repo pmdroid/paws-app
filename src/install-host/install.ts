@@ -224,7 +224,7 @@ export async function runInstall(args: InstallArgs, deps: InstallHostDeps): Prom
 /**
  * The public dashboard's key and certificate. On a tailnet URL, offers `tailscale cert`
  * into `PAWS_HOME/tls`; otherwise, or when that fails, asks for existing paths.
- * A pair that fails `public-tls validate` is explained and asked again.
+ * A pair that fails the startup certificate checks is explained and asked again.
  */
 async function resolveTls(
   pawsHome: string,

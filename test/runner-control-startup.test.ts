@@ -13,7 +13,7 @@ test("startup rejects local execution and serves runner control over HTTPS", asy
       assert(passed, name);
       names.push(name);
     });
-    assert.equal(names.length, 30);
+    assert.equal(names.length, 28);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
