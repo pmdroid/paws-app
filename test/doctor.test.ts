@@ -447,31 +447,6 @@ test("doctor names the chosen repositories and fails when none is chosen", () =>
   });
 });
 
-test("bun run paws doctor exits nonzero until prerequisites exist", async () => {
-  const home = mkdtempSync(join(tmpdir(), "paws-doctor-"));
-  const proc = Bun.spawn([process.execPath, "src/index.ts", "doctor"], {
-    cwd: new URL("..", import.meta.url).pathname,
-    env: { PATH: process.env.PATH ?? "", HOME: home },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  const diagnostics = stderr.trim().split("\n");
-  expect(diagnostics.length).toBeGreaterThan(0);
-  for (const line of diagnostics) {
-    expect(line).toStartWith("catch item=none operation=");
-    expect(line).toContain("code=ENOENT");
-    expect(line).toContain("expected=prerequisite may be absent");
-  }
-  expect(stdout).toContain("paws doctor");
-  expect(stdout).toContain("missing linear:");
-  expect(code).toBe(1);
-});
-
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 
 test("doctor is green with no claude when the implementer is grok", async () => {

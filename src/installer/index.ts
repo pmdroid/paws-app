@@ -1,4 +1,5 @@
-export { defaultEnvFile, INSTALL_USAGE, runInstallCli } from "./cli";
+export { INSTALL_USAGE, runInstallCli } from "./cli";
+export { defaultEnvFile } from "./env-file-path";
 export { openEnvFile } from "./env-file";
 export type { EnvFile } from "./env-file";
 export { terminalPrompter } from "./prompt";

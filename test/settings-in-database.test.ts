@@ -120,7 +120,7 @@ async function savedSettingsHome(): Promise<string> {
   return home;
 }
 
-test("a command without a running Paws, such as paws doctor, reads the saved settings", async () => {
+test("a probe without a running Paws reads the saved settings", async () => {
   const home = await savedSettingsHome();
   const saved = await withSavedStore({ PAWS_HOME: home }, async ({ held }) => ({
     held,

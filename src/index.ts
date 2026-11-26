@@ -210,8 +210,7 @@ import {
   recordQueueDepths,
   setGauge,
 } from "./metrics";
-import { doctorChecks, formatDoctor, realProbe } from "./doctor";
-import { installHostMain } from "./install-host";
+import { doctorChecks, realProbe } from "./doctor";
 import { runInstallCli } from "./installer";
 import {
   createGitHubTokenProvider,
@@ -1541,6 +1540,14 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   try {
     server = startServer({
       storageUsage,
+      doctor: () =>
+        realProbe(envSource, store).then(doctorChecks, (error: unknown) => [
+          {
+            name: "doctor",
+            ok: false,
+            detail: error instanceof Error ? error.message : String(error),
+          },
+        ]),
       vmProviderChecks: {
         run: (name, signal) => vmProviderChecks.runVmProviderCheck(name, signal),
         nextCheckAt: () => store.run((q) => jobRunAtByKeySteps(q, VM_PROVIDER_CHECK_JOB)),
@@ -3034,8 +3041,6 @@ const CLI_HELP = `usage: paws
 
 Commands:
   paws                          start Paws on 127.0.0.1:8787
-  paws doctor                   check prerequisites, including the GitHub App
-  paws install                  set up the env file, config.toml and the user service
   paws install secrets          print the public URL and the browser setup link
   paws login slack              connect Slack
   paws setup-link               print the browser setup link
@@ -3061,17 +3066,6 @@ export async function setupLinkMain(
     journalCaught(error, "paws setup-link failed.", null);
     return 1;
   }
-}
-
-async function doctorMain(): Promise<number> {
-  const probe = await realProbe(process.env).catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : String(error));
-    return null;
-  });
-  if (probe === null) return 1;
-  const checks = doctorChecks(probe);
-  console.log(formatDoctor(checks));
-  return checks.every((item) => item.ok) ? 0 : 1;
 }
 
 function sealedEvidenceObjects(paths: { home: string; secretsDir: string }): EvidenceObjects {
@@ -3156,12 +3150,8 @@ if (import.meta.main || compiled()) {
     console.log(CLI_HELP);
     process.exit(0);
   }
-  if (command === "doctor") {
-    process.exit(await doctorMain());
-  }
   if (command === "install" && argv[1] === "secrets")
     process.exit(await runInstallCli(argv.slice(1), process.env, withSecretStore));
-  if (command === "install") process.exit(await installHostMain(argv.slice(1)));
   if (command === "setup-link") process.exit(await setupLinkMain(argv.slice(1), process.env));
   if (command === "login" && argv[1] === "slack") {
     try {

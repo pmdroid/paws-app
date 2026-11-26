@@ -81,7 +81,7 @@ test("secrets already on disk stay as they are", async () => {
   expect(readExeDevToken(home)).toBe("exe-dev-token-ee4");
 });
 
-test("the default env file is the one paws install wrote", () => {
+test("the default env file is the user unit's EnvironmentFile", () => {
   const user = join(home, "..", "user");
   expect(defaultEnvFile({ HOME: user, PAWS_HOME: home })).toBe(join(home, "https.env"));
   const unitDir = join(user, ".config", "systemd", "user");

@@ -165,6 +165,15 @@ export async function startDashboardFixture(
     workspaceAccess: access,
     evidenceDir,
     dashboardNow: () => new Date(clock),
+    doctor: async () => [
+      { name: "git", ok: true, detail: "/usr/bin/git" },
+      {
+        name: "github-webhook",
+        ok: false,
+        detail: "no signed GitHub webhook delivery has arrived",
+        fix: "Enable the GitHub App webhook at PAWS_PUBLIC_URL/webhooks/github.",
+      },
+    ],
     questionAnswers: (request, principal, sessionIds) =>
       handleQuestionAnswer(request, {
         store: db,

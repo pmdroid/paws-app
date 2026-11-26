@@ -61,7 +61,7 @@ const stages = [
               <div class="actions"><a class="button primary" href={setup}>Get started <svg aria-hidden="true"><use href="#arrow" /></svg></a><a class="button secondary" href="#how-it-works">See how it works</a></div>
               <div class="terminal">
                 <div class="titlebar"><span>terminal</span><div class="window-dots" aria-hidden="true"><i></i><i></i><i></i></div></div>
-                <div class="terminal-content"><code><span class="prompt">$</span> bun run paws setup<br /><span class="terminal-note">Connect your tools.<br />Give your issues a good home.</span><br /><span class="cursor" aria-hidden="true">_</span></code><img src="/images/sleeping-pup.png" width="1536" height="1024" alt="" /></div>
+                <div class="terminal-content"><code><span class="prompt">$</span> curl -fsSL https://get.paws.boo | sudo sh<br /><span class="terminal-note">Connect your tools.<br />Give your issues a good home.</span><br /><span class="cursor" aria-hidden="true">_</span></code><img src="/images/sleeping-pup.png" width="1536" height="1024" alt="" /></div>
               </div>
               <p class="local-note">Runs on your machine. Naps optional.</p>
             </div>
@@ -90,10 +90,7 @@ const stages = [
             <noscript><ol class="no-script-stages">{stages.slice(1).map(stage => <li><h3>{stage.name}</h3><p>{stage.description}</p></li>)}</ol></noscript>
           </div>
         </section>
-        <section class="local-section" aria-labelledby="local-title"><div class="local-copy"><h2 id="local-title">Your machine.<br />Your agent.<br />Your call.</h2><p>Paws coordinates the coding tools you already use. Choose Claude Code, Codex, or Grok, keep the work local, and follow along in Linear and GitHub.</p><a href={`${repo}/blob/main/README.md`}>Take a closer look <svg aria-hidden="true"><use href="#arrow" /></svg></a></div><div class="window setup-window"><div class="titlebar"><span>getting-started.txt</span><div class="window-dots" aria-hidden="true"><i></i><i></i><i></i></div></div><div class="setup-content"><h3>Make yourself at home.</h3><p>Install Bun 1.4 or newer, clone the repo, then connect your tools.</p><pre><code>bun install
-bun run paws setup
-bun run paws doctor
-bun run paws</code></pre><a class="button primary" href={setup}>Open the setup guide <svg aria-hidden="true"><use href="#arrow" /></svg></a><p class="setup-note">Linear + GitHub + your coding agent.</p></div></div></section>
+        <section class="local-section" aria-labelledby="local-title"><div class="local-copy"><h2 id="local-title">Your machine.<br />Your agent.<br />Your call.</h2><p>Paws coordinates the coding tools you already use. Choose Claude Code, Codex, or Grok, keep the work local, and follow along in Linear and GitHub.</p><a href={`${repo}/blob/main/README.md`}>Take a closer look <svg aria-hidden="true"><use href="#arrow" /></svg></a></div><div class="window setup-window"><div class="titlebar"><span>getting-started.txt</span><div class="window-dots" aria-hidden="true"><i></i><i></i><i></i></div></div><div class="setup-content"><h3>Make yourself at home.</h3><p>Install the package, then connect your tools in the dashboard.</p><pre><code>curl -fsSL https://get.paws.boo | sudo sh</code></pre><a class="button primary" href={setup}>Open the setup guide <svg aria-hidden="true"><use href="#arrow" /></svg></a><p class="setup-note">Linear + GitHub + your coding agent.</p></div></div></section>
       </main>
       <footer><a class="brand" href="/" aria-label="Paws home"><svg aria-hidden="true"><use href="#paw" /></svg>paws</a><p>A little help. A lot of good work.</p><a href={repo}>Find us on GitHub <svg aria-hidden="true"><use href="#arrow" /></svg></a><span>paws.boo</span></footer>
     </div>

@@ -4,13 +4,12 @@ Paws is one Bun process on the developer's machine. It takes delegated Linear is
 
 The product is Paws. Do not rename it, and do not describe it as a factory.
 
-The loop lives in `src/loop` and is wired from `src/index.ts`. Check prerequisites with `bun run paws doctor`. Do not invent the feature while touching a neighboring module. The dashboard in `src/dashboard` is owned separately.
+The loop lives in `src/loop` and is wired from `src/index.ts`. Workspace › Integrations in the dashboard shows the prerequisite checks. Do not invent the feature while touching a neighboring module. The dashboard in `src/dashboard` is owned separately.
 
 ## Run
 
 ```sh
 bun install
-bun run paws doctor  # prerequisites for a real Linear / GitHub / Closeout run
 bun run paws          # 127.0.0.1:8787, data in ~/.paws
 bun run check         # lint, fmt:check, typecheck, test, build:dashboard, links, raw-sql, graphql, knip
 ```
@@ -42,7 +41,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/db`                                                 | Postgres schema, migrations, domain rows, jobs, outbox and writes     |
 | `src/decisions`                                          | Workspace decisions and repository access choices                     |
 | `src/deployment`                                         | Deployment configuration, TLS certificates and renewal                |
-| `src/doctor`                                             | Local prerequisites, agent profiles and external access probes        |
+| `src/doctor`                                             | Prerequisite checks for the dashboard and external access probes      |
 | `src/evidence`                                           | Evidence storage, media, review marks and HTTP routes                 |
 | `src/execution-controls`                                 | Pause, resume, stop and take-over controls                            |
 | `src/finding-issues`                                     | Linear issues filed from pre-existing review findings                 |
@@ -51,8 +50,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/host-operation`                                     | Tracking which host operation runs, for the event-loop lag watchdog   |
 | `src/improvements`                                       | Improvement inbox sources: daily findings and legacy actions          |
 | `src/install`                                            | Agent adapter installation, login and usage probes                    |
-| `src/install-host`                                       | Host installation checks and package verification                     |
-| `src/installer`                                          | `paws install`: prompts, env file and the secrets step                |
+| `src/installer`                                          | `paws install secrets`: prompts, env file and the secrets step        |
 | `src/intake`                                             | Delegation intake, dependencies, ordering and repository readiness    |
 | `src/issue-vm`                                           | Issue VMs: records, budget and admission                              |
 | `src/journal`                                            | Durable journal lines for process and workflow events                 |

@@ -50,7 +50,7 @@ items:
 
 Write the review instructions in `SKILL.md` and supporting text in `references/rules.md`. Import and skill paths resolve from `policy_root`. Commands run against the candidate checkout.
 
-The local policy replaces the repository policy for that project. Paws blocks verification if the configured local policy is missing or invalid. Setup preserves this setting and validates the local policy without creating `.agents/closeout.yaml` in the work repository. Run `bun run paws doctor` to check the selected policy.
+The local policy replaces the repository policy for that project. Paws blocks verification if the configured local policy is missing or invalid. Setup preserves this setting and validates the local policy without creating `.agents/closeout.yaml` in the work repository. The `closeout` check under Prerequisites on Workspace › Integrations checks the selected policy.
 
 Changing the policy or its review instructions requires fresh verification. Review results identify the selected local policy. Paired runners use the same policy, with commands executed against the candidate checkout.
 

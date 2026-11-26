@@ -20,7 +20,7 @@ async function paws(args: string[]) {
 test("--help lists the commands and no GitHub login or logout", async () => {
   const help = await paws(["--help"]);
   expect(help.code).toBe(0);
-  expect(help.stdout).toContain("paws doctor");
+  expect(help.stdout).toContain("paws install secrets");
   expect(help.stdout).toContain("docs/github-app.md");
   expect(help.stdout).not.toContain("login github");
   expect(help.stdout).not.toContain("logout");
@@ -43,13 +43,29 @@ test("--no-tunnel from an older systemd unit is accepted and ignored", async () 
   expect(started.stderr).not.toContain("Unknown option --no-tunnel.");
 });
 
-test.each([["evidence migrate"], ["db check"], ["review-score"], ["probes collect acme/widgets"]])(
-  "paws %s exits with general usage",
-  async (command) => {
-    const help = await paws(["--help"]);
-    const rejected = await paws(command.split(" "));
-    expect(rejected.code).toBe(1);
-    expect(rejected.stderr).toContain(help.stdout.trim());
-    expect(help.stdout).not.toContain(command.split(" ").slice(0, 2).join(" "));
-  },
-);
+test.each([
+  ["evidence migrate"],
+  ["db check"],
+  ["review-score"],
+  ["probes collect acme/widgets"],
+  ["doctor"],
+])("paws %s exits with general usage", async (command) => {
+  const help = await paws(["--help"]);
+  const rejected = await paws(command.split(" "));
+  expect(rejected.code).toBe(1);
+  expect(rejected.stderr).toContain(help.stdout.trim());
+  expect(help.stdout).not.toContain(command.split(" ").slice(0, 2).join(" "));
+});
+
+test.each(["install", "install --yes"])("paws %s exits with general usage", async (command) => {
+  const help = await paws(["--help"]);
+  const rejected = await paws(command.split(" "));
+  expect(rejected.code).toBe(1);
+  expect(rejected.stderr).toContain(help.stdout.trim());
+});
+
+test("paws install secrets still runs", async () => {
+  const secrets = await paws(["install", "secrets", "extra"]);
+  expect(secrets.code).toBe(1);
+  expect(secrets.stderr).toContain("usage: paws install secrets");
+});

@@ -8,11 +8,11 @@ A runner Paws creates always gets Docker for agent jobs. The install step adds D
 
 Generate an exe.dev API token that may run `new`, `ls`, `ssh`, `rm`, `pool list` and `pool adopt`, and save it on Settings › Runner VMs. exe.dev lists each subcommand on its own: `"pool"` does not allow `pool list`. Without `pool list` the Runners page cannot list pools and shows HTTP 403, and only team admins may `pool adopt`.
 
-Create VM appears on the Runners page once the key of the configured provider is saved. `bun run paws doctor` reports it as `exe-dev`.
+Create VM appears on the Runners page once the key of the configured provider is saved. The Prerequisites checks on Workspace › Integrations report it as `exe-dev`.
 
 ## Choose the provider
 
-`provider` in `[vm_sizes]` names where Create VM makes new VMs: `exe-dev` (the default), `boat` or `instabox`. Each VM keeps the provider it was created with, so changing the setting affects only VMs created afterwards. Save the provider's API key on Settings › Runner VMs: the boat key or the InstaBox key. `bun run paws doctor` reports them as `boat` and `instabox` once the setting or a VM names that provider.
+`provider` in `[vm_sizes]` names where Create VM makes new VMs: `exe-dev` (the default), `boat` or `instabox`. Each VM keeps the provider it was created with, so changing the setting affects only VMs created afterwards. Save the provider's API key on Settings › Runner VMs: the boat key or the InstaBox key. The Prerequisites checks report them as `boat` and `instabox` once the setting or a VM names that provider.
 
 Each provider keeps its own size in `[vm_sizes.exe-dev]`, `[vm_sizes.boat]` or `[vm_sizes.instabox]`, which Create VM and issue VMs on that provider use. Saving refuses a size the provider can't give and lists the sizes it can:
 
@@ -80,7 +80,7 @@ The VM must reach Paws on both ports: 8787 for enrollment and 8788 for the runne
 
    With grants instead of ACLs, the rule is `{ "src": ["tag:paws-runner"], "dst": ["paws"], "ip": ["tcp:8787", "tcp:8788"] }`. Nothing else should accept `tag:paws-runner` as a source.
 
-3. Run `bun run paws doctor`. The `tailscale-authkey` check passes when the key is present and readable.
+3. Open Workspace › Integrations. The `tailscale-authkey` check under Prerequisites passes when the key is present and readable.
 
 With the key saved, Create VM adds a `tailnet` step after the install and before enrollment. The VM installs a pinned Tailscale static release whose SHA-256 Paws checks before unpacking. No install script runs. On an exe.dev VM, before the join it installs and enables `systemd-resolved` with exe.dev's resolver (`169.254.169.254`) as its upstream in `/etc/systemd/resolved.conf.d/paws-upstream.conf`, and links `/etc/resolv.conf` to its stub. A boat VM keeps its own systemd-resolved, which already works with Tailscale. tailscaled then configures MagicDNS through resolved, and `*.localhost` names resolve to loopback as on Ubuntu CI. The VM then joins with `tailscale up --hostname=<vm name>` and waits until it resolves the Paws host and `/health` answers. Last, it checks that it resolves github.com, the Paws host and `probe.localhost` (to a loopback address); a failure ends the step with "the VM cannot resolve *.localhost names" and the check's output. A VM that is already on the tailnet repeats the resolved setup, which changes nothing once in place, and both checks.
 

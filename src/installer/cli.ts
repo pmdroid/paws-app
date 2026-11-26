@@ -1,8 +1,6 @@
 import { closeSync, openSync, writeSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { ensureLayout, loadEnv, pawsPaths, type EnvSource } from "../config";
-import { ENV_FILE, installedUnit, unitPaths } from "../install-host";
+import { defaultEnvFile } from "./env-file-path";
 import { openEnvFile } from "./env-file";
 import { terminalPrompter, type PromptOutput } from "./prompt";
 import { runSecretsStep } from "./secrets";
@@ -46,12 +44,6 @@ export async function runInstallCli(
   } finally {
     terminal?.close();
   }
-}
-
-/** The env file `paws install` wrote: the user unit's `EnvironmentFile`, else `PAWS_HOME/https.env`. */
-export function defaultEnvFile(source: EnvSource): string {
-  const installed = installedUnit(unitPaths(source.HOME || homedir(), source.XDG_CONFIG_HOME));
-  return installed.envFile ?? join(loadEnv(source).home, ENV_FILE);
 }
 
 function openTerminal(): (PromptOutput & { close(): void }) | null {
