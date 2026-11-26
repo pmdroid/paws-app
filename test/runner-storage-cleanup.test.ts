@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pawsPaths } from "../src/config";
 import type { Q } from "../src/db";
-import type { RunnerCommand, RunnerStorageCleanupResult } from "../src/runner-protocol";
+import {
+  MINIMUM_RUNNER_VERSION,
+  type RunnerCommand,
+  type RunnerStorageCleanupResult,
+} from "../src/runner-protocol";
 import { handleStorageCleanupRequest } from "../src/settings";
 import { createRunnerStorageCleaner, createStorageCleanup } from "../src/storage-cleanup";
 import { describePglite, seed } from "./pglite-fixtures";
@@ -155,7 +159,7 @@ describePglite((connect) => {
         .insert(q.t.runnerHostStatus)
         .values({ runnerId, runnerVersion, reportedAt: NOW })
         .onConflictDoUpdate({ target: q.t.runnerHostStatus.runnerId, set: { runnerVersion } });
-    await seed(db, host(current, "0.1.103"), host(old, "0.1.101"));
+    await seed(db, host(current, MINIMUM_RUNNER_VERSION.join(".")), host(old, "0.1.101"));
     const clock = { now: NOW };
     const sent: RunnerCommand[] = [];
     const service = createStorageCleanup({

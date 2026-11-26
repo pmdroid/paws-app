@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pawsPaths } from "../src/config";
 import { saveStorageSnapshotSteps, type Q } from "../src/db";
-import type { RunnerCommand, RunnerStorageReport } from "../src/runner-protocol";
+import {
+  MINIMUM_RUNNER_VERSION,
+  type RunnerCommand,
+  type RunnerStorageReport,
+} from "../src/runner-protocol";
 import { handleStorageUsageRequest } from "../src/settings";
 import {
   createRunnerStorageReporter,
@@ -136,9 +140,9 @@ describePglite((connect) => {
         .onConflictDoUpdate({ target: q.t.runnerHostStatus.runnerId, set: { runnerVersion } });
     await seed(
       db,
-      (q) => host(q, current, "0.1.103"),
+      (q) => host(q, current, MINIMUM_RUNNER_VERSION.join(".")),
       (q) => host(q, old, "0.1.100"),
-      (q) => host(q, away, "0.1.103"),
+      (q) => host(q, away, MINIMUM_RUNNER_VERSION.join(".")),
       (q) =>
         q.orm
           .update(q.t.runner)
