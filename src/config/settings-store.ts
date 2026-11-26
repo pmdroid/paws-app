@@ -63,13 +63,34 @@ export async function useSettingsStore(
 
 export function savedSettingsSections(text: string, check: (known: string) => void) {
   const lines = knownConfigLines(text);
-  check(lines);
   try {
+    check(lines);
     return settingsSectionsOf(lines);
   } catch (error) {
-    throw new Error(`Saved settings could not be read: ${(error as Error).message}`, {
-      cause: error,
-    });
+    const message = (error as Error).message;
+    if (/^Saved settings line \d+/.test(message)) throw error;
+    const line = unreadableLine(lines);
+    throw new Error(
+      `Saved settings${line === null ? "" : ` line ${line}`} could not be read: ${message}`,
+      { cause: error },
+    );
+  }
+}
+
+function unreadableLine(text: string): number | null {
+  const lines = text.split(/\r?\n/);
+  let parsed = 0;
+  for (let count = 1; count <= lines.length; count += 1)
+    if (parsesAsToml(lines.slice(0, count).join("\n"))) parsed = count;
+  return parsed === lines.length ? null : parsed + 1;
+}
+
+function parsesAsToml(text: string): boolean {
+  try {
+    Bun.TOML.parse(text);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -158,10 +179,11 @@ export function settingsSectionsOf(text: string): SettingSections {
   const known = knownSections(text);
   const root = known === "" ? {} : (Bun.TOML.parse(known) as SettingSections);
   const sections: SettingSections = {};
-  for (const name of SETTINGS_SECTIONS) {
-    const value = root[name];
+  for (const [key, value] of Object.entries(root)) {
+    const name = key.toLowerCase();
+    if (!(SETTINGS_SECTIONS as readonly string[]).includes(name)) continue;
     if (typeof value === "object" && value !== null && !Array.isArray(value))
-      sections[name] = value;
+      sections[name] = { ...(sections[name] as object | undefined), ...value };
   }
   return sections;
 }
@@ -197,7 +219,7 @@ function tomlKey(key: string): string {
 
 function tomlValue(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(tomlValue).join(", ")}]`;
-  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "string") return JSON.stringify(value).replaceAll("\x7f", "\\u007f");
   if (typeof value === "object" && value !== null)
     return `{ ${Object.entries(value)
       .map(([key, entry]) => `${tomlKey(key)} = ${tomlValue(entry)}`)

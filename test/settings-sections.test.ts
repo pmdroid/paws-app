@@ -4,15 +4,19 @@ import { join } from "node:path";
 import {
   configSettingsSections,
   loadConfigFile,
+  parseBriefTemplates,
   parseConfigToml,
+  readConfigText,
   SETTINGS_SECTIONS,
   useSettingsStore,
+  writeFindingsGroupingTime,
 } from "../src/config";
 import {
   CONFIG_SETTINGS_KEY,
   convertConfigSettingsSteps,
   readSetting,
   updateSetting,
+  updateSettingSectionsSteps,
   type Db,
 } from "../src/db";
 import { handleTimeLimitSettingsRequest } from "../src/settings";
@@ -160,4 +164,40 @@ test("saving through a settings route writes only its section row", async () => 
   );
   expect(changed).toEqual(["settings.time_limits"]);
   expect(loadConfigFile(configPath).timeLimits?.implementationMinutes).toBe(30);
+});
+
+test("a section heading in another case converts to its section row", async () => {
+  const db = await database();
+  await updateSetting(db, CONFIG_SETTINGS_KEY, () => "[GitHub_Access]\nagent_read = false\n", 1);
+  await convert(db);
+  const stored = await rows(db);
+  expect(JSON.parse(stored["settings.github_access"]!.value)).toEqual({ agent_read: false });
+  expect(stored[CONFIG_SETTINGS_KEY]).toBeUndefined();
+  expect(loadConfigFile(await open(db)).githubAccess).toEqual({ agentRead: false });
+});
+
+test("a TOML syntax error stops the conversion with its line and stays in place", async () => {
+  const db = await database();
+  const broken = "[brief]\ntemplate = ]\n";
+  await updateSetting(db, CONFIG_SETTINGS_KEY, () => broken, 1);
+  await expect(convert(db)).rejects.toThrow("Saved settings line 2 could not be read");
+  expect(await readSetting(db, CONFIG_SETTINGS_KEY)).toBe(broken);
+});
+
+test("a string with a DEL character reads back after a save", async () => {
+  const db = await database();
+  await db.transaction((q) =>
+    updateSettingSectionsSteps(q, SETTINGS_SECTIONS, (stored) => ({
+      ...stored,
+      brief: { template: "Keep\u007f short." },
+    })),
+  );
+  const reopened = await open(db);
+  expect(readConfigText(reopened)).toContain("\\u007f");
+  expect(parseBriefTemplates(readConfigText(reopened)).template).toBe("Keep\u007f short.");
+  await writeFindingsGroupingTime(reopened, "08:00");
+  expect(loadConfigFile(reopened).findingsGroupingTime).toBe("08:00");
+  expect(JSON.parse((await rows(db))["settings.brief"]!.value)).toEqual({
+    template: "Keep\u007f short.",
+  });
 });
