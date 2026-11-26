@@ -169,7 +169,7 @@ export function* unsettledIssueVmIdsSteps(q: Q) {
       .from(v)
       .where(
         or(
-          inArray(v.state, ["creating", "sleeping", "waking"]),
+          inArray(v.state, ["creating", "sleeping", "waking", "unknown"]),
           and(eq(v.state, "awake"), eq(v.want, "asleep")),
           and(eq(v.state, "asleep"), eq(v.want, "awake")),
         ),

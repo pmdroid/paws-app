@@ -3,6 +3,7 @@ import { claimNextJob, completeJob, syncSteps, type Db, type IssueVm } from "../
 import {
   createFakeIssueVmDriver,
   createIssueVmLifecycleHandler,
+  ISSUE_VM_FIND_MS,
   ISSUE_VM_LIFECYCLE_QUEUE,
   armUnsettledIssueVmsSteps,
   requestIssueVmAsleepSteps,
@@ -118,6 +119,11 @@ async function sleepThenWaking(w: World) {
   return waking!;
 }
 
+async function reconcile(w: World) {
+  expect(await w.db.transaction((q) => armUnsettledIssueVmsSteps(q, w.clock.t))).toBe(true);
+  await drain(w);
+}
+
 const ops = (w: World) => w.driver.calls.map((call) => call.op);
 const power = (w: World) => [...w.driver.vms.values()].map((vm) => vm.power);
 
@@ -196,6 +202,25 @@ describePglite((connect) => {
     expect(await rows(w.db)).toMatchObject([
       { state: "unknown", providerRef: null, failure: "The VM did not start before its deadline" },
     ]);
+    w.clock.t += ISSUE_VM_FIND_MS + 1_000;
+    await reconcile(w);
+    expect(await rows(w.db)).toMatchObject([{ state: "awake", providerRef: "fake-1" }]);
+    expect(w.driver.vms.size).toBe(1);
+  });
+
+  test("a create that never made a VM is reconciled as failed, and the next dispatch makes one", async () => {
+    const w = await world(connect);
+    const { vm } = (await awake(w)) as { vm: IssueVm };
+    w.driver.aroundNext("create", async () => {
+      w.clock.t = vm.deadlineAt! + 1;
+    });
+    await drain(w);
+    w.clock.t += ISSUE_VM_FIND_MS + 1_000;
+    await reconcile(w);
+    expect(await rows(w.db)).toMatchObject([{ state: "failed" }]);
+    await awake(w);
+    await drain(w);
+    expect(await rows(w.db)).toMatchObject([{ state: "failed" }, { state: "awake" }]);
   });
 
   test("a wake result after its deadline is ignored and keeps the deadline", async () => {
@@ -212,7 +237,7 @@ describePglite((connect) => {
     ]);
   });
 
-  test("a call that never answers is aborted at the deadline, and unknown blocks the VM", async () => {
+  test("a call that never answers is aborted at the deadline and reconciled from the provider", async () => {
     const w = await world(connect);
     const waking = await sleepThenWaking(w);
     let signal: AbortSignal | null = null;
@@ -223,13 +248,14 @@ describePglite((connect) => {
     w.clock.t = waking.deadlineAt! - 20;
     await drain(w);
     expect(signal!.aborted).toBe(true);
-    const calls = w.driver.calls.length;
     expect(await awake(w)).toMatchObject({ ok: true, ready: false, vm: { state: "unknown" } });
-    expect(await asleep(w)).toBe(false);
-    expect(await w.db.transaction((q) => armUnsettledIssueVmsSteps(q, w.clock.t))).toBe(false);
     await drain(w);
-    expect(w.driver.calls.length).toBe(calls);
     expect(await rows(w.db)).toMatchObject([{ state: "unknown" }]);
+    expect(ops(w).at(-1)).toBe("wake");
+    w.clock.t += ISSUE_VM_FIND_MS + 1_000;
+    await reconcile(w);
+    expect(await rows(w.db)).toMatchObject([{ state: "awake", want: "awake" }]);
+    expect(ops(w).slice(-2)).toEqual(["find", "wake"]);
   });
 
   test("a result for an older generation is ignored and the current one is asked again", async () => {

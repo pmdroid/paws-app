@@ -34,6 +34,7 @@ export const ISSUE_VM_SWEEP_QUEUE = "issue_vm.sweep";
 export const ISSUE_VM_CREATE_MS = 15 * 60_000;
 export const ISSUE_VM_SLEEP_MS = 60_000;
 export const ISSUE_VM_WAKE_MS = 120_000;
+export const ISSUE_VM_FIND_MS = 60_000;
 const RETRY_MS = 5_000;
 const MAX_STEPS = 12;
 const MAX_FAILURE = 500;
@@ -44,7 +45,10 @@ export type IssueVmDriver = {
   create(vm: IssueVm, call: IssueVmCall): Promise<{ ref: string; runnerId?: string | null }>;
   sleep(vm: IssueVm, call: IssueVmCall): Promise<void>;
   wake(vm: IssueVm, call: IssueVmCall): Promise<void>;
+  find(vm: IssueVm, call: IssueVmCall): Promise<IssueVmFound>;
 };
+
+export type IssueVmFound = { state: "awake" | "asleep" | "missing"; ref?: string };
 
 export type IssueVmRequest = {
   workspaceId: string;
@@ -108,7 +112,7 @@ export function* requestIssueVmAwakeSteps(q: Q, input: IssueVmRequest) {
     return readiness((yield* issueVmByIdSteps(q, id))!);
   }
   if (live.state === "awake" && live.want === "awake") return readiness(live, true);
-  if (live.state === "unknown" || live.state === "deleting") return readiness(live);
+  if (live.state === "deleting") return readiness(live);
   if (live.want === "asleep" && live.state !== "creating" && live.state !== "waking") {
     const admission = yield* issueVmWakeAdmissionSteps(q, { ...live, at: input.now });
     if (!admission.ok) return refused(admission);
@@ -121,8 +125,7 @@ export function* requestIssueVmAwakeSteps(q: Q, input: IssueVmRequest) {
 
 export function* requestIssueVmAsleepSteps(q: Q, input: { itemId: string; now: number }) {
   const live = yield* liveIssueVmForItemSteps(q, input.itemId);
-  if (live === null || live.want === "asleep" || ["unknown", "deleting"].includes(live.state))
-    return false;
+  if (live === null || live.want === "asleep" || live.state === "deleting") return false;
   yield* setIssueVmWantSteps(q, { id: live.id, want: "asleep" });
   if (live.state === "awake") yield* sleepNowSteps(q, live, input.now);
   yield* armSteps(q, live.id, input.now);
@@ -206,12 +209,39 @@ export function createIssueVmLifecycleHandler(store: Db, options: IssueVmLifecyc
     return settle(vm, result);
   }
 
+  async function reconcile(vm: IssueVm, driver: IssueVmDriver): Promise<Outcome> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ISSUE_VM_FIND_MS);
+    const aborted = new Promise<never>((_, reject) => {
+      controller.signal.onabort = () => reject(new Error("The provider did not answer in time"));
+    });
+    let found: IssueVmFound;
+    try {
+      const call = { generation: vm.generation, signal: controller.signal };
+      found = await Promise.race([driver.find(vm, call), aborted]);
+    } finally {
+      clearTimeout(timer);
+    }
+    const at = now();
+    const set: IssueVmMove =
+      found.state === "missing"
+        ? { state: "failed", failure: "The provider no longer lists the VM" }
+        : { state: found.state, deadlineAt: null, attempts: 0, failure: null };
+    const ref = found.ref === undefined ? {} : { providerRef: found.ref };
+    if (await store.transaction((q) => moveSteps(q, vm, { ...set, ...ref }, at)))
+      journal(`issue_vm_reconciled vm=${vm.id} item=${vm.itemId} found=${found.state}`);
+    return "again";
+  }
+
   async function step(id: string): Promise<Outcome> {
     const vm = await store.run((q) => issueVmByIdSteps(q, id));
     if (vm === null) return "settled";
-    if ((IN_FLIGHT as readonly string[]).includes(vm.state)) {
+    const known = (IN_FLIGHT as readonly string[]).includes(vm.state);
+    if (known || vm.state === "unknown") {
       const driver = options.drivers[vm.provider];
       if (driver === undefined) throw new Error(`No issue VM driver for ${vm.provider}`);
+      if (!known && now() < (vm.deadlineAt ?? 0) + ISSUE_VM_FIND_MS) return "settled";
+      if (!known) return reconcile(vm, driver);
       return perform(vm as IssueVm & { state: InFlight }, driver);
     }
     const at = now();
@@ -277,7 +307,7 @@ export async function registerIssueVmLifecycle(
   });
 }
 
-type FakeOp = "create" | "sleep" | "wake";
+type FakeOp = "create" | "sleep" | "wake" | "find";
 
 export type FakeIssueVm = { ref: string; power: "on" | "off" };
 
@@ -322,5 +352,11 @@ export function createFakeIssueVmDriver(): FakeIssueVmDriver {
       }),
     sleep: (vm, given) => call("sleep", vm, given, () => void (found(vm.id).power = "off")),
     wake: (vm, given) => call("wake", vm, given, () => void (found(vm.id).power = "on")),
+    find: (vm, given) =>
+      call("find", vm, given, (): IssueVmFound => {
+        const seen = vms.get(vm.id);
+        if (seen === undefined) return { state: "missing" };
+        return { state: seen.power === "on" ? "awake" : "asleep", ref: seen.ref };
+      }),
   };
 }
