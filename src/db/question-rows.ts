@@ -151,6 +151,23 @@ export function* answeredRunQuestionSteps(
   return row?.answer ?? null;
 }
 
+export function* answeredItemQuestionSteps(q: Q, itemId: string, reason: string) {
+  const { question: x } = q.t;
+  const answered = and(eq(x.itemId, itemId), eq(x.reason, reason), eq(x.status, "answered"));
+  const row = yield* q.one(
+    q.orm
+      .select({ answer: x.answer, options: jsonText(q, x.options) })
+      .from(x)
+      .where(answered)
+      .orderBy(desc(x.answeredAt))
+      .limit(1),
+  );
+  const answer = (row?.answer ?? "").trim().toLowerCase();
+  const options = JSON.parse(row?.options ?? "[]") as (string | { value: string })[];
+  const values = options.map((option) => (typeof option === "string" ? option : option.value));
+  return values.find((value) => value.toLowerCase() === answer) ?? null;
+}
+
 export function* nextQueuedQuestionRowSteps(q: Q, sessionId: string): Steps<QuestionRow | null> {
   const { question } = q.t;
   const row = yield* q.one(

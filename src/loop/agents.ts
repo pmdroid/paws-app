@@ -60,6 +60,7 @@ export type AcpAgentDeps = {
   pullRequest?: PullRequestHook;
   postUpdate?: PostUpdateHook;
   profiles?: () => Promise<AgentProfiles>;
+  checkReviewer?: () => Promise<void>;
   onCandidate?: (identity: AgentIdentity) => void | Promise<void>;
   home?: string;
   launch: AgentLaunch;
@@ -198,6 +199,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
   let seq = 0;
   return {
     async review(request): Promise<ReviewResult> {
+      await deps.checkReviewer?.();
       const launchProfiles = await deps.profiles?.();
       const prompt = [
         ...(launchProfiles?.reviewer?.agent === "opencode"
@@ -323,6 +325,7 @@ export function createReviewCommandReviewer(deps: AcpAgentDeps): CodexReviewer {
   let seq = 0;
   return {
     async review(request): Promise<ReviewResult> {
+      await deps.checkReviewer?.();
       const profiles = await deps.profiles?.();
       const prompt = [
         `Review ${request.base}..${request.head} with the agent's review command.`,

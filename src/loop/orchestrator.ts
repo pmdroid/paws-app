@@ -113,6 +113,11 @@ import {
   type FixRound,
   type RestartHandoff,
   activateLinearItemSteps,
+  answeredItemQuestionSteps,
+  lastSuccessfulImplementationSteps,
+  workspaceAgentRunnersSteps,
+  latestModelCatalogSteps,
+  unsupportedModelsSteps,
   bindLinearSessionTaskSteps,
   configureWorkItemSteps,
   discardLinearTurnsSteps,
@@ -293,6 +298,7 @@ import {
   MAX_TRANSIENT_RETRIES,
   RUNNER_CAPACITY_WAIT_MS,
   RunnerCapacityWait,
+  ReviewerModelConflict,
   RunnerSetupRequired,
   RunnerRepositoryRefused,
   SavedWorkRewritten,
@@ -764,6 +770,9 @@ import {
   AGENT_HUNG_STOP,
   KEEP_WAITING,
   MOVE_TO_ANOTHER_RUNNER,
+  REVIEWER_MODEL_REASON,
+  reviewerModelAlternatives,
+  type ReviewerRunner,
   waitForRunner,
   type RunnerWaitQuestion,
 } from "./runner-wait";
@@ -2199,6 +2208,7 @@ export class Orchestrator {
             if (held) await this.waitForVerification(job, context, held);
             return;
           }
+          if ((await context.isCurrent()) && (await this.askReviewerModel(item.id, error))) return;
           const wait = await this.nextRunnerWait(job, error);
           if (!wait || !(await context.isCurrent())) throw error;
           journalCaught(
@@ -2826,6 +2836,7 @@ export class Orchestrator {
         );
         return;
       }
+      if (await this.askReviewerModel(item.id, error)) return;
       const wait = await this.nextRunnerWait(job, error);
       if (wait) {
         // Settle the attempt before the park. The parked interval is waiting, not a lease expiry,
@@ -5382,6 +5393,54 @@ export class Orchestrator {
       );
     });
     await this.flush();
+  }
+
+  private async checkReviewerModel(item: WorkItemRecord, runId: string): Promise<void> {
+    const { reviewer, reviewerFallback } = await this.profileSnapshot(runId);
+    const explicit = [reviewer.model, reviewerFallback?.model];
+    const found = await this.store.run(function* (q) {
+      const implementation = (yield* lastSuccessfulImplementationSteps(q, item.id))?.model;
+      if (!implementation || !explicit.includes(implementation)) return null;
+      const session = item.sessionKey ? yield* getLinearSessionSteps(q, item.sessionKey) : null;
+      const workspace = session?.organizationId
+        ? yield* workspaceForOrganizationSteps(q, session.organizationId)
+        : null;
+      const runners: ReviewerRunner[] = [];
+      for (const runner of workspace ? yield* workspaceAgentRunnersSteps(q, workspace.id) : [])
+        runners.push({
+          ...runner,
+          catalog: yield* latestModelCatalogSteps(q, runner.runnerId, runner.agent),
+        });
+      const unsupported = workspace ? yield* unsupportedModelsSteps(q, workspace.id) : [];
+      const alternatives = reviewerModelAlternatives(implementation, runners, unsupported);
+      return { implementation, alternatives };
+    });
+    if (found) throw new ReviewerModelConflict(found.implementation, found.alternatives);
+  }
+
+  private async askReviewerModel(itemId: string, error: unknown): Promise<boolean> {
+    const conflict = capacityWaitIn(error);
+    if (!(conflict instanceof ReviewerModelConflict)) return false;
+    const item = await this.store.run((q) => getWorkItemSteps(q, itemId));
+    const sessionId = item && this.activitySession(item);
+    const runId = item?.currentRunId;
+    if (!item || !sessionId || !runId) return false;
+    const choices = conflict.alternatives.length ? conflict.alternatives : ["Retry"];
+    const body = `${item.linearIdentifier} was implemented with ${conflict.implementation}, and its reviewer is set to the same model. The reviewer must be a different model, so no runner can review it. ${conflict.alternatives.length ? "Pick another reviewer model for this item, or stop." : "No runner offers another model: change the reviewer in Settings and choose Retry, or stop."}`;
+    const now = this.now();
+    await this.store.transaction(function* (q) {
+      const current = yield* getWorkItemSteps(q, item.id);
+      if (current?.currentRunId !== runId || current.state === "awaiting_input") return;
+      yield* askSteps(
+        q,
+        { itemId: item.id, runId, sessionId, version: current.version },
+        "runner-wait",
+        body,
+        { options: [...choices, "Stop"], reason: REVIEWER_MODEL_REASON, now },
+      );
+    });
+    await this.flush();
+    return true;
   }
 
   private async askOutOfMemory(
@@ -11175,6 +11234,7 @@ export class Orchestrator {
       repository: repository ? `${repository.owner}/${repository.repo}` : undefined,
       pawsRoot: this.options.pawsRoot,
       profiles: () => this.profileSnapshot(runId),
+      checkReviewer: () => this.checkReviewerModel(item, runId),
       publishArtifact: await this.artifactPublisher(item),
       prepareInputFiles: this.prepareInputFiles(item, runId),
       onCandidate: async (identity) => {
@@ -11398,6 +11458,25 @@ export class Orchestrator {
   }
 
   private async profileSnapshot(runId: string): Promise<AgentProfiles> {
+    const profiles = await this.storedProfiles(runId);
+    const { answer, implemented } = await this.store.run(function* (q) {
+      const itemId = (yield* getRunSteps(q, runId))?.itemId;
+      if (!itemId) return { answer: null, implemented: null };
+      const chosen = yield* answeredItemQuestionSteps(q, itemId, REVIEWER_MODEL_REASON);
+      return {
+        answer: chosen,
+        implemented: (yield* lastSuccessfulImplementationSteps(q, itemId))?.model,
+      };
+    });
+    const [agent, model] = (answer ?? "").split(" ") as [AgentProfile["agent"], string?];
+    if (!model) return profiles;
+    const { reviewerFallback, ...rest } = profiles;
+    const kept = implemented && reviewerFallback?.model === implemented ? rest : profiles;
+    const same = agent === profiles.reviewer.agent ? profiles.reviewer : {};
+    return { ...kept, reviewer: { ...same, agent, model } };
+  }
+
+  private async storedProfiles(runId: string): Promise<AgentProfiles> {
     const saved = this.readProfileSnapshot(runId);
     if (saved) return saved.profiles;
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));

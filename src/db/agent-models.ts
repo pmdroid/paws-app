@@ -38,6 +38,26 @@ export function* agentModelSourcesSteps(q: Q, at: number) {
   );
 }
 
+export function* workspaceAgentRunnersSteps(q: Q, workspaceId: string) {
+  const { runner: r, runnerAgentPolicy: p, workspaceMember: owner } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({ runnerId: r.id, agent: p.agent })
+      .from(r)
+      .innerJoin(p, eq(p.runnerId, r.id))
+      .innerJoin(owner, and(eq(owner.workspaceId, r.workspaceId), eq(owner.userId, r.ownerUserId)))
+      .where(
+        and(
+          eq(r.workspaceId, workspaceId),
+          ne(r.status, "revoked"),
+          isNull(r.revokedAt),
+          boundAgentAccountWhere(q, r.id, p.agent),
+          workspaceMemberUsableWhere(owner),
+        ),
+      ),
+  );
+}
+
 export async function agentModelSources(store: Db, at: number): Promise<AgentModelSource[]> {
   return store.run((q) => agentModelSourcesSteps(q, at));
 }

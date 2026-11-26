@@ -351,3 +351,13 @@ export async function resumeAccountHealthNow(
 ): Promise<void> {
   await store.run((q) => resumeAccountHealthNowSteps(q, agent, runnerId, now));
 }
+
+export function* unsupportedModelsSteps(q: Q, workspaceId: string) {
+  const { agentAccountHealth: h } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({ agent: h.agent, model: h.model })
+      .from(h)
+      .where(and(eq(h.workspaceId, workspaceId), eq(h.state, "unsupported_model"))),
+  );
+}

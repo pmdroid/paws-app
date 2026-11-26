@@ -123,6 +123,15 @@ export class RunnerCapacityWait extends Error {
   }
 }
 
+export class ReviewerModelConflict extends RunnerCapacityWait {
+  constructor(
+    readonly implementation: string,
+    readonly alternatives: readonly string[],
+  ) {
+    super([], undefined, []);
+  }
+}
+
 export const HANG_ASK_AFTER = 3;
 
 export class AgentHungError extends Error {

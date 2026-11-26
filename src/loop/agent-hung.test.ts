@@ -10,7 +10,7 @@ import {
   saveRunResult,
   type Db,
 } from "../db";
-import { answerSteps } from "../questions";
+import { answerSteps, findOpenQuestion } from "../questions";
 import { askSteps } from "./operations";
 import { questionEffects } from "./question-effects";
 import { AGENT_HUNG_REASON, AGENT_HUNG_RETRY, AGENT_HUNG_STOP } from "./runner-wait";
@@ -94,6 +94,7 @@ async function askHung(answer: string, reason = AGENT_HUNG_REASON) {
   expect(outcome.status).toBe("answered");
   return {
     state: (await getWorkItem(db, item.id))?.state,
+    asked: await findOpenQuestion(db, "ses"),
     jobs: await listJobs(db),
   };
 }
@@ -122,4 +123,10 @@ test("Stop after the runner ran out of memory ends the item as stopped", async (
   const { state, jobs } = await askHung("Stop", OUT_OF_MEMORY_REASON);
   expect(state).toBe("failed");
   expect(jobs.filter((job) => job.status === "pending")).toEqual([]);
+});
+
+test("a reviewer model reply that matches no option asks again", async () => {
+  const { state, asked } = await askHung("Which model?", "reviewer_model_conflict");
+  expect(state).toBe("awaiting_input");
+  expect(asked?.body).toStartWith("Reply with one of the options.");
 });
