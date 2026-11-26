@@ -13,13 +13,13 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { RunAgentOptions, RunAgentResult } from "../acp";
-import { consumeWorkspaceBootstrap, putWorkspaceUser, recordRunnerCapacity } from "../db";
+import { recordRunnerHostStatus } from "../db";
 import { createRunnerHelpers } from "../runner-helpers";
 import { createRunnerPlacement } from "../runner-placement";
-import type { RunnerCommand } from "../runner-protocol";
-import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../workspace";
-import { sqlRows, sqlRun, tempStore } from "../../test/pglite";
-import { signInFixtureRunner } from "../../test/pglite-fixtures";
+import { MINIMUM_RUNNER_VERSION, type RunnerCommand } from "../runner-protocol";
+import { workspaceId } from "../workspace";
+import { sqlRows, tempStore } from "../../test/pglite";
+import { REPOSITORY, workspaceWithRunners } from "../../test/runner-slot-fixture";
 import {
   createFakeReviewThreads,
   type FakeReviewThread,
@@ -592,34 +592,15 @@ describe("check status", () => {
 
 type HelperCommand = Extract<RunnerCommand, { type: "helper" }>;
 
-async function runnerFixture(signedIn: boolean) {
+async function runnerFixture(
+  profiled: "claude" | "codex",
+  runnerVersion = MINIMUM_RUNNER_VERSION.join("."),
+) {
   const { db, close } = await tempStore();
   closers.push(close);
-  const now = Date.now();
-  const userId = await putWorkspaceUser(db, {
-    id: workspaceId(),
-    linearUserId: "owner",
-    name: "Owner",
-    email: "owner@example.invalid",
-  });
-  const workspace = await consumeWorkspaceBootstrap(db, {
-    id: workspaceId(),
-    organizationId: "org",
-    name: "Acme",
-    userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
-    now,
-  });
-  await sqlRun(db, "INSERT INTO workspace_repository VALUES(?,'acme/widgets','team')", [
-    workspace.id,
-  ]);
-  await sqlRun(
-    db,
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner',?,?,'box','active',?,?)",
-    [workspace.id, userId, now, now],
-  );
-  await recordRunnerCapacity(db, "runner", 1, 1, 2);
-  if (signedIn) await signInFixtureRunner(db, "runner", "codex");
+  const { pair, workspace, userId } = await workspaceWithRunners(db);
+  const runner = await pair("box", 1, null);
+  await recordRunnerHostStatus(db, runner, { runnerVersion }, Date.now());
   const helpers = createRunnerHelpers({
     store: db,
     keyId: "fixture",
@@ -640,7 +621,7 @@ async function runnerFixture(signedIn: boolean) {
     pawsRoot,
     helpers: async () => helpers,
     placement: createRunnerPlacement({ store: db }),
-    profile: () => ({ agent: "codex", model: null }),
+    profile: () => ({ agent: profiled, model: null }),
     locate: () => ({ repository: options.repository, github: options.github }),
     pollIntervalMs: 1,
   });
@@ -670,8 +651,8 @@ async function runnerFixture(signedIn: boolean) {
             entry: JSON.parse(/```json\n([\s\S]*?)```/.exec(text)![1]!),
           }
         : undefined;
-      await helpers.acknowledge("runner", id);
-      await helpers.submit("runner", {
+      await helpers.acknowledge(runner, id);
+      await helpers.submit(runner, {
         ...{ executionId: workspaceId(), commandId: id, account: command.account },
         ...{ role: "implementer", stopReason: "end_turn", agentExited: true },
         ...{ cancelled: false, timedOut: false, authRequired: false, text },
@@ -679,21 +660,28 @@ async function runnerFixture(signedIn: boolean) {
       });
     }
   };
-  const start = { workspaceId: workspace.id, userId, repository: "acme/widgets" };
-  return { db, collection, answer, start, pawsRoot };
+  const start = { workspaceId: workspace.id, userId, repository: REPOSITORY };
+  return { db, collection, answer, start, pawsRoot, runner };
 }
 
 describe("probe collection on a runner", () => {
   test("with no signed-in account it stops before any turn and names the account", async () => {
-    const { db, collection, start } = await runnerFixture(false);
+    const { db, collection, start } = await runnerFixture("codex");
     const refusal = "No signed-in codex account on box";
     expect(await collection.start(start)).toEqual({ status: 409, body: { error: refusal } });
     await expect(collection.run(start, new AbortController().signal)).rejects.toThrow(refusal);
     expect(await sqlRows(db, "SELECT id FROM runner_helper")).toEqual([]);
   });
 
+  test("a runner older than the minimum release gets no turn", async () => {
+    const { db, collection, start } = await runnerFixture("claude", "0.1.0");
+    const refusal = `box needs runner ${MINIMUM_RUNNER_VERSION.join(".")} or later`;
+    expect(await collection.start(start)).toEqual({ status: 409, body: { error: refusal } });
+    expect(await sqlRows(db, "SELECT id FROM runner_helper")).toEqual([]);
+  });
+
   test("a bound account runs probe_distill then probe_write on its runner and stores the probe", async () => {
-    const { db, collection, answer, start, pawsRoot } = await runnerFixture(true);
+    const { db, collection, answer, start, pawsRoot, runner } = await runnerFixture("claude");
     expect((await collection.start(start)).status).toBe(202);
     const timer = setInterval(() => void answer().catch(() => undefined), 5);
     closers.push(async () => clearInterval(timer));
@@ -708,9 +696,9 @@ describe("probe collection on a runner", () => {
     );
     expect(yaml).toContain('    paths: ["migrations/**"]\n    failOn: P0\n');
     expect(await sqlRows(db, "SELECT runner_id, purpose FROM runner_helper ORDER BY id")).toEqual([
-      { runner_id: "runner", purpose: "probe_distill" },
-      { runner_id: "runner", purpose: "probe_write" },
-      { runner_id: "runner", purpose: "probe_write" },
+      { runner_id: runner, purpose: "probe_distill" },
+      { runner_id: runner, purpose: "probe_write" },
+      { runner_id: runner, purpose: "probe_write" },
     ]);
   });
 

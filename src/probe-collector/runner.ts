@@ -7,6 +7,8 @@ import {
   enqueueJob,
   insertRunnerExecutionUsageSteps,
   listRunnersSteps,
+  runnerHelperAvailabilitySteps,
+  runnerHostVersionSteps,
   runnerStandingSteps,
   workspaceMemberSteps,
   workspaceMemberUsable,
@@ -23,7 +25,12 @@ import {
   type PlacementAccount,
   type RunnerPlacement,
 } from "../runner-placement";
-import type { RunnerCodingAgent, RunnerHelperResult } from "../runner-protocol";
+import {
+  MINIMUM_RUNNER_VERSION,
+  runnerReleaseAtLeast,
+  type RunnerCodingAgent,
+  type RunnerHelperResult,
+} from "../runner-protocol";
 import { json, localRequest, readJson, sameToken } from "../settings";
 import { isWorkspaceAdmin } from "../workspace";
 import { collectProbes, type CollectOptions, type CollectResult } from "./collect";
@@ -71,6 +78,7 @@ function* placeSteps(q: Q, input: Start, profile: Profile, at: number): Steps<Pl
       repository: input.repository,
     });
     const seen = (yield* runnerStandingSteps(q, runner.id))?.lastSeenAt;
+    const release = yield* runnerHostVersionSteps(q, runner.id);
     if (!allowed || !seen || seen <= at - RUNNER_ONLINE_MS) continue;
     const fit = yield* signInFitSteps(q, runner, input.workspaceId, {
       agent: profile.agent,
@@ -79,9 +87,12 @@ function* placeSteps(q: Q, input: Start, profile: Profile, at: number): Steps<Pl
       role: "implementer",
       at,
     });
-    if (!("reason" in fit))
+    if (!runnerReleaseAtLeast(release, MINIMUM_RUNNER_VERSION))
+      refused ??= `${runner.name} needs runner ${MINIMUM_RUNNER_VERSION.join(".")} or later`;
+    else if ("reason" in fit) refused ??= `No signed-in ${profile.agent} account on ${runner.name}`;
+    else if ((yield* runnerHelperAvailabilitySteps(q, runner.id, at, true)).available)
       return { runnerId: runner.id, ownerUserId: runner.ownerUserId, account: fit.account };
-    refused ??= `No signed-in ${profile.agent} account on ${runner.name}`;
+    else refused ??= `${runner.name} is busy with another helper turn`;
   }
   return refused ?? `No online runner of a workspace admin can read ${input.repository}`;
 }
