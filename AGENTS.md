@@ -70,7 +70,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/questions`                                          | Elicitations, answer authorization, lifecycle and visual review       |
 | `src/run-files`                                          | Encrypted, chunked run files: transcripts and session snapshots       |
 | `src/retros`                                             | Retro settings revisions, frozen run profiles and their API           |
-| `src/review-score`                                       | Reviewer score report: escapes after merge and after the PR           |
+| `src/review-score`                                       | Reviewer escape scoring after the PR and after merge                  |
 | `src/runner-answers`                                     | Runner answer storage and delivery                                    |
 | `src/runner-artifacts`                                   | Runner artifact storage                                               |
 | `src/runner-backend`                                     | Remote execution backend, helper turns and failover                   |

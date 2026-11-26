@@ -601,7 +601,6 @@
     "test/serial-merge-closeout.test.ts": 968,
     "test/linear-result-boundaries.test.ts": 964,
     "test/repeat-failure.test.ts": 958,
-    "scripts/review-score.test.ts": 954,
     "test/commit-attribution.test.ts": 954,
     "test/closeout-security-review.test.ts": 951,
     "test/linear-oauth.test.ts": 939,

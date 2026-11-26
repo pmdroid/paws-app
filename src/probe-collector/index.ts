@@ -1,12 +1,5 @@
 export { collectProbes } from "./collect";
 export type { CollectOptions, CollectResult } from "./collect";
-export {
-  keepCandidates,
-  parseProbesArgs,
-  PROBES_USAGE,
-  readStoredFindings,
-  type ProbesCommand,
-} from "./cli";
 export { checkProbe, checkStatus } from "./check";
 export { distillPrompt, parseCandidates } from "./distill";
 export {

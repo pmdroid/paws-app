@@ -40,8 +40,6 @@ export * from "./question-handoffs";
 export * from "./policy-outage";
 export * from "./policy-block";
 export {
-  connectPglite,
-  connectPostgres,
   openPawsStore,
   openPglite,
   openPostgres,
@@ -50,13 +48,7 @@ export {
   type PgliteDb,
   type PostgresDb,
 } from "./postgres";
-export {
-  checkPostgres,
-  refuseOlderDatabase,
-  UnknownDatabaseError,
-  type MigrationReport,
-  type PostgresConnection,
-} from "./db-check";
+export { refuseOlderDatabase, UnknownDatabaseError } from "./db-check";
 export * from "./linear-budget";
 export { closingParen, createTableParts, splitTopLevel, unquoteName } from "./ddl";
 export {

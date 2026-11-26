@@ -42,3 +42,14 @@ test("--no-tunnel from an older systemd unit is accepted and ignored", async () 
   expect(started.stderr).toContain("Unknown option bogus.");
   expect(started.stderr).not.toContain("Unknown option --no-tunnel.");
 });
+
+test.each([["evidence migrate"], ["db check"], ["review-score"], ["probes collect acme/widgets"]])(
+  "paws %s exits with general usage",
+  async (command) => {
+    const help = await paws(["--help"]);
+    const rejected = await paws(command.split(" "));
+    expect(rejected.code).toBe(1);
+    expect(rejected.stderr).toContain(help.stdout.trim());
+    expect(help.stdout).not.toContain(command.split(" ").slice(0, 2).join(" "));
+  },
+);

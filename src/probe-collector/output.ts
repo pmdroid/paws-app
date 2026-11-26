@@ -23,7 +23,7 @@ export function renderProposal(input: {
   skipped: readonly SkippedCandidate[];
 }): string {
   const lines = [
-    `# Probe rules proposed by \`paws probes collect\` for ${input.repository} at ${input.main.slice(0, 12)}.`,
+    `# Proposed probe rules for ${input.repository} at ${input.main.slice(0, 12)}.`,
     "# Nothing here holds a pull request yet. Review each rule, save the script between its",
     `# "${SCRIPT_START}" and "${SCRIPT_END}" lines, without the leading "#   ", at the path its`,
     "# `probe:` names, and add the entry to .agents/closeout.yaml.",

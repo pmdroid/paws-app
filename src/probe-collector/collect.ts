@@ -50,7 +50,6 @@ export type CollectResult = {
   out: string | null;
 };
 
-/** `paws probes collect`: collect, distill, write, check, then write the proposal file. */
 export async function collectProbes(options: CollectOptions): Promise<CollectResult> {
   const { owner, repo, remoteUrl } = options.repository;
   const repository = `${owner}/${repo}`;

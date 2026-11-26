@@ -10,17 +10,3 @@ export function checkDatabaseUrl(value: string, field: string): string {
   if (url.hostname === "") throw new Error(`${field} must name a host`);
   return value;
 }
-
-export function describeDatabaseUrl(value: string): string {
-  const url = new URL(value);
-  const database = decodeURIComponent(url.pathname.replace(/^\//, ""));
-  return `${url.host}/${database || "(default database)"}`;
-}
-
-export function redactDatabaseUrl(text: string, value: string): string {
-  const url = new URL(value);
-  const secrets = [value, url.password, decodeURIComponent(url.password)].filter(
-    (secret) => secret.length > 0,
-  );
-  return secrets.reduce((out, secret) => out.split(secret).join("***"), text);
-}

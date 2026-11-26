@@ -12,7 +12,6 @@ export {
   closeoutRecordObjects,
   hydrateCloseoutEvidence,
   hydrateItemCloseoutEvidence,
-  migrateCloseoutEvidence,
   publishCloseoutEvidence,
   uploadLocalCloseoutEvidence,
 } from "./closeout";

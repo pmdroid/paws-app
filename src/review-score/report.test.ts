@@ -11,7 +11,7 @@ import {
   settleReviewEscape,
   type ReviewEscapeTrigger,
 } from "../db";
-import { formatReviewScore, readReviewEscapesFile, scoreReview } from "./report";
+import { formatReviewScore, readReviewEscapesFile, scoreReview } from "./index";
 import { tempStore } from "../../test/pglite";
 
 const dirs: string[] = [];

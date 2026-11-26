@@ -273,35 +273,3 @@ export function closeoutRecordObjects(
     };
   };
 }
-
-export async function migrateCloseoutEvidence(
-  db: Db,
-  storage: EvidenceStorage,
-): Promise<{ copied: number; skipped: number }> {
-  if (!storage.objects?.())
-    throw new Error("No object store is configured; run paws runner-storage configure first");
-  const counts = { copied: 0, skipped: 0 };
-  const objectsOf = closeoutRecordObjects(db, storage);
-  let entries;
-  try {
-    entries = await readdir(storage.root, { withFileTypes: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return counts;
-    throw error;
-  }
-  for (const entry of entries) {
-    const objects = entry.isDirectory() ? objectsOf(join(storage.root, entry.name)) : null;
-    if (objects === null) continue;
-    const stored = new Set(await objects.list());
-    for await (const parts of files(join(storage.root, entry.name, "evidence"))) {
-      const path = ["evidence", ...parts].join("/");
-      if (!path.endsWith(".json") || !safePath(path)) continue;
-      if (stored.has(path)) counts.skipped++;
-      else {
-        await objects.write(path, await Bun.file(join(storage.root, entry.name, path)).text());
-        counts.copied++;
-      }
-    }
-  }
-  return counts;
-}
