@@ -125,6 +125,16 @@ export class BranchMovedError extends Error {
   }
 }
 
+export class NothingToPublishError extends Error {
+  constructor(
+    readonly branch: string,
+    readonly reason: string,
+  ) {
+    super(`${branch} has no commits ahead of main`);
+    this.name = "NothingToPublishError";
+  }
+}
+
 export class GitCommandError extends Error {
   readonly args: string[];
   readonly stderr: string;

@@ -397,7 +397,8 @@ async function runTask(input: {
       client: {
         async request(req) {
           if (req.path.endsWith("/pulls") && req.method === "POST") {
-            if (pull !== null) return { status: 422, body: {} };
+            if (pull !== null)
+              return { status: 422, body: { message: "A pull request already exists" } };
             const created = await client.request(req);
             pull = created.body as { number: number; html_url: string };
             return created;

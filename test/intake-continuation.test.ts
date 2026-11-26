@@ -126,7 +126,7 @@ describe("re-delegating an issue", () => {
 
     // GitHub refuses a second pull request for the branch, so Paws updates the open one.
     const client = fakeClient({
-      "POST /repos/o/r/pulls": { status: 422, body: {} },
+      "POST /repos/o/r/pulls": { status: 422, body: { message: "A pull request already exists" } },
       "GET /repos/o/r/pulls?": { status: 200, body: [{ number: 1056 }] },
       "PATCH /repos/o/r/pulls/1056": {
         status: 200,
