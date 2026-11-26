@@ -63,10 +63,7 @@ export async function withSavedStore<T>(
       secrets = await useDatabaseSecrets(store, paths.secretsDir, { copy: false });
     if (store) {
       await store.transaction((q) => convertConfigSettingsSteps(q, SETTINGS_CONVERSION));
-      settings = await useSettingsStore(
-        paths.configFile,
-        settingSectionsStore(store, SETTINGS_SECTIONS),
-      );
+      settings = await useSettingsStore(paths.home, settingSectionsStore(store, SETTINGS_SECTIONS));
     }
   } catch (error) {
     await secrets?.close().catch(() => undefined);

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import {
   emptyConfigFile,
-  loadConfigFile,
+  loadSettings,
   parseAgentSettings,
   readAgentSettings,
   resolveAgentProfiles,
@@ -22,7 +22,7 @@ const settings: AgentSettings = {
 
 describe("agent settings config", () => {
   test("persists role effort", async () => {
-    const path = join(tempHome(), "config.toml");
+    const path = tempHome();
     useMemorySettings(path);
     const next: AgentSettings = {
       defaults: {
@@ -31,8 +31,8 @@ describe("agent settings config", () => {
       },
     };
     await writeAgentSettings(path, next);
-    expect(readAgentSettings(loadConfigFile(path))).toEqual(next);
-    expect(resolveAgentProfiles(loadConfigFile(path)).reviewer.effort).toBe("xhigh");
+    expect(readAgentSettings(loadSettings(path))).toEqual(next);
+    expect(resolveAgentProfiles(loadSettings(path)).reviewer.effort).toBe("xhigh");
     expect(() =>
       parseAgentSettings({
         ...next,
@@ -63,12 +63,12 @@ describe("agent settings config", () => {
   });
 
   test("writes valid TOML and saves the same settings again", async () => {
-    const path = join(tempHome(), "config.toml");
+    const path = tempHome();
     useMemorySettings(path, '[agents]\nimplementer = "grok"\n');
     await writeAgentSettings(path, settings);
     const text = readConfigText(path);
     expect(Bun.TOML.parse(text)).toMatchObject({ agents: { implementer: "claude" } });
-    const config = loadConfigFile(path);
+    const config = loadSettings(path);
     expect(readAgentSettings(config)).toEqual(settings);
     expect(resolveAgentProfiles(config)).toEqual(settings.defaults);
     await writeAgentSettings(path, settings);
@@ -85,7 +85,7 @@ describe("agent settings config", () => {
     const invalid = {
       defaults: { implementer: same, reviewer: same },
     } as AgentSettings;
-    const path = join(tempHome(), "config.toml");
+    const path = tempHome();
     useMemorySettings(path, '[agents]\nimplementer = "grok"\n');
     await expect(writeAgentSettings(path, invalid)).rejects.toThrow(/different/);
     expect(readConfigText(path)).toBe('[agents]\nimplementer = "grok"\n');
@@ -108,7 +108,7 @@ describe("agent settings config", () => {
   });
 
   test("keeps an optional reviewer fallback that is independent of the implementer", async () => {
-    const path = join(tempHome(), "config.toml");
+    const path = tempHome();
     useMemorySettings(path);
     const next: AgentSettings = {
       defaults: {
@@ -121,8 +121,8 @@ describe("agent settings config", () => {
     expect(readConfigText(path)).toContain(
       '[agents.defaults.reviewer_fallback]\nagent = "codex"\nmodel = "gpt-6-sol"',
     );
-    expect(readAgentSettings(loadConfigFile(path))).toEqual(next);
-    expect(resolveAgentProfiles(loadConfigFile(path)).reviewerFallback).toEqual({
+    expect(readAgentSettings(loadSettings(path))).toEqual(next);
+    expect(resolveAgentProfiles(loadSettings(path)).reviewerFallback).toEqual({
       agent: "codex",
       model: "gpt-6-sol",
     });
@@ -138,7 +138,7 @@ describe("agent settings config", () => {
         defaults: { ...next.defaults, reviewerFallback: { agent: "claude", model: "sonnet" } },
       }),
     ).toThrow(/fallback/);
-    expect(resolveAgentProfiles(loadConfigFile(join(tempHome(), "none.toml")))).not.toHaveProperty(
+    expect(resolveAgentProfiles(loadSettings(join(tempHome(), "none.toml")))).not.toHaveProperty(
       "reviewerFallback",
     );
   });

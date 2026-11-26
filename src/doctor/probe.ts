@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { resolveAdapter } from "../acp";
 import {
   closeoutPolicyRoot,
-  loadConfigFile,
+  loadSettings,
   loadRuntime,
   memberVmProvider,
   tailscaleAuthKeyStatus,
@@ -253,9 +253,9 @@ async function closeoutPolicyFact(
   const home = runtime.env.home;
   let config: PawsConfigFile;
   try {
-    config = loadConfigFile(pawsPaths(home).configFile);
+    config = loadSettings(home);
   } catch (error) {
-    journalCaught(error, "probe.closeoutPolicyFact.loadConfigFile", null);
+    journalCaught(error, "probe.closeoutPolicyFact.loadSettings", null);
     return {
       ok: false,
       detail: "Saved settings could not be read for local Closeout policy roots",

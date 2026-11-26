@@ -189,7 +189,7 @@ import {
   highRiskPaths,
   agentReadAllowed,
   githubMirrorsOn,
-  loadConfigFile,
+  loadSettings,
   mergeLaneKey,
   parallelFiles,
   readMergeSettings,
@@ -1111,8 +1111,7 @@ export class Orchestrator {
         ? (sessionId, onLaneWait) =>
             options.remoteExecution!.agentForSession(sessionId, "classify", onLaneWait)
         : undefined,
-      profile: () =>
-        resolveAgentProfiles(loadConfigFile(join(options.pawsRoot, "config.toml"))).implementer,
+      profile: () => resolveAgentProfiles(loadSettings(options.pawsRoot)).implementer,
     });
     this.catchUpFn = options.catchUp ?? (() => Promise.resolve());
     this.bus.subscribe((command) => {
@@ -3063,7 +3062,7 @@ export class Orchestrator {
     if (!eligibleRunner) return;
     const holds = await this.store.run((q) => listRunnerSetupHoldsSteps(q, ownerUserId));
     if (holds.length === 0) return;
-    const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+    const config = loadSettings(this.options.pawsRoot);
     const now = this.now();
     let resumed = false;
     for (const hold of holds) {
@@ -6927,7 +6926,7 @@ export class Orchestrator {
       changed,
       ...(fileGlobs ? { fileGlobs } : {}),
       settingsGlobs: highRiskPaths(
-        readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
+        readMergeSettings(loadSettings(this.options.pawsRoot)),
         `${repository.owner}/${repository.repo}`,
       ),
     });
@@ -7057,7 +7056,7 @@ export class Orchestrator {
         base,
         changed,
         settingsGlobs: highRiskPaths(
-          readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
+          readMergeSettings(loadSettings(this.options.pawsRoot)),
           `${owner}/${repo}`,
         ),
       });
@@ -7211,8 +7210,7 @@ export class Orchestrator {
   /** `[queue] start_timeout_hours`, read on every dispatch. Missing or unreadable means 24. */
   private queueStartTimeoutHours(): number {
     try {
-      return readQueueSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
-        .startTimeoutHours;
+      return readQueueSettings(loadSettings(this.options.pawsRoot)).startTimeoutHours;
     } catch (caughtError11) {
       journalCaught(
         caughtError11,
@@ -7231,10 +7229,7 @@ export class Orchestrator {
 
   private repositoryPackages(repository: string): string[] {
     try {
-      return repositoryPackages(
-        readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
-        repository,
-      );
+      return repositoryPackages(readMergeSettings(loadSettings(this.options.pawsRoot)), repository);
     } catch (caughtError) {
       journalCaught(
         caughtError,
@@ -7345,7 +7340,7 @@ export class Orchestrator {
   }
 
   private readMergePolicy(): MergeSettings {
-    return readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")));
+    return readMergeSettings(loadSettings(this.options.pawsRoot));
   }
 
   /**
@@ -8411,17 +8406,17 @@ export class Orchestrator {
 
   private async dispatch(): Promise<void> {
     const { ownerHasRunner, itemRunners } = this.options;
-    let config: ReturnType<typeof loadConfigFile> | null = null;
+    let config: ReturnType<typeof loadSettings> | null = null;
     let merge: MergeSettings | null = null;
     try {
       await this.applyAgentSettingsToWaiting();
-      const loaded = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+      const loaded = loadSettings(this.options.pawsRoot);
       merge = readMergeSettings(loaded);
       if (ownerHasRunner || this.options.itemRunners) config = loaded;
     } catch (caughtError15) {
       journalCaught(
         caughtError15,
-        "orchestrator.dispatch.loadConfigFile",
+        "orchestrator.dispatch.loadSettings",
         null,
         undefined,
         this.options.journal,
@@ -8472,7 +8467,7 @@ export class Orchestrator {
     });
   }
 
-  private async implementerAgent(item: WorkItemRecord, config: ReturnType<typeof loadConfigFile>) {
+  private async implementerAgent(item: WorkItemRecord, config: ReturnType<typeof loadSettings>) {
     return implementerAgentFor(config, this.knownProfileLabels(item));
   }
 
@@ -8485,7 +8480,7 @@ export class Orchestrator {
     q: Q,
     itemId: string,
     itemRunners: NonNullable<OrchestratorOptions["itemRunners"]>,
-    config: ReturnType<typeof loadConfigFile> | null,
+    config: ReturnType<typeof loadSettings> | null,
   ): Steps<ItemRunnerVerdicts | null> {
     const item = yield* getWorkItemSteps(q, itemId);
     return item && config
@@ -8502,7 +8497,7 @@ export class Orchestrator {
     q: Q,
     itemId: string,
     ownerHasRunner: NonNullable<OrchestratorOptions["ownerHasRunner"]>,
-    config: ReturnType<typeof loadConfigFile>,
+    config: ReturnType<typeof loadSettings>,
   ): Steps<boolean | null> {
     const item = yield* getWorkItemSteps(q, itemId);
     if (!item) return null;
@@ -8555,7 +8550,7 @@ export class Orchestrator {
    */
   private async awaitsAdmissionLabels(
     itemId: string,
-    config: ReturnType<typeof loadConfigFile>,
+    config: ReturnType<typeof loadSettings>,
   ): Promise<boolean> {
     if (this.admissionLabelReads.has(itemId)) return true;
     const item = await this.store.run((q) => getWorkItemSteps(q, itemId));
@@ -8772,7 +8767,7 @@ export class Orchestrator {
       }
     }
     // A new run, including a retry, uses the profiles saved in Settings now (PAS-831).
-    const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+    const config = loadSettings(this.options.pawsRoot);
     const previous = item.currentRunId ? this.readProfileSnapshot(item.currentRunId) : null;
     const defaultRoles = previous?.defaultRoles;
     const profileLabels = await this.readProfileLabels(item, previous?.profileLabels, defaultRoles);
@@ -8849,7 +8844,7 @@ export class Orchestrator {
   private async checkProfileLabels(item: WorkItemRecord, runId: string): Promise<boolean> {
     const saved = this.readProfileSnapshot(runId);
     if (!saved) return true;
-    const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+    const config = loadSettings(this.options.pawsRoot);
     let resolved = resolveAgentProfiles(config, saved.profileLabels);
     let answered = false;
     const question = saved.profileQuestion
@@ -10581,9 +10576,7 @@ export class Orchestrator {
           .filter(Boolean)
           .join("\n\n")
       : "";
-    const template = resolveBriefTemplate(
-      loadConfigFile(join(this.options.pawsRoot, "config.toml")),
-    );
+    const template = resolveBriefTemplate(loadSettings(this.options.pawsRoot));
     return renderWorkContext(template, {
       brief: item.brief,
       projectOverview,
@@ -11415,7 +11408,7 @@ export class Orchestrator {
   }
 
   async applyAgentSettingsToWaiting(): Promise<number> {
-    const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+    const config = loadSettings(this.options.pawsRoot);
     let changedRuns = 0;
     const now = this.now();
     for (const run of await this.store.run((q) => listWaitingProfileRunsSteps(q, now))) {
@@ -11489,7 +11482,7 @@ export class Orchestrator {
   private async storedProfiles(runId: string): Promise<AgentProfiles> {
     const saved = this.readProfileSnapshot(runId);
     if (saved) return saved.profiles;
-    const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+    const config = loadSettings(this.options.pawsRoot);
     const profiles = resolveAgentProfiles(config);
     mkdirSync(runDir(this.options.pawsRoot, runId), { recursive: true, mode: 0o700 });
     writeFileSync(
@@ -11752,11 +11745,11 @@ export class Orchestrator {
 
   private agentReadAllowed(item: WorkItemRecord): boolean {
     try {
-      return agentReadAllowed(loadConfigFile(join(this.options.pawsRoot, "config.toml")));
+      return agentReadAllowed(loadSettings(this.options.pawsRoot));
     } catch (error) {
       journalCaught(
         error,
-        "orchestrator.agentReadAllowed.loadConfigFile",
+        "orchestrator.agentReadAllowed.loadSettings",
         item.id,
         undefined,
         this.options.journal,
@@ -11866,10 +11859,7 @@ export class Orchestrator {
   }
 
   private mirrorsOff(): boolean {
-    return !(
-      this.options.githubMirrors ??
-      githubMirrorsOn(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
-    );
+    return !(this.options.githubMirrors ?? githubMirrorsOn(loadSettings(this.options.pawsRoot)));
   }
 
   private storedCandidates(): boolean {
@@ -12226,8 +12216,7 @@ export class Orchestrator {
           itemId: item.id,
           pawsRoot: this.options.pawsRoot,
           home: this.options.home,
-          profile: resolveAgentProfiles(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
-            .implementer,
+          profile: resolveAgentProfiles(loadSettings(this.options.pawsRoot)).implementer,
           signal: controller.signal,
           launch: this.launchAgent,
           agentRunner: this.helperRunner(item, "select_repository"),
@@ -12483,7 +12472,7 @@ export class Orchestrator {
     const launched = this.options.launch?.(input) ?? {};
     if (launched.command) return launched;
     try {
-      const agents = loadConfigFile(join(this.options.pawsRoot, "config.toml")).agents;
+      const agents = loadSettings(this.options.pawsRoot).agents;
       const adapter = resolveAdapter(
         input.role,
         process.env,
@@ -12496,7 +12485,7 @@ export class Orchestrator {
     } catch (caughtError17) {
       journalCaught(
         caughtError17,
-        "orchestrator.launchAgent.loadConfigFile",
+        "orchestrator.launchAgent.loadSettings",
         input.itemId,
         undefined,
         this.options.journal,
@@ -12571,7 +12560,7 @@ export function attachOrchestrator(options: OrchestratorOptions): Orchestrator {
 }
 
 function implementerAgentFor(
-  config: ReturnType<typeof loadConfigFile>,
+  config: ReturnType<typeof loadSettings>,
   labels: ProfileLabels | undefined,
 ): string {
   return resolveAgentProfiles(config, labels).implementer.agent;

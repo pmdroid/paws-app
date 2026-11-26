@@ -37,7 +37,7 @@ export const decisionMemory = pgTable(
       .notNull()
       .references(() => workspaceUser.id),
     updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
-    // Punctuation becomes spaces so `config.toml` is two words, as in SQLite's FTS5 index.
+    // Punctuation becomes spaces so `paws.db` is two words, as in SQLite's FTS5 index.
     search: tsvector().generatedAlwaysAs(
       sql`to_tsvector('simple', regexp_replace(statement || ' ' || tags::text, '[[:punct:]]+', ' ', 'g'))`,
     ),

@@ -1,10 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import { join } from "node:path";
 import {
   parseConfigToml,
   BOAT_SIZES,
-  loadConfigFile,
+  loadSettings,
   updateVmSizes,
   useSettingsStore,
 } from "../src/config";
@@ -25,7 +24,7 @@ afterEach(async () => {
 async function instance(seeded = SEEDED) {
   const { db, close } = await tempStore();
   const home = tempHome();
-  const configPath = join(home, "config.toml");
+  const configPath = home;
   await seedSettings(db, seeded);
   const settings = await useSettingsStore(configPath, sectionSettings(db));
   cleanups.push(close, () => {
@@ -35,7 +34,7 @@ async function instance(seeded = SEEDED) {
   const audits: string[] = [];
   const instaBox: { sizes: [number, number][] | null } = { sizes: null };
   const options = (role?: string): MemberVmSettingsOptions => ({
-    configPath,
+    home: configPath,
     csrfToken: "csrf",
     ...(role ? { role } : {}),
     instaBoxSizes: async () => instaBox.sizes,
@@ -84,13 +83,13 @@ test("a save changes only the providers it names and keeps the rest", async () =
   const instabox = { cpu: 8, memoryGb: 16 };
   expect((await save({ provider: "boat", sizes: { boat } })).status).toBe(200);
   expect((await save({ sizes: { instabox } })).status).toBe(200);
-  expect(loadConfigFile(configPath).vmSizes).toEqual({
+  expect(loadSettings(configPath).vmSizes).toEqual({
     provider: "boat",
     offProviders: ["boat"],
     sizes: { "exe-dev": { cpu: 2 }, boat, instabox },
   });
   expect((await save({ sizes: { "exe-dev": {} }, offProviders: [] })).status).toBe(200);
-  expect(loadConfigFile(configPath).vmSizes?.sizes?.["exe-dev"]).toBeUndefined();
+  expect(loadSettings(configPath).vmSizes?.sizes?.["exe-dev"]).toBeUndefined();
   expect(audits[0]).toBe('settings.vm_sizes: Set VM sizes: boat {"cpu":4,"memoryGb":8}');
 });
 

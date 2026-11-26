@@ -2,6 +2,12 @@
 
 Changes that need action on upgrade come first in each entry. Settings are in the [configuration reference](docs/configuration.md).
 
+## 2026-11-26: Paws no longer reads config.toml
+
+### Changed
+
+- **Set `PAWS_DATABASE_URL` in the service environment if `config.toml` named your database.** Paws no longer reads `~/.paws/config.toml`. When the file exists and `PAWS_DATABASE_URL` is not set, Paws refuses to start with `Set PAWS_DATABASE_URL in the service environment; config.toml is no longer read`. With the variable set, the file is ignored and left in place. Settings live in the database. See [Database](docs/postgres.md).
+
 ## 2026-11-17: One baseline migration; older databases are refused
 
 ### Changed

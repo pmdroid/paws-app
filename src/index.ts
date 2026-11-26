@@ -96,7 +96,7 @@ import {
   loadEnv,
   githubMirrorsOn,
   useActiveGitHubMirrors,
-  loadConfigFile,
+  loadSettings,
   MEMBER_VM_PROVIDERS,
   memberVmKeyReadable,
   memberVmProvider,
@@ -637,7 +637,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     throw error;
   }
   const savedSettings = await useSettingsStore(
-    paths.configFile,
+    paths.home,
     settingSectionsStore(store, SETTINGS_SECTIONS),
   );
   runtime = (await browserSetupRuntime(store, loadRuntime(envSource), envSource)).runtime;
@@ -652,7 +652,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     savedSettings.release();
   };
   try {
-    if (loadConfigFile(paths.configFile).ignoredMergeOverrides) journal(MERGE_OVERRIDES_IGNORED);
+    if (loadSettings(paths.home).ignoredMergeOverrides) journal(MERGE_OVERRIDES_IGNORED);
   } catch (error) {
     journalCaught(error, "index.startPaws.ignoredMergeOverrides", null);
   }
@@ -685,8 +685,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     ...repositoryAccess,
     granted: repositoryGrant({ store, reader: snapshotReader }),
   };
-  const commentFilter = pullCommentFilter(runtime, paths.configFile, resolveApp);
-  const startupMirrors = githubMirrorsOn(loadConfigFile(paths.configFile));
+  const commentFilter = pullCommentFilter(runtime, paths.home, resolveApp);
+  const startupMirrors = githubMirrorsOn(loadSettings(paths.home));
   useActiveGitHubMirrors(startupMirrors);
   useGitReader(
     !startupMirrors
@@ -744,7 +744,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     reader: snapshotReader,
     helpers: async () => (await runnerReady)?.helpers,
     placement: createRunnerPlacement({ store }),
-    profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
+    profile: () => resolveAgentProfiles(loadSettings(paths.home)).implementer,
   });
   if (options?.refreshRepositories)
     periodic.push({
@@ -1029,7 +1029,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     });
 
   const exeDevToken = exeDevTokenReader(paths.home);
-  const memberVmSettings = () => loadConfigFile(paths.configFile).vmSizes;
+  const memberVmSettings = () => loadSettings(paths.home).vmSizes;
   const memberVmProviderSetting = () => memberVmProvider(memberVmSettings());
   const createVmAvailable = async () =>
     options?.memberVm !== undefined || memberVmKeyReadable(paths.home, memberVmSettings());
@@ -1441,7 +1441,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             ...coordinator,
             fetchCandidate: fetchRunnerCandidate,
             checkpointBot: repositoryAccess?.checkpointBot,
-            ...(!githubMirrorsOn(loadConfigFile(paths.configFile))
+            ...(!githubMirrorsOn(loadSettings(paths.home))
               ? { storedCandidates: githubCommits }
               : {}),
             placement,
@@ -1465,7 +1465,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       if (!coordinator) throw new Error("A paired runner is required for finding grouping.");
       return coordinator.helpers;
     },
-    profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
+    profile: () => resolveAgentProfiles(loadSettings(paths.home)).implementer,
   });
   const findingGrouping = linear?.findingIssues
     ? await createFindingGrouping({
@@ -1702,7 +1702,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       readLinearArtifact: createLinearArtifactReader({ store, secretsDir: paths.secretsDir }),
       ...(linear?.startSession ? { startLinearSession: linear.startSession } : {}),
       skillSettings: {
-        configPath: paths.configFile,
+        home: paths.home,
         root: paths.skillsDir,
         resolver: createSkillResolver(),
         updates: skillUpdates,
@@ -1716,7 +1716,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                 linear.tracker!.readBriefIssue!(identifier, { signal }),
             }
           : {}),
-        configPath: paths.configFile,
+        home: paths.home,
         instaBoxSizes: async () =>
           readVmProviderToken(paths.home, "instabox") === null
             ? null
@@ -1863,7 +1863,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       if (Date.now() - mergeParallel.at < 30_000) return mergeParallel.value;
       let value = mergeParallel.value;
       try {
-        value = readMergeSettings(loadConfigFile(paths.configFile)).parallel;
+        value = readMergeSettings(loadSettings(paths.home)).parallel;
       } catch (error) {
         journalCaught(error, "index.mergeParallel", null);
       }
@@ -1944,7 +1944,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             placement: createRunnerPlacement({ store }),
           });
         },
-        profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
+        profile: () => resolveAgentProfiles(loadSettings(paths.home)).implementer,
         source: createGitHubSnapshotReader({
           locate: (name) => {
             const repository = repositoryBinding(name);
@@ -2004,7 +2004,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         outbox: created.outbox,
         pawsRoot: paths.home,
         closeoutPolicyRoot: ({ owner, repo }) =>
-          closeoutPolicyRoot(loadConfigFile(paths.configFile), paths.home, `${owner}/${repo}`),
+          closeoutPolicyRoot(loadSettings(paths.home), paths.home, `${owner}/${repo}`),
         tracker,
         linearTaskModes: true,
         appLogin: (repository) => commentFilter.appLogin(repository),
@@ -2134,7 +2134,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         linearComments: {
           appUserId: runtime.linearViewerId,
           get agents() {
-            return resolveLinearCommentAgents(loadConfigFile(paths.configFile));
+            return resolveLinearCommentAgents(loadSettings(paths.home));
           },
           ...(workspace
             ? {
@@ -2154,7 +2154,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             : true,
         scheduling: async () => {
           await enqueueMissingSnapshots();
-          return { ownerCap: ownerCap(paths.configFile) };
+          return { ownerCap: ownerCap(paths.home) };
         },
         publicationReady: (
           ...args: Parameters<NonNullable<OrchestratorOptions["publicationReady"]>>
@@ -2344,10 +2344,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         },
         githubForRepository: (selected) =>
           githubBinding(authProvider(runtime, selected, "write", resolveApp)),
-        githubMirrors: githubMirrorsOn(loadConfigFile(paths.configFile)),
+        githubMirrors: githubMirrorsOn(loadSettings(paths.home)),
         caps: {
           maxAwakeMs: runtime.maxAwakeMs,
-          limits: () => resolveTimeLimits(loadConfigFile(paths.configFile), runtime.maxAwakeMs),
+          limits: () => resolveTimeLimits(loadSettings(paths.home), runtime.maxAwakeMs),
         },
       });
       orchestrator = attached;
@@ -2450,7 +2450,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       }
       if (findingGrouping)
         await registerFindingGrouping(created.jobs, {
-          groupingTime: () => loadConfigFile(paths.configFile).findingsGroupingTime ?? "06:00",
+          groupingTime: () => loadSettings(paths.home).findingsGroupingTime ?? "06:00",
           workspaces: () => listWorkspaceIds(store),
           run: (workspaceId, signal) =>
             findingGrouping.run(workspaceId, AbortSignal.any([signal, abort.signal])),
@@ -2780,7 +2780,7 @@ export function unavailableRemoteExecution(): NonNullable<OrchestratorOptions["r
  */
 function pullCommentFilter(
   runtime: RuntimeConfig,
-  configFile: string,
+  home: string,
   resolveApp: (repository: string) => Promise<ActiveGitHubApp>,
 ): PullCommentFilter {
   const logins = new Map<string, string | null>();
@@ -2807,14 +2807,14 @@ function pullCommentFilter(
     },
     ignoredBots(repository) {
       try {
-        return ignoredCommentBots(readMergeSettings(loadConfigFile(configFile)), repository);
+        return ignoredCommentBots(readMergeSettings(loadSettings(home)), repository);
       } catch {
         return DEFAULT_IGNORED_COMMENT_BOTS.map((login) => login.toLowerCase());
       }
     },
     ignoredMarkers(repository) {
       try {
-        return ignoredCommentMarkers(readMergeSettings(loadConfigFile(configFile)), repository);
+        return ignoredCommentMarkers(readMergeSettings(loadSettings(home)), repository);
       } catch (error) {
         journalCaught(error, "index.commentFilter.ignoredMarkers", null);
         return [];
@@ -2824,19 +2824,18 @@ function pullCommentFilter(
     commentWait() {
       let wait = DEFAULT_COMMENT_WAIT;
       try {
-        wait = readMergeSettings(loadConfigFile(configFile)).commentWait;
+        wait = readMergeSettings(loadSettings(home)).commentWait;
       } catch (error) {
         journalCaught(error, "index.commentFilter.commentWait", null);
-        // A config.toml that does not parse keeps the defaults.
       }
       return { quietMs: wait.quietSeconds * 1000, maxMs: wait.maxWaitSeconds * 1000 };
     },
   };
 }
 
-function ownerCap(configFile: string): number | null {
+function ownerCap(home: string): number | null {
   try {
-    return readQueueSettings(loadConfigFile(configFile)).maxRunningPerOwner;
+    return readQueueSettings(loadSettings(home)).maxRunningPerOwner;
   } catch (caughtError11) {
     journalCaught(caughtError11, "index.ownerCap.readQueueSettings", null);
     return null;

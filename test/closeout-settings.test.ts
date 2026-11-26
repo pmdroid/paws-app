@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   closeoutPolicyRoot,
-  loadConfigFile,
+  loadSettings,
   useSettingsStore,
   settingsSectionsOf,
 } from "../src/config";
@@ -23,7 +23,7 @@ const FILE =
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "paws-closeout-settings-"));
-  configPath = join(dir, "config.toml");
+  configPath = dir;
   policies = join(dir, "policies");
   mkdirSync(policies);
   audits = [];
@@ -44,7 +44,7 @@ afterEach(() => {
 
 function options(role?: string): CloseoutSettingsOptions {
   return {
-    configPath,
+    home: configPath,
     csrfToken: "csrf",
     ...(role ? { role } : {}),
     audit: async (action) => {
@@ -62,7 +62,7 @@ function put(body: unknown): Request {
   });
 }
 
-const liveRoot = () => closeoutPolicyRoot(loadConfigFile(configPath), dir, "Acme/One");
+const liveRoot = () => closeoutPolicyRoot(loadSettings(configPath), dir, "Acme/One");
 
 test("GET reads the saved settings and a save replaces them", async () => {
   const before = await handleCloseoutSettingsRequest(new Request(url), options());

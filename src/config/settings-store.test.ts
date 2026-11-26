@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { configFromSections, loadConfigFile, saveSettingsSection } from "./file";
+import { configFromSections, loadSettings, saveSettingsSection } from "./file";
 import {
   readSettingSections,
   useMemorySettings,
@@ -127,11 +127,11 @@ test("a save that fails its section's checks keeps the stored sections", async (
   expect(readSettingSections(configPath)).toEqual({ merge: { ci_fix_attempts: 4 } });
 });
 
-test("memory settings seed loadConfigFile with no file on disk and keep a save", async () => {
+test("memory settings seed loadSettings with no file on disk and keep a save", async () => {
   const configPath = join(tmpdir(), `paws-memory-${crypto.randomUUID()}`, "config.toml");
   const settings = useMemorySettings(configPath, '[agents]\nimplementer = "codex"\n');
   cleanups.push(() => settings.release());
-  expect(loadConfigFile(configPath).agents.implementer).toBe("codex");
+  expect(loadSettings(configPath).agents.implementer).toBe("codex");
   await saveSettingsSection(configPath, "queue", { start_timeout_hours: 12 });
   expect(readSettingSections(configPath)).toEqual({
     agents: { implementer: "codex" },
@@ -145,7 +145,7 @@ test("releasing memory settings removes the registration", () => {
   const settings = useMemorySettings(configPath, '[agents]\nimplementer = "codex"\n');
   settings.release();
   expect(readSettingSections(configPath)).toEqual({});
-  expect(loadConfigFile(configPath).agents.implementer).not.toBe("codex");
+  expect(loadSettings(configPath).agents.implementer).not.toBe("codex");
 });
 
 test("memory settings without text start empty", () => {

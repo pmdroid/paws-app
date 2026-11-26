@@ -101,7 +101,7 @@ test("mergeSettingsFor journals the read failure once and leaves settings retrya
 test("mergeSettingsFor names a refused value and continues on the workspace default", async () => {
   const f = await fixture();
   try {
-    useMemorySettings(join(f.root, "config.toml"), '[merge]\nmain_moved = "overlap"\n');
+    useMemorySettings(f.root, '[merge]\nmain_moved = "overlap"\n');
     await (f.db as PgDb).orm.execute(
       sql.raw(
         "CREATE FUNCTION refuse() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'CHECK constraint failed: main_moved'; END $$ LANGUAGE plpgsql",
@@ -130,7 +130,7 @@ test("mergeSettingsFor names a refused value and continues on the workspace defa
 
 test("a Settings › Merging save reaches the next item without a restart", async () => {
   const f = await fixture();
-  const configPath = join(f.root, "config.toml");
+  const configPath = f.root;
   const store = f.db;
   const settings = await useSettingsStore(configPath, sectionSettings(store));
   try {
@@ -142,7 +142,7 @@ test("a Settings › Merging save reaches the next item without a restart", asyn
           headers: { "Content-Type": "application/json", "x-paws-csrf": "csrf" },
           body: JSON.stringify({ default: { order: "queue", mainMoved } }),
         }),
-        { configPath, csrfToken: "csrf" },
+        { home: configPath, csrfToken: "csrf" },
       );
       expect(response?.status).toBe(200);
     };

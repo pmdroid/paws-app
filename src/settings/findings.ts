@@ -1,4 +1,4 @@
-import { loadConfigFile, writeFindingsGroupingTime } from "../config";
+import { loadSettings, writeFindingsGroupingTime } from "../config";
 import { findingGroupingEnabledSteps, setFindingGroupingSteps, type Db } from "../db";
 import { journalCaught } from "../journal";
 import { isWorkspaceAdmin } from "../workspace";
@@ -10,7 +10,7 @@ export type FindingSettingsOptions = {
   store: Db;
   csrfToken: string;
   workspaceId: string;
-  configPath?: string;
+  home?: string;
   trustedOrigin?: string;
   role?: string;
   audit: (action: string, subject: string) => Promise<void>;
@@ -29,8 +29,7 @@ export async function handleFindingSettingsRequest(
   const listing = async () =>
     json({
       grouping: await store.run((q) => findingGroupingEnabledSteps(q, options.workspaceId)),
-      groupingTime:
-        (options.configPath && loadConfigFile(options.configPath).findingsGroupingTime) || "06:00",
+      groupingTime: (options.home && loadSettings(options.home).findingsGroupingTime) || "06:00",
     });
   if (request.method === "GET") return listing();
   if (request.method !== "POST" && request.method !== "PUT")
@@ -47,10 +46,10 @@ export async function handleFindingSettingsRequest(
   if (request.method === "PUT") {
     if (!isRecord(body) || typeof body.groupingTime !== "string")
       return json({ error: "Send groupingTime as HH:MM (24-hour, UTC)." }, 400);
-    if (!options.configPath) return json({ error: "Settings storage is not available." }, 503);
+    if (!options.home) return json({ error: "Settings storage is not available." }, 503);
     const groupingTime = body.groupingTime;
     try {
-      await writeFindingsGroupingTime(options.configPath, groupingTime);
+      await writeFindingsGroupingTime(options.home, groupingTime);
     } catch (error) {
       journalCaught(error, "findings.handleFindingSettingsRequest.write", null);
       return json({ error: "Send groupingTime as HH:MM (24-hour, UTC)." }, 400);

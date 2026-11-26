@@ -25,10 +25,7 @@ function fixture() {
   const skill = join(pawsRoot, "skills/check");
   mkdirSync(worktree);
   mkdirSync(join(skill, "scripts"), { recursive: true });
-  useMemorySettings(
-    join(pawsRoot, "config.toml"),
-    '[skills.projects."acme/repo"]\nroot = "skills"\n',
-  );
+  useMemorySettings(pawsRoot, '[skills.projects."acme/repo"]\nroot = "skills"\n');
   writeFileSync(join(skill, "SKILL.md"), "Check with scripts/run.sh");
   writeFileSync(join(skill, "scripts/run.sh"), "printf checked");
   chmodSync(join(skill, "scripts/run.sh"), 0o755);

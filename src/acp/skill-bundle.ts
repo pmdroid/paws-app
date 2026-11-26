@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 import { z } from "zod";
-import { loadConfigFile } from "../config";
+import { loadSettings } from "../config";
 import { loadImplementationSkills } from "./skills";
 
 const MAX_BUNDLE_BYTES = 20 * 1024 * 1024;
@@ -51,7 +51,7 @@ export async function snapshotImplementationSkills(input: {
     worktree: input.worktree,
     repository: input.repository,
     signal: input.signal,
-    config: loadConfigFile(join(input.pawsRoot, "config.toml")),
+    config: loadSettings(input.pawsRoot),
   });
   if (!roots.length) return undefined;
   const files: z.infer<typeof bundleSchema> = [];

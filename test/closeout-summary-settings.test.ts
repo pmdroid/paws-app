@@ -78,7 +78,7 @@ function call(role?: string, now = 1000) {
     store: db,
     workspaceId: "ws",
     pawsHome: home,
-    configPath: join(home, "config.toml"),
+    home: home,
     now: () => now,
     ...(role ? { role } : {}),
   }) as Promise<Response>;

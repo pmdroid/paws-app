@@ -145,8 +145,8 @@ async function runPreflight(fault: {
       );
   }
   if (fault.reviewerFallback) {
-    useMemorySettings(path.join(layout.pawsRoot, "config.toml"));
-    await writeAgentSettings(path.join(layout.pawsRoot, "config.toml"), {
+    useMemorySettings(layout.pawsRoot);
+    await writeAgentSettings(layout.pawsRoot, {
       defaults: {
         implementer: { agent: "codex", model: "test-claude-model" },
         reviewer: { agent: "claude", model: null },

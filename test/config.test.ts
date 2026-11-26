@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { statSync, writeFileSync } from "node:fs";
+import { statSync } from "node:fs";
 import { join } from "node:path";
 import {
   closeoutPolicyRoot,
   databaseUrlOf,
   emptyConfigFile,
   ensureLayout,
-  loadConfigFile,
+  loadSettings,
   loadEnv,
   loadRuntime,
   parseConfigToml,
@@ -23,16 +23,14 @@ describe("config", () => {
     const paths = pawsPaths(tempHome());
     ensureLayout(paths);
     useMemorySettings(
-      paths.configFile,
+      paths.home,
       '[closeout.projects."acme/one"]\npolicy_root = "policies/one"\n\n[merge]\nmain_moved = "closeout"\n',
     );
-    expect(readMergeSettings(loadConfigFile(paths.configFile)).default.mainMoved).toBe("closeout");
-    expect(closeoutPolicyRoot(loadConfigFile(paths.configFile), paths.home, "Acme/One")).toBe(
+    expect(readMergeSettings(loadSettings(paths.home)).default.mainMoved).toBe("closeout");
+    expect(closeoutPolicyRoot(loadSettings(paths.home), paths.home, "Acme/One")).toBe(
       join(paths.home, "policies/one"),
     );
-    expect(
-      closeoutPolicyRoot(loadConfigFile(paths.configFile), paths.home, "acme/two"),
-    ).toBeUndefined();
+    expect(closeoutPolicyRoot(loadSettings(paths.home), paths.home, "acme/two")).toBeUndefined();
   });
   test("local Closeout settings reject malformed project roots", () => {
     for (const text of [
@@ -106,7 +104,6 @@ describe("config", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
     expect(paths.db).toBe(join(home, "paws.db"));
-    expect(paths.configFile).toBe(join(home, "config.toml"));
     expect(paths.secretsDir).toBe(join(home, "secrets"));
     expect(paths.worktreesDir).toBe(join(home, "worktrees"));
     ensureLayout(paths);
@@ -115,20 +112,15 @@ describe("config", () => {
     expect(statSync(paths.home).mode & 0o777).toBe(0o700);
   });
 
-  test("missing config.toml is empty", () => {
+  test("a home with no saved settings is empty", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
-    expect(loadConfigFile(paths.configFile)).toEqual(emptyConfigFile());
+    expect(loadSettings(paths.home)).toEqual(emptyConfigFile());
   });
 
-  test("a config.toml on disk is not read: startup values come from their variables", () => {
+  test("startup values come from their variables", () => {
     const home = tempHome();
-    const paths = pawsPaths(home);
-    ensureLayout(paths);
-    writeFileSync(
-      paths.configFile,
-      '[linear]\nteam = "ENG"\nteam_id = "team_eng"\nviewer_id = "viewer_1"\nwebhooks = true\n\n[github]\nrepo = "acme/file"\n\n[database]\nurl = "postgres://file@localhost/paws"\n\n[server]\npublic_url = "https://file.example"\n',
-    );
+    ensureLayout(pawsPaths(home));
     expect(databaseUrlOf({ PAWS_HOME: home })).toBeNull();
     expect(startupSettings({ PAWS_HOME: home }).publicUrl).toBeNull();
     const runtime = loadRuntime({ PAWS_HOME: home });
@@ -187,7 +179,7 @@ describe("config", () => {
     );
     const paths = pawsPaths(tempHome());
     ensureLayout(paths);
-    useMemorySettings(paths.configFile, "[merge]\nunknown = true\n");
+    useMemorySettings(paths.home, "[merge]\nunknown = true\n");
     expect(loadRuntime({ PAWS_HOME: paths.home }).configError).toBe(
       "Saved settings have an unknown key: merge.unknown",
     );
@@ -199,20 +191,20 @@ describe("config", () => {
     ).toThrow("Saved settings have an unknown section: update");
   });
 
-  test("missing config.toml defaults the implementer to claude", () => {
+  test("no saved settings default the implementer to claude", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
-    expect(loadConfigFile(paths.configFile).agents).toEqual({ implementer: "claude" });
+    expect(loadSettings(paths.home).agents).toEqual({ implementer: "claude" });
   });
 
   test("parses agents.implementer", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
     ensureLayout(paths);
-    useMemorySettings(paths.configFile, '[agents]\nimplementer = "grok"\n');
-    expect(loadConfigFile(paths.configFile).agents).toEqual({ implementer: "grok" });
-    useMemorySettings(paths.configFile, '[agents]\nimplementer = "gpt"\n');
-    expect(() => loadConfigFile(paths.configFile)).toThrow(/claude, grok, codex, or opencode/);
+    useMemorySettings(paths.home, '[agents]\nimplementer = "grok"\n');
+    expect(loadSettings(paths.home).agents).toEqual({ implementer: "grok" });
+    useMemorySettings(paths.home, '[agents]\nimplementer = "gpt"\n');
+    expect(() => loadSettings(paths.home)).toThrow(/claude, grok, codex, or opencode/);
   });
 
   test("agents.grok and agents.opencode are unknown sections", () => {

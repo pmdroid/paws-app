@@ -1,5 +1,5 @@
 import {
-  loadConfigFile,
+  loadSettings,
   MEMBER_VM_PROVIDERS,
   writeMemberVmProviderOff,
   type MemberVmProviderName,
@@ -23,7 +23,6 @@ export const VM_PROVIDER_CHECK_REUSE_MS = 30_000;
 
 export type VmProvidersSettingsOptions = {
   home: string;
-  configPath: string;
   store: Db;
   checks: VmProviderCheckService;
   csrfToken: string;
@@ -75,7 +74,7 @@ export async function handleVmProvidersSettingsRequest(
   if (!isOffable(provider) || typeof body?.off !== "boolean")
     return json({ error: "Name a provider and whether it is off." }, 400);
   try {
-    await writeMemberVmProviderOff(options.configPath, provider, body.off);
+    await writeMemberVmProviderOff(options.home, provider, body.off);
   } catch (error) {
     journalCaught(error, "vm-providers.handleVmProvidersSettingsRequest.write", null);
     return json({ error: "Member VM settings could not be saved" }, 503);
@@ -108,7 +107,7 @@ function checkOnce(
 async function status(options: VmProvidersSettingsOptions): Promise<Response> {
   let off: MemberVmProviderName[];
   try {
-    off = loadConfigFile(options.configPath).vmSizes?.offProviders ?? [];
+    off = loadSettings(options.home).vmSizes?.offProviders ?? [];
   } catch (error) {
     journalCaught(error, "vm-providers.status", null);
     return json({ error: "Member VM settings could not be read" }, 503);

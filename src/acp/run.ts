@@ -1,7 +1,7 @@
 import { journal, journalCaught } from "../journal";
 import { appendFile, lstat, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute } from "node:path";
 import { Readable, Writable } from "node:stream";
 import {
   PROTOCOL_VERSION,
@@ -20,7 +20,7 @@ import {
   type AnyMessage,
   type Stream,
 } from "@agentclientprotocol/sdk";
-import { loadConfigFile, resolveAgentProfiles } from "../config";
+import { loadSettings, resolveAgentProfiles } from "../config";
 import { loadImplementationSkills } from "./skills";
 import { buildAgentPrompt, snapshotAgentInputs } from "./input-files";
 import { commitCheckpoint } from "./checkpoint";
@@ -157,7 +157,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         }
       : {}),
   };
-  const config = loadConfigFile(join(options.pawsRoot, "config.toml"));
+  const config = loadSettings(options.pawsRoot);
   if (options.role === "implementer" && !options.prepareOnly) {
     const skills = await loadImplementationSkills({
       config,

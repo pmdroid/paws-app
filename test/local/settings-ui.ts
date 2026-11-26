@@ -12,7 +12,7 @@ import { tempStore } from "../pglite";
 
 const root = process.env.PAWS_VERIFY_ROOT;
 if (root === undefined) throw new Error("Use scripts/verify-local.ts workspace-serve.");
-useMemorySettings(join(root, "config.toml"));
+useMemorySettings(root);
 const { db, close } = await tempStore();
 const home = join(root, "home");
 mkdirSync(home, { recursive: true, mode: 0o700 });
@@ -166,7 +166,7 @@ const server = startServer({
   },
   workspaceAccess: ready.promise,
   agentSettings: {
-    configPath: join(root, "config.toml"),
+    home: root,
   },
 });
 const origin = `https://127.0.0.1:${server.port}`;

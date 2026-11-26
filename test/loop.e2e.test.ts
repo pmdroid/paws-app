@@ -1019,10 +1019,7 @@ test.each(["claude", "codex", "grok"])(
   "stop from Linear pauses the live %s run",
   async (implementer) => {
     const layout = await repoLayout("paws-e2e-");
-    useMemorySettings(
-      path.join(layout.pawsRoot, "config.toml"),
-      `[agents]\nimplementer = "${implementer}"\n`,
-    );
+    useMemorySettings(layout.pawsRoot, `[agents]\nimplementer = "${implementer}"\n`);
     const tracker = createFakeTracker([
       {
         linearIssueId: "iss-9",
@@ -1635,7 +1632,7 @@ test("grok implementer runs the demo delegation with ask_team and one Closeout f
   const layout = await repoLayout("paws-e2e-");
   const argvLog = path.join(layout.root, "grok-argv.log");
   const wrapper = path.join(layout.root, "grok-wrapper");
-  useMemorySettings(path.join(layout.pawsRoot, "config.toml"), `[agents]\nimplementer = "grok"\n`);
+  useMemorySettings(layout.pawsRoot, `[agents]\nimplementer = "grok"\n`);
   const tracker = createFakeTracker([
     {
       linearIssueId: "parent",
@@ -2084,7 +2081,7 @@ type DemoSeed = {
 for (const sameModel of [true, false]) {
   test(`configured Codex role models ${sameModel ? "block identical models before implementation" : "use the global profiles and retain their candidate snapshot"}`, async () => {
     const layout = await repoLayout("paws-e2e-");
-    const configPath = path.join(layout.pawsRoot, "config.toml");
+    const configPath = layout.pawsRoot;
     useMemorySettings(
       configPath,
       `[agents.defaults.implementer]\nagent = "codex"\nmodel = "model-a"\n[agents.defaults.reviewer]\nagent = "codex"\nmodel = "model-b"\n`,
@@ -2251,7 +2248,7 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
       expect(question.options).toEqual(["Restart implementation"]);
       expect(question.body).not.toContain("Retry Closeout");
       useMemorySettings(
-        path.join(layout.pawsRoot, "config.toml"),
+        layout.pawsRoot,
         `[agents.defaults.implementer]\nagent = "codex"\nmodel = "test-new-implementer"\n[agents.defaults.reviewer]\nagent = "codex"\nmodel = "test-codex-model"\n`,
       );
       await orchestrator.onLinearEvent({
@@ -3331,7 +3328,7 @@ async function runGitHubQueue(
   detail: string;
 }> {
   const layout = await repoLayout("paws-e2e-");
-  useMemorySettings(path.join(layout.pawsRoot, "config.toml"), '[merge]\norder = "github-queue"\n');
+  useMemorySettings(layout.pawsRoot, '[merge]\norder = "github-queue"\n');
   const dashboard: (string | null)[] = [];
   const tracker = createFakeTracker([
     {
@@ -3524,7 +3521,7 @@ async function runCiFix(options: {
   detail: string;
 }> {
   const layout = await repoLayout("paws-e2e-");
-  if (options.config) useMemorySettings(path.join(layout.pawsRoot, "config.toml"), options.config);
+  if (options.config) useMemorySettings(layout.pawsRoot, options.config);
   if (options.withoutReview || options.attempts !== undefined) {
     const policy = options.withoutReview ? CLOSEOUT_POLICY_WITHOUT_REVIEW : CLOSEOUT_POLICY;
     const configured =
@@ -3539,10 +3536,7 @@ async function runCiFix(options: {
     await withGitIdentity(() => commitOnMain(layout.bare, configured, ".agents/closeout.yaml"));
   }
   if (options.rebaseAfterPr)
-    useMemorySettings(
-      path.join(layout.pawsRoot, "config.toml"),
-      '[merge]\nmain_moved = "closeout"\n',
-    );
+    useMemorySettings(layout.pawsRoot, '[merge]\nmain_moved = "closeout"\n');
   const linearCalls: string[] = [];
   const tracker = new Proxy(
     Object.assign(
@@ -4125,7 +4119,7 @@ async function runRebaseConflict(
     },
   ]);
   if (merging !== undefined) {
-    useMemorySettings(path.join(layout.pawsRoot, "config.toml"), merging.toml);
+    useMemorySettings(layout.pawsRoot, merging.toml);
     if (merging.labels)
       tracker.mergeContexts.set(`rebase-${mode}`, { projectId: null, labels: merging.labels });
   }

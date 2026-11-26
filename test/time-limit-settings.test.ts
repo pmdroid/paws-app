@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfigFile, resolveTimeLimits, useMemorySettings } from "../src/config";
+import { loadSettings, resolveTimeLimits, useMemorySettings } from "../src/config";
 import { readConfigText } from "./saved-settings";
 import { handleTimeLimitSettingsRequest, type TimeLimitSettingsOptions } from "../src/settings";
 
@@ -13,7 +13,7 @@ let release: () => void;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "paws-time-limits-"));
-  configPath = join(dir, "config.toml");
+  configPath = dir;
   release = useMemorySettings(configPath, '[merge]\norder = "queue"\n').release;
   audits = [];
 });
@@ -25,7 +25,7 @@ afterEach(() => {
 
 function options(role?: string): TimeLimitSettingsOptions {
   return {
-    configPath,
+    home: configPath,
     csrfToken: "csrf",
     ...(role ? { role } : {}),
     audit: async (action, subject) => {
@@ -64,7 +64,7 @@ test("a write replaces [time_limits] and keeps every other table", async () => {
     "[time_limits]\nimplementation_minutes = 180\nfixes_minutes = 60\ncloseout_minutes = 0\n",
   );
   expect(text).not.toContain("projects");
-  expect(resolveTimeLimits(loadConfigFile(configPath), 1)).toEqual({
+  expect(resolveTimeLimits(loadSettings(configPath), 1)).toEqual({
     implementation: 180 * 60_000,
     fixes: 60 * 60_000,
     closeout: 0,

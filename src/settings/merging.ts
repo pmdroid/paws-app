@@ -6,7 +6,7 @@ import {
   ignoredCommentMarkers,
   DEFAULT_CONFLICT_PRONE_AFTER,
   DEFAULT_CONFLICT_PRONE_DAYS,
-  loadConfigFile,
+  loadSettings,
   MAX_CONFLICT_PRONE_AFTER,
   MAX_CONFLICT_PRONE_DAYS,
   MAX_MERGE_PARALLEL,
@@ -45,7 +45,7 @@ export type MergeSettingsOptions = {
   role?: string;
   /** Invalidate cached risk policy inputs after a settings write. */
   changed?: () => void;
-  configPath: string;
+  home: string;
   csrfToken: string;
   store?: Db;
   /** Records each change in the audit history. */
@@ -130,7 +130,7 @@ export async function handleMergeSettingsRequest(
   if (request.method === "GET") {
     let policy: MergeSettings;
     try {
-      policy = readMergeSettings(loadConfigFile(options.configPath));
+      policy = readMergeSettings(loadSettings(options.home));
     } catch (caughtError1) {
       journalCaught(caughtError1, "merging.handleMergeSettingsRequest.readMergeSettings", null);
       return json({ error: "Merging settings could not be read" }, 503);
@@ -299,11 +299,11 @@ export async function handleMergeSettingsRequest(
   let current: StoredMerge = {};
   let before: MergeSettings | null = null;
   try {
-    const config = loadConfigFile(options.configPath);
+    const config = loadSettings(options.home);
     current = storedMerge(config);
     before = readMergeSettings(config);
   } catch (caughtError4) {
-    journalCaught(caughtError4, "merging.handleMergeSettingsRequest.loadConfigFile", null);
+    journalCaught(caughtError4, "merging.handleMergeSettingsRequest.loadSettings", null);
   }
   let sessionBefore = DEFAULT_SESSION_DONE;
   let sessionAfter = DEFAULT_SESSION_DONE;
@@ -342,7 +342,7 @@ export async function handleMergeSettingsRequest(
   }
   try {
     await writeMergePolicy(
-      options.configPath,
+      options.home,
       policy,
       {
         ...current,
@@ -451,7 +451,7 @@ export async function handleMergeSettingsRequest(
     await options.audit?.("settings.merging", change);
   let after: MergeSettings | null = null;
   try {
-    after = readMergeSettings(loadConfigFile(options.configPath));
+    after = readMergeSettings(loadSettings(options.home));
   } catch (caughtError) {
     journalCaught(caughtError, "merging.handleMergeSettingsRequest.readSaved", null);
   }

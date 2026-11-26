@@ -91,7 +91,7 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
         job.status === "pending" &&
         "reviewerFault" in (job.payload as object),
     );
-  const configPath = path.join(layout.pawsRoot, "config.toml");
+  const configPath = layout.pawsRoot;
   const settings = useMemorySettings(configPath);
   try {
     for (const identifier of ["ENG-1", "ENG-2"])

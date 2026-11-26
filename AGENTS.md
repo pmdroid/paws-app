@@ -33,7 +33,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/auth`                                               | GitHub App credentials and hosted workspace authentication            |
 | `src/closeout`                                           | Verification gate, fix loop, reports and independent review           |
 | `src/closeout-spec`                                      | Closeout policy schema, sessions, retries and evidence approval       |
-| `src/config`                                             | Home paths, environment, config.toml, agent and merge settings        |
+| `src/config`                                             | Home paths, environment, saved settings, agent and merge settings     |
 | `src/core`                                               | Domain types, states, pure transition() and execution policies        |
 | `src/credentials`                                        | Secret file access and credential refresh                             |
 | `src/dashboard`                                          | Dashboard client, server contract and build                           |

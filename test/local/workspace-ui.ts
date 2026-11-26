@@ -9,7 +9,7 @@ import { tempStore } from "../pglite";
 
 const root = process.env.PAWS_VERIFY_ROOT;
 if (root === undefined) throw new Error("Use scripts/verify-local.ts workspace-serve.");
-useMemorySettings(join(root, "config.toml"));
+useMemorySettings(root);
 const { db, close } = await tempStore();
 await insertQueuedItem(db, {
   id: "fixture-item",
@@ -33,7 +33,7 @@ const server = startServer({
   statusEnv: {},
   workspaceAccess: ready.promise,
   agentSettings: {
-    configPath: join(root, "config.toml"),
+    home: root,
   },
 });
 const origin = `http://127.0.0.1:${server.port}`;

@@ -1,6 +1,6 @@
 import {
   activeGitHubMirrors,
-  loadConfigFile,
+  loadSettings,
   parseGitHubAccessSettings,
   readGitHubAccessSettings,
   writeGitHubAccess,
@@ -12,7 +12,7 @@ import { json, localRequest, readJson, sameToken } from "./handler";
 export const GITHUB_ACCESS_SETTINGS_PATH = "/api/settings/github-access";
 
 export type GitHubAccessSettingsOptions = {
-  configPath: string;
+  home: string;
   csrfToken: string;
   trustedOrigin?: string;
   role?: string;
@@ -29,7 +29,7 @@ export async function handleGitHubAccessSettingsRequest(
       { error: "GitHub access settings are only available on the local Paws origin" },
       403,
     );
-  const current = () => readGitHubAccessSettings(loadConfigFile(options.configPath));
+  const current = () => readGitHubAccessSettings(loadSettings(options.home));
   let before: ReturnType<typeof current>;
   try {
     before = current();
@@ -50,7 +50,7 @@ export async function handleGitHubAccessSettingsRequest(
     journalCaught(error, "github-access.handleGitHubAccessSettingsRequest.parse", null);
     return json({ error: error instanceof Error ? error.message : "Invalid GitHub access" }, 400);
   }
-  await writeGitHubAccess(options.configPath, settings);
+  await writeGitHubAccess(options.home, settings);
   const restartRequired = settings.mirrors !== (activeGitHubMirrors() ?? before.mirrors);
   if (settings.mirrors !== before.mirrors)
     journal(

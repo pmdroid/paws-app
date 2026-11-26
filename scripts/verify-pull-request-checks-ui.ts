@@ -2,7 +2,7 @@ import { chromium, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfigFile, readMergeSettings, useMemorySettings } from "../src/config";
+import { loadSettings, readMergeSettings, useMemorySettings } from "../src/config";
 import { handleAgentSettingsRequest, handleMergeSettingsRequest } from "../src/settings";
 import { handleStatusRequest } from "../src/dashboard";
 import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
@@ -96,7 +96,7 @@ try {
         await page.getByRole("button", { name: "Save", exact: true }).click();
         await expect(page.getByText("Merging settings saved.")).toBeVisible();
         await expect(input).toHaveValue("5");
-        expect(readMergeSettings(loadConfigFile(configPath)).ciFixAttempts).toBe(5);
+        expect(readMergeSettings(loadSettings(configPath)).ciFixAttempts).toBe(5);
         await expect
           .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
           .toBe(true);

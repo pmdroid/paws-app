@@ -12,6 +12,8 @@ PAWS_DATABASE_URL=postgres://paws:password@db.example.com:5432/paws
 
 The URL must start with `postgres://` or `postgresql://` and name a host. A `max` query parameter (`?max=4`) sets the connection pool size; the default is 10. Without it, Paws uses PGlite in `~/.paws/pglite`.
 
+Paws reads no configuration file. When `~/.paws/config.toml` exists and `PAWS_DATABASE_URL` is not set, Paws refuses to start with `Set PAWS_DATABASE_URL in the service environment; config.toml is no longer read`, so an install that named its server in that file never starts on an empty PGlite. Move the URL into the service environment; with the variable set, Paws ignores the file and never deletes it.
+
 The URL holds the password, so it is a secret: keep the environment file that sets it, such as `PAWS_HOME/https.env`, at mode `0600`. Paws never prints it; messages name only the host and database, for example `db.example.com:5432/paws`.
 
 ## Starting Paws

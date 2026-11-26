@@ -35,7 +35,7 @@ export async function probeWorkspaceAuthorization(
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
   mkdirSync(root, { recursive: true });
-  useMemorySettings(join(root, "config.toml"));
+  useMemorySettings(root);
   const { db, close } = await tempStore();
   const now = Date.now();
   const ownerId = await putWorkspaceUser(db, {
@@ -196,7 +196,7 @@ export async function probeWorkspaceAuthorization(
       return Response.json({ ok: true });
     },
     agentSettings: {
-      configPath: join(root, "config.toml"),
+      home: root,
     },
     skillSettings: { root: join(root, "skills"), resolver: fakeSkillResolver() },
     readLinearArtifact: async (id) => {

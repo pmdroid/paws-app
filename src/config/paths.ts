@@ -1,13 +1,12 @@
 import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { githubMirrorsOn, loadConfigFile } from "./file";
+import { githubMirrorsOn, loadSettings } from "./file";
 
 /** Directories under `~/.paws`. The developer's own checkout is never one of these. */
 export type PawsPaths = {
   home: string;
   db: string;
   pgliteDir: string;
-  configFile: string;
   secretsDir: string;
   reposDir: string;
   publicationDir: string;
@@ -26,7 +25,6 @@ export function pawsPaths(home: string): PawsPaths {
     home,
     db: join(home, "paws.db"),
     pgliteDir: join(home, "pglite"),
-    configFile: join(home, "config.toml"),
     secretsDir: join(home, "secrets"),
     reposDir: join(home, "repos"),
     publicationDir: join(home, "publication"),
@@ -44,7 +42,7 @@ export function ensureLayout(paths: PawsPaths): void {
   const dirs = [
     paths.home,
     paths.secretsDir,
-    ...(githubMirrorsOn(loadConfigFile(paths.configFile)) ? [paths.reposDir] : []),
+    ...(githubMirrorsOn(loadSettings(paths.home)) ? [paths.reposDir] : []),
     paths.publicationDir,
     paths.worktreesDir,
     paths.runsDir,

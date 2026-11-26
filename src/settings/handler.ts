@@ -3,7 +3,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import {
   DEFAULT_CI_FIX_ATTEMPTS,
   DEFAULT_QUEUE_START_TIMEOUT_HOURS,
-  loadConfigFile,
+  loadSettings,
   parseAgentSettings,
   parseMergeSettings,
   parseQueueSettings,
@@ -23,7 +23,7 @@ import { reviewerRunnerWarnings, type RunnerReadiness } from "./reviewer-runners
 
 export type AgentSettingsOptions = {
   trustedOrigin?: string;
-  configPath: string;
+  home: string;
   csrfToken: string;
   repos?: string[];
   role?: string;
@@ -34,8 +34,8 @@ export type AgentSettingsOptions = {
   runnerReadiness?: (agent: ImplementerName) => RunnerReadiness[] | Promise<RunnerReadiness[]>;
 };
 
-function settingsRevision(configPath: string): string {
-  const sections = readSettingSections(configPath);
+function settingsRevision(home: string): string {
+  const sections = readSettingSections(home);
   const text = JSON.stringify(SETTINGS_SECTIONS.map((name) => sections[name] ?? null));
   return createHash("sha256").update(text).digest("hex").slice(0, 32);
 }
@@ -54,15 +54,15 @@ export async function handleAgentSettingsRequest(
     return json({ error: "Only workspace admins can read or change agent settings." }, 403);
   if (request.method === "GET" && url.pathname === SETTINGS_PATH) {
     try {
-      const config = loadConfigFile(options.configPath);
+      const config = loadSettings(options.home);
       return json({
         ...readAgentSettings(config),
         merge: { ciFixAttempts: readMergeSettings(config).ciFixAttempts },
         queue: readQueueSettings(config),
-        revision: settingsRevision(options.configPath),
+        revision: settingsRevision(options.home),
       });
     } catch (caughtError1) {
-      journalCaught(caughtError1, "handler.handleAgentSettingsRequest.loadConfigFile", null);
+      journalCaught(caughtError1, "handler.handleAgentSettingsRequest.loadSettings", null);
       return json({ error: "Agent settings could not be read" }, 503);
     }
   }
@@ -107,11 +107,11 @@ export async function handleAgentSettingsRequest(
   let previous: StoredMerge = {};
   let previousQueue: QueueSettings | null = null;
   try {
-    const config = loadConfigFile(options.configPath);
+    const config = loadSettings(options.home);
     previous = storedMerge(config);
     previousQueue = readQueueSettings(config);
   } catch (caughtError3) {
-    journalCaught(caughtError3, "handler.handleAgentSettingsRequest.loadConfigFile", null);
+    journalCaught(caughtError3, "handler.handleAgentSettingsRequest.loadSettings", null);
   }
   let merge: StoredMerge | undefined;
   let queue: QueueSettings | undefined;
@@ -129,11 +129,11 @@ export async function handleAgentSettingsRequest(
     journalCaught(error, "handler.handleAgentSettingsRequest.parseMergeSettings", null);
     return json({ error: error instanceof Error ? error.message : "Invalid agent settings" }, 400);
   }
-  if (expectedRevision !== undefined && expectedRevision !== settingsRevision(options.configPath))
+  if (expectedRevision !== undefined && expectedRevision !== settingsRevision(options.home))
     return json(
       {
         error: "Settings changed since they were loaded. Reload them and apply your change again.",
-        revision: settingsRevision(options.configPath),
+        revision: settingsRevision(options.home),
       },
       409,
     );
@@ -141,8 +141,8 @@ export async function handleAgentSettingsRequest(
   let savedQueue: QueueSettings;
   let waitingRuns = 0;
   try {
-    await writeAgentSettings(options.configPath, settings, merge, queue);
-    const config = loadConfigFile(options.configPath);
+    await writeAgentSettings(options.home, settings, merge, queue);
+    const config = loadSettings(options.home);
     saved = readMergeSettings(config).ciFixAttempts;
     savedQueue = queue ?? readQueueSettings(config);
     if (applyToWaiting) waitingRuns = (await options.applyToWaiting?.()) ?? 0;
@@ -179,7 +179,7 @@ export async function handleAgentSettingsRequest(
     ...settings,
     merge: { ciFixAttempts: saved },
     queue: savedQueue,
-    revision: settingsRevision(options.configPath),
+    revision: settingsRevision(options.home),
     ...(applyToWaiting ? { waitingRuns } : {}),
     ...(warnings.length ? { warnings } : {}),
   });

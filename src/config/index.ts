@@ -12,7 +12,7 @@ export {
   emptyConfigFile,
   githubMirrorsOn,
   isImplementer,
-  loadConfigFile,
+  loadSettings,
   parseConfigToml,
   saveSettingsSection,
   saveSettingsSections,
@@ -72,6 +72,7 @@ export { ensureLayout, pawsPaths } from "./paths";
 export { parseRepositoryList } from "./repositories";
 export type { PawsPaths } from "./paths";
 export {
+  CONFIG_FILE_RETIRED,
   databaseUrlOf,
   LINEAR_WORKSPACE_REQUIRED,
   loadRuntime,

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import {
   agentReadAllowed,
   githubMirrorsOn,
-  loadConfigFile,
+  loadSettings,
   useActiveGitHubMirrors,
   useSettingsStore,
   settingsSectionsOf,
@@ -25,7 +25,7 @@ let release: () => void;
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "paws-github-access-"));
-  configPath = join(dir, "config.toml");
+  configPath = dir;
   audits = [];
   stored = null;
   const snapshot = await useSettingsStore(configPath, {
@@ -45,7 +45,7 @@ afterEach(() => {
 
 function options(role?: string): GitHubAccessSettingsOptions {
   return {
-    configPath,
+    home: configPath,
     csrfToken: "csrf",
     ...(role ? { role } : {}),
     audit: async (action) => {
@@ -70,8 +70,8 @@ test("without a saved section the settings read their defaults", async () => {
     agentRead: true,
     mirrors: true,
   });
-  expect(agentReadAllowed(loadConfigFile(configPath))).toBe(true);
-  expect(githubMirrorsOn(loadConfigFile(configPath))).toBe(true);
+  expect(agentReadAllowed(loadSettings(configPath))).toBe(true);
+  expect(githubMirrorsOn(loadSettings(configPath))).toBe(true);
 });
 
 test("a save goes to the database and applies without a restart", async () => {
@@ -95,7 +95,7 @@ test("a save goes to the database and applies without a restart", async () => {
   expect(stored).toBe("[github_access]\nagent_read = false\nmirrors = false\n");
   expect(lines.some((line) => line.includes("mirrors set to false"))).toBe(true);
   expect(audits).toEqual(["settings.github_access"]);
-  const config = loadConfigFile(configPath);
+  const config = loadSettings(configPath);
   expect(agentReadAllowed(config)).toBe(false);
   expect(githubMirrorsOn(config)).toBe(false);
   const again = await handleGitHubAccessSettingsRequest(
@@ -103,7 +103,7 @@ test("a save goes to the database and applies without a restart", async () => {
     options("admin"),
   );
   expect(await again!.json()).toMatchObject({ agentRead: true, restartRequired: false });
-  expect(agentReadAllowed(loadConfigFile(configPath))).toBe(true);
+  expect(agentReadAllowed(loadSettings(configPath))).toBe(true);
 });
 
 test("a member, a missing CSRF token or an invalid value cannot write", async () => {

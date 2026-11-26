@@ -1,7 +1,7 @@
 import {
   BOAT_SIZES,
   checkVmSizeIn,
-  loadConfigFile,
+  loadSettings,
   parseMemberVmSettings,
   updateVmSizes,
   vmSizeFor,
@@ -14,7 +14,7 @@ import { json, localRequest, readJson, sameToken } from "./handler";
 export const MEMBER_VM_SETTINGS_PATH = "/api/settings/vm-sizes";
 
 export type MemberVmSettingsOptions = {
-  configPath: string;
+  home: string;
   csrfToken: string;
   trustedOrigin?: string;
   role?: string;
@@ -32,7 +32,7 @@ export async function handleMemberVmSettingsRequest(
   const listing = async () => {
     let settings: VmSizes | undefined;
     try {
-      settings = loadConfigFile(options.configPath).vmSizes;
+      settings = loadSettings(options.home).vmSizes;
     } catch (error) {
       journalCaught(error, "member-vm.handleMemberVmSettingsRequest.read", null);
       return json({ error: "VM size settings could not be read" }, 503);
@@ -78,7 +78,7 @@ export async function handleMemberVmSettingsRequest(
       return json({ error: (error as Error).message }, 400);
     }
   }
-  await updateVmSizes(options.configPath, (saved) => ({
+  await updateVmSizes(options.home, (saved) => ({
     ...saved,
     ...body,
     sizes: { ...saved.sizes, ...body.sizes },

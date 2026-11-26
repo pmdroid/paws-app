@@ -49,7 +49,7 @@ for (const [name, setup] of cases)
   test(name, async () => {
     const layout = await h.repoLayout("paws-reviewer-model-");
     const settings = useMemorySettings(
-      path.join(layout.pawsRoot, "config.toml"),
+      layout.pawsRoot,
       [
         `[agents.defaults.implementer]\nagent = "claude"\nmodel = "test-claude-model"`,
         `[agents.defaults.reviewer]\nagent = "codex"${setup.reviewer ? `\nmodel = "${setup.reviewer}"` : ""}`,

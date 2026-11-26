@@ -33,12 +33,12 @@ type Snapshot = { store: SettingsStore; stored: SettingSections; ticket: number 
 const snapshots = new Map<string, Snapshot>();
 let tickets = 0;
 export async function useSettingsStore(
-  configPath: string,
+  home: string,
   store: SettingsStore,
 ): Promise<SettingsSnapshot> {
   const ticket = ++tickets;
   const snapshot: Snapshot = { store, stored: await store.read(), ticket };
-  snapshots.set(configPath, snapshot);
+  snapshots.set(home, snapshot);
   return {
     async refresh() {
       const started = ++tickets;
@@ -48,7 +48,7 @@ export async function useSettingsStore(
       snapshot.ticket = started;
     },
     release() {
-      if (snapshots.get(configPath) === snapshot) snapshots.delete(configPath);
+      if (snapshots.get(home) === snapshot) snapshots.delete(home);
     },
   };
 }
@@ -93,7 +93,7 @@ function parsesAsToml(text: string): boolean {
   }
 }
 
-export function useMemorySettings(configPath: string, text?: string): { release(): void } {
+export function useMemorySettings(home: string, text?: string): { release(): void } {
   let stored = text === undefined ? {} : settingsSectionsOf(text);
   const store: SettingsStore = {
     read: async () => stored,
@@ -102,10 +102,10 @@ export function useMemorySettings(configPath: string, text?: string): { release(
     },
   };
   const snapshot: Snapshot = { store, stored, ticket: ++tickets };
-  snapshots.set(configPath, snapshot);
+  snapshots.set(home, snapshot);
   return {
     release() {
-      if (snapshots.get(configPath) === snapshot) snapshots.delete(configPath);
+      if (snapshots.get(home) === snapshot) snapshots.delete(home);
     },
   };
 }
@@ -116,20 +116,20 @@ export function useMemorySettingsByDefault(enabled = true): void {
   memoryByDefault = enabled;
 }
 
-function snapshotOf(configPath: string): Snapshot | undefined {
-  if (!snapshots.has(configPath) && memoryByDefault) useMemorySettings(configPath);
-  return snapshots.get(configPath);
+function snapshotOf(home: string): Snapshot | undefined {
+  if (!snapshots.has(home) && memoryByDefault) useMemorySettings(home);
+  return snapshots.get(home);
 }
 
-export function readSettingSections(configPath: string): SettingSections {
-  return snapshotOf(configPath)?.stored ?? {};
+export function readSettingSections(home: string): SettingSections {
+  return snapshotOf(home)?.stored ?? {};
 }
 
 export async function updateSettingSections(
-  configPath: string,
+  home: string,
   change: (stored: SettingSections) => SettingSections,
 ): Promise<void> {
-  const snapshot = snapshotOf(configPath);
+  const snapshot = snapshotOf(home);
   if (snapshot === undefined)
     throw new Error("Settings are not available: the database is not open");
   let saved: SettingSections = {};
