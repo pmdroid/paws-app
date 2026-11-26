@@ -17,7 +17,6 @@ import {
   INSTABOX_BOOT_SHELL,
   INSTABOX_PREPARE_COMMAND,
   InstaBoxIssueVmError,
-  ISSUE_VM_SLEEP_CHECK,
 } from "../src/issue-vm";
 import {
   createFakeBootstrap,
@@ -223,24 +222,4 @@ describe("InstaBox boot step", () => {
     expect(tree(root).filter((line) => !line.startsWith("calls.log"))).toEqual(first);
     expect(readFileSync(log, "utf8").split("umount")).toHaveLength(2);
   });
-});
-
-test("an InstaBox VM suspends only after its sign-in check passes", async () => {
-  const { instaBox, vms, create } = setup();
-  await create("pas-1-vm");
-  const execVm = instaBox.execVm;
-  instaBox.execVm = async () => ({
-    exitCode: 1,
-    stdout: "",
-    stderr: "Agent credentials are still in this VM",
-  });
-  const refused = await refusal(vms.sleep("pas-1-vm"));
-  expect(refused.message).toContain("Agent credentials are still in this VM");
-  expect(instaBox.machines.get("pas-1-vm")?.state).toBe("running");
-  instaBox.execVm = execVm;
-  await vms.sleep("pas-1-vm");
-  expect(instaBox.calls.filter((call) => call.operation === "execVm").at(-1)?.command).toBe(
-    ISSUE_VM_SLEEP_CHECK,
-  );
-  expect(instaBox.machines.get("pas-1-vm")?.state).toBe("suspended");
 });

@@ -6,7 +6,6 @@ export {
   type RunnerDaemon,
   type RunnerDaemonOptions,
 } from "./daemon";
-export { heldCredentialCount } from "./credential-store";
 export { RunnerRequestError, RunnerTransportError, transportFailure } from "./transport";
 export { isIdentityRejected } from "./transport";
 export {

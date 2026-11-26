@@ -1,5 +1,4 @@
 import { journal, journalCaught } from "../journal";
-import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
   type Dirent,
@@ -50,7 +49,6 @@ const SHARE_LIMIT = 100_000;
 export const ISSUE_VM_MARKER = "/etc/paws-runner/issue-vm";
 const ACCOUNT_CACHES = ".paws-account-caches";
 const RETURNED = ".paws-returned";
-const OPENCODE_DATABASE = ".local/share/opencode/opencode.db";
 const RETURN_LIMIT = 2_097_152;
 const TMPFS_MAGIC = 0x01021994;
 const SHARED_ELSEWHERE = new Set([
@@ -212,57 +210,6 @@ function takeReturnedCredentials(home: string, executionId: string): Buffer | nu
   }
 }
 
-function scrubOpenCodeDatabase(home: string): void {
-  if (!present(join(home, OPENCODE_DATABASE))) return;
-  const db = new Database(join(home, OPENCODE_DATABASE), { readwrite: true });
-  try {
-    db.run("PRAGMA busy_timeout = 5000");
-    db.run("PRAGMA secure_delete = ON");
-    if (db.query("SELECT 1 FROM sqlite_master WHERE name = 'credential'").get())
-      db.run("DELETE FROM credential WHERE integration_id = 'opencode'");
-    db.run("PRAGMA wal_checkpoint(TRUNCATE)");
-  } finally {
-    db.close();
-  }
-}
-
-function openCodeCredentialLeft(home: string): boolean {
-  if (!present(join(home, OPENCODE_DATABASE))) return false;
-  try {
-    const db = new Database(join(home, OPENCODE_DATABASE), { readonly: true });
-    try {
-      if (!db.query("SELECT 1 FROM sqlite_master WHERE name = 'credential'").get()) return false;
-      return db.query("SELECT 1 FROM credential WHERE integration_id = 'opencode'").get() !== null;
-    } finally {
-      db.close();
-    }
-  } catch (error) {
-    journalCaught(error, "accounts.openCodeCredentialLeft", null, "unreadable counts as left");
-    return true;
-  }
-}
-
-export function runnerCredentialsLeft(agentHome: string): string[] {
-  const root = join(agentHome, RUNNER_ACCOUNT_HOMES);
-  let names: string[];
-  try {
-    names = readdirSync(root).sort();
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw error;
-  }
-  const paths = [...new Set(Object.values(RUNNER_AGENT_CREDENTIAL_FILES).flat())];
-  return names.flatMap((name) => [
-    ...paths
-      .filter((path) => path !== CLAUDE_STATE && present(join(root, name, path)))
-      .map((path) => join(name, path)),
-    ...(openCodeCredentialLeft(join(root, name)) ? [join(name, OPENCODE_DATABASE)] : []),
-    ...(present(join(root, name, RETURNED))
-      ? readdirSync(join(root, name, RETURNED)).map((file) => join(name, RETURNED, file))
-      : []),
-  ]);
-}
-
 export function runnerAgentCredentials(
   agentHome: string,
   owners: RunnerAccountOwners = processOwners(),
@@ -308,12 +255,6 @@ export function runnerAgentCredentials(
         recursive: true,
         force: true,
       });
-      if (tmpfs && agent === "opencode")
-        try {
-          scrubOpenCodeDatabase(runnerAccountHome(agentHome, account));
-        } catch (error) {
-          journalCaught(error, "accounts.runnerAgentCredentials.remove", null);
-        }
     },
   };
 }
@@ -342,7 +283,6 @@ export function returnRunnerAgentCredentials(
   publish(read);
   if (activeExecutions(home, executionId).length > 0) return;
   for (const path of raw.keys()) rmSync(join(home, path), { force: true });
-  if (agent === "opencode" && onTmpfs(home)) scrubOpenCodeDatabase(home);
   if (activeExecutions(home, executionId).length === 0) return;
   for (const [path, data] of raw)
     if (!present(join(home, path))) {

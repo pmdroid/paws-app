@@ -52,7 +52,6 @@ export {
   runnerAccountBindings,
   runnerAccountCache,
   runnerAccountHome,
-  runnerCredentialsLeft,
   onTmpfs,
   writeReturnedCredentials,
   returnRunnerAgentCredentials,

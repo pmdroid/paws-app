@@ -3,12 +3,7 @@ import { execFileSync } from "node:child_process";
 import { closeSync, constants, existsSync, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
-import {
-  createRunnerHostSampler,
-  EnrollmentTokenSchema,
-  heldCredentialCount,
-  openRunnerDaemon,
-} from "../runner-daemon";
+import { createRunnerHostSampler, EnrollmentTokenSchema, openRunnerDaemon } from "../runner-daemon";
 import {
   ExecutionIdSchema,
   ISSUE_VM_MARKER,
@@ -18,7 +13,6 @@ import {
   RUNNER_SKILLS_ENV,
   runnerAccountBindings,
   runnerAgentCredentials,
-  runnerCredentialsLeft,
 } from "../runner-execution";
 import { runRunnerWorker } from "../runner-worker";
 import { describeRunnerFailure, RunnerCliFailure, journalRunnerFailure } from "../runner-failure";
@@ -347,17 +341,6 @@ export async function runRunnerCli(
       } finally {
         daemon.close();
       }
-    }
-    if (operation === "sleep-check" && args.length === 0) {
-      if (process.getuid?.() !== ids.runnerUid)
-        throw new RunnerCliFailure("identity", "Runner service identity is invalid.");
-      const files = runnerCredentialsLeft("/var/lib/paws-agent");
-      const held = existsSync(ISSUE_VM_CREDENTIALS) ? heldCredentialCount(ISSUE_VM_CREDENTIALS) : 0;
-      if (files.length === 0 && held === 0) return 0;
-      error(
-        `Agent credentials are still in this VM: ${files.length} sign-in files and ${held} held copies. Sleep refused.`,
-      );
-      return 1;
     }
     if (operation !== "daemon" || args.length !== 2 || args[0] !== "--config" || !args[1])
       throw new RunnerCliFailure("usage", "Invalid daemon command.");

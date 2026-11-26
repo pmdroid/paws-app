@@ -15,12 +15,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setJournalSink } from "../src/journal";
 import { Database } from "bun:sqlite";
-import { heldCredentialCount, openRunnerDaemon } from "../src/runner-daemon";
+import { openRunnerDaemon } from "../src/runner-daemon";
 import {
   openRunnerAccountHome,
   returnRunnerAgentCredentials,
   runnerAgentCredentials,
-  runnerCredentialsLeft,
   writeReturnedCredentials,
 } from "../src/runner-execution";
 import { initializeRunnerAuthority, startRunnerListener } from "../src/runner-identity";
@@ -520,6 +519,15 @@ test("Claude OAuth accounts use the token environment and never return refreshed
   }
 });
 
+function heldCopies(store: string): number {
+  const db = new Database(join(store, "credentials.db"), { readonly: true });
+  try {
+    return (db.query("SELECT count(*) AS n FROM agent_credential").get() as { n: number }).n;
+  } finally {
+    db.close();
+  }
+}
+
 test("on an issue VM the sign-in stays in the tmpfs, its refresh reaches Paws and nothing is left after the turn", async () => {
   await withRunner(async ({ daemon, home, root, uploads, plane, store }) => {
     plane.commands = () => [command("check-vm", "login_check")];
@@ -529,8 +537,7 @@ test("on an issue VM the sign-in stays in the tmpfs, its refresh reaches Paws an
       ".claude/.credentials.json",
     );
     expect(readFileSync(credentials, "utf8")).toContain("r1");
-    expect(runnerCredentialsLeft(home)).toEqual([`${account.bindingId}/.claude/.credentials.json`]);
-    expect(heldCredentialCount(store!)).toBe(1);
+    expect(heldCopies(store!)).toBe(1);
     const disk = new Database(join(root, "daemon", "commands.db"), { readonly: true });
     expect(
       disk.query("SELECT name FROM sqlite_master WHERE name = 'agent_credential'").all(),
@@ -551,17 +558,17 @@ test("on an issue VM the sign-in stays in the tmpfs, its refresh reaches Paws an
         ),
       ),
     );
-    expect(runnerCredentialsLeft(home)).toEqual([
-      `${account.bindingId}/.paws-returned/${EXECUTION}`,
-    ]);
+    expect(existsSync(credentials)).toBe(false);
+    const returned = join(accountHome, ".paws-returned", EXECUTION);
+    expect(existsSync(returned)).toBe(true);
     daemon.returnCredentials("check-vm", EXECUTION, null);
-    expect(runnerCredentialsLeft(home)).toEqual([]);
+    expect(existsSync(returned)).toBe(false);
     await daemon.acknowledgeCommand("check-vm");
     await sync(daemon);
     expect(sent(uploads)).toEqual([[4, token("r2")]]);
     await sync(daemon);
-    expect(heldCredentialCount(store!)).toBe(0);
-    expect(runnerCredentialsLeft(home)).toEqual([]);
+    expect(heldCopies(store!)).toBe(0);
+    expect(existsSync(credentials)).toBe(false);
     expect(plane.protocols).toContain(2);
     expect(plane.protocols).not.toContain(1);
     expect(readFileSync(join(store!, "credentials.db"), "latin1")).not.toMatch(
@@ -577,7 +584,6 @@ test("an issue VM refuses a sign-in whose account homes are on disk", () => {
     expect(() =>
       runnerAgentCredentials(home, undefined, true).write(account, "claude", stored),
     ).toThrow("Agent sign-ins on an issue VM need a tmpfs account root");
-    expect(runnerCredentialsLeft(home)).toEqual([]);
     expect(() =>
       openRunnerDaemon({
         root: join(home, "daemon"),

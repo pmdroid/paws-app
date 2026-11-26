@@ -124,7 +124,8 @@ export function* bindingReadinessSteps(
     return unavailable("auth-required");
   if (
     binding.isolation === "issue_vm" &&
-    (binding.accountProtocol ?? 0) < RUNNER_MEMORY_ACCOUNT_PROTOCOL
+    (binding.agent === "opencode" ||
+      (binding.accountProtocol ?? 0) < RUNNER_MEMORY_ACCOUNT_PROTOCOL)
   )
     return unavailable("sign-ins-on-disk");
   const rows = yield* bindingAccountHealthSteps(q, input.bindingId, input.model);

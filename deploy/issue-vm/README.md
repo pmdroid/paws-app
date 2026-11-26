@@ -2,14 +2,14 @@
 
 `base-disk.sh` builds the base disk that issue VMs on a VM host start from: Ubuntu 24.04 with Docker, kind, the common build tools and the Paws runner, and no SSH host keys, machine id, cloud-init state, runner enrollment, credentials or logs from the build. It runs on the VM host as root, for the host's own architecture (arm64 or amd64), because the build boots the image once in Cloud Hypervisor under KVM.
 
-| File           | What it holds                                                                                                                     |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `image.env`    | The pinned versions and checksums: Ubuntu cloud image, apt packages, runner, kind, hypervisor                                     |
-| `provision.sh` | Runs inside the guest as root: sets memory overcommit, installs the packages, runner and kind, and puts agent sign-ins on a tmpfs |
-| `seal.sh`      | Runs inside the guest as root: removes identity, credentials, state and logs, then powers off                                     |
-| `base-disk.sh` | Runs on the host: `build` makes the disk, `check` boots a copy of one and proves it works                                         |
-| `disk.sh`      | Runs on the host as root: the thin pool and each issue VM's own disk in it                                                        |
-| `vm.sh`        | Runs in each VM unit on the host: the seed, disk owner and network before Cloud Hypervisor                                        |
+| File           | What it holds                                                                                 |
+| -------------- | --------------------------------------------------------------------------------------------- |
+| `image.env`    | The pinned versions and checksums: Ubuntu cloud image, apt packages, runner, kind, hypervisor |
+| `provision.sh` | Runs inside the guest as root: sets memory overcommit, installs the packages, runner and kind |
+| `seal.sh`      | Runs inside the guest as root: removes identity, credentials, state and logs, then powers off |
+| `base-disk.sh` | Runs on the host: `build` makes the disk, `check` boots a copy of one and proves it works     |
+| `disk.sh`      | Runs on the host as root: the thin pool and each issue VM's own disk in it                    |
+| `vm.sh`        | Runs in each VM unit on the host: the seed, disk owner and network before Cloud Hypervisor    |
 
 The boat and InstaBox snapshots run the same `provision.sh` and `seal.sh` with the same `image.env`.
 
@@ -19,7 +19,7 @@ An issue VM never writes an agent's sign-in to its disk. `provision.sh` mounts a
 
 Each turn's command brings the sign-in. When the account home is on a tmpfs, the worker hands the refreshed sign-in back through a sealed file in `.paws-returned` in the account home, not through the results folder. The runner uploads it to Paws, then deletes the files and its copy. Paws runs a refreshable account in one issue VM at a time, so a second issue using the same account waits.
 
-A runner on a marked VM tells Paws that it keeps sign-ins in memory only. Paws gives no agent account work to an issue VM runner that doesn't, including runners older than this change and VMs whose image lacks the tmpfs. `paws-runner runner sleep-check`, run as `paws-runner`, fails while any sign-in file, returned sign-in, held copy or OpenCode credential row is still in the VM. The boat and InstaBox sleep steps run it inside the VM before they stop or suspend it, and refuse to sleep when it fails.
+A runner on a marked VM tells Paws that it keeps sign-ins in memory only. Paws gives no agent account work to an issue VM runner that doesn't, including runners older than this change and VMs whose image lacks the tmpfs. OpenCode accounts get no issue VM work yet, because OpenCode keeps its sign-in in its own database.
 
 ## Build
 
