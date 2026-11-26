@@ -2,7 +2,8 @@ CREATE TABLE "issue_vm_awake" (
 	"id" text PRIMARY KEY NOT NULL,
 	"issue_vm_id" text NOT NULL,
 	"started_at" bigint NOT NULL,
-	"ended_at" bigint
+	"ended_at" bigint,
+	"hourly_usd" double precision
 );
 --> statement-breakpoint
 CREATE TABLE "issue_vm_spend" (
@@ -11,9 +12,7 @@ CREATE TABLE "issue_vm_spend" (
 	"boat_hourly_usd" double precision,
 	"instabox_hourly_usd" double precision,
 	"updated_by" text,
-	"updated_at" bigint NOT NULL,
-	CONSTRAINT "issue_vm_spend_limit" CHECK (monthly_limit_usd >= 0),
-	CONSTRAINT "issue_vm_spend_prices" CHECK (coalesce(boat_hourly_usd, 0) >= 0 AND coalesce(instabox_hourly_usd, 0) >= 0)
+	"updated_at" bigint NOT NULL
 );
 --> statement-breakpoint
 ALTER TABLE "issue_vm_awake" ADD CONSTRAINT "issue_vm_awake_issue_vm_id_issue_vm_id_fk" FOREIGN KEY ("issue_vm_id") REFERENCES "public"."issue_vm"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint

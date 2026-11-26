@@ -13,12 +13,13 @@ import {
   workspaceMemberUsable,
   type Db,
   type IssueVmGrant,
+  type IssueVmSpendSettings,
   type Q,
 } from "../db";
 import { journalCaught } from "../journal";
 import { json, localRequest, readJson, sameToken } from "../settings";
 import { isWorkspaceAdmin, type WorkspacePrincipal } from "../workspace";
-import { issueVmSpendLimitSteps, issueVmSpendSteps, type IssueVmSpendLimit } from "./spend";
+import { DEFAULT_MONTHLY_LIMIT_USD, issueVmSpendSteps } from "./spend";
 
 export const ISSUE_VM_MEMBERS_PATH = "/api/settings/issue-vm/members";
 export const ISSUE_VM_GRANTS_PATH = "/api/settings/issue-vm/grants";
@@ -109,21 +110,22 @@ function parseGrant(body: unknown, now: number): GrantInput | string {
 
 const MAX_USD = 1_000_000;
 
-function amount(value: unknown, name: string): number | null | string {
-  if (value === null) return null;
+type SpendChanges = Partial<IssueVmSpendSettings>;
+
+function amount(value: unknown, name: string): number | string {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > MAX_USD)
     return `${name} must be a number of US dollars from 0 to ${MAX_USD}`;
   return value;
 }
 
-function parseSpend(body: unknown, current: IssueVmSpendLimit): IssueVmSpendLimit | string {
+function parseSpend(body: unknown): SpendChanges | string {
   if (typeof body !== "object" || body === null) return "Expected a JSON object";
   const { monthlyLimitUsd, prices } = body as Record<string, unknown>;
-  const next: IssueVmSpendLimit = { ...current, prices: { ...current.prices } };
+  const changes: SpendChanges = {};
   if (monthlyLimitUsd !== undefined) {
-    const limit = amount(monthlyLimitUsd ?? Number.NaN, "monthlyLimitUsd");
-    if (typeof limit !== "number") return limit ?? "monthlyLimitUsd is required";
-    next.monthlyLimitUsd = limit;
+    const limit = amount(monthlyLimitUsd, "monthlyLimitUsd");
+    if (typeof limit === "string") return limit;
+    changes.monthlyLimitUsd = limit;
   }
   if (prices !== undefined) {
     if (typeof prices !== "object" || prices === null) return "prices must be an object";
@@ -132,16 +134,11 @@ function parseSpend(body: unknown, current: IssueVmSpendLimit): IssueVmSpendLimi
         return "prices takes only boat and instabox";
       const price = amount(value, `prices.${provider}`);
       if (typeof price === "string") return price;
-      next.prices[provider] = price;
+      changes[provider === "boat" ? "boatHourlyUsd" : "instaboxHourlyUsd"] = price;
     }
   }
-  return next;
-}
-
-const usd = (value: number | null) => (value === null ? "none" : `$${value}`);
-
-function describeSpend(spend: IssueVmSpendLimit) {
-  return `monthly limit ${usd(spend.monthlyLimitUsd)}, boat ${usd(spend.prices.boat)}/h, instabox ${usd(spend.prices.instabox)}/h`;
+  if (Object.keys(changes).length === 0) return "Expected monthlyLimitUsd or prices";
+  return changes;
 }
 
 async function handleSpend(request: Request, options: IssueVmHttpOptions, now: number) {
@@ -152,21 +149,20 @@ async function handleSpend(request: Request, options: IssueVmHttpOptions, now: n
   if (request.method !== "PUT") return json({ error: "Method not allowed" }, 405);
   if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))
     return json({ error: "CSRF token missing" }, 403);
-  let body: unknown;
+  let changes: SpendChanges | string;
   try {
-    body = await readJson(request);
+    changes = parseSpend(await readJson(request));
   } catch (error) {
     journalCaught(error, "issue-vm.handleSpend.parse", null);
-    return json({ error: "Expected a JSON body" }, 400);
+    changes = "Expected a JSON body";
   }
+  if (typeof changes === "string") return json({ error: changes }, 400);
+  const update = changes;
   const saved = await db.transaction(function* (q) {
-    const next = parseSpend(body, yield* issueVmSpendLimitSteps(q, workspaceId));
-    if (typeof next === "string") return next;
     yield* saveIssueVmSpendSettingsSteps(q, {
       workspaceId,
-      monthlyLimitUsd: next.monthlyLimitUsd,
-      boatHourlyUsd: next.prices.boat,
-      instaboxHourlyUsd: next.prices.instabox,
+      changes: update,
+      defaultLimitUsd: DEFAULT_MONTHLY_LIMIT_USD,
       updatedBy: principal.userId,
       now,
     });
@@ -174,12 +170,11 @@ async function handleSpend(request: Request, options: IssueVmHttpOptions, now: n
       workspaceId,
       userId: principal.userId,
       action: "settings.issue_vm_spend",
-      subject: `Set issue VM spend: ${describeSpend(next)}`,
+      subject: `Set issue VM spend: ${JSON.stringify(update)}`,
       now,
     });
     return yield* issueVmSpendSteps(q, { workspaceId, at: now });
   });
-  if (typeof saved === "string") return json({ error: saved }, 400);
   return json(saved);
 }
 

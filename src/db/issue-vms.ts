@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gt, inArray, isNull, lt, max, notInArray, or } from "drizzle-orm";
+import { and, count, desc, eq, gt, isNull, lt, max, notInArray, or } from "drizzle-orm";
 import { type Q } from "./db";
 import { ulid } from "./ulid";
 
@@ -213,13 +213,12 @@ export function* activeIssueVmGrantLimitSteps(
   return row?.limit ?? null;
 }
 
-export function* openIssueVmAwakeSteps(q: Q, input: { issueVmId: string; now: number }) {
-  yield* q.exec(
-    q.orm
-      .insert(q.t.issueVmAwake)
-      .values({ id: ulid(input.now), issueVmId: input.issueVmId, startedAt: input.now })
-      .onConflictDoNothing(),
-  );
+export function* openIssueVmAwakeSteps(
+  q: Q,
+  { issueVmId, hourlyUsd, now }: { issueVmId: string; hourlyUsd: number | null; now: number },
+) {
+  const row = { id: ulid(now), issueVmId, startedAt: now, hourlyUsd };
+  yield* q.exec(q.orm.insert(q.t.issueVmAwake).values(row).onConflictDoNothing());
 }
 
 export function* closeIssueVmAwakeSteps(q: Q, input: { issueVmId: string; now: number }) {
@@ -234,18 +233,22 @@ export function* closeIssueVmAwakeSteps(q: Q, input: { issueVmId: string; now: n
 
 export function* issueVmAwakeIntervalsSteps(
   q: Q,
-  input: { workspaceId: string; providers: IssueVmProvider[]; from: number; to: number },
+  input: { workspaceId: string; from: number; to: number },
 ) {
   const { issueVmAwake: a, issueVm: v } = q.t;
   const rows = yield* q.all(
     q.orm
-      .select({ provider: v.provider, startedAt: a.startedAt, endedAt: a.endedAt })
+      .select({
+        provider: v.provider,
+        startedAt: a.startedAt,
+        endedAt: a.endedAt,
+        hourlyUsd: a.hourlyUsd,
+      })
       .from(a)
       .innerJoin(v, eq(v.id, a.issueVmId))
       .where(
         and(
           eq(v.workspaceId, input.workspaceId),
-          inArray(v.provider, input.providers),
           lt(a.startedAt, input.to),
           or(isNull(a.endedAt), gt(a.endedAt, input.from)),
         ),
@@ -262,29 +265,25 @@ export type IssueVmSpendSettings = {
 
 export function* issueVmSpendSettingsSteps(q: Q, workspaceId: string) {
   const { issueVmSpend: s } = q.t;
-  const row = yield* q.one(
-    q.orm
-      .select({
-        monthlyLimitUsd: s.monthlyLimitUsd,
-        boatHourlyUsd: s.boatHourlyUsd,
-        instaboxHourlyUsd: s.instaboxHourlyUsd,
-      })
-      .from(s)
-      .where(eq(s.workspaceId, workspaceId)),
-  );
+  const row = yield* q.one(q.orm.select().from(s).where(eq(s.workspaceId, workspaceId)));
   return (row ?? null) as IssueVmSpendSettings | null;
 }
 
 export function* saveIssueVmSpendSettingsSteps(
   q: Q,
-  input: IssueVmSpendSettings & { workspaceId: string; updatedBy: string; now: number },
+  input: {
+    workspaceId: string;
+    changes: Partial<IssueVmSpendSettings>;
+    defaultLimitUsd: number;
+    updatedBy: string;
+    now: number;
+  },
 ) {
-  const { now, ...row } = input;
-  const values = { ...row, updatedAt: now };
+  const set = { ...input.changes, updatedBy: input.updatedBy, updatedAt: input.now };
   yield* q.exec(
     q.orm
       .insert(q.t.issueVmSpend)
-      .values(values)
-      .onConflictDoUpdate({ target: q.t.issueVmSpend.workspaceId, set: values }),
+      .values({ workspaceId: input.workspaceId, monthlyLimitUsd: input.defaultLimitUsd, ...set })
+      .onConflictDoUpdate({ target: q.t.issueVmSpend.workspaceId, set }),
   );
 }

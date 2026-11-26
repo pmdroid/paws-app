@@ -80,6 +80,7 @@ export const issueVmAwake = pgTable(
       .references(() => issueVm.id),
     startedAt: bigint("started_at", { mode: "number" }).notNull(),
     endedAt: bigint("ended_at", { mode: "number" }),
+    hourlyUsd: doublePrecision("hourly_usd"),
   },
   (table) => [
     uniqueIndex("issue_vm_awake_open")
@@ -89,23 +90,13 @@ export const issueVmAwake = pgTable(
   ],
 );
 
-export const issueVmSpend = pgTable(
-  "issue_vm_spend",
-  {
-    workspaceId: text("workspace_id")
-      .primaryKey()
-      .references(() => workspace.id),
-    monthlyLimitUsd: doublePrecision("monthly_limit_usd").notNull(),
-    boatHourlyUsd: doublePrecision("boat_hourly_usd"),
-    instaboxHourlyUsd: doublePrecision("instabox_hourly_usd"),
-    updatedBy: text("updated_by").references(() => workspaceUser.id),
-    updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
-  },
-  () => [
-    check("issue_vm_spend_limit", sql`monthly_limit_usd >= 0`),
-    check(
-      "issue_vm_spend_prices",
-      sql`coalesce(boat_hourly_usd, 0) >= 0 AND coalesce(instabox_hourly_usd, 0) >= 0`,
-    ),
-  ],
-);
+export const issueVmSpend = pgTable("issue_vm_spend", {
+  workspaceId: text("workspace_id")
+    .primaryKey()
+    .references(() => workspace.id),
+  monthlyLimitUsd: doublePrecision("monthly_limit_usd").notNull(),
+  boatHourlyUsd: doublePrecision("boat_hourly_usd"),
+  instaboxHourlyUsd: doublePrecision("instabox_hourly_usd"),
+  updatedBy: text("updated_by").references(() => workspaceUser.id),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+});

@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import type { Db, IssueVmProvider, Q, WorkspaceRole } from "../src/db";
+import { eq } from "drizzle-orm";
+import type { Db, IssueVmProvider, WorkspaceRole } from "../src/db";
 import {
   handleIssueVmGrantRequest,
   issueVmAdmissionSteps,
@@ -10,7 +11,7 @@ import {
   recordIssueVmSteps,
   setIssueVmStateSteps,
 } from "../src/issue-vm";
-import { describePglite, seed, withoutForeignKeys, type PgliteTestDb } from "./pglite-fixtures";
+import { describePglite, withoutForeignKeys, type PgliteTestDb } from "./pglite-fixtures";
 
 const HOUR = 3_600_000;
 const NOV = Date.UTC(2026, 10, 1);
@@ -24,39 +25,8 @@ afterEach(async () => {
 async function connected(connect: () => Promise<PgliteTestDb>): Promise<Db> {
   const handle = await connect();
   opened.push(handle);
-  const { db } = handle;
-  await withoutForeignKeys(db);
-  const people: [string, WorkspaceRole][] = [
-    ["admin", "admin"],
-    ["ada", "member"],
-  ];
-  await seed(
-    db,
-    (q) =>
-      q.orm
-        .insert(q.t.workspace)
-        .values({ id: "acme", linearOrganizationId: "org", name: "Acme", createdAt: 0 }),
-    ...people.map(
-      ([id]) =>
-        (q: Q) =>
-          q.orm
-            .insert(q.t.workspaceUser)
-            .values({ id, linearUserId: `linear-${id}`, name: id, email: `${id}@acme.test` }),
-    ),
-    ...people.map(
-      ([id, role]) =>
-        (q: Q) =>
-          q.orm.insert(q.t.workspaceMember).values({
-            workspaceId: "acme",
-            userId: id,
-            role,
-            source: "linear",
-            active: 1,
-            checkedAt: 0,
-          }),
-    ),
-  );
-  return db;
+  await withoutForeignKeys(handle.db);
+  return handle.db;
 }
 
 function call(
@@ -120,18 +90,11 @@ describePglite((connect) => {
     const db = await connected(connect);
     const response = await call(db, "GET");
     expect(response?.status).toBe(200);
-    expect(await response!.json()).toEqual({
-      monthlyLimitUsd: 50,
-      prices: { boat: null, instabox: null },
-      month: "2026-11",
-      spentUsd: 0,
-    });
-    expect(await start(db, "boat", NOV)).toEqual({
-      ok: false,
-      reason: "no_price",
-      provider: "boat",
-      message: "No hourly price is set for boat issue VMs",
-    });
+    const body = { monthlyLimitUsd: 50, prices: { boat: null, instabox: null } };
+    expect(await response!.json()).toEqual({ ...body, month: "2026-11", spentUsd: 0 });
+    const message = "No hourly price is set for boat issue VMs";
+    const refused = { ok: false, reason: "no_price", provider: "boat", message } as const;
+    expect(await start(db, "boat", NOV)).toEqual(refused);
     expect(await wake(db, "instabox", NOV)).toMatchObject({ ok: false, reason: "no_price" });
     expect(await start(db, "host", NOV)).toEqual({ ok: true });
   });
@@ -164,12 +127,13 @@ describePglite((connect) => {
     expect(await wake(db, "instabox", at)).toEqual({ ok: true });
 
     await awake(db, "two", "boat", NOV + 3 * HOUR, NOV + 4 * HOUR);
+    const message = "Monthly issue VM spend limit reached ($4.00 of $4.00)";
     const refused = {
       ok: false,
       reason: "spend_limit",
       spentUsd: 4,
       limitUsd: 4,
-      message: "Monthly issue VM spend limit reached ($4.00 of $4.00)",
+      message,
     } as const;
     expect(await start(db, "boat", at)).toEqual(refused);
     expect(await start(db, "instabox", at)).toEqual(refused);
@@ -178,12 +142,7 @@ describePglite((connect) => {
     expect(await wake(db, "host", at)).toEqual({ ok: true });
 
     const raised = await call(db, "PUT", { body: { monthlyLimitUsd: 10 }, at });
-    expect(await raised!.json()).toEqual({
-      monthlyLimitUsd: 10,
-      prices: { boat: 2, instabox: 1 },
-      month: "2026-11",
-      spentUsd: 4,
-    });
+    expect(await raised!.json()).toMatchObject({ monthlyLimitUsd: 10, spentUsd: 4 });
     expect(await start(db, "boat", at)).toEqual({ ok: true });
     expect(await wake(db, "boat", at)).toEqual({ ok: true });
   });
@@ -199,12 +158,59 @@ describePglite((connect) => {
       { monthlyLimitUsd: null },
       { prices: { boat: "1" } },
       { prices: { "exe-dev": 1 } },
+      { prices: { boat: null } },
+      {},
     ])
       expect((await call(db, "PUT", { body }))?.status).toBe(400);
     expect((await call(db, "POST", { body: {} }))?.status).toBe(405);
-    const cleared = await call(db, "PUT", { body: { prices: { boat: 3 } } });
-    expect(await cleared!.json()).toMatchObject({ prices: { boat: 3, instabox: null } });
-    const unpriced = await call(db, "PUT", { body: { prices: { boat: null } } });
-    expect(await unpriced!.json()).toMatchObject({ monthlyLimitUsd: 50, prices: { boat: null } });
+    const priced = await call(db, "PUT", { body: { prices: { boat: 3 } } });
+    expect(await priced!.json()).toMatchObject({
+      monthlyLimitUsd: 50,
+      prices: { boat: 3, instabox: null },
+    });
+    await call(db, "PUT", { body: { monthlyLimitUsd: 20 } });
+    const both = await call(db, "PUT", { body: { prices: { instabox: 1 } } });
+    expect(await both!.json()).toMatchObject({
+      monthlyLimitUsd: 20,
+      prices: { boat: 3, instabox: 1 },
+    });
+  });
+
+  test("an awake interval keeps the price it started with", async () => {
+    const db = await connected(connect);
+    await call(db, "PUT", { body: { monthlyLimitUsd: 4, prices: { boat: 2, instabox: 1 } } });
+    await awake(db, "one", "boat", NOV, NOV + 2 * HOUR);
+    await call(db, "PUT", { body: { prices: { boat: 0 } } });
+    expect((await spent(db, NOV + 3 * HOUR)).spentUsd).toBe(4);
+    expect(await start(db, "instabox", NOV + 3 * HOUR)).toMatchObject({ reason: "spend_limit" });
+  });
+
+  test("spend that adds up to the limit reaches it despite floating point", async () => {
+    const db = await connected(connect);
+    await call(db, "PUT", { body: { monthlyLimitUsd: 1, prices: { boat: 0.1 } } });
+    for (let hour = 0; hour < 10; hour += 1)
+      await awake(db, `vm-${hour}`, "boat", NOV + hour * HOUR, NOV + (hour + 1) * HOUR);
+    expect((await spent(db, NOV + 20 * HOUR)).spentUsd).toBe(1);
+    expect(await wake(db, "boat", NOV + 20 * HOUR)).toMatchObject({ reason: "spend_limit" });
+  });
+
+  test("a VM being deleted keeps costing until it is deleted, and a retried delete closes it", async () => {
+    const db = await connected(connect);
+    await call(db, "PUT", { body: { prices: { boat: 1 } } });
+    await awake(db, "gone", "boat", NOV);
+    const move = (state: "deleting" | "deleted", now: number) =>
+      db.run((q) => setIssueVmStateSteps(q, { id: "gone", state, now }));
+    expect(await move("deleting", NOV + HOUR)).toEqual({ ok: true });
+    expect((await spent(db, NOV + 3 * HOUR)).spentUsd).toBe(3);
+    await db.run(function* (q) {
+      yield* q.exec(
+        q.orm
+          .update(q.t.issueVm)
+          .set({ state: "deleted", deletedAt: NOV + 3 * HOUR })
+          .where(eq(q.t.issueVm.id, "gone")),
+      );
+    });
+    expect(await move("deleted", NOV + 4 * HOUR)).toMatchObject({ ok: false, reason: "ended" });
+    expect((await spent(db, NOV + 10 * HOUR)).spentUsd).toBe(4);
   });
 });

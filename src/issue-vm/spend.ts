@@ -10,6 +10,7 @@ export const PRICED_ISSUE_VM_PROVIDERS = ["boat", "instabox"] as const;
 export type PricedIssueVmProvider = (typeof PRICED_ISSUE_VM_PROVIDERS)[number];
 
 const HOUR = 3_600_000;
+const MICRO = 1_000_000;
 
 export type IssueVmSpendLimit = {
   monthlyLimitUsd: number;
@@ -23,19 +24,15 @@ export type IssueVmSpendCheck =
   | { ok: false; reason: "no_price"; provider: PricedIssueVmProvider; message: string }
   | { ok: false; reason: "spend_limit"; spentUsd: number; limitUsd: number; message: string };
 
-function priced(provider: IssueVmProvider): provider is PricedIssueVmProvider {
+export function priced(provider: IssueVmProvider): provider is PricedIssueVmProvider {
   return (PRICED_ISSUE_VM_PROVIDERS as readonly string[]).includes(provider);
 }
 
 function monthBounds(at: number) {
   const date = new Date(at);
-  const year = date.getUTCFullYear();
-  const month = date.getUTCMonth();
-  return {
-    month: `${year}-${String(month + 1).padStart(2, "0")}`,
-    from: Date.UTC(year, month, 1),
-    to: Date.UTC(year, month + 1, 1),
-  };
+  const from = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
+  const to = Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1);
+  return { month: new Date(from).toISOString().slice(0, 7), from, to };
 }
 
 export function* issueVmSpendLimitSteps(q: Q, workspaceId: string) {
@@ -46,24 +43,21 @@ export function* issueVmSpendLimitSteps(q: Q, workspaceId: string) {
   } satisfies IssueVmSpendLimit;
 }
 
-export function* issueVmSpendSteps(q: Q, input: { workspaceId: string; at: number }) {
-  const limit = yield* issueVmSpendLimitSteps(q, input.workspaceId);
-  const { month, from, to } = monthBounds(input.at);
-  const until = Math.min(to, input.at);
-  const intervals = yield* issueVmAwakeIntervalsSteps(q, {
-    workspaceId: input.workspaceId,
-    providers: [...PRICED_ISSUE_VM_PROVIDERS],
-    from,
-    to: until,
-  });
+export function* issueVmSpendSteps(q: Q, { workspaceId, at }: { workspaceId: string; at: number }) {
+  const limit = yield* issueVmSpendLimitSteps(q, workspaceId);
+  const { month, from, to } = monthBounds(at);
+  const until = Math.min(to, at);
+  const intervals = yield* issueVmAwakeIntervalsSteps(q, { workspaceId, from, to: until });
   let spentUsd = 0;
   for (const interval of intervals) {
     if (!priced(interval.provider)) continue;
     const start = Math.max(interval.startedAt, from);
     const end = Math.min(interval.endedAt ?? until, until);
-    if (end > start) spentUsd += ((end - start) / HOUR) * (limit.prices[interval.provider] ?? 0);
+    const price = interval.hourlyUsd ?? limit.prices[interval.provider] ?? 0;
+    if (end > start) spentUsd += ((end - start) / HOUR) * price;
   }
-  return { ...limit, month, spentUsd } satisfies IssueVmSpend;
+  const rounded = Math.round(spentUsd * MICRO) / MICRO;
+  return { ...limit, month, spentUsd: rounded } satisfies IssueVmSpend;
 }
 
 const dollars = (value: number) => `$${value.toFixed(2)}`;

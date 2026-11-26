@@ -1,5 +1,5 @@
 {
-  "id": "ce9b052c-fc62-4aeb-bb5b-48c46fca0d4f",
+  "id": "4ae917bb-8be2-41c7-8369-b7f20e79a191",
   "prevId": "17418a05-a36f-4217-baa6-1853b85671c5",
   "version": "7",
   "dialect": "postgresql",
@@ -21372,6 +21372,12 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": false
+        },
+        "hourly_usd": {
+          "name": "hourly_usd",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -21605,16 +21611,7 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "issue_vm_spend_limit": {
-          "name": "issue_vm_spend_limit",
-          "value": "monthly_limit_usd >= 0"
-        },
-        "issue_vm_spend_prices": {
-          "name": "issue_vm_spend_prices",
-          "value": "coalesce(boat_hourly_usd, 0) >= 0 AND coalesce(instabox_hourly_usd, 0) >= 0"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.vm_host": {

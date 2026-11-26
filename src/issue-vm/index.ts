@@ -7,7 +7,6 @@ export {
   setIssueVmStateSteps,
 } from "./records";
 export { DEFAULT_MONTHLY_LIMIT_USD, issueVmSpendSteps } from "./spend";
-export type { IssueVmSpend, IssueVmSpendCheck, IssueVmSpendLimit } from "./spend";
 export type { IssueVmStateChange } from "./records";
 export { handleIssueVmGrantRequest, isIssueVmGrantPath } from "./http";
 export type { IssueVmGrantView, IssueVmHttpOptions, IssueVmMemberView } from "./http";
