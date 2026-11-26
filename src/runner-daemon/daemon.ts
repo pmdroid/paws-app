@@ -1035,15 +1035,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
             .regex(/^[A-Za-z0-9_-]{16,256}$/)
             .nullable(),
         })
-        .parse(
-          await authenticated("/v1/issue-vms/enrollment", "POST", { id }).catch(
-            (error: unknown) => {
-              if (error instanceof RunnerRequestError && error.status === 404)
-                return { token: null };
-              throw error;
-            },
-          ),
-        );
+        .parse(await authenticated("/v1/issue-vms/enrollment", "POST", { id }));
     },
     async postStorageCleanup(result: RunnerStorageCleanupResult) {
       const body = RunnerStorageCleanupResultSchema.parse(result);
