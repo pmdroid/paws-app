@@ -97,6 +97,7 @@ export {
 } from "./lifecycle";
 export { accountAgentEnv, accountHomeEnv, isBlockedEnv, minimalAgentEnv } from "./env";
 export { executeItem } from "./executor";
+export { readOpenCodeCredential, writeOpenCodeCredential } from "./opencode-turn";
 export { createFakeAcpRunner } from "./fake";
 export type { FakeAcpRunner } from "./fake";
 export type { PolicyFilesLoad } from "./ask-team";
