@@ -244,10 +244,6 @@ export function runnerAgentCredentials(
     join(runnerAccountHome(agentHome, account), RETURNED, ExecutionIdSchema.parse(executionId));
   return {
     write(account, agent, written) {
-      if (tmpfs && agent === "opencode")
-        throw new RunnerAccountHomeError(
-          "OpenCode sign-ins are refused on an issue VM: OpenCode keeps its token in opencode.db",
-        );
       const home = openRunnerAccountHome(agentHome, account, agent, { signIn: true, owners });
       if (tmpfs && !onTmpfs(dirname(home)))
         throw new RunnerAccountHomeError("Agent sign-ins on an issue VM need a tmpfs account root");

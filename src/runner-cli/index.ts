@@ -266,7 +266,8 @@ export async function runRunnerCli(
     const [operation, ...args] = argv;
     const ids = accounts();
     abort.signal.throwIfAborted();
-    if (operation === "worker" || operation === "daemon") process.umask(SHARED_UMASK);
+    if (operation === "worker" || operation === "daemon" || operation === "sleep-check")
+      process.umask(SHARED_UMASK);
     if (operation === "worker") {
       if (
         args[0] !== "--execution-id" ||

@@ -51,8 +51,10 @@ import { executeRetroCommand, type RetroWorkerResult } from "./retro";
 import { missingToolchainQuestion } from "./toolchain";
 import {
   collectOpenCodeCredential,
+  markOpenCodePurge,
   migrateOpenCodeDatabase,
   placeOpenCodeCredential,
+  purgeOpenCodeCredential,
 } from "./opencode-credential";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -196,6 +198,7 @@ import {
   type RestoredAgentSession,
 } from "./session-restore";
 
+export { openCodeSignInsLeft } from "./opencode-credential";
 export {
   compactAcpEvent,
   SESSION_BUNDLE_FILE,
@@ -722,14 +725,27 @@ function replaceOutputFile(
   }
 }
 
-function returnSealed(
+function returnAccountCredentials(
   options: { outputDirectory: string; resultsGid: number },
   home: string,
+  agent: RunnerCodingAgent,
   executionId: string,
-  sealed: string,
+  recipient: string,
+  placedOpenCode: string | null,
 ): void {
-  if (onTmpfs(home)) writeReturnedCredentials(home, executionId, sealed);
-  else replaceOutputFile(options, "credentials.json", sealed);
+  if (placedOpenCode !== null) collectOpenCodeCredential(home, placedOpenCode);
+  const tmpfs = onTmpfs(home);
+  returnRunnerAgentCredentials(home, agent, executionId, (files) => {
+    const sealed = sealForRunner(
+      recipient,
+      JSON.stringify(files),
+      agentCredentialReturnContext(executionId),
+    );
+    if (!tmpfs) return replaceOutputFile(options, "credentials.json", sealed);
+    writeReturnedCredentials(home, executionId, sealed);
+    if (agent === "opencode") markOpenCodePurge(home, executionId, files);
+  });
+  if (tmpfs && agent === "opencode") purgeOpenCodeCredential(home, executionId);
 }
 
 function createJournal(options: { outputDirectory: string; resultsGid: number }): number {
@@ -1143,18 +1159,13 @@ export async function executeRunnerCommand(
     if (credentialsReturned || !recipient) return;
     credentialsReturned = true;
     try {
-      if (placedOpenCode !== null) collectOpenCodeCredential(home, placedOpenCode);
-      returnRunnerAgentCredentials(home, binding.agent, job.executionId, (files) =>
-        returnSealed(
-          options,
-          home,
-          job.executionId,
-          sealForRunner(
-            recipient,
-            JSON.stringify(files),
-            agentCredentialReturnContext(job.executionId),
-          ),
-        ),
+      returnAccountCredentials(
+        options,
+        home,
+        binding.agent,
+        job.executionId,
+        recipient,
+        placedOpenCode,
       );
     } catch (error) {
       journalCaught(
@@ -2971,18 +2982,14 @@ export async function runRunnerWorker(options: {
       executionId: options.executionId,
       ...(recipient && command.account
         ? {
-            returnCredentials: (home: string) =>
-              returnRunnerAgentCredentials(home, command.profile.agent, job.executionId, (files) =>
-                returnSealed(
-                  { outputDirectory, resultsGid: options.results.resultsGid },
-                  home,
-                  job.executionId,
-                  sealForRunner(
-                    recipient,
-                    JSON.stringify(files),
-                    agentCredentialReturnContext(job.executionId),
-                  ),
-                ),
+            returnCredentials: (home: string, placed: string | null) =>
+              returnAccountCredentials(
+                { outputDirectory, resultsGid: options.results.resultsGid },
+                home,
+                command.profile.agent,
+                job.executionId,
+                recipient,
+                placed,
               ),
           }
         : {}),

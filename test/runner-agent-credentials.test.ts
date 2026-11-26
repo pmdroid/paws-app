@@ -638,13 +638,20 @@ test.skipIf(!shmTmpfs)(
   },
 );
 
-test("an issue VM refuses OpenCode sign-ins", () => {
-  const home = mkdtempSync(join(tmpdir(), "paws-issue-vm-opencode-"));
+test.skipIf(!shmTmpfs)("an issue VM accepts OpenCode sign-ins into its tmpfs", () => {
+  const home = mkdtempSync("/dev/shm/paws-issue-vm-opencode-");
   try {
-    expect(() =>
-      runnerAgentCredentials(home, undefined, true).write(account, "opencode", stored),
-    ).toThrow("OpenCode sign-ins are refused on an issue VM");
-    expect(existsSync(join(home, ".paws-accounts"))).toBe(false);
+    chmodSync(home, 0o770);
+    const opencode = [
+      {
+        path: ".paws/opencode-credential.json",
+        data: Buffer.from('{"type":"oauth","refresh":"r1"}').toString("base64"),
+      },
+    ];
+    runnerAgentCredentials(home, undefined, true).write(account, "opencode", opencode);
+    expect(runnerSleepLeftovers(home, join(home, "store"))).toEqual([
+      "binding-1/.paws/opencode-credential.json",
+    ]);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

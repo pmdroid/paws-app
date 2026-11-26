@@ -1,6 +1,14 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { returnRunnerAgentCredentials } from "../runner-execution";
@@ -8,8 +16,12 @@ import type { RunnerAgentCredentialFiles } from "../runner-protocol";
 import {
   OPENCODE_CREDENTIAL_FILE,
   OPENCODE_DATABASE,
+  OPENCODE_PURGE,
   collectOpenCodeCredential,
+  markOpenCodePurge,
+  openCodeSignInsLeft,
   placeOpenCodeCredential,
+  purgeOpenCodeCredential,
 } from "./opencode-credential";
 
 const roots: string[] = [];
@@ -40,6 +52,7 @@ function migrate(root: string, calls: string[] = []) {
     calls.push(root);
     mkdirSync(dirname(join(root, OPENCODE_DATABASE)), { recursive: true });
     const db = new Database(join(root, OPENCODE_DATABASE));
+    db.run("PRAGMA journal_mode = WAL");
     db.run("CREATE TABLE `session` (`id` text PRIMARY KEY)");
     db.run(`CREATE TABLE \`credential\` (
       \`id\` text PRIMARY KEY,
@@ -159,4 +172,79 @@ test("stops when the CLI does not create its database", async () => {
   await expect(placeOpenCodeCredential(root, "opencode", async () => {})).rejects.toThrow(
     "OpenCode did not create its database",
   );
+});
+
+const EXECUTION = "01JEXECVT10N00000000000000";
+
+function accountHome(): { agentHome: string; root: string } {
+  const agentHome = mkdtempSync(join(tmpdir(), "paws-opencode-purge-"));
+  roots.push(agentHome);
+  const root = join(agentHome, ".paws-accounts", "binding-1");
+  mkdirSync(dirname(join(root, OPENCODE_CREDENTIAL_FILE)), { recursive: true });
+  writeFileSync(join(root, OPENCODE_CREDENTIAL_FILE), credential);
+  return { agentHome, root };
+}
+
+function returnAndMark(root: string, execution = EXECUTION) {
+  returnRunnerAgentCredentials(root, "opencode", execution, (files) =>
+    markOpenCodePurge(root, execution, files),
+  );
+}
+
+function leaked(root: string, secret: string): string[] {
+  const folder = dirname(join(root, OPENCODE_DATABASE));
+  return readdirSync(folder).filter((name) =>
+    readFileSync(join(folder, name), "latin1").includes(secret),
+  );
+}
+
+test("after the return, the returned sign-in leaves opencode.db and its journals", async () => {
+  const { agentHome, root } = accountHome();
+  const placed = await placeOpenCodeCredential(root, "opencode", migrate(root));
+  insert(root, "cred_xai", "xai", '{"type":"key","key":"k"}');
+  const writer = new Database(join(root, OPENCODE_DATABASE));
+  writer.run("PRAGMA wal_autocheckpoint = 0");
+  const refreshed = JSON.stringify({ ...JSON.parse(credential), access: "access-2" });
+  writer.run("UPDATE credential SET value = ? WHERE integration_id = 'opencode'", [refreshed]);
+  expect(collectOpenCodeCredential(root, placed!)).toBe(true);
+  returnAndMark(root);
+  expect(leaked(root, "access-2")).toContain("opencode.db-wal");
+  expect(purgeOpenCodeCredential(root)).toBe(true);
+  writer.close();
+  expect(rows(root).map((row) => row.integration_id)).toEqual(["xai"]);
+  expect(readdirSync(join(root, OPENCODE_PURGE))).toEqual([]);
+  expect(leaked(root, "access-")).toEqual([]);
+  expect(leaked(root, "refresh-1")).toEqual([]);
+  expect(openCodeSignInsLeft(agentHome)).toEqual([]);
+});
+
+test("a purge deletes only the credential it returned, never a newer one", async () => {
+  const { agentHome, root } = accountHome();
+  await placeOpenCodeCredential(root, "opencode", migrate(root));
+  returnAndMark(root);
+  const newer = JSON.stringify({ ...JSON.parse(credential), access: "access-3" });
+  writeFileSync(join(root, OPENCODE_CREDENTIAL_FILE), newer);
+  await placeOpenCodeCredential(root, "opencode", migrate(root));
+  expect(purgeOpenCodeCredential(root)).toBe(true);
+  expect(rows(root).map((row) => row.value)).toEqual([newer]);
+  expect(openCodeSignInsLeft(agentHome)).toEqual([
+    `binding-1/${OPENCODE_DATABASE} holds 1 OpenCode sign-ins`,
+  ]);
+});
+
+test("a purge waits for other turns on the account and sleep-check finishes it", async () => {
+  const { agentHome, root } = accountHome();
+  await placeOpenCodeCredential(root, "opencode", migrate(root));
+  returnAndMark(root);
+  const other = "01JEXECVT10N00000000000001";
+  mkdirSync(join(root, ".paws-active"));
+  writeFileSync(join(root, ".paws-active", other), '{"scope":"0123456789abcdef"}');
+  expect(purgeOpenCodeCredential(root, EXECUTION)).toBe(false);
+  expect(openCodeSignInsLeft(agentHome)).toEqual([
+    `binding-1/${OPENCODE_PURGE}/${EXECUTION}`,
+    `binding-1/${OPENCODE_DATABASE} holds 1 OpenCode sign-ins`,
+  ]);
+  rmSync(join(root, ".paws-active", other));
+  expect(openCodeSignInsLeft(agentHome)).toEqual([]);
+  expect(rows(root)).toEqual([]);
 });

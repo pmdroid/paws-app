@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -367,4 +368,36 @@ test("a runner restart during the turn keeps the command identity", async () => 
   expect(result).toMatchObject({ executionId, commandId: "retro-command", outcome: "error" });
   expect(existsSync(run.recorded)).toBe(false);
   expect((await executeRetroCommand(run.options)).result).toEqual(result);
+});
+
+test("an OpenCode retro installs its sign-in into opencode.db and hands it back after the turn", async () => {
+  const opencode = { accountId: "opencode-account", bindingId: "opencode-binding" };
+  const retro = command({
+    profile: { agent: "opencode", model: "gpt-6-astra", effort: "high" },
+    account: opencode,
+  });
+  const run = options([text(reply), { type: "end" }], { command: retro });
+  const accountHome = openRunnerAccountHome(run.options.home, opencode, "opencode", {
+    signIn: true,
+  });
+  markRunnerAccountSignedIn(accountHome, opencode, "opencode");
+  mkdirSync(join(accountHome, ".paws"), { recursive: true });
+  writeFileSync(join(accountHome, ".paws/opencode-credential.json"), '{"type":"oauth"}');
+  mkdirSync(join(accountHome, ".local/share/opencode"), { recursive: true });
+  const db = new Database(join(accountHome, ".local/share/opencode/opencode.db"));
+  db.run(
+    "CREATE TABLE credential (id text PRIMARY KEY, integration_id text, label text NOT NULL, value text NOT NULL, active integer, time_created integer NOT NULL, time_updated integer NOT NULL)",
+  );
+  db.close();
+  const returned: [string, string | null][] = [];
+  await executeRetroCommand({
+    ...run.options,
+    returnCredentials: (home, placed) => returned.push([home, placed]),
+  });
+  expect(returned).toEqual([[accountHome, '{"type":"oauth"}']]);
+  const installed = new Database(join(accountHome, ".local/share/opencode/opencode.db"));
+  expect(installed.query("SELECT value FROM credential").all()).toEqual([
+    { value: '{"type":"oauth"}' },
+  ]);
+  installed.close();
 });

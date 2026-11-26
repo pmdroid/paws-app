@@ -19,6 +19,7 @@ import { scrubText } from "../closeout-spec";
 import {
   accountHomeEnv,
   minimalAgentEnv,
+  resolveOpencodeCommand,
   runAgent,
   type RunAgentOptions,
   type RunAgentResult,
@@ -32,6 +33,7 @@ import {
   type RunnerAccountOwners,
 } from "../runner-execution";
 import { withoutRunnerBin } from "../runner-mise";
+import { migrateOpenCodeDatabase, placeOpenCodeCredential } from "./opencode-credential";
 import {
   RUNNER_INPUT_CHUNK_BYTES,
   RUNNER_RETRO_CAPABILITY,
@@ -192,7 +194,7 @@ export interface RetroWorkerOptions {
   owners?: RunnerAccountOwners;
   signal?: AbortSignal;
   launch?: Pick<RunAgentOptions, "command" | "args" | "env">;
-  returnCredentials?: (home: string) => void;
+  returnCredentials?: (home: string, placedOpenCode: string | null) => void;
   executionLimitMs?: number;
   now?: () => number;
 }
@@ -352,6 +354,20 @@ export async function executeRetroCommand(options: RetroWorkerOptions): Promise<
       ...accountHomeEnv(home, runnerAccountCache(options.home, home)),
     });
     env.PATH = withoutRunnerBin(env.PATH);
+    let placed: string | null;
+    try {
+      placed = await placeOpenCodeCredential(home, command.profile.agent, () =>
+        migrateOpenCodeDatabase(resolveOpencodeCommand().command, home, env),
+      );
+    } catch (error) {
+      journalCaught(error, "runner-worker.executeRetroCommand.placeOpenCodeCredential", null);
+      options.returnCredentials?.(home, null);
+      return finish({
+        outcome: "error",
+        activeMs: 0,
+        errorMessage: "The runner could not install the OpenCode sign-in.",
+      });
+    }
     const limitMs = Math.min(
       command.executionLimit.activeMinutes * 60_000,
       options.executionLimitMs ?? Number.MAX_SAFE_INTEGER,
@@ -404,7 +420,7 @@ export async function executeRetroCommand(options: RetroWorkerOptions): Promise<
       };
     }
     try {
-      options.returnCredentials?.(home);
+      options.returnCredentials?.(home, placed);
     } catch (error) {
       journalCaught(error, "runner-worker.executeRetroCommand.returnCredentials", null);
     }
