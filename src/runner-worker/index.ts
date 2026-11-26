@@ -1752,13 +1752,7 @@ export async function executeRunnerCommand(
       role: command.type === "review" ? "reviewer" : "implementer",
       readOnly: command.type === "task" ? command.purpose !== "artifact" : command.type !== "run",
       ...(probeRoot ? { writableRoot: join(probeRoot, ".agents", "probes") } : {}),
-      ...(probeHelper
-        ? {
-            sandbox: {
-              writable: probeRoot ? [{ root: probeRoot, relative: ".agents/probes" }] : [],
-            },
-          }
-        : {}),
+      ...(probeHelper ? { sandbox: probeRoot ? { probes: probeRoot } : {} } : {}),
       checkpoint: command.type === "run" && command.checkpoint !== false,
       ...(command.type === "run" && command.closeoutRulesFirst ? { closeoutRulesFirst: true } : {}),
       ...(command.type === "run" && command.closeoutFocus

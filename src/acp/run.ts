@@ -484,6 +484,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           30_000,
           phaseSignal,
         );
+        sandboxed?.started();
         const auth = summarizeAuth(initialized as InitializeResponse);
         await emit({ type: "auth_checked", role: options.role, auth });
         assertRunning();

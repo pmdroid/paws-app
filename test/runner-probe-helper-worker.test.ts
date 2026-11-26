@@ -109,7 +109,10 @@ async function run(
       env: { PATH: "/usr/bin:/bin" },
     },
   });
-  const calls = existsSync(recorded) ? JSON.parse(readFileSync(recorded, "utf8")) : {};
+  const glob = new Bun.Glob(".paws/runs/*/sessions/agent.json");
+  const turn = [...glob.scanSync({ cwd: join(root, "work"), dot: true })][0];
+  const calls = turn ? JSON.parse(readFileSync(join(root, "work", turn), "utf8")) : {};
+  expect(existsSync(recorded)).toBe(false);
   return { result, calls, checkout, agentHome };
 }
 
@@ -172,6 +175,6 @@ test.skipIf(!sandbox)(
 
 test("a probe_write checkout whose .agents is a link is refused before the agent starts", async () => {
   await expect(run(write, () => [end], { link: true })).rejects.toThrow(
-    "A sandbox writable path is not a plain directory",
+    "A sandbox path is not a plain directory",
   );
 });

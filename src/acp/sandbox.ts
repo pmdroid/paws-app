@@ -7,7 +7,7 @@ import type { AgentProfile } from "../config";
 type AgentName = AgentProfile["agent"];
 
 export interface AgentSandbox {
-  writable: readonly { root: string; relative: string }[];
+  probes?: string;
 }
 
 const SESSION_DIRECTORIES: Record<AgentName, string> = {
@@ -19,8 +19,7 @@ const SESSION_DIRECTORIES: Record<AgentName, string> = {
 
 const userEnv = () => ({
   PATH: "/usr/bin:/bin",
-  LANG: "C",
-  XDG_RUNTIME_DIR: `/run/user/${process.getuid?.() ?? 0}`,
+  XDG_RUNTIME_DIR: `/run/user/${process.getuid!()}`,
 });
 
 function plainDirectory(root: string, relative: string): string {
@@ -29,8 +28,7 @@ function plainDirectory(root: string, relative: string): string {
     path = join(path, part);
     const info = lstatSync(path, { throwIfNoEntry: false });
     if (!info) mkdirSync(path, { mode: 0o700 });
-    else if (!info.isDirectory())
-      throw new Error("A sandbox writable path is not a plain directory");
+    else if (!info.isDirectory()) throw new Error("A sandbox path is not a plain directory");
   }
   if (!/^\/[A-Za-z0-9._/@+-]*$/.test(path)) throw new Error("Unsafe sandbox path");
   return path;
@@ -46,14 +44,15 @@ export function sandboxedLaunch(input: {
   home: string;
   sandbox: AgentSandbox;
 }) {
-  const writable = [
-    { root: input.scratch, relative: "" },
-    { root: input.home, relative: SESSION_DIRECTORIES[input.agent] },
-    ...input.sandbox.writable,
-  ].map(({ root, relative }) => plainDirectory(root, relative));
+  const { probes } = input.sandbox;
+  const writable = [plainDirectory(input.scratch, "")];
+  if (probes) writable.push(plainDirectory(probes, ".agents/probes"));
+  const sessions = plainDirectory(input.home, SESSION_DIRECTORIES[input.agent]);
+  const turnSessions = plainDirectory(input.scratch, "sessions");
   const unit = `paws-helper-${randomUUID()}.service`;
-  const envFile = join(writable[0]!, `${unit}.env`);
-  const lines = Object.entries(input.env).map(([key, value]) => {
+  const envFile = join(userEnv().XDG_RUNTIME_DIR, `${unit}.env`);
+  const passed = Object.entries(input.env).filter(([key]) => key !== "DOCKER_HOST");
+  const lines = passed.map(([key, value]) => {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || /[\0\n\r]/.test(value))
       throw new Error("Agent environment is not safe for a sandbox");
     return `${key}="${value.replace(/[\\"]/g, "\\$&")}"\n`;
@@ -64,7 +63,8 @@ export function sandboxedLaunch(input: {
     "ProtectHome=read-only",
     "PrivateTmp=yes",
     "NoNewPrivileges=yes",
-    "InaccessiblePaths=/run/user",
+    "InaccessiblePaths=/run/user -/run/paws-docker -/run/paws-agent-docker -/run/docker.sock",
+    `BindPaths=${turnSessions}:${sessions}`,
     "RuntimeMaxSec=900",
     `EnvironmentFile=${envFile}`,
     ...writable.map((path) => `ReadWritePaths=${path}`),
@@ -81,6 +81,7 @@ export function sandboxedLaunch(input: {
       ...input.args,
     ],
     env: userEnv(),
+    started: () => rmSync(envFile, { force: true }),
     cleanup() {
       rmSync(envFile, { force: true });
       spawnSync("/usr/bin/systemctl", ["--user", "stop", unit], {
