@@ -409,11 +409,23 @@ export function questionEffects(
         return;
       }
       if (question.reason === REVIEWER_MODEL_REASON) {
-        if (!/^\s*stop\s*$/i.test(question.answer ?? ""))
+        const offered = question.options.map((o) => (typeof o === "string" ? o : o.value));
+        const answer = (question.answer ?? "").trim().toLowerCase();
+        const chosen = offered.find((option) => option.toLowerCase() === answer);
+        if (chosen && chosen !== "Stop")
           return yield* verifyAgainSteps(q, question, { now: input.now, key: "reviewer-model" });
         yield* consumeTurn(q, question);
         const item = yield* getWorkItemSteps(q, question.itemId);
-        if (item?.state === "awaiting_input")
+        if (item?.state !== "awaiting_input") return;
+        if (!chosen)
+          yield* askSteps(
+            q,
+            { itemId: item.id, runId: item.currentRunId, sessionId: question.sessionId },
+            "runner-wait",
+            `Reply with one of the options. ${question.body}`,
+            { options: offered, reason: REVIEWER_MODEL_REASON, now: input.now },
+          );
+        else
           yield* failWorkItemSteps(
             q,
             item,

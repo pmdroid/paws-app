@@ -9,7 +9,6 @@ import { JobLoop, OutboxDispatcher } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
 import { questionEffects } from "../src/loop/question-effects";
-import { reviewerModelAlternatives } from "../src/loop/runner-wait";
 import { answerSteps } from "../src/questions";
 import * as h from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
@@ -121,15 +120,3 @@ for (const reviewerModel of ["implemented", "gpt-other"])
       await layout.cleanup();
     }
   }, 120_000);
-
-test("an unset reviewer model matches only when every runner's default is the implementation", () => {
-  const runner = { agent: "codex", resolvedModel: "same", catalog: null };
-  const other = { agent: "claude", resolvedModel: "opus", catalog: '{"models":[{"id":"opus"}]}' };
-  expect(reviewerModelAlternatives("same", { agent: "codex" }, [runner, other])).toEqual([
-    "claude opus",
-  ]);
-  const mixed = [runner, { ...runner, resolvedModel: "newer" }];
-  expect(reviewerModelAlternatives("same", { agent: "codex" }, mixed)).toBeNull();
-  expect(reviewerModelAlternatives("same", { agent: "codex" }, [])).toBeNull();
-  expect(reviewerModelAlternatives("same", { agent: "codex", model: "x" }, [runner])).toBeNull();
-});

@@ -11458,14 +11458,21 @@ export class Orchestrator {
 
   private async profileSnapshot(runId: string): Promise<AgentProfiles> {
     const profiles = await this.storedProfiles(runId);
-    const answer = await this.store.run(function* (q) {
+    const { answer, implemented } = await this.store.run(function* (q) {
       const itemId = (yield* getRunSteps(q, runId))?.itemId;
-      return itemId ? yield* answeredItemQuestionSteps(q, itemId, REVIEWER_MODEL_REASON) : null;
+      if (!itemId) return { answer: null, implemented: null };
+      const chosen = yield* answeredItemQuestionSteps(q, itemId, REVIEWER_MODEL_REASON);
+      return {
+        answer: chosen,
+        implemented: (yield* lastSuccessfulImplementationSteps(q, itemId))?.model,
+      };
     });
+    const { reviewerFallback, ...rest } = profiles;
+    const kept = implemented && reviewerFallback?.model === implemented ? rest : profiles;
     const [agent, model] = (answer ?? "").split(" ") as [AgentProfile["agent"], string?];
-    if (!model) return profiles;
-    const kept = agent === profiles.reviewer.agent ? profiles.reviewer : {};
-    return { ...profiles, reviewer: { ...kept, agent, model } };
+    if (!model) return kept;
+    const same = agent === profiles.reviewer.agent ? profiles.reviewer : {};
+    return { ...kept, reviewer: { ...same, agent, model } };
   }
 
   private async storedProfiles(runId: string): Promise<AgentProfiles> {

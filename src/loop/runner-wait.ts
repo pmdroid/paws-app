@@ -11,22 +11,14 @@ export const AGENT_HUNG_RETRY = "Retry";
 export const AGENT_HUNG_STOP = "Stop";
 export const REVIEWER_MODEL_REASON = "reviewer_model_conflict";
 
-export type ReviewerRunner = {
-  agent: string;
-  resolvedModel: string | null;
-  catalog: string | null;
-};
+export type ReviewerRunner = { agent: string; catalog: string | null };
 
 export function reviewerModelAlternatives(
   implementation: string,
   reviewer: { agent: string; model?: string | null },
   runners: readonly ReviewerRunner[],
 ): string[] | null {
-  const defaults = runners.filter((runner) => runner.agent === reviewer.agent);
-  const equal = reviewer.model
-    ? reviewer.model === implementation
-    : defaults.length > 0 && defaults.every((runner) => runner.resolvedModel === implementation);
-  if (!equal) return null;
+  if (reviewer.model !== implementation) return null;
   const choices = new Set<string>();
   for (const { agent, catalog } of runners)
     for (const { id } of (JSON.parse(catalog ?? "{}") as { models?: { id: string }[] }).models ??
