@@ -597,12 +597,16 @@ export async function convertLinearUploadManifests(secretsDir: string, now = Dat
     if (match === null) continue;
     const path = join(directory, name);
     const grantPath = join(secretsDir, `linear-upload-${match[1]}`);
-    const upload = JSON.parse(new TextDecoder().decode(await readPrivate(path, 64 * 1024)));
-    if (upload.uploadUrl !== undefined || upload.headers !== undefined) {
-      await saveUpload(path, grantPath, upload, now);
-      converted++;
-    } else if (Number(upload.expiresAt ?? 0) <= now && secretFileExists(grantPath))
-      await removeSecret(grantPath);
+    try {
+      const upload = JSON.parse(new TextDecoder().decode(await readPrivate(path, 64 * 1024)));
+      if (upload.uploadUrl !== undefined || upload.headers !== undefined) {
+        await saveUpload(path, grantPath, upload, now);
+        converted++;
+      } else if (Number(upload.expiresAt ?? 0) <= now && secretFileExists(grantPath))
+        await removeSecret(grantPath);
+    } catch (error) {
+      journalCaught(error, "artifacts.convertLinearUploadManifests.file");
+    }
   }
   return converted;
 }
