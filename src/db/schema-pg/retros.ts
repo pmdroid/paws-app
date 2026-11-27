@@ -174,6 +174,8 @@ export const retroAttempt = pgTable(
     finishedAt: bigint("finished_at", { mode: "number" }),
     outcome: text().notNull(),
     error: text(),
+    transcriptReads: bigint("transcript_reads", { mode: "number" }).default(0).notNull(),
+    transcriptBytes: bigint("transcript_bytes", { mode: "number" }).default(0).notNull(),
   },
   (table) => [
     primaryKey({

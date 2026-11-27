@@ -64,7 +64,7 @@ import {
 } from "./credentials";
 import { ArtifactRejectedError, commitCheckpointSync, git, mirrorFiles, worktreePath } from "./acp";
 import { useGitReader } from "./closeout";
-import { useEvidenceRecordObjects } from "./closeout-spec";
+import { credentialSecrets, useEvidenceRecordObjects } from "./closeout-spec";
 import {
   closeoutRecordObjects,
   createEvidenceStore,
@@ -1226,6 +1226,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     store,
     artifactRoot: join(paths.home, "retros"),
     catalogs: retroCatalog,
+    secrets: () => credentialSecrets(),
     transcripts: () => runner?.transcripts,
   });
   const runnerHostRefusals = createRunnerHostRefusals();
@@ -1286,6 +1287,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             artifactRoot: join(paths.home, "retros"),
             sign: value.signRetroCommand,
             credentials: value.attachCredentials,
+            transcripts: () => value.transcripts,
+            secrets: () => credentialSecrets(),
           });
           return value;
         });

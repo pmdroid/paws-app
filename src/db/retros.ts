@@ -820,6 +820,31 @@ export function* failRetroAttemptSteps(q: Q, input: AttemptFailure) {
   return true;
 }
 
+export function* chargeRetroTranscriptReadSteps(
+  q: Q,
+  input: { retroId: string; attempt: number; bytes: number; maxReads: number; maxBytes: number },
+): Steps<{ reads: number; bytes: number } | null> {
+  const { retroAttempt: a } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .update(a)
+      .set({
+        transcriptReads: sql`${a.transcriptReads} + 1`,
+        transcriptBytes: sql`${a.transcriptBytes} + ${input.bytes}`,
+      })
+      .where(
+        and(
+          eq(a.retroId, input.retroId),
+          eq(a.attempt, input.attempt),
+          sql`${a.transcriptReads} < ${input.maxReads}`,
+          sql`${a.transcriptBytes} + ${input.bytes} <= ${input.maxBytes}`,
+        ),
+      )
+      .returning({ reads: a.transcriptReads, bytes: a.transcriptBytes }),
+  );
+  return rows[0] ?? null;
+}
+
 export async function listRetroAttempts(store: Db, retroId: string): Promise<RetroAttempt[]> {
   return store.run((q) => listRetroAttemptsSteps(q, retroId));
 }

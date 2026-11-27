@@ -256,6 +256,7 @@ export {
   RunnerRetroResultSchema,
   acceptRetroResult,
   authorizeRetroInput,
+  authorizeRetroTranscript,
   runnerRetroInputGrant,
   runnerRetroSlot,
   runnerRetroSlotKey,

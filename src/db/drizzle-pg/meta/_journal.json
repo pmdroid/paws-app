@@ -330,6 +330,13 @@
       "when": 1795750374693,
       "tag": "0046_issue_splits",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1795770046659,
+      "tag": "0047_retro_transcript_read_budget",
+      "breakpoints": true
     }
   ]
 }

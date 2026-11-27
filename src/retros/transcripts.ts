@@ -183,6 +183,70 @@ function summarizeRetroTranscript(
 
 const iso = (value: number | null) => (value === null ? "unknown" : new Date(value).toISOString());
 
+export function renderRetroTranscript(bytes: Uint8Array): string {
+  const lines: string[] = [];
+  const titles = new Map<string, string>();
+  const message = { at: "", text: "" };
+  const flush = () => {
+    if (message.text.trim().length > 0) lines.push(`${message.at} agent: ${message.text}`);
+    message.text = "";
+  };
+  for (const line of new TextDecoder().decode(bytes).split("\n")) {
+    if (line.trim().length === 0) continue;
+    let record: { t?: unknown; event?: Record<string, unknown> };
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const at = typeof record.t === "string" ? record.t : "unknown";
+    const event = record.event ?? {};
+    const update = (event.update ?? {}) as Record<string, unknown>;
+    const kind = event.type === "session_update" ? update.sessionUpdate : undefined;
+    if (kind === "agent_thought_chunk") continue;
+    if (kind === "agent_message_chunk") {
+      const part = (update.content as { text?: unknown } | undefined)?.text;
+      if (typeof part === "string") {
+        if (message.text.length === 0) message.at = at;
+        message.text += part;
+      }
+      continue;
+    }
+    flush();
+    if (event.type === "session_started")
+      lines.push(
+        `${at} session started: ${text((event.identity as { model?: unknown })?.model ?? "unknown model")}`,
+      );
+    else if (event.type === "prompt_complete")
+      lines.push(`${at} turn end: ${text(event.stopReason)}`);
+    else if (event.type === "error") lines.push(`${at} error: ${text(event.message)}`);
+    else if (event.type === "ask_team" && event.phase === "asked")
+      lines.push(`${at} question: ${text(event.question)}`);
+    else if (
+      (kind === "tool_call" || kind === "tool_call_update") &&
+      typeof update.toolCallId === "string"
+    ) {
+      if (typeof update.title === "string" && update.title.length > 0)
+        titles.set(update.toolCallId, update.title);
+      const title = titles.get(update.toolCallId) ?? "untitled tool";
+      if (update.rawInput !== undefined)
+        lines.push(`${at} tool ${title}: ${text(update.rawInput)}`);
+      const output = [
+        update.rawOutput === undefined ? "" : text(update.rawOutput),
+        ...(Array.isArray(update.content) ? update.content : []).map((part) =>
+          text((part as { content?: { text?: unknown } }).content?.text ?? ""),
+        ),
+      ]
+        .join("\n")
+        .trim();
+      if (output.length > 0 || typeof update.status === "string")
+        lines.push(`${at} tool ${title} ${text(update.status ?? "output")}: ${output}`);
+    }
+  }
+  flush();
+  return lines.join("\n");
+}
+
 function transcriptIndexLine(entry: RetroTranscriptEntry): string {
   return `- run:${entry.runId}${entry.generation === null ? "" : `#${entry.generation}`} ${entry.identifier} ${entry.kind} ${iso(entry.at)} ${entry.sizeBytes} bytes ${entry.status}`;
 }

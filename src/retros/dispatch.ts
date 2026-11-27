@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import {
   workspaceMemberUsable,
   acknowledgeRetroDispatchSteps,
   AgentAccountError,
+  chargeRetroTranscriptReadSteps,
+  retroTranscriptRowsSteps,
   closeRetroSteps,
   deliverableRetroDispatchesSteps,
   failRetroAttemptSteps,
@@ -59,6 +61,7 @@ import {
 import {
   acceptRetroResult,
   authorizeRetroInput,
+  authorizeRetroTranscript,
   RUNNER_RESULT_BODY_LIMIT,
   RUNNER_RETRO_CAPABILITY,
   RUNNER_RETRO_LIMITS,
@@ -66,6 +69,7 @@ import {
   runnerRetroInputGrant,
   type RunnerCodingAgent,
   type RunnerRetroCommand,
+  type RunnerRetroInputGrant,
   type RunnerRetroResult,
   type SignedRunnerCommand,
 } from "../runner-protocol";
@@ -81,7 +85,8 @@ import {
   settleRetroAttemptSteps,
 } from "./result";
 import { retroAttemptLimits, type RetroAgentProfile } from "./settings";
-import type { RetroDigest } from "./digest";
+import { redactRetroText, type RetroDigest } from "./digest";
+import { renderRetroTranscript, type RetroTranscriptReader } from "./transcripts";
 
 export const RETRO_DISPATCH_JOB = "retro.dispatch";
 
@@ -130,6 +135,16 @@ export type RetroCommandCredentials = (
 ) => Promise<SignedRunnerCommand[]>;
 
 class RetroFencedError extends Error {}
+
+class RetroInputRefusal extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 const LOCAL_OWNER = "retro-dispatch:local";
 const owner = (commandId: string) => `retro-dispatch:${commandId}`;
@@ -369,10 +384,13 @@ export function createRetroDispatcher(options: {
   artifactRoot: string;
   sign: RetroCommandSigner;
   credentials?: RetroCommandCredentials;
+  transcripts?: () => RetroTranscriptReader | undefined;
+  secrets: () => readonly string[];
   now?: () => number;
 }) {
   const { store, artifactRoot: root } = options;
   const now = options.now ?? Date.now;
+  let rendered: { key: string; bytes: Buffer } | null = null;
 
   function* noteSteps(
     q: Q,
@@ -851,6 +869,100 @@ export function createRetroDispatcher(options: {
     return attemptPrompt(store, retro, digest, new TextDecoder().decode(stored.bytes), attempt);
   }
 
+  async function transcriptBytes(runId: string, generation: number) {
+    const secrets = options.secrets();
+    const key = JSON.stringify([runId, generation, secrets]);
+    if (rendered?.key === key) return rendered.bytes;
+    const reader = options.transcripts?.();
+    if (reader === undefined) throw new Error("transcript storage is unavailable");
+    const text = renderRetroTranscript(await reader.download(runId, generation));
+    rendered = { key, bytes: Buffer.from(redactRetroText(text, secrets), "utf8") };
+    return rendered.bytes;
+  }
+
+  async function transcript(
+    retro: Retro,
+    dispatch: RetroDispatch,
+    request: unknown,
+    grant: RunnerRetroInputGrant,
+  ) {
+    const authorized = authorizeRetroTranscript(grant, {
+      runnerId: dispatch.runnerId,
+      request,
+      currentAttempt: retro.attempt,
+      now: now(),
+    });
+    if (!authorized.ok) {
+      if (authorized.reason === "invalid_request")
+        throw new Error("Retro transcript request is invalid");
+      throw new RetroFencedError(`Retro input refused: ${authorized.reason}`);
+    }
+    const { runId, generation, offset, limit } = authorized.request;
+    const digest = await readDigest(store, root, retro);
+    if (digest === null) throw new RetroFencedError("The frozen retro digest is unreadable");
+    const rows = await store.run((q) => retroTranscriptRowsSteps(q, retro.workspaceId, [runId]));
+    if (
+      !digest.transcripts?.entries.some((e) => e.runId === runId && e.generation === generation) ||
+      !rows.some((row) => row.generation === generation)
+    )
+      throw new RetroInputRefusal(
+        403,
+        "not_listed",
+        "This run is not in the retro's transcript index.",
+      );
+    let bytes: Buffer;
+    try {
+      bytes = await transcriptBytes(runId, generation);
+    } catch (error) {
+      journalCaught(error, "retros.dispatch.transcript", null);
+      throw new RetroInputRefusal(
+        422,
+        "unreadable",
+        `The transcript of run ${runId}#${generation} is unreadable.`,
+      );
+    }
+    const total = bytes.byteLength;
+    const boundary = (at: number) => {
+      while (at > 0 && at < total && (bytes[at]! & 0xc0) === 0x80) at -= 1;
+      return at;
+    };
+    const start = boundary(Math.min(offset, total));
+    let end = boundary(Math.min(start + limit, total));
+    if (end <= start && start < total) {
+      end = start + 1;
+      while (end < total && (bytes[end]! & 0xc0) === 0x80) end += 1;
+    }
+    const limits = RUNNER_RETRO_LIMITS;
+    const charged = await store.transaction((q) =>
+      chargeRetroTranscriptReadSteps(q, {
+        retroId: retro.id,
+        attempt: dispatch.attempt,
+        bytes: end - start,
+        maxReads: limits.transcriptReads,
+        maxBytes: limits.transcriptBytes,
+      }),
+    );
+    if (charged === null)
+      throw new RetroInputRefusal(
+        429,
+        "transcript_budget_used",
+        `Transcript budget used: an attempt may read ${limits.transcriptReads} times and ${limits.transcriptBytes} bytes.`,
+      );
+    journal(
+      `retro.transcript_read retro=${retro.id} attempt=${dispatch.attempt} run=${runId}#${generation} bytes=${end - start} reads=${charged.reads} attempt_bytes=${charged.bytes}`,
+    );
+    return {
+      commandId: dispatch.commandId,
+      kind: "transcript" as const,
+      runId,
+      generation,
+      offset: start,
+      nextOffset: end,
+      total,
+      text: bytes.subarray(start, end).toString("utf8"),
+    };
+  }
+
   function* authorizeSteps(q: Q, runnerId: string, commandId: string, terminal = false) {
     const dispatch = yield* getRetroDispatchSteps(q, commandId);
     if (dispatch === null || dispatch.runnerId !== runnerId)
@@ -963,6 +1075,8 @@ export function createRetroDispatcher(options: {
           command.executionLimit.activeMinutes * 60_000 +
           RETRO_DISPATCH_TIMING.commandTtlMs,
       );
+      if ((request as { kind?: unknown } | null)?.kind === "transcript")
+        return transcript(retro, dispatch, request, grant);
       const authorized = authorizeRetroInput(grant, {
         runnerId,
         request,
@@ -1053,6 +1167,8 @@ export function createRetroDispatcher(options: {
         }
       } catch (error) {
         journalCaught(error, "retros.dispatch.fetch", null);
+        if (error instanceof RetroInputRefusal)
+          return json({ error: error.message, code: error.code }, error.status);
         if (error instanceof RetroFencedError)
           return json({ error: "Retro command is fenced.", code: "fenced" }, 409);
         if (runnerRequestUnavailable(error))
