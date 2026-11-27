@@ -46,7 +46,7 @@ export async function validateCandidateAttribution(
       .trimEnd()
       .split("\n");
     const message = await invoke(["show", "-s", "--format=%B", sha]);
-    validateCommitAttribution(policy, metadata, commitCoauthorTrailers(message));
+    validateCommitAttribution(policy, metadata, commitCoauthorTrailers(message), sha);
   }
 }
 

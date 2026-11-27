@@ -675,6 +675,7 @@ export function createRunnerRepositories(options: {
                 command.commitPolicy,
                 metadata,
                 commitCoauthorTrailers(message),
+                commit,
               );
             }
           }
