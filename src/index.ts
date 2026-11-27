@@ -326,6 +326,7 @@ import {
 } from "./intake";
 import { createExecutionControls } from "./execution-controls";
 import {
+  createHostIssueVmDriver,
   createIssueVmSweep,
   ISSUE_VM_SWEEP_EVERY_MS,
   ISSUE_VM_SWEEP_JOB,
@@ -1327,6 +1328,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     },
   });
   const issueVmDrivers: Partial<Record<IssueVmProvider, IssueVmDriver>> = {
+    host: createHostIssueVmDriver({ store }),
     ...options?.issueVmDrivers,
   };
   const issueVmProviders = Object.keys(issueVmDrivers) as IssueVmProvider[];
