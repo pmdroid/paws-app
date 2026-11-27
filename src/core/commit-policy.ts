@@ -37,6 +37,9 @@ export function commitPolicyMessage(message: string, policy: GitCommitPolicy): s
   return `${message.trim()}${trailers.length ? `\n\n${trailers.join("\n")}` : ""}\n`;
 }
 
+export const COAUTHOR_REJECTION =
+  "Candidate attribution rejected: Co-authored-by trailers must match the consenting identities in the run policy.";
+
 export function validateCommitAttribution(
   policy: GitCommitPolicy,
   metadata: readonly string[],
@@ -68,7 +71,7 @@ export function validateCommitAttribution(
     missing.length ? `is missing Co-authored-by: ${missing.join(", ")}` : "",
   ].filter(Boolean);
   throw new Error(
-    `Candidate attribution rejected: Co-authored-by trailers must match the consenting identities in the run policy. ${commit ? `Commit ${commit.slice(0, 12)}` : "A commit"} ${problems.join(" and ")}; expected ${expected.length ? expected.join(", ") : "no Co-authored-by trailers"}. No candidate was rewritten.`,
+    `${COAUTHOR_REJECTION} ${commit ? `Commit ${commit.slice(0, 12)}` : "A commit"} ${problems.join(" and ")}; expected ${expected.length ? expected.join(", ") : "no Co-authored-by trailers"}. No candidate was rewritten.`,
   );
 }
 
