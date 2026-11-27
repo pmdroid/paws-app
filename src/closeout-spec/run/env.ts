@@ -24,6 +24,7 @@ const DENY = new Set([
   "AWS_ACCESS_KEY_ID",
   "AWS_SECRET_ACCESS_KEY",
   "AWS_SESSION_TOKEN",
+  "PAWS_DATABASE_URL",
 ]);
 
 const PREFIXES = ["AWS_", "AZURE_", "CLOUDSDK_", "GH_", "GITHUB_", "GOOGLE_"];
@@ -32,7 +33,7 @@ export function scrubCommandEnv(parent: NodeJS.ProcessEnv = process.env): Record
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(parent)) {
     if (value === undefined) continue;
-    if (isScrubbed(key) || key === "PAWS_TEST_BAIL") continue;
+    if (isScrubbed(key, value) || key === "PAWS_TEST_BAIL") continue;
     env[key] = value;
   }
   return env;
@@ -42,17 +43,43 @@ export function credentialSecrets(parent: NodeJS.ProcessEnv = process.env): stri
   const found = new Set<string>();
   for (const [key, value] of Object.entries(parent)) {
     if (value === undefined || value.length < 8) continue;
-    if (!isScrubbed(key)) continue;
+    if (!isScrubbed(key, value)) continue;
     found.add(value);
+    for (const password of urlPasswords(value)) if (password.length >= 8) found.add(password);
   }
   return [...found].sort((left, right) => right.length - left.length);
 }
 
-function isScrubbed(key: string): boolean {
+function isScrubbed(key: string, value: string): boolean {
   if (DENY.has(key)) return true;
+  if (hasUserinfo(value)) return true;
   if (PREFIXES.some((prefix) => key.startsWith(prefix))) return true;
   if (key.includes("OAUTH") && key.includes("TOKEN")) return true;
   return /API_KEY|PASSWORD|SECRET|TOKEN/i.test(key);
+}
+
+function parsedUrl(value: string): URL | undefined {
+  if (!value.includes("@") || !value.includes("://")) return undefined;
+  try {
+    return new URL(value.trim());
+  } catch {
+    return undefined;
+  }
+}
+
+function hasUserinfo(value: string): boolean {
+  const url = parsedUrl(value);
+  return url !== undefined && (url.username !== "" || url.password !== "");
+}
+
+function urlPasswords(value: string): string[] {
+  const password = parsedUrl(value)?.password ?? "";
+  if (password === "") return [];
+  try {
+    return [password, decodeURIComponent(password)];
+  } catch {
+    return [password];
+  }
 }
 
 export type PullRequestDraft = { title: string; body: string };
