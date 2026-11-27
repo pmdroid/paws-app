@@ -1130,6 +1130,14 @@ export async function collectRetroDigest(
     built,
     await collectRetroTranscripts(store, {
       workspaceId: retro.workspaceId,
+      retroId: retro.id,
+      repositories: retro.repositories,
+      from: Math.min(cut, ...windows.map((window) => window.start)),
+      to: Math.max(cut, ...windows.map((window) => window.end)),
+      items: built.sessions.map((session) => ({
+        itemId: session.itemId,
+        identifier: session.identifier,
+      })),
       runs,
       reader: input.transcripts,
       clip: (text, limit) => excerpt(text, secrets, limit),
