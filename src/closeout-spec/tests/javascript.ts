@@ -63,9 +63,11 @@ async function plan(runner: JavaScriptRunner, context: TestContext): Promise<Tes
   const atHead = affectedTests(head, changed);
   reasons.push(...atBase.problems.map((problem) => `at base: ${problem}`));
   reasons.push(...atHead.problems.map((problem) => `at head: ${problem}`));
-  const selected = [...new Set([...atBase.affected, ...atHead.affected])]
-    .filter((path) => head.paths.has(path))
-    .sort();
+  const reaching = [...new Set([...atBase.affected, ...atHead.affected])].filter((path) =>
+    head.paths.has(path),
+  );
+  const opaque = atHead.opaque.filter((path) => !reaching.includes(path));
+  const selected = [...reaching, ...opaque].sort();
   const targets = [...new Set([...selected, ...always])].sort();
   if (selected.length === 0 && always.length === 0) {
     reasons.push("no test file reaches a changed path, and select.always is empty");
@@ -82,7 +84,10 @@ async function plan(runner: JavaScriptRunner, context: TestContext): Promise<Tes
       mode: "selected",
       targets,
       reasons: [
-        ...selected.map((path) => `${path} reaches a changed path`),
+        ...reaching.sort().map((path) => `${path} reaches a changed path`),
+        ...opaque.map(
+          (path) => `${path} has a non-literal dynamic import or require, so it always runs`,
+        ),
         ...always.map((path) => `${path} is in select.always`),
       ],
     },

@@ -43,6 +43,8 @@ items:
     kind: command
     gate: beforePR
     exec: ["bun", "test", "--parallel=4", "--timeout=20000", "--no-orphans"]
+    paths: ["**"]
+    except: ["**/*.md", "docs/**"]
     select:
       runner: bun
       always: [test/boundaries.test.ts, test/empty-catches.test.ts]
@@ -54,7 +56,7 @@ items:
         - "scripts/**"
       max_selected: 120
       over_max: direct
-    timeoutSeconds: 1800
+    timeoutSeconds: 3000
     ci: "test (*)"
   - id: links
     kind: command
