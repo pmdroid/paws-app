@@ -34,6 +34,7 @@ describePglite((open) => {
         scope: snapshot.scope,
         linearStates: snapshot.linearStates,
         linearIdentifiers: snapshot.linearIdentifiers,
+        externalEvidence: "{}",
         workspaceId: "workspace",
       });
     } finally {

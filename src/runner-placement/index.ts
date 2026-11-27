@@ -66,6 +66,7 @@ export {
   itemOwnerHasEligibleRunnerSteps,
   itemOwnerRunnerSetupNeedSteps,
   itemRepositoryRunnerSteps,
+  itemRunnerOnReleaseSteps,
   RUNNER_ONLINE_MS,
 } from "./eligible";
 /**

@@ -250,6 +250,20 @@ export function* itemRepositoryAllowedOnSteps(
   );
 }
 
+export function* itemRunnerOnReleaseSteps(q: Q, itemId: string, tag: string): Steps<boolean> {
+  const match = tag.match(/^v?(\d+)\.(\d+)\.(\d+)$/);
+  const found = match && (yield* itemRepositoryRunnersSteps(q, { itemId }));
+  if (!match || !found) return false;
+  const release = [Number(match[1]), Number(match[2]), Number(match[3])] as const;
+  for (const runner of found.runners)
+    if (
+      runnerReleaseAtLeast(yield* runnerHostVersionSteps(q, runner.id), release) &&
+      (yield* runnerRepositoryRefusalSteps(q, runner.id, found.repository)) === null
+    )
+      return true;
+  return false;
+}
+
 export function* itemRepositoryRefusalsSteps(q: Q, input: { itemId: string; now?: number }) {
   const found = yield* itemRepositoryRunnersSteps(q, input);
   if (!found || found.runners.length === 0) return null;

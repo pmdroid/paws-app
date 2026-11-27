@@ -616,7 +616,8 @@ test("a GitHub App without the comment and review events is reported", () => {
   });
   expect(facts).toEqual({
     ok: false,
-    detail: "not subscribed to pull_request_review, pull_request_review_comment, issue_comment",
+    detail:
+      "not subscribed to pull_request_review, pull_request_review_comment, issue_comment, release",
   });
   expect(appEventsFact(200, { events: [...GITHUB_APP_EVENTS] }).ok).toBe(true);
   expect(appEventsFact(401, {}).ok).toBe(false);

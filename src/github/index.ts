@@ -203,3 +203,5 @@ export type {
   GitHubSnapshotReader,
   RepositorySnapshot,
 } from "./snapshot";
+export { createFakeRunnerReleases, createRunnerReleaseLookup } from "./releases";
+export type { RunnerReleaseLookup } from "./releases";

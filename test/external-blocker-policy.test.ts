@@ -1,9 +1,14 @@
 import { expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { bindLinearSessionTask, recordLinearInstallation, saveTaskMode, type Db } from "../src/db";
-import { intakeDelegatedIssue, readyItemsSteps, syncItemDependencies } from "../src/intake";
+import {
+  blockingIssuesSteps,
+  intakeDelegatedIssue,
+  readyItemsSteps,
+  syncItemDependencies,
+} from "../src/intake";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../src/linear";
-import { inspectPullRequestMerge } from "../src/github";
+import { createFakeRunnerReleases, inspectPullRequestMerge } from "../src/github";
 import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
@@ -99,12 +104,14 @@ async function fixture() {
   });
   const itemId = intake.items[0]!.id;
   const target = { workspaceId: "workspace", itemId };
+  const releases = createFakeRunnerReleases();
   const refresh = async () =>
     syncItemDependencies(db, {
       ...target,
       expectedGeneration: (await db.run((q) => readyItemsSteps(q, target))).generation,
       tracker,
       lifecycle,
+      releases: releases.lookup,
     });
   return {
     db,
@@ -112,6 +119,7 @@ async function fixture() {
     target,
     tracker,
     lifecycle,
+    releases,
     refresh,
     ready: async () =>
       (await db.run((q) => readyItemsSteps(q, target))).readyItemIds.includes(itemId),
@@ -347,4 +355,85 @@ test("Linear blocker links require complete attachment pagination and exact issu
   expect(page).toBe(2);
   wrong = true;
   await expect(tracker.listIssuePullRequests!("a")).rejects.toThrow("another blocker");
+});
+
+async function releaseBlocker(f: Awaited<ReturnType<typeof fixture>>, label: string) {
+  Object.assign(f.lifecycle.issue, { identifier: "DEP-3", labels: [label] });
+  f.tracker.epics.set("a", {
+    ...{ linearIssueId: "a", identifier: "DEP-3", title: "Runner half" },
+    ...{ description: null, subIssues: [] },
+  });
+  const intake = await intakeDelegatedIssue(f.db, f.tracker, { linearIssueId: "a", now: 2000 });
+  if (!intake.ok) throw new Error("Intake failed");
+  await recordLinearInstallation(f.db, {
+    organizationId: "org",
+    oauthClientId: "client",
+    appUserId: "app",
+    sessionId: "other-session",
+    teamId: "team",
+    observedAtMs: 2000,
+  });
+  await bindLinearSessionTask(f.db, "other-session", intake.delegation.id, {
+    actorId: "linear-person",
+  });
+  const blocker = intake.items[0]!.id;
+  await saveTaskMode(f.db, blocker, "code");
+  const repository = { owner: "owner", repo: "repo", remoteUrl: "https://github.com/owner/repo" };
+  const runner = { workspaceId: "workspace", ownerUserId: "person", name: "r", status: "active" };
+  await seed(
+    f.db,
+    (q) => q.orm.insert(q.t.workItemRepository).values({ itemId: f.target.itemId, ...repository }),
+    (q) => q.orm.insert(q.t.runner).values({ id: "runner", ...runner, createdAt: Date.now() }),
+  );
+  await setItem(f.db, blocker, { state: "merged" });
+  await recordMerge(f.db, blocker, 12, "c".repeat(40), 2000);
+}
+
+function runnerOn(db: Db, runnerVersion: string) {
+  return seed(
+    db,
+    (q) => q.orm.update(q.t.runner).set({ lastSeenAt: Date.now() }),
+    (q) =>
+      q.orm
+        .insert(q.t.runnerHostStatus)
+        .values({ runnerId: "runner", runnerVersion, reportedAt: Date.now() })
+        .onConflictDoUpdate({ target: q.t.runnerHostStatus.runnerId, set: { runnerVersion } }),
+  );
+}
+
+test("A 'needs runner release' blocker holds its dependent until a runner runs the release", async () => {
+  const f = await fixture();
+  try {
+    await releaseBlocker(f, "Needs runner release");
+    await runnerOn(f.db, "0.1.109");
+    await f.refresh();
+    expect(await f.ready()).toBe(false);
+    expect(await f.db.run((q) => blockingIssuesSteps(q, f.target.itemId))).toEqual([
+      "waiting for a runner release with DEP-3",
+    ]);
+    expect(f.releases.calls).toEqual([{ repository: "owner/repo", mergeSha: "c".repeat(40) }]);
+    f.releases.releases.set("c".repeat(40), "v0.1.110");
+    await f.refresh();
+    expect(await f.ready()).toBe(false);
+    await runnerOn(f.db, "0.1.110");
+    expect(await f.ready()).toBe(true);
+    await runnerOn(f.db, "0.1.109");
+    expect(await f.ready()).toBe(false);
+    await runnerOn(f.db, "0.1.111");
+    expect(await f.ready()).toBe(true);
+  } finally {
+    await f.close();
+  }
+});
+
+test("A merged blocker without the release label releases its dependent", async () => {
+  const f = await fixture();
+  try {
+    await releaseBlocker(f, "bug");
+    await f.refresh();
+    expect(await f.ready()).toBe(true);
+    expect(f.releases.calls).toEqual([]);
+  } finally {
+    await f.close();
+  }
 });
