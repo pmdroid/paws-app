@@ -5,19 +5,24 @@ description: Plan work for Paws and write Linear issues a Paws agent can finish 
 
 A Paws agent works alone, often overnight, from the issue and the repository. Closeout checks its commit, and a stricter reviewer reads the pull request. Every choice the issue leaves open becomes a question that waits for a person, or a guess the reviewer blocks. Write each issue so the smallest correct change is the obvious one.
 
-## Before writing
+Specs that look solid still miss hard cases, agents misread existing code, and pull requests grow until review rounds run out. Pull request size is the strongest predictor of review rounds. This skill exists to stop all three before the issue is filed.
 
-1. **Measure, don't estimate.** Count what the change touches on current main before sizing it: call sites, files, transaction bodies, tests that assert the old behaviour. Use the TypeScript compiler or `git grep`, not intuition. When the count itself is the hard part, make it a first issue whose only deliverable is the per-file measurement, and size the real issues from that report.
-2. **Find the order.** List what must merge before what. A change that needs its callers changed first is blocked by issues for those callers. Draw the chain before filing anything.
-3. **Decide everything you can.** Defaults, limits, names, which option wins, what counts and what doesn't. If you can't decide, ask Pascal before filing, not the agent after.
+## Research first
+
+1. **Find the root cause in code.** Read the source you were pointed at: the journal (`journalctl --user -u paws`), the item and run rows, the Closeout step, the PR or review thread, the CI run. Name the function and file that cause it, and say whether it is consistent or flaky.
+2. **Measure, don't estimate.** Count what the change touches on current main before sizing it: call sites, files, transaction bodies, tests that assert the old behaviour. Use the TypeScript compiler or `git grep`, not intuition. When the count itself is the hard part, make it a first issue whose only deliverable is the per-file measurement, and size the real issues from that report.
+3. **Find the existing mechanism.** Look for the helper, owner module and sibling pattern the change should reuse before describing a new one. Name real paths.
+4. **Check for an existing issue.** Search Linear for an open issue on the same problem. If one exists, add a comment there or ask, instead of filing a duplicate.
+5. **Find the order.** List what must merge before what. A change that needs its callers changed first is blocked by issues for those callers. Draw the chain before filing anything.
+6. **Decide everything you can.** Defaults, limits, names, which option wins, what counts and what doesn't. If you can't decide, ask Pascal before filing, not the agent after.
 
 ## Splitting
 
-- **One concern, one module.** A dashboard change in an area owned separately is its own issue.
-- **About 300 to 800 changed lines per issue.** Pull requests stay under 1000 lines. Bigger work splits into issues that each merge on their own and leave main green.
+- **One behaviour change, one module.** A dashboard change in an area owned separately is its own issue.
+- **Aim for under about 500 changed lines.** Past about 800, split. Issues of 700 to 900 lines ran out of review rounds every time. Bigger work splits into issues that each merge on their own and leave main green.
 - **Split by file.** Issues with disjoint file sets run in parallel and merge without rebasing onto each other. Issues that edit the same file must be chained with a blocks relation, or they conflict in the merge queue.
+- **Runner first, then Paws.** Runner code reaches hosts only with a release, and Paws must never rely on a runner command no release has. Put the runner side in its own issue, release it, then file the Paws side that uses it and raises `MINIMUM_RUNNER_VERSION`.
 - **Give every slice a stop rule.** "If an area has nothing to convert, change nothing, list the blockers and end" keeps an agent from inventing work. "Stop at a file boundary near the budget and list the rest under Left for later" keeps a PR small.
-- **One issue per runner release when the change is runner-side.** Runner code reaches hosts only with a release, so say in the issue that it needs one.
 
 ## The issue
 
@@ -30,16 +35,21 @@ What is wrong and why, as precisely as you know it. Name functions and files, no
 
 ## Evidence
 
-What you observed: times in UTC, item and run IDs, log lines, PR numbers, commit SHAs.
+What you observed: times in UTC, item and run IDs, log lines, PR numbers, commit SHAs. A trimmed log excerpt in a code block.
 
 ## Change
 
 - decided: … (one bullet per decision, with the reason when it isn't obvious)
-- The existing mechanism to reuse, by name. Say "don't build a new one".
+- decided against: the main alternative, and why it lost.
+- The existing mechanism to reuse, by name and path. Say "don't build a new one".
+
+## Hard cases
+
+- Each case from the list below that applies, answered, or "n/a, because …".
 
 ## Acceptance
 
-- Tests the agent can write with each module's fakes, stated as behaviour.
+- Tests the agent can write with each module's fakes, stated as behaviour. One test per item.
 
 ## Leave alone
 
@@ -47,12 +57,29 @@ What you observed: times in UTC, item and run IDs, log lines, PR numbers, commit
 - Size budget: under N changed lines.
 ```
 
-- **Write `decided:` lines.** A choice the issue leaves open becomes an overnight question.
-- **State the repository rules the change touches**, from AGENTS.md: modules import through `index.ts`, migrations are append-only and generated by drizzle-kit, `transition()` stays pure, tests use the fakes, no code comments.
+- **Write `decided:` lines.** A choice the issue leaves open becomes an overnight question. Settle the design in the issue, not in review.
+- **Say plainly when the fix isn't code.** An ops, settings or permissions fix is for a person, not for Paws.
+- **State the repository rules the change touches**, from AGENTS.md: modules import through `index.ts`, migrations are append-only and generated by drizzle-kit, `transition()` stays pure, `ask()` and `restart()` come only from `src/loop`, tests use the fakes, no code comments.
 - **Nothing the reviewer will block.** No check that fails open, no unsafe default, no deleting what you can't attribute. If an unsafe-looking thing is wanted, say how it is made safe.
 - **Measurements carry their commit.** Line ranges and counts are only valid on the commit they were taken from. Say which, and tell the agent to re-check on current main.
+- **Parity when replacing or migrating.** List what the old code enforced implicitly (validation, journaling, error mapping, limits) and keep each one or drop it on purpose.
 - **Tests must run inside a runner sandbox.** Runs can't `chown` to other users, and `chmod` of setuid or setgid bits can fail with EPERM. Ask for tests that skip cleanly where the sandbox forbids the operation.
 - **A tool version bump can't pass Closeout on its own head.** Closeout runs the tools pinned on main, so a bump whose tests need the new version fails there. Plan for a person to approve a bypass of that one check, and say so in the issue.
+
+## Hard cases
+
+Answer every case that applies, for anything touching runners, credentials, accounts, the outbox, Closeout, placement, settings or stored state. Each one cost real throughput in November 2026.
+
+- **Runner and Paws versions.** Is it safe when the runner is newer than the deployed Paws, and when Paws is newer than the oldest admitted runner? A new protocol field must be accepted by the deployed Paws before any runner sends it. Strict schemas reject unknown fields with 403.
+- **Every delivery path.** Agent turns, helpers, retros, probes and login checks are separate command kinds and some have separate routes. Name which ones the change must reach, and test each.
+- **Every agent and sign-in mode.** Claude, Codex, Grok and OpenCode, each with a stored file, a central refreshable sign-in, an API key or an OAuth token. Per-agent tables must cover all of them; say what happens for an unsupported combination.
+- **Blast radius.** When one element of a batch fails (one command in a poll, one row in a sweep), only that element fails.
+- **Settings against the fleet.** Does a default only some runners can serve (a model, an agent) break work? Does a change strand items that are already waiting?
+- **Retries and bounds.** Every network call, loop, retry and page has a deadline or limit. An error that can't change by waiting asks through `ask()` instead of spending attempts. No failure state latches forever.
+- **Recovery.** How stale, rejected or lost stored state gets unstuck, and what a restart of Paws or the runner does halfway through.
+- **Concurrency and fencing.** Two runners, two Paws instances or two requests at once: what wins, which lock or generation fences the loser, which cache goes stale.
+- **Members and permissions.** Admin versus member, another member's personal runner, workspace boundaries.
+- **Default and off switch.** The default value, and how an admin turns it off.
 
 ## Wording that picks the right task mode
 
@@ -62,16 +89,27 @@ Paws classifies each new item from the request text alone, as code, answer, arti
 - For a question, say "explain" or "find out why", and say no change is wanted.
 - For a split or plan, say "plan" or "break down", and say nothing is implemented now.
 
+## Before filing
+
+- [ ] Root cause named in code, with evidence and times
+- [ ] Decision and the rejected alternative written
+- [ ] Hard cases answered or marked n/a with a reason
+- [ ] Reuse names real paths
+- [ ] Parity list, if replacing or migrating
+- [ ] One behaviour change within the size budget, with a stop rule
+- [ ] Every acceptance item has a test
+- [ ] No duplicate open issue
+
 ## Filing and delegating
 
 1. Create every issue **without a delegate**, with the repository label (for example `pmdroid/paws-app`), the project and the milestone.
 2. Add all blocks relations, including "blocks the final issue" and the chain for issues that share a file.
-3. Delegate only after the relations exist. Paws reads dependencies when it takes an item, so an issue delegated before its blockers are linked starts at once.
+3. Delegate only after the relations exist. Paws reads dependencies when it takes an item, so an issue delegated before its blockers are linked starts at once. When you replace a blocker, add the new relation before removing the old one.
 4. Check that each delegated issue opened a Paws session. If one didn't, mention Paws in a comment on it.
 
 ## While it runs
 
-- **Answer in the session, not the description.** Editing a delegated issue's description restarts its item. Reply to the agent's question in the Linear session, or on the item page in the dashboard.
+- **Answer in the session, not the description.** Editing a delegated issue's description restarts its item. Reply to the agent's question in the Linear session, or on the item page in the dashboard. Answer with the option's exact label.
 - **Close what's finished.** An issue that ended with no code change stays open in Linear and keeps blocking its dependents, and an item whose head equals main can loop on Closeout. Mark it Done with a comment naming where its findings went, or take it off Paws until its blockers merge.
 - **Turn "Left for later" into issues.** When a merged PR lists remaining work, file it at once with its blockers, or nothing covers it.
-- **Rewrite the issue, not the run.** When an agent overbuilds, gets stuck, or proves the issue wrong, cancel it with a comment, write a corrected issue, and start again from main.
+- **Rewrite the issue, not the run.** When an agent overbuilds, gets stuck, or proves the issue wrong, cancel it with a comment, write a corrected issue, and start again from main. When review rounds run out twice on a growing diff, split.
