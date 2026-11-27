@@ -59,6 +59,17 @@ test("loads, saves without replacing the stored header, and shows the test resul
     expect(bodies[0]).not.toHaveProperty("headerValue");
     expect((bodies[0]!.traces as { enabled: boolean }).enabled).toBe(true);
     expect(root.textContent).toContain("Telemetry settings saved.");
+    root.querySelector<HTMLInputElement>("#telemetry-endpoint")!.value = "https://edited.test";
+    root.querySelector<HTMLInputElement>("#telemetry-headerValue")!.value = "Bearer edited";
+    root.querySelector<HTMLButtonElement>('[data-telemetry="discard"]')!.click();
+    await settleReactWork();
+    expect(root.querySelector<HTMLInputElement>("#telemetry-endpoint")!.value).toBe(
+      "https://otel.example.test",
+    );
+    root.querySelector<HTMLButtonElement>('button[type="submit"]')!.click();
+    await settleReactWork();
+    expect(bodies[1]).toMatchObject({ endpoint: "https://otel.example.test" });
+    expect(bodies[1]).not.toHaveProperty("headerValue");
     root.querySelector<HTMLButtonElement>('[data-telemetry="check"]')!.click();
     await settleReactWork();
     expect(root.querySelector('[role="alert"]')?.textContent).toBe(

@@ -304,6 +304,8 @@ export function createTelemetrySettings() {
     }
     const action = target.closest<HTMLElement>("[data-telemetry]")?.dataset.telemetry;
     if (action === "discard" && data) {
+      for (const input of root.querySelectorAll<HTMLInputElement>("input"))
+        input.value = input.defaultValue;
       reset(data);
       message = "";
       paint();
