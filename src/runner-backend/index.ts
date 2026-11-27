@@ -30,6 +30,7 @@ import {
   lastRunResultSteps,
   leasedRunnerWorkCommandSteps,
   onlineMemberRunnersSteps,
+  runnerHostVersionSteps,
   runnerLastSeenSteps,
   runnerNameSteps,
   runnerOnlineSteps,
@@ -97,11 +98,13 @@ import type { RunnerHealth } from "../runner-health";
 import type { RunnerArtifactStore } from "../runner-artifacts";
 import {
   HOST_TOOL_LIMITS,
+  MINIMUM_RUNNER_VERSION,
   REVIEW_BRIEF_LIMIT,
   REVIEW_EXPLANATION_LIMIT,
   REVIEW_LOCATION_LIMIT,
   RUNNER_LEASE_GRACE_MS,
   redactedJson,
+  runnerReleaseAtLeast,
   withSignedOutAuth,
   type HostToolDefinitions,
   type RunnerCommand,
@@ -204,6 +207,7 @@ const RUN_LOST_THOUGHT = "The runner lost this run after it restarted; continuin
 const RUN_HUNG_THOUGHT = (minutes: number) =>
   `The agent sent nothing for ${minutes} minutes, so Paws stopped it; continuing from the branch.`;
 const RUN_LOST_MESSAGE = "The runner no longer runs this command.";
+const BELOW_MINIMUM_THOUGHT = `Runner below minimum version ${MINIMUM_RUNNER_VERSION.join(".")}: it did not finish this run within its limit, so Paws released it; continuing from the branch.`;
 export const restoredCheckpointNote = (sha: string) =>
   `This checkout holds the work saved at the last checkpoint (${sha.slice(0, 8)}) of the turn before this one, as uncommitted changes. Read git status and git diff, keep that work, and continue from it.`;
 
@@ -1902,6 +1906,32 @@ export function createRemoteAgentRunner(options: {
               true,
             );
           };
+          const releasedBelowMinimum = async () => {
+            const version = await store.run((q) => runnerHostVersionSteps(q, selected.id));
+            if (
+              !options.placement ||
+              version === null ||
+              runnerReleaseAtLeast(version, MINIMUM_RUNNER_VERSION)
+            )
+              return null;
+            const at = now();
+            const released = await store.transaction(function* (q) {
+              yield* endLostRunnerWorkSteps(q, assigned.runId, assigned.generation, at);
+              return (
+                options.placement &&
+                (yield* options.placement.finishedSteps(q, {
+                  commandId: assigned.id,
+                  runnerId: selected.id,
+                  profile,
+                  failure: "heartbeat_lost",
+                  finishedAt: at,
+                }))
+              );
+            });
+            return released?.retryable
+              ? await lostRun("runner below minimum version", BELOW_MINIMUM_THOUGHT)
+              : null;
+          };
           const unlessFenced = async <T>(read: () => Promise<T>): Promise<T | typeof FENCED> => {
             try {
               return await read();
@@ -1922,6 +1952,8 @@ export function createRemoteAgentRunner(options: {
             } catch (error) {
               if (!(error instanceof RunnerWorkFencedError) || !options.placement) throw error;
               signal.throwIfAborted();
+              const released = now() >= deadline ? await releasedBelowMinimum() : null;
+              if (released) throw released;
               // The runner's heartbeat no longer names this work, so it is gone, not just quiet.
               if ((await liveness())?.lostAt != null) {
                 const recovered = await store.transaction(function* (q) {
@@ -2516,7 +2548,7 @@ export function createRemoteAgentRunner(options: {
             }
             await delay(interval, undefined, { signal });
           }
-          if (!complete) throw new Error("Remote run timed out");
+          if (!complete) throw (await releasedBelowMinimum()) ?? new Error("Remote run timed out");
           // A handover can stop the agent while Paws still posts its question, whether the
           // handover then succeeds or fails after the interrupt; the question stays either way.
           if (question && (complete.handedOver || complete.handoverFailure)) await question;

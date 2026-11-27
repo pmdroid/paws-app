@@ -84,6 +84,8 @@ import {
   RunnerInstalledRuntimesSchema,
   RunnerInstalledSkillsSchema,
   RunnerSkillSchema,
+  runnerReleaseAtLeast,
+  type RunnerVersion,
 } from "../runner-protocol";
 import {
   RunnerTranscriptChunkSchema,
@@ -210,6 +212,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   let state = readState(options.root);
   let closed = false;
   let observedAt = 0;
+  let belowMinimum = false;
   let rejection: { error: RunnerRequestError; attemptAt: number } | null = null;
   if (
     state &&
@@ -910,6 +913,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       return stored?.phase === "paired" && stored.certificate !== state.certificate;
     },
     capacity: () => applied,
+    belowMinimum: () => belowMinimum,
     ceiling: () => ceiling,
     conversationCapacity: () => conversations ?? 0,
     pendingCommands,
@@ -1049,6 +1053,12 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         }
       }
       const response = RunnerHeartbeatSchema.parse(reply);
+      const level = response.protocolLevel?.split(".").map(Number);
+      belowMinimum =
+        body.runnerVersion !== undefined &&
+        level?.length === 3 &&
+        level.every(Number.isSafeInteger) &&
+        !runnerReleaseAtLeast(body.runnerVersion, level as unknown as RunnerVersion);
       if (response.observedAt !== undefined) observedAt = Math.max(observedAt, response.observedAt);
       if (options.concurrency !== undefined && response.concurrency !== undefined)
         applied = Math.min(response.concurrency, ceiling);

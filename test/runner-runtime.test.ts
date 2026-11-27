@@ -413,7 +413,7 @@ test("a command for a repository the runner does not allow is reported once", as
   }
 });
 
-test("lowering concurrency holds back new work and lets running work continue", async () => {
+test("lowering concurrency or falling below the minimum version holds back new work and lets running work continue", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-concurrency-"));
   const now = Date.now();
   const paired = {
@@ -443,6 +443,7 @@ test("lowering concurrency holds back new work and lets running work continue", 
     prompt: "Implement the assigned issue",
   });
   let limit = 2;
+  let behind = false;
   let commands: RunnerCommand[] = [run("first", "run-a"), run("second", "run-b")];
   const calls: string[] = [];
   const runtime = await openRunnerRuntime({
@@ -463,6 +464,7 @@ test("lowering concurrency holds back new work and lets running work continue", 
     },
     daemon: {
       status: () => paired,
+      belowMinimum: () => behind,
       async heartbeat() {
         return {
           leases: commands.map((command) => ({
@@ -517,7 +519,11 @@ test("lowering concurrency holds back new work and lets running work continue", 
     await runtime.tick();
     await runtime.tick();
     expect(calls).toEqual(["ack:first", "ack:second"]);
+    behind = true;
     limit = 3;
+    await runtime.tick();
+    expect(calls).toEqual(["ack:first", "ack:second"]);
+    behind = false;
     await runtime.tick();
     expect(calls).toEqual(["ack:first", "ack:second", "ack:third"]);
   } finally {
