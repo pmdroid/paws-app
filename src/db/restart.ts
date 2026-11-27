@@ -17,6 +17,7 @@ export type RestartHandoff = {
   /** The fix-attempt limit this round's lines name, when it differs from the fix rounds. */
   limit?: number;
   fixRound?: boolean;
+  freshRun?: boolean;
   fix?: FixRound;
   carried?: Record<string, unknown>;
 };
@@ -73,6 +74,7 @@ export function* restartSteps(
     reason: handoff.reason,
     ...(handoff.limit !== undefined ? { limit: handoff.limit } : {}),
     ...(handoff.fixRound ? { fixRound: true } : {}),
+    ...(handoff.freshRun ? { freshRun: true } : {}),
     ...(handoff.carried ? { ...handoff.carried, fixRounds: 0 } : {}),
   };
   const job = yield* reenqueueJobSteps(
