@@ -121,7 +121,7 @@ async function started() {
       }),
     )
     .flatMap((verified) => (verified.ok ? [verified.command] : []))[0]!;
-  expect(command.transcripts).toBeUndefined();
+  expect(command.transcripts).toBe(true);
   expect((await call(dispatcher, `/v1/retro-commands/${command.id}/ack`, {})).status).toBe(200);
   const read = (body: Record<string, unknown>) =>
     call(dispatcher, `/v1/retro-commands/${command.id}/input`, {
