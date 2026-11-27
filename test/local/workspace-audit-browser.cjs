@@ -89,7 +89,8 @@ const errors = [];
           throw new Error(`Repository mutation failed: ${response.status}`);
       }
     });
-    await owner.page.locator('#side a[href="#/settings"]').click();
+    await owner.page.goto(`${fixture.origin}/dashboard/workspace/audit`);
+    await owner.page.getByRole("navigation", { name: "Main navigation" }).waitFor();
     const summary = owner.page.locator(".workspace-audit summary");
     const historyResponse = owner.page.waitForResponse(
       (response) => new URL(response.url()).pathname === "/api/workspaces/audit",
@@ -156,7 +157,8 @@ const errors = [];
       observations.push(`Audit history fits ${size}`);
     }
     await member.page.bringToFront();
-    await member.page.locator('#side a[href="#/settings"]').click();
+    await member.page.goto(`${fixture.origin}/dashboard/workspace/audit`);
+    await member.page.getByRole("navigation", { name: "Main navigation" }).waitFor();
     assert.equal(await member.page.locator(".workspace-audit").count(), 0);
     assert.equal(
       await member.page.evaluate(async () => (await fetch("/api/workspaces/audit")).status),

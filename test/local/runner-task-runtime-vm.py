@@ -71,13 +71,13 @@ def main():
         assert json.loads((runtime / 'done.json').read_text())['passed']
         coordinator.send_signal(signal.SIGTERM)
         assert coordinator.wait(timeout=15) == 0
-        db = sqlite3.connect(ROOT / 'server/paws.db')
-        results = [json.loads(row[0]) for row in db.execute('SELECT payload FROM runner_result ORDER BY rowid')]
+        facts = json.loads((ROOT / 'server/facts.json').read_text())
+        results = facts['results']
         assert len(results) == 4 and all(row['role'] == 'implementer' and not set(row) & {'candidateSha','reviewText'} for row in results)
-        kinds = [json.loads(row[0])['type'] for row in db.execute('SELECT payload FROM runner_event ORDER BY rowid')]
+        kinds = [event['type'] for event in facts['events']]
         assert kinds.count('question') == 4 and kinds.count('artifact') == 2
-        assert db.execute('SELECT COUNT(*) FROM runner_question_answer').fetchone()[0] == 6
-        sealed = db.execute('SELECT execution_id,sealed_size,sha256,uri FROM runner_transcript WHERE uri IS NOT NULL ORDER BY rowid').fetchall()
+        assert len(facts['answers']) == 6
+        sealed = facts['transcripts']
         assert len(sealed) == 4
         config = json.loads((ROOT / 'config.json').read_text())
         for index,(execution_id,size,digest,uri) in enumerate(sealed):
@@ -102,7 +102,6 @@ def main():
                 assert trace['fs'][0]['content'] == 'authorized source' and not trace['fs'][1]['ok']
                 assert (pathlib.Path('/var/lib/paws-runner-spool') / execution_id / 'repository/tracked').read_text() == 'authorized source'
             assert (pathlib.Path('/var/lib/paws-runner/runtime/workers') / (execution_id + '.pid')).is_file()
-        db.close()
         journal = sqlite3.connect(runtime / 'executions.db')
         assert journal.execute("SELECT COUNT(*) FROM execution WHERE phase='complete' AND consumed=transcript_offset AND consumed>0").fetchone()[0] == 4
         journal.close()

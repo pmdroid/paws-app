@@ -137,12 +137,7 @@ try:
         pending_db.commit()
         pending_db.close()
         (root / "server" / "advance").write_text("advance")
-        def helper_finished():
-            state_db = sqlite3.connect(root / "server" / "paws.db")
-            ended = state_db.execute("SELECT ended_at FROM runner_helper ORDER BY rowid LIMIT 1").fetchone()[0]
-            state_db.close()
-            return ended is not None
-        wait_for(helper_finished, coordinator)
+        wait_for(lambda: (root / "server" / "helper-ended").exists(), coordinator)
         daemon = actor("fence", 1001)
         wait_for(lambda: (root / "health" / "crash-ready.json").exists() and (root / "agent" / "held").exists(), daemon)
         fenced_execution = json.loads((root / "health" / "crash-ready.json").read_text())["executionId"]
@@ -176,22 +171,19 @@ try:
         assert ("session/prompt" in calls) == helpers
     coordinator.send_signal(signal.SIGTERM)
     assert coordinator.wait(timeout=5) == 0
-    db = sqlite3.connect(root / "server" / "paws.db")
+    facts = json.loads((root / "server" / "facts.json").read_text())
     if helpers:
-        rows = db.execute("SELECT result FROM runner_helper WHERE result IS NOT NULL ORDER BY rowid").fetchall()
+        rows = facts["helperResults"]
         assert len(rows) == 1
-        result = json.loads(rows[0][0])
+        result = rows[0]
         assert result["text"] == "fixture helper response"
         assert result["agentExited"] and result["stopReason"] == "end_turn"
         assert not (root / "agent" / "forbidden-helper-write").exists()
         assert not list((root / "spool").glob("**/*.bundle"))
-        db.close()
         print(json.dumps({"passed": True, "network": "none", "uids": {"coordinator": 1004, "daemon": 1001, "agent": 1002}, "signedHelperCommands": 3, "generationChangeStopsActualWorker": True, "mTlsReceipts": 1, "actualPromptReadOnly": True, "persistedBeforeNetwork": True, "normalPollRetriesStoredHelperAck": True, "terminalHelperAckCannotBlockNextAssignment": True, "lostResultReceiptAfterSigkillDrainsWithoutRelaunch": True, "repositoryBundles": 0, "crashedDaemonLeavesWorkerAlive": True, "reopenStopsInterruptedWorker": True, "executionsStarted": len(started), "relaunches": 0, "serviceBackend": "recording process-group backend"}))
     else:
-        rows = db.execute("SELECT result_json FROM runner_health_result ORDER BY rowid").fetchall()
-        db.close()
-        assert len(rows) == 2
-        results = [json.loads(row[0]) for row in rows]
+        results = facts["healthResults"]
+        assert len(results) == 2
         assert results[0]["models"][0]["id"] == "fixture-model"
         assert results[1]["login"] == {"agent": "claude", "authenticated": False, "method": "none"}, results[1]["login"]
         assert all(result["agentExited"] and result["stopReason"] == "end_turn" for result in results)

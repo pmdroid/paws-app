@@ -28,6 +28,7 @@ import { executeRunnerCommand } from "../../src/runner-worker";
 import type { WorkCommand } from "../../src/runner-journal";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 import { copyMigratedPglite } from "../pglite";
+import { writeRunnerFacts } from "./runner-facts";
 
 const mode = process.argv[2]!;
 const root = process.argv[3]!;
@@ -286,8 +287,13 @@ if (mode === "prepare") {
     () =>
       void coordinator
         .stop()
-        .then(() => {
+        .then(async () => {
           clearInterval(timer);
+          await writeRunnerFacts(
+            db,
+            join(server, "facts.json"),
+            config.commands.map((command) => command.id),
+          );
           return close();
         })
         .then(() => process.exit(0)),
