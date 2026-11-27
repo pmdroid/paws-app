@@ -29,7 +29,7 @@ function runPage(snapshot: FullStatus): string {
     error: null,
     engineUrl: null,
     closeout: openedView(),
-    ...pageData(snapshot, { view: "runs", id: "r-102" }),
+    ...pageData(snapshot, { view: "issues", id: "ENG-102" }),
   }).content;
 }
 

@@ -29,7 +29,7 @@ export const WORKSPACE_PAGES = [
     id: "agents",
     name: "Agents",
     description:
-      "Choose the agents that implement and review your work. Check each connection on an installed runner after sign-in. Sign in to each agent per runner on the Runners page.",
+      "Choose the agents that implement and review your work. Check each connection on an installed runner after sign-in. Sign in to each agent in Settings › Agent accounts.",
 
     sections: ["Global defaults", "Label presets", "Agent", "Model", "Effort"],
   },

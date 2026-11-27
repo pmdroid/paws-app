@@ -12,7 +12,6 @@ export type Route =
   | { view: "overview" }
   | { view: "runners"; id: string | null }
   | { view: "issues"; id: string | null }
-  | { view: "runs"; id: string | null }
   | { view: "alias"; kind: AliasKind; id: string }
   | { view: "mergeQueue" }
   | { view: "findings" }
@@ -124,7 +123,6 @@ export type RouteResource =
 export function routeResource(route: Route): RouteResource {
   if (route.view === "overview") return "overview";
   if (route.view === "issues") return route.id === null ? "issues" : "issue";
-  if (route.view === "runs") return "issues";
   if (route.view === "mergeQueue") return "mergeQueue";
   if (route.view === "questions") return route.id === null ? "questions" : "question";
   if (route.view === "evidence") return route.id === null ? "evidenceGallery" : "evidence";

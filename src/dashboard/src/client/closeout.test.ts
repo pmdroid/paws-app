@@ -36,7 +36,7 @@ function runPage(snapshot: FullStatus = fullStatusFixture()): string {
     phase: "ready",
     error: null,
     engineUrl: null,
-    ...pageData(snapshot, { view: "runs", id: "r-100" }),
+    ...pageData(snapshot, { view: "issues", id: "ENG-100" }),
   }).content;
 }
 
