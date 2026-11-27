@@ -43,6 +43,7 @@ export const issueVm = pgTable(
     unitSeenAt: bigint("unit_seen_at", { mode: "number" }),
     sleepRefusal: text("sleep_refusal"),
     sleepRefusedAt: bigint("sleep_refused_at", { mode: "number" }),
+    tokenMintedAt: bigint("token_minted_at", { mode: "number" }),
   },
   (table) => [
     uniqueIndex("issue_vm_item_live")

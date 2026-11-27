@@ -1,6 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parseConfigToml } from "../src/config";
 import {
+  enrollRunnerSteps,
   recordRunnerHostStatusSteps,
   saveIssueVmSpendSettingsSteps,
   saveVmHostSteps,
@@ -23,8 +27,14 @@ import {
 } from "../src/issue-vm";
 import { createFakeBoat, createFakeBootstrap, createFakeInstaBox } from "../src/provisioning";
 import { issueVmReconciler } from "../src/runner-cli/daemon";
-import { createFakeIssueVmUnits, type IssueVmHostView } from "../src/runner-daemon";
+import {
+  createFakeIssueVmDiskHelper,
+  createFakeIssueVmUnits,
+  issueVmDisks,
+  type IssueVmHostView,
+} from "../src/runner-daemon";
 import { handleVmHostRunnerRequest } from "../src/vm-hosts";
+import { workspaceTokenHash } from "../src/workspace";
 import { describePglite, withoutForeignKeys, type PgliteTestDb } from "./pglite-fixtures";
 
 const NOW = Date.UTC(2026, 10, 10);
@@ -33,13 +43,17 @@ const SIZES = parseConfigToml(
 ).vmSizes;
 
 const opened: PgliteTestDb[] = [];
+const dirs: string[] = [];
 afterEach(async () => {
   for (const handle of opened.splice(0)) await handle.close();
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 type Provider = "boat" | "instabox" | "host";
 
 const HOST = "01JRRNNER0000000000000000A";
+const GUEST = "01JRRNNER0000000000000000B";
+const GIB = 1024 ** 3;
 
 type Subject = {
   driver: IssueVmDriver;
@@ -136,10 +150,41 @@ async function hostSubject(store: Db): Promise<Subject> {
       updatedBy: "ada",
     }),
   );
+  await store.run((q) =>
+    q.exec(
+      q.orm.insert(q.t.workspaceMember).values({
+        workspaceId: "acme",
+        userId: "ada",
+        role: "member",
+        source: "manual",
+        active: 1,
+        checkedAt: 0,
+      }),
+    ),
+  );
   const units = createFakeIssueVmUnits();
+  const disk = createFakeIssueVmDiskHelper({ poolBytes: 400 * GIB, baseBytes: 8 * GIB });
+  const enrollDir = mkdtempSync(join(tmpdir(), "paws-issue-vm-enroll-"));
+  dirs.push(enrollDir);
+  // The guest's first boot: it enrolls with the token the host staged for it, once.
+  const boot = async () => {
+    for (const id of readdirSync(enrollDir)) {
+      const token = readFileSync(join(enrollDir, id), "utf8");
+      rmSync(join(enrollDir, id));
+      await store.transaction((q) =>
+        enrollRunnerSteps(q, {
+          tokenHash: workspaceTokenHash(token),
+          runnerId: GUEST,
+          name: `paws-vm-${id.toLowerCase()}`,
+          certificate: { fingerprint: "guest", serial: "1", pem: "pem", notBefore: 0, notAfter: 1 },
+          now: 1,
+        }),
+      );
+    }
+  };
   const daemon = {
     async issueVmHost(running?: string[]) {
-      const request = new Request("https://runner.paws.test/v1/issue-vms", {
+      const request = new Request("https://runner.paws.test/v1/issue-vms?disks=1", {
         method: "POST",
         body: JSON.stringify({ running, sleepCheck: true }),
       });
@@ -148,7 +193,17 @@ async function hostSubject(store: Db): Promise<Subject> {
     },
   };
   let clock = 0;
-  const tick = issueVmReconciler(daemon, units.units, () => (clock += 30_000));
+  const reconcile = issueVmReconciler(
+    daemon,
+    units.units,
+    () => (clock += 30_000),
+    enrollDir,
+    issueVmDisks(disk.helper),
+  );
+  const tick = async () => {
+    await reconcile();
+    await boot();
+  };
   const unitOf = (id: string) => [...units.active].find((unit) => unit.includes(`@${id}-`));
   return {
     driver: createHostIssueVmDriver({ store, wait: () => tick() }),
@@ -157,7 +212,8 @@ async function hostSubject(store: Db): Promise<Subject> {
       const [, , vcpus, memoryGb] = unitOf(id)?.split("@")[1]?.split(/[-.]/) ?? [];
       return { vcpus: Number(vcpus), memoryGb: Number(memoryGb) };
     },
-    stateOf: (id) => (unitOf(id) === undefined ? undefined : "running"),
+    stateOf: (id) =>
+      unitOf(id) !== undefined ? "running" : disk.volumes.has(id) ? "stopped" : undefined,
     commands: () => [],
   };
 }
@@ -189,7 +245,7 @@ const SUBJECTS: Record<
   host: {
     make: hostSubject,
     size: { vcpus: 2, memoryGb: 4 },
-    runner: () => null,
+    runner: () => GUEST,
     sleepCheck: false,
     price: null,
   },

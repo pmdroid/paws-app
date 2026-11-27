@@ -210,14 +210,52 @@ export function* reportHostIssueVmUnitsSteps(
     );
 }
 
+/** Host issue VMs still creating with no enrolled runner, and whether their member may still own one. */
+export function* hostIssueVmsAwaitingEnrollmentSteps(q: Q, hostRunnerId: string) {
+  const { issueVm: v, workspaceMember: m } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        id: v.id,
+        workspaceId: v.workspaceId,
+        memberUserId: v.memberUserId,
+        active: m.active,
+        revokedAt: m.revokedAt,
+      })
+      .from(v)
+      .leftJoin(m, and(eq(m.workspaceId, v.workspaceId), eq(m.userId, v.memberUserId)))
+      .where(
+        and(
+          eq(v.hostRunnerId, hostRunnerId),
+          eq(v.state, "creating"),
+          isNull(v.runnerId),
+          isNull(v.deletedAt),
+        ),
+      )
+      .orderBy(v.id),
+  );
+  return rows.map(({ active, revokedAt, ...row }) => ({
+    ...row,
+    memberUsable: active === 1 && revokedAt === null,
+  }));
+}
+
+/** Notes that Paws gave the VM a bootstrap token, so its host enrolls it and create waits for that. */
+export function* markIssueVmTokenMintedSteps(q: Q, input: { id: string; now: number }) {
+  const { issueVm: v } = q.t;
+  yield* q.exec(q.orm.update(v).set({ tokenMintedAt: input.now }).where(eq(v.id, input.id)));
+}
+
 export type HostIssueVmUnit = {
   state: IssueVmState;
   hostRunnerId: string | null;
+  runnerId: string | null;
   deletedAt: number | null;
   unitRunning: boolean | null;
   unitSeenAt: number | null;
   sleepRefusal: string | null;
   sleepRefusedAt: number | null;
+  tokenMintedAt: number | null;
 };
 
 export function* hostIssueVmUnitSteps(q: Q, id: string) {
@@ -227,11 +265,13 @@ export function* hostIssueVmUnitSteps(q: Q, id: string) {
       .select({
         state: v.state,
         hostRunnerId: v.hostRunnerId,
+        runnerId: v.runnerId,
         deletedAt: v.deletedAt,
         unitRunning: v.unitRunning,
         unitSeenAt: v.unitSeenAt,
         sleepRefusal: v.sleepRefusal,
         sleepRefusedAt: v.sleepRefusedAt,
+        tokenMintedAt: v.tokenMintedAt,
       })
       .from(v)
       .where(eq(v.id, id)),
