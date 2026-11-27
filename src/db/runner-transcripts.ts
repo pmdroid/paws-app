@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, count, eq, gte, inArray, isNull, lt, ne, sql } from "drizzle-orm";
 import { type Q, type Steps, type Db } from "./db";
 
 export type RunnerTranscriptRow = {
@@ -177,4 +177,48 @@ export function* retroTranscriptRowsSteps(
       .where(and(eq(t.workspaceId, workspaceId), inArray(t.runId, [...runIds])))
       .orderBy(asc(t.runId), asc(t.generation)),
   );
+}
+
+export function* retroUnstoredTurnsSteps(
+  q: Q,
+  input: {
+    workspaceId: string;
+    retroId: string;
+    itemIds: readonly string[];
+    from: number;
+    to: number;
+  },
+): Steps<{ helpers: number; retros: number }> {
+  const { runnerHelper: h, workItem: w, retroDispatch: d } = q.t;
+  const at = sql`coalesce(${h.endedAt}, ${h.expiresAt})`;
+  const helpers =
+    input.itemIds.length === 0
+      ? undefined
+      : yield* q.one(
+          q.orm
+            .select({ n: count() })
+            .from(h)
+            .innerJoin(w, eq(w.sessionKey, h.sessionId))
+            .where(
+              and(
+                eq(h.workspaceId, input.workspaceId),
+                inArray(w.id, [...input.itemIds]),
+                sql`${at} >= ${input.from} AND ${at} < ${input.to}`,
+              ),
+            ),
+        );
+  const retros = yield* q.one(
+    q.orm
+      .select({ n: count() })
+      .from(d)
+      .where(
+        and(
+          eq(d.workspaceId, input.workspaceId),
+          ne(d.retroId, input.retroId),
+          gte(d.createdAt, input.from),
+          lt(d.createdAt, input.to),
+        ),
+      ),
+  );
+  return { helpers: helpers?.n ?? 0, retros: retros?.n ?? 0 };
 }

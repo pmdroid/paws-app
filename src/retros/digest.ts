@@ -16,6 +16,7 @@ import {
 import { dailyFindingKey } from "../improvements";
 import {
   collectRetroTranscripts,
+  notStoredLine,
   renderRetroTranscripts,
   RETRO_TRANSCRIPT_PROMPT_CHARS,
   type RetroTranscriptReader,
@@ -1032,10 +1033,13 @@ export function attachRetroTranscripts(
     ...digest,
     coverage: {
       ...digest.coverage,
-      unavailable: digest.coverage.unavailable.map((line) =>
+      unavailable: digest.coverage.unavailable.flatMap((line) =>
         line === TRANSCRIPTS_UNAVAILABLE
-          ? "raw runner transcripts are not in the digest; the transcripts section has a redacted index and per-run summary"
-          : line,
+          ? [
+              "raw runner transcripts are not in the digest; the transcripts section has a redacted index and per-run summary",
+              notStoredLine(transcripts.notStored),
+            ]
+          : [line],
       ),
     },
     transcripts,
@@ -1130,6 +1134,10 @@ export async function collectRetroDigest(
     built,
     await collectRetroTranscripts(store, {
       workspaceId: retro.workspaceId,
+      retroId: retro.id,
+      itemIds: built.sessions.map((session) => session.itemId),
+      from: Math.min(cut, ...windows.map((window) => window.start)),
+      to: Math.max(cut, ...windows.map((window) => window.end)),
       runs,
       reader: input.transcripts,
       clip: (text, limit) => excerpt(text, secrets, limit),

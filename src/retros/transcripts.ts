@@ -1,4 +1,4 @@
-import { retroTranscriptRowsSteps, type Db } from "../db";
+import { retroTranscriptRowsSteps, retroUnstoredTurnsSteps, type Db } from "../db";
 
 const RETRO_TRANSCRIPT_RUN_LIMIT = 2_000;
 export const RETRO_TRANSCRIPT_PROMPT_CHARS = 40_000;
@@ -44,6 +44,7 @@ export type RetroTranscriptSection = {
   entries: RetroTranscriptEntry[];
   runsNotRead: number;
   trimmed: number;
+  notStored: { helpers: number; retros: number };
   note: string | null;
 };
 
@@ -209,16 +210,39 @@ function transcriptSummaryBlock(entry: RetroTranscriptEntry): string {
 const TRANSCRIPT_HEADER =
   "## transcripts\nOne index line per run transcript in the window (run, item, kind, bytes, status). Summaries count turns, tool calls, failed tools, blocked waits (failed sleep or pgrep commands) and Closeout calls; their text is redacted. A run marked missing or unreadable has no transcript evidence.";
 
+function indexView(entries: readonly RetroTranscriptEntry[], room: number): string[] {
+  const index = entries.map(transcriptIndexLine);
+  if (index.reduce((sum, line) => sum + line.length + 1, 0) <= room) return index;
+  const counts = new Map<string, Record<string, number>>();
+  for (const entry of entries) {
+    const tally = counts.get(entry.identifier) ?? {};
+    const status = entry.status.startsWith("unreadable") ? "unreadable" : entry.status;
+    tally.runs = (tally.runs ?? 0) + 1;
+    tally[status] = (tally[status] ?? 0) + 1;
+    counts.set(entry.identifier, tally);
+  }
+  return [
+    `Index lines for ${index.length} runs do not fit this view; the digest keeps every one. Per item:`,
+    ...[...counts].map(
+      ([identifier, c]) =>
+        `- ${identifier}: ${c.runs} runs, ${c.available ?? 0} available, ${c.missing ?? 0} missing, ${c.unreadable ?? 0} unreadable`,
+    ),
+  ];
+}
+
 export function boundRetroTranscripts(
   entries: RetroTranscriptEntry[],
   runsNotRead: number,
   maxChars = RETRO_TRANSCRIPT_PROMPT_CHARS,
   maxBytes = RETRO_TRANSCRIPT_SECTION_BYTES,
-): RetroTranscriptSection {
-  const reserve = 200;
+): Omit<RetroTranscriptSection, "notStored"> {
+  const reserve = 400;
   let chars =
     TRANSCRIPT_HEADER.length +
-    entries.reduce((sum, e) => sum + transcriptIndexLine(e).length + 1, 0);
+    indexView(entries, maxChars - TRANSCRIPT_HEADER.length - reserve).reduce(
+      (sum, line) => sum + line.length + 1,
+      0,
+    );
   let bytes = Buffer.byteLength(
     JSON.stringify(entries.map((entry) => ({ ...entry, summary: null }))),
   );
@@ -251,12 +275,15 @@ export function boundRetroTranscripts(
   };
 }
 
+export const notStoredLine = (turns: RetroTranscriptSection["notStored"]) =>
+  `${turns.helpers} helper and ${turns.retros} retro turns in the window: not stored by design (helper and retro turns keep no runner transcript)`;
+
 export function renderRetroTranscripts(section: RetroTranscriptSection, maxChars: number): string {
   const lines = [TRANSCRIPT_HEADER];
   let size = TRANSCRIPT_HEADER.length;
   const tail = section.note ?? "";
   const all = [
-    ...section.entries.map(transcriptIndexLine),
+    ...indexView(section.entries, maxChars - size - tail.length - 240),
     ...section.entries.map(transcriptSummaryBlock).filter((block) => block.length > 0),
   ];
   let omitted = 0;
@@ -270,6 +297,7 @@ export function renderRetroTranscripts(section: RetroTranscriptSection, maxChars
   }
   if (omitted > 0) lines.push(`${omitted} transcript lines are omitted from this view.`);
   if (tail.length > 0) lines.push(tail);
+  lines.push(notStoredLine(section.notStored));
   return lines.join("\n");
 }
 
@@ -277,6 +305,10 @@ export async function collectRetroTranscripts(
   store: Db,
   input: {
     workspaceId: string;
+    retroId: string;
+    itemIds: readonly string[];
+    from: number;
+    to: number;
     runs: readonly RetroTranscriptRun[];
     reader: RetroTranscriptReader | undefined;
     clip: Clip;
@@ -324,5 +356,6 @@ export async function collectRetroTranscripts(
       }
     }
   }
-  return boundRetroTranscripts(entries, input.runs.length - runs.length);
+  const notStored = await store.run((q) => retroUnstoredTurnsSteps(q, input));
+  return { ...boundRetroTranscripts(entries, input.runs.length - runs.length), notStored };
 }

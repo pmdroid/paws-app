@@ -916,6 +916,18 @@ describe("transcript summaries", () => {
             sealedSize: FIXTURE.length,
           })),
         ),
+      (q) =>
+        q.orm.insert(q.t.runnerHelper).values({
+          id: "helper-1",
+          runnerId: "box",
+          workspaceId: "ws",
+          sessionId: "session-PAS-1",
+          sessionGeneration: 1,
+          runnerFence: 1,
+          envelope: {},
+          expiresAt: at(1, 600),
+          purpose: "classify",
+        }),
     );
     const reads: string[] = [];
     const digest = await collect(db, root, {
@@ -963,6 +975,21 @@ describe("transcript summaries", () => {
     const text = boundRetroDigest(digest).text;
     expect(text).toContain("- run:run-fix PAS-1 fix 0 bytes missing");
     expect(text).toContain("run_closeout 2; get_closeout 1");
+    expect(digest.transcripts!.notStored).toEqual({ helpers: 1, retros: 0 });
+    expect(digest.coverage.unavailable).toContain(
+      "1 helper and 0 retro turns in the window: not stored by design (helper and retro turns keep no runner transcript)",
+    );
+    const many = Array.from({ length: 2_000 }, (_, index) => ({
+      ...fix!,
+      runId: `01JF${String(index).padStart(22, "0")}`,
+    }));
+    const compact = boundRetroDigest({
+      ...digest,
+      transcripts: { ...digest.transcripts!, entries: [implement!, ...many] },
+    }).text;
+    expect(compact).toContain("Index lines for 2001 runs do not fit this view");
+    expect(compact).toContain("- PAS-1: 2001 runs, 1 available, 2000 missing, 0 unreadable");
+    expect(compact).toContain("run_closeout 2; get_closeout 1");
     expect(JSON.stringify(digest)).not.toContain(TOKEN);
     expect(JSON.stringify(digest)).not.toContain("planted-secret-value");
   });
