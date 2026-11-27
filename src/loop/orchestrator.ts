@@ -106,7 +106,6 @@ import {
 } from "./runner-repository";
 import { acceptedResumeNeedsTurn, mergeAcceptedWork, settleRejectedPush } from "./accepted-work";
 import { restartForPushConflict } from "./push-conflict";
-import { attributionReturnHandoff } from "./attribution-return";
 import { arrivalsPrompt, arrivalsThought, branchMovedHandoff } from "./branch-arrivals";
 import {
   NOTHING_TO_PUBLISH_OPTIONS,
@@ -4285,15 +4284,6 @@ export class Orchestrator {
         return;
       if (executed.run.stopReason === "error" && isAgentServiceError(executed.run.errorMessage))
         throw new AgentServiceError(executed.run.errorMessage!);
-      const attribution = attributionReturnHandoff(executed.run.errorMessage, handoff);
-      if (attribution !== null && finished.state === "running") {
-        await restart(this.store, finished, {
-          reason: "follow_up",
-          body: attribution,
-          now: this.now(),
-        });
-        return;
-      }
       if (executed.run.stopReason !== "end_turn") {
         await this.fail(
           finished,

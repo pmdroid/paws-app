@@ -51,22 +51,12 @@ test("a follow-up interruption with an error stop reason continues instead of fa
   expect(result.prompts[1], result.detail).toContain("address any pending follow-up");
 }, 90_000);
 
-test("a candidate refused for a foreign Co-authored-by trailer goes back to the agent naming it", async () => {
-  const result = await handOver({ attribution: true });
-  expect(result.state, result.detail).toBe("running");
-  expect(result.prompts.length, result.detail).toBe(2);
-  expect(result.prompts[1], result.detail).toContain(
-    "has unexpected Co-authored-by: Claude <noreply@anthropic.com>",
-  );
-}, 90_000);
-
 /**
  * The remote runner hands the run over: it optionally asks, then Paws holds the WIP commit. With
  * `failure`, the first turn's handover fails after the interrupt instead.
  */
 async function handOver(options: {
   ask?: string;
-  attribution?: boolean;
   followUpError?: boolean;
   failure?: "commit" | "snapshot" | "publication";
 }) {
@@ -143,16 +133,6 @@ async function handOver(options: {
               baseSha: git(["rev-parse", "HEAD~1"]),
               wipCommit: wip,
             });
-            if (options.attribution && prompts.length === 1)
-              return {
-                role: input.role,
-                stopReason: "error",
-                errorMessage: `Run failed during push: Commit attribution rejected. Candidate attribution rejected: Co-authored-by trailers must match the consenting identities in the run policy. Commit ${wip.slice(0, 12)} has unexpected Co-authored-by: Claude <noreply@anthropic.com>; expected no Co-authored-by trailers. No candidate was rewritten.`,
-                cancelled: false,
-                timedOut: false,
-                authRequired: false,
-                agentExited: true,
-              };
             if (options.followUpError && prompts.length === 1)
               return {
                 role: input.role,

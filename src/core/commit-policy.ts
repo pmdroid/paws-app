@@ -72,7 +72,7 @@ export function validateCommitAttribution(
   );
 }
 
-export const COAUTHOR_REJECTION =
+const COAUTHOR_REJECTION =
   "Candidate attribution rejected: Co-authored-by trailers must match the consenting identities in the run policy.";
 
 export function policyPullRequestCredit(policy: GitCommitPolicy): string {

@@ -118,7 +118,6 @@ export {
   CHECKPOINT_COMMIT_MESSAGE,
   checkpointRef,
   checkpointStart,
-  COAUTHOR_REJECTION,
   commitCoauthorTrailers,
   commitPolicyMessage,
   policyCoauthors,
