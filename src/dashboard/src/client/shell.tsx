@@ -11,7 +11,6 @@ import {
 import {
   LayoutDashboard,
   ListTodo,
-  Terminal,
   CircleHelp,
   Server,
   Menu,
@@ -49,7 +48,6 @@ import { SettingsSubmenu } from "./settings-search";
 const ICONS = {
   overview: LayoutDashboard,
   issues: ListTodo,
-  runs: Terminal,
   mergeQueue: GitPullRequestArrow,
   findings: Bug,
   improvements: Lightbulb,
@@ -239,7 +237,7 @@ function Breadcrumb({
       {authenticated && (
         <>
           {slash}
-          {detail && (route.view === "runs" || route.view === "issues") ? (
+          {detail && route.view === "issues" ? (
             <Link to={routePath({ view: route.view, id: null })} className="hover:text-foreground">
               {title}
             </Link>

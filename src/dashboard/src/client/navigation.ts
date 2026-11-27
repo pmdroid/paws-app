@@ -9,10 +9,6 @@ export const PAGES = {
     title: "Issues",
     description: "Every issue delegated to Paws, who owns it and what blocks it.",
   },
-  runs: {
-    title: "Issues",
-    description: "Every issue delegated to Paws, who owns it and what blocks it.",
-  },
   alias: {
     title: "Issues",
     description: "Every issue delegated to Paws, who owns it and what blocks it.",

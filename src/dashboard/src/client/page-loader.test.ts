@@ -47,15 +47,7 @@ describe("issue page loading", () => {
     await settle();
     sent[1]!.answer(detail("ENG-101"));
     expect(await opened).toBe("applied");
-    const run = pages.load({ view: "runs", id: "r-101" });
-    await settle();
-    sent[2]!.answer(list());
-    await run;
-    expect(sent.map((entry) => entry.path)).toEqual([
-      "/api/issues",
-      "/api/issues/ENG-101",
-      "/api/issues",
-    ]);
+    expect(sent.map((entry) => entry.path)).toEqual(["/api/issues", "/api/issues/ENG-101"]);
     expect(pages.data.issue?.issue.id).toBe("ENG-101");
   });
 

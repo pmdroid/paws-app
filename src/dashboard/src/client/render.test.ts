@@ -86,7 +86,7 @@ describe("status views", () => {
       verdict.decision = decision;
       item.state = "awaiting_input";
       run.state = "verifying";
-      const html = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
+      const html = render(model({ snapshot, route: { view: "issues", id: run.itemId } })).content;
       expect(html).toContain("<h2>Closeout</h2>");
       expect(html).toContain(detail);
       expect(html).not.toContain("Closeout is verifying this candidate.");
@@ -105,7 +105,7 @@ describe("status views", () => {
       model({
         snapshot,
         engineUrl: "https://engine.example/api/status",
-        route: { view: "runs", id: run.id },
+        route: { view: "issues", id: run.itemId },
         closeout: openedView({ [checkKey(verdict.itemId, 1, check.id)]: true }),
       });
     expect(render(input()).content).toContain(
@@ -499,10 +499,10 @@ describe("status views", () => {
     const item = snapshot.items.find((entry) => entry.id === run?.itemId);
     if (!run || !item) throw new Error("missing fixture");
     item.state = "queued";
-    const before = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
+    const before = render(model({ snapshot, route: { view: "issues", id: run.itemId } })).content;
     expect(before).not.toContain("in line");
     item.queue = { position: 2, busySlots: 4, totalSlots: 4 };
-    const page = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
+    const page = render(model({ snapshot, route: { view: "issues", id: run.itemId } })).content;
     expect(page).toContain("Queued, 2nd in line. 4 of 4 runner slots are busy.");
     expect(page).toContain('<span class="result-icon" aria-hidden="true">2</span>');
     expect(page).toContain(`Paws starts ${item.id} when a slot frees.`);
@@ -511,9 +511,9 @@ describe("status views", () => {
     const issue = render(model({ snapshot, route: { view: "issues", id: item.id } })).content;
     expect(issue).toContain("Queued, 11th in line. 1 of 1 runner slot is busy.");
     item.state = "running";
-    expect(render(model({ snapshot, route: { view: "runs", id: run.id } })).content).not.toContain(
-      "in line",
-    );
+    expect(
+      render(model({ snapshot, route: { view: "issues", id: run.itemId } })).content,
+    ).not.toContain("in line");
   });
 
   test("a queued item names what it waits for instead of slots", () => {
@@ -620,7 +620,9 @@ describe("status views", () => {
     item.linearRequests = 12;
     const closeout = openedView();
     closeout.open[`section\ndetails:${item.id}`] = true;
-    const page = render(model({ snapshot, route: { view: "runs", id: run.id }, closeout })).content;
+    const page = render(
+      model({ snapshot, route: { view: "issues", id: run.itemId }, closeout }),
+    ).content;
     expect(page).toContain("<dt>Linear requests</dt><dd>12</dd>");
   });
 
@@ -630,10 +632,10 @@ describe("status views", () => {
     const item = snapshot.items.find((entry) => entry.id === run?.itemId);
     if (!run || !item) throw new Error("missing fixture");
     item.state = "merge_queue";
-    const before = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
+    const before = render(model({ snapshot, route: { view: "issues", id: run.itemId } })).content;
     expect(before).not.toContain("queue</h3>");
     item.mergeQueue = { repository: "acme/platform", position: 2, total: 3, ahead: "ENG-101" };
-    const page = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
+    const page = render(model({ snapshot, route: { view: "issues", id: run.itemId } })).content;
     expect(page).toContain("Second in the acme/platform queue");
     expect(page).toContain("Merge queue · #2");
     expect(page).toContain("ENG-101 merges first.");
@@ -658,9 +660,9 @@ describe("status views", () => {
       "This pull request moves now",
     );
     item.state = "running";
-    expect(render(model({ snapshot, route: { view: "runs", id: run.id } })).content).not.toContain(
-      "acme/platform queue",
-    );
+    expect(
+      render(model({ snapshot, route: { view: "issues", id: run.itemId } })).content,
+    ).not.toContain("acme/platform queue");
   });
 
   test("an item in the GitHub merge queue shows GitHub's position and state", () => {
@@ -674,23 +676,18 @@ describe("status views", () => {
       state: "AWAITING_CHECKS",
       line: "Second in the acme/platform GitHub merge queue, waiting for checks.",
     };
-    for (const route of [
-      { view: "runs", id: run.id },
-      { view: "issues", id: item.id },
-    ] as const) {
-      const page = render(model({ snapshot, route })).content;
-      expect(page).toContain("Second in the acme/platform GitHub merge queue, waiting for checks.");
-      expect(page).toContain('<span class="result-icon" aria-hidden="true">2</span>');
-      expect(page).toContain("Paws does not rebase it or run Closeout again.");
-    }
+    const page = render(model({ snapshot, route: { view: "issues", id: item.id } })).content;
+    expect(page).toContain("Second in the acme/platform GitHub merge queue, waiting for checks.");
+    expect(page).toContain('<span class="result-icon" aria-hidden="true">2</span>');
+    expect(page).toContain("Paws does not rebase it or run Closeout again.");
     delete item.githubQueue;
-    expect(render(model({ snapshot, route: { view: "runs", id: run.id } })).content).not.toContain(
-      "GitHub merge queue",
-    );
+    expect(
+      render(model({ snapshot, route: { view: "issues", id: run.itemId } })).content,
+    ).not.toContain("GitHub merge queue");
   });
 
-  test("a run detail renders the verification section", () => {
-    const html = render(model({ route: { view: "runs", id: "r-100" } })).content;
+  test("an issue detail renders the verification section", () => {
+    const html = render(model({ route: { view: "issues", id: "ENG-100" } })).content;
     expect(html).toContain("<h2>Closeout</h2>");
     expect(html).toContain("Exhausted");
     expect(html).toContain('data-action="toggle-check"');
@@ -708,7 +705,7 @@ describe("status views", () => {
     run.activity.push({ at: "2026-10-09T20:20:00.000Z", kind: "tool", text: "bun test" });
     for (const state of ["running", "verifying", "done"] as const) {
       run.state = state;
-      const html = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
+      const html = render(model({ snapshot, route: { view: "issues", id: run.itemId } })).content;
       const section = activitySection(html);
       expect(html).not.toContain('<details class="run-activity"');
       expect(section).toContain("<h2");
@@ -732,7 +729,7 @@ describe("status views", () => {
     expect(render(model({ route: { view: "issues", id: "ENG-104" } })).content).toContain(
       "Admin export UI",
     );
-    expect(render(model({ route: { view: "runs", id: "r-103" } })).content).toContain(
+    expect(render(model({ route: { view: "issues", id: "ENG-103" } })).content).toContain(
       "ask_team → Q-41",
     );
     expect(render(model({ route: { view: "questions", id: "Q-40" } })).content).toContain(
