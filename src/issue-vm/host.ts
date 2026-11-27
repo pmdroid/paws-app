@@ -56,7 +56,8 @@ export function createHostIssueVmDriver(options: HostIssueVmDriverOptions): Issu
         row.unitRunning === running &&
         (!enrolled || row.tokenMintedAt === null || row.runnerId !== null) &&
         (!diskGone ||
-          (row.diskSeenAt !== null && row.diskSeenAt >= since && row.diskPresent === false))
+          row.diskSeenAt === null ||
+          (row.diskSeenAt >= since && row.diskPresent === false))
       )
         return;
       if (sleeping && row.sleepRefusedAt !== null && row.sleepRefusedAt >= since)

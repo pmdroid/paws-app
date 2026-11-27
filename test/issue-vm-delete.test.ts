@@ -294,3 +294,40 @@ test("a host delete succeeds only once the host reports the unit stopped and the
   const [row] = await vms(db);
   expect(row).toMatchObject({ diskPresent: false, unitRunning: false });
 });
+
+test("a host that never reports its disks, a runner before disk reports, deletes on a stopped unit", async () => {
+  const { db, close } = await tempStore();
+  closers.push(close);
+  await withoutForeignKeys(db);
+  await insertWorkItem(db, "PAS-1");
+  const id = "01KOLDHOST0000000000000000";
+  let clock = Date.now();
+  await seed(
+    db,
+    runner("host", () => clock),
+    (q) =>
+      q.orm.insert(q.t.issueVm).values({
+        id,
+        workspaceId: "ws",
+        itemId: "PAS-1",
+        memberUserId: "owner",
+        provider: "host",
+        hostRunnerId: "host",
+        state: "deleting",
+        createdAt: clock,
+        stateAt: clock,
+      }),
+  );
+  const driver = createHostIssueVmDriver({
+    store: db,
+    now: () => clock,
+    wait: async () => {
+      clock += 1;
+      await db.run((q) =>
+        reportHostIssueVmUnitsSteps(q, { hostRunnerId: "host", running: [], now: clock }),
+      );
+    },
+  });
+  await driver.delete(id, { generation: 0, signal: new AbortController().signal });
+  expect((await vms(db))[0]).toMatchObject({ diskSeenAt: null, unitRunning: false });
+});
