@@ -15,6 +15,7 @@ import {
   intakePollMs,
   wakeIntakeOnInsert,
   LinearRateLimitError,
+  LinearForeignInstallationError,
   type AcceptedLinearEvent,
   type TrackerAdapter,
 } from "../src/linear";
@@ -270,6 +271,50 @@ test("a session that keeps failing retries on its own schedule while later sessi
       unhandled: [{ sessionId: "s0" }],
     });
     expect(INTAKE_RETRY_MS).toEqual([30_000, 60_000, 120_000, 300_000, 600_000]);
+  } finally {
+    await queue.stop();
+    await close();
+  }
+});
+
+test("a session of another installation is skipped once, an unreadable one is retried and ours is processed", async () => {
+  const { db, close } = await tempStore();
+  const store = createInboxStore(db);
+  let clock = 1_000_000;
+  const delivered: string[] = [];
+  const logs: string[] = [];
+  const queue = createIntakeQueue({
+    store,
+    now: () => clock,
+    log: (line) => logs.push(line),
+    arrive: async () => true,
+    deliver: async (event) => {
+      delivered.push(event.sessionId!);
+      if (event.sessionId === "s0") throw new LinearForeignInstallationError("s0");
+      if (event.sessionId === "s1")
+        throw new Error("Linear returned incomplete installation access.");
+    },
+  });
+  try {
+    for (const n of [0, 1, 2]) await store.commit(created(n));
+    queue.wake();
+    await queue.idle();
+    clock += INTAKE_RETRY_MS[0]!;
+    queue.wake();
+    await queue.idle();
+    expect({
+      delivered: delivered.toSorted(),
+      skipped: logs.filter((line) => line.includes("another installation")),
+      foreign: (await inboxRow(db, "s0")).attempts,
+      unreadable: (await inboxRow(db, "s1")).attempts,
+      unhandled: await unhandled(db),
+    }).toEqual({
+      delivered: ["s0", "s1", "s1", "s2"],
+      skipped: ["linear session s0 belongs to another installation; skipped"],
+      foreign: 0,
+      unreadable: 2,
+      unhandled: 1,
+    });
   } finally {
     await queue.stop();
     await close();

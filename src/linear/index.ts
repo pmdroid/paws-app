@@ -217,7 +217,7 @@ export type {
   StartLinearCodeIssue,
   StartLinearCodeIssueOptions,
 } from "./issue-lifecycle";
-export { createLinearAccessReads } from "./access";
+export { createLinearAccessReads, LinearForeignInstallationError } from "./access";
 export { createFakeLinearAccessReads } from "./fake-access";
 export type { LinearAccessReads, LinearSessionInstallation } from "./access";
 

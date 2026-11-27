@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { createLinearAccessReads, type LinearClient } from "../src/linear";
+import {
+  createLinearAccessReads,
+  LinearForeignInstallationError,
+  type LinearClient,
+} from "../src/linear";
 
 const viewer = { id: "app", app: true, organization: { id: "org" } };
 const session = {
@@ -48,6 +52,38 @@ test.each([
   { viewer, agentSession: null },
 ])("unverified or mismatched installation cannot authorize a session: %j", async (data) => {
   await expect(reads(data).adapter.session("session")).rejects.toThrow();
+});
+
+test.each([
+  { viewer, agentSession: { ...session, id: "other" } },
+  { viewer, agentSession: { ...session, appUser: { ...viewer, id: "other" } } },
+  { viewer, agentSession: { ...session, appUser: { ...viewer, app: false } } },
+  {
+    viewer,
+    agentSession: { ...session, appUser: { ...viewer, organization: { id: "other" } } },
+  },
+])("a session of another installation is a positive mismatch: %j", async (data) => {
+  const failure = await reads(data)
+    .adapter.session("session")
+    .catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(LinearForeignInstallationError);
+  expect((failure as LinearForeignInstallationError).sessionId).toBe("session");
+});
+
+test.each([
+  { viewer, agentSession: { ...session, id: null } },
+  { viewer, agentSession: { ...session, appUser: null } },
+  { viewer, agentSession: { ...session, appUser: { ...viewer, id: "other", app: null } } },
+  { viewer, agentSession: { ...session, appUser: { ...viewer, organization: null } } },
+  { viewer, agentSession: { ...session, id: "other", appUser: { ...viewer, organization: {} } } },
+  { viewer: { ...viewer, organization: null }, agentSession: { ...session, id: "other" } },
+  { viewer, agentSession: null },
+])("an unreadable session field is not a positive mismatch: %j", async (data) => {
+  const failure = await reads(data)
+    .adapter.session("session")
+    .catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(Error);
+  expect(failure).not.toBeInstanceOf(LinearForeignInstallationError);
 });
 
 test("a missing OAuth client cannot establish installation ownership", async () => {

@@ -16,6 +16,15 @@ export interface LinearAccessReads {
   teams?(options?: TrackerRequestOptions): Promise<{ id: string; name: string; key: string }[]>;
 }
 
+export class LinearForeignInstallationError extends Error {
+  readonly sessionId: string;
+  constructor(sessionId: string) {
+    super("The Linear agent session belongs to another installation.");
+    this.name = "LinearForeignInstallationError";
+    this.sessionId = sessionId;
+  }
+}
+
 const VIEWER = `query PawsInstallation {
   viewer { id app organization { id } }
 }`;
@@ -55,13 +64,21 @@ export function createLinearAccessReads(
       const scope = installation(data);
       const session = child(data, "agentSession");
       const app = child(session, "appUser");
-      if (
-        required(session, "id") !== sessionId ||
-        required(app, "id") !== scope.appUserId ||
-        app?.["app"] !== true ||
-        required(child(app, "organization"), "id") !== scope.organizationId
-      )
+      const read = {
+        sessionId: required(session, "id"),
+        appUserId: required(app, "id"),
+        organizationId: required(child(app, "organization"), "id"),
+        app: app?.["app"],
+      };
+      if (typeof read.app !== "boolean")
         throw new Error("The Linear agent session belongs to another installation.");
+      if (
+        read.sessionId !== sessionId ||
+        read.appUserId !== scope.appUserId ||
+        read.app !== true ||
+        read.organizationId !== scope.organizationId
+      )
+        throw new LinearForeignInstallationError(sessionId);
       const issue = child(session, "issue");
       return {
         ...scope,
