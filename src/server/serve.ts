@@ -5,7 +5,7 @@ import { journalCaught } from "../journal";
 import type { DoctorCheck } from "../doctor";
 import { recordDuration } from "../metrics";
 import { observeRequest, type RequestMetrics } from "./request-metrics";
-import { ALERTS_PATH, readAlerts } from "../alerts";
+import { ALERTS_PATH, readAlerts, type DeployLagCheck } from "../alerts";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
 import { createGitHubStatusCache, type GitHubStatusCache } from "./github-status-cache";
@@ -182,6 +182,7 @@ export type ServerOptions = {
   ) => Promise<Response>;
   vmProviderChecks?: VmProviderCheckService;
   doctor?: () => Promise<readonly DoctorCheck[]>;
+  deployLag?: DeployLagCheck;
   retros?: (
     request: Request,
     principal: WorkspacePrincipal,
@@ -377,6 +378,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(options.telemetry ? { telemetry: options.telemetry } : {}),
           ...(options.vmProviderChecks ? { vmProviderChecks: options.vmProviderChecks } : {}),
           ...(options.doctor ? { doctor: options.doctor } : {}),
+          ...(options.deployLag ? { deployLag: options.deployLag } : {}),
           ...(options.storageCleanup ? { storageCleanup: options.storageCleanup } : {}),
           ...(options.probeCollection ? { probeCollection: options.probeCollection } : {}),
           ...(options.improvements ? { improvements: options.improvements } : {}),
@@ -446,6 +448,7 @@ type Secrets = {
   probeCollection?: ServerOptions["probeCollection"];
   vmProviderChecks?: ServerOptions["vmProviderChecks"];
   doctor?: ServerOptions["doctor"];
+  deployLag?: ServerOptions["deployLag"];
   improvements?: ServerOptions["improvements"];
   executionControls?: ServerOptions["executionControls"];
   blockerChecks?: ServerOptions["blockerChecks"];
@@ -943,7 +946,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       return Response.json({ error: "Method not allowed" }, { status: 405 });
     if (principal !== undefined && !isWorkspaceAdmin(principal.role))
       return Response.json({ error: "Workspace admin required." }, { status: 403 });
-    return Response.json(await readAlerts(secrets.store));
+    return Response.json(await readAlerts(secrets.store, Date.now(), secrets.deployLag));
   }
   if (path === "/api/settings/doctor" && secrets.doctor) {
     if (request.method !== "GET")

@@ -180,6 +180,7 @@ export {
   readBranchWork,
   readRef,
   readCommit,
+  githubSourceRepository,
   readOpenPullHead,
 } from "./pull-head";
 export { inspectPullRequestMerge } from "./blocker-merge";

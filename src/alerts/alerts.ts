@@ -1,4 +1,5 @@
 import { alertFactsSteps, metricMinutesSteps, type AlertJobRow, type Db } from "../db";
+import { deployLagAlerts, type DeployLagCheck } from "./deploy-lag";
 
 export const ALERTS_PATH = "/api/alerts";
 
@@ -126,7 +127,11 @@ function idleCapacity(
   ];
 }
 
-export async function readAlerts(db: Db, now = Date.now()): Promise<Alert[]> {
+export async function readAlerts(
+  db: Db,
+  now = Date.now(),
+  deployLag?: DeployLagCheck,
+): Promise<Alert[]> {
   const from = Math.floor((now - RUNNER_4XX_WINDOW_MS) / MINUTE_MS) * MINUTE_MS;
   const metrics = await db.run((q) =>
     metricMinutesSteps(q, { names: ["http.request"], from, to: now + MINUTE_MS }),
@@ -144,5 +149,6 @@ export async function readAlerts(db: Db, now = Date.now()): Promise<Alert[]> {
     ...testTimeouts(facts.testTimeouts),
     ...deadOutbox(facts.deadOutbox),
     ...idleCapacity(facts, now),
+    ...(deployLag ? await deployLagAlerts(deployLag, now) : []),
   ].sort((a, b) => b.since - a.since);
 }

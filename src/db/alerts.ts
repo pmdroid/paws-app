@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNotNull, max, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, max, or, sql } from "drizzle-orm";
 import { type Q } from "./db";
 import { jsonItemId } from "./jobs";
 import { activeRunnerIdsSteps, runnerOccupancySteps } from "./runner-capacity";
@@ -81,4 +81,16 @@ export function* alertFactsSteps(q: Q, now: number, since: AlertWindows) {
     lastQueuedAt: (lastQueued?.at ?? null) === null ? null : Number(lastQueued!.at),
     freeSlots,
   };
+}
+
+export function* admittedRunnerVersionsSteps(q: Q) {
+  const { runner, runnerHostStatus } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({ id: runner.id, name: runner.name, version: runnerHostStatus.runnerVersion })
+      .from(runner)
+      .innerJoin(runnerHostStatus, eq(runnerHostStatus.runnerId, runner.id))
+      .where(and(eq(runner.status, "active"), isNull(runner.revokedAt)))
+      .orderBy(runner.id),
+  );
 }

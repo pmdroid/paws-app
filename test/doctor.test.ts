@@ -653,6 +653,17 @@ test("doctor fails with one actionable line when grok has no auth method", async
   expect(missing).toEqual([`missing grok: ${GROK_LOGIN_MESSAGE}`]);
 });
 
+test("doctor notes when deploy lag can't be checked", () => {
+  const detail = "deploy lag can't be checked: the running checkout has no GitHub origin remote";
+  const unavailable = "the running checkout has no GitHub origin remote";
+  expect(
+    doctorChecks(probe(true), { deployLagUnavailable: unavailable }).filter(
+      (check) => check.name === "deploy-lag",
+    ),
+  ).toEqual([{ name: "deploy-lag", ok: true, detail, note: true }]);
+  expect(doctorChecks(probe(true)).some((check) => check.name === "deploy-lag")).toBe(false);
+});
+
 function probe(
   ok: boolean,
   env: Record<string, string> = {},
