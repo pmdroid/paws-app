@@ -1270,6 +1270,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             (await storageUsage.fetch(request, runnerId)) ??
             storageCleanup.fetch(request, runnerId),
           issueVms: (request, runnerId) => handleVmHostRunnerRequest(request, runnerId, store),
+          observeRequest: (labels, ms) => recordDuration("http.request", labels, ms),
           slackReplyAuthority: (q, input) => slackReplyAllowedSteps(q, paths.home, input),
           repositorySummaryAuthority: repositorySummaryAllowedSteps,
           probeAuthority: probeCollectionAllowedSteps,
