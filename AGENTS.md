@@ -107,6 +107,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/slack`                                              | Slack OAuth, identity, authorization and webhooks                     |
 | `src/storage-cleanup`                                    | Admin cleanups: preview, run, daily schedule and history              |
 | `src/storage-usage`                                      | Disk use per category under the Paws home, and stored snapshots       |
+| `src/telemetry`                                          | OTLP export: settings, header secret, exporters and export status     |
 | `src/vm-hosts`                                           | VM hosts: issue VM size and slots per machine                         |
 | `src/vm-provider-checks`                                 | VM provider key checks: when they run and the latest result kept      |
 | `src/webhook-body`                                       | Bounded webhook request bodies and raw signature checks               |

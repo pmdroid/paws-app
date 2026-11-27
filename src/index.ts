@@ -356,6 +356,7 @@ import {
   type RetroDispatcher,
 } from "./retros";
 import { createStorageUsage } from "./storage-usage";
+import { createTelemetry, readTelemetrySettings, telemetryHeader } from "./telemetry";
 import { handleVmHostRunnerRequest } from "./vm-hosts";
 import {
   STORAGE_CLEANUP_JOB,
@@ -1231,6 +1232,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   });
   const runnerHostRefusals = createRunnerHostRefusals();
   const storageUsage = createStorageUsage({ paths, store, runners: async () => runner?.work });
+  const telemetry = createTelemetry({
+    version: installedPawsVersion() ?? "unknown",
+    instanceId: runtime.publicUrl === null ? hostname() : new URL(runtime.publicUrl).hostname,
+  });
+  await telemetry.apply(await readTelemetrySettings(store), telemetryHeader.read(paths.home));
   const storageCleanup = createStorageCleanup({
     paths,
     store,
@@ -1587,6 +1593,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   try {
     server = startServer({
       storageUsage,
+      telemetry,
       doctor: () =>
         realProbe(envSource, store).then(doctorChecks, (error: unknown) => [
           {
@@ -2751,6 +2758,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             { name: "Linear", stop: () => running.stop() },
             { name: "server", stop: () => server.stop(true) },
             { name: "storage usage", stop: () => storageUsage.stop() },
+            { name: "telemetry", stop: () => telemetry.shutdown() },
             { name: "reconciler", stop: () => reconciler?.close() },
             { name: "orchestrator", stop: () => orchestrator?.shutdown() },
           ],

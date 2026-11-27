@@ -40,6 +40,12 @@ export type { CloseoutSummaryOptions } from "./closeout-summary";
 export { STORAGE_CHECK_PATH, STORAGE_SETTINGS_PATH, handleStorageSettingsRequest } from "./storage";
 export type { StorageSettingsOptions } from "./storage";
 export {
+  TELEMETRY_CHECK_PATH,
+  TELEMETRY_SETTINGS_PATH,
+  handleTelemetrySettingsRequest,
+} from "./telemetry";
+export type { TelemetrySettingsOptions } from "./telemetry";
+export {
   STORAGE_USAGE_PATH,
   STORAGE_USAGE_REFRESH_PATH,
   handleStorageUsageRequest,

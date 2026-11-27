@@ -93,6 +93,7 @@ const MODULES = [
   "storage-cleanup",
   "metrics",
   "alerts",
+  "telemetry",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -197,6 +198,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "workspace",
     "worktree-checkout",
     "runner-transcript-config",
+    "telemetry",
   ],
   skills: ["journal", "core", "db", "runner-protocol"],
   runtimes: ["journal"],
@@ -212,6 +214,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "webhook-body",
   ],
   metrics: ["db"],
+  telemetry: ["config", "credentials", "db", "journal", "metrics"],
   "project-context": ["db", "linear"],
   notebook: ["db", "improvements", "project-context"],
   retros: [
