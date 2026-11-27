@@ -1,10 +1,17 @@
-export async function waitFor(
-  ready: () => boolean | Promise<boolean>,
-  options: { timeout?: number; what?: string } = {},
-): Promise<void> {
-  const deadline = Date.now() + (options.timeout ?? 5_000);
-  while (!(await ready())) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${options.what ?? "it"}`);
+export async function waitFor<T>(
+  ready: () => T | Promise<T>,
+  options: { timeoutMs?: number; what?: string; observe?: () => unknown } = {},
+): Promise<T> {
+  const deadline = Date.now() + (options.timeoutMs ?? 5_000);
+  for (;;) {
+    const value = await ready();
+    if (value) return value;
+    if (Date.now() > deadline) {
+      const observed = options.observe ? await options.observe() : value;
+      throw new Error(
+        `timed out after ${options.timeoutMs ?? 5_000} ms waiting for ${options.what ?? ready.toString()}; last observed ${Bun.inspect(observed)}`,
+      );
+    }
     await Bun.sleep(5);
   }
 }

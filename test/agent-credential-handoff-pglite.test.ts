@@ -11,6 +11,7 @@ import {
   assignRunnerWorkSteps,
   bindAgentAccountSteps,
 } from "../src/db";
+import { setJournalSink } from "../src/journal";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import {
   agentCredentialContext,
@@ -238,6 +239,47 @@ describePglite((connect) => {
       "",
     );
     await expect(work.currentCredential("new", stored)).rejects.toThrow();
+    await db.transaction((q) =>
+      writeAgentAuthSteps(q, claude.id, JSON.stringify({ state: "signed-in" })),
+    );
+    await db.transaction((q) =>
+      writeAgentCredentialSteps(q, secretsDir, {
+        accountId: claude.id,
+        runnerId: null,
+        version: 2,
+        blob: JSON.stringify([{ path: ".claude/.credentials.json", data: "e30=" }]),
+        now: NOW,
+      }),
+    );
+    let clock = NOW;
+    const lines: string[] = [];
+    const restore = setJournalSink((line) => lines.push(line));
+    const polling = createRunnerWork({
+      store: db,
+      keyId: "coordinator",
+      privateKey: signing.privateKey,
+      eventKey: randomBytes(32),
+      secretsDir,
+      now: () => clock,
+    });
+    const poll = () =>
+      polling.attachCredentials("new", [
+        envelope("new", "login_check", "unsealable", "claude", claude.id),
+        envelope("new", "login_check", "central"),
+      ]);
+    try {
+      for (const at of [NOW, NOW + 30 * 60_000, NOW + 60 * 60_000]) {
+        clock = at;
+        const [unsealable, sealed] = await poll();
+        expect(unsealable!.credential).toBeUndefined();
+        expect(sealed!.credential?.version).toBe(3);
+      }
+    } finally {
+      restore();
+    }
+    const unsealableLines = lines.filter((line) => line.includes(claude.id));
+    expect(unsealableLines).toHaveLength(2);
+    expect(unsealableLines[0]).toContain("Unsupported central credential");
     const binding = await db.transaction((q) =>
       bindAgentAccountSteps(q, {
         userId: "owner",

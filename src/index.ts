@@ -64,7 +64,7 @@ import {
 } from "./credentials";
 import { ArtifactRejectedError, commitCheckpointSync, git, mirrorFiles, worktreePath } from "./acp";
 import { useGitReader } from "./closeout";
-import { useEvidenceRecordObjects } from "./closeout-spec";
+import { credentialSecrets, useEvidenceRecordObjects } from "./closeout-spec";
 import {
   closeoutRecordObjects,
   createEvidenceStore,
@@ -349,7 +349,7 @@ import {
 } from "./runner-placement";
 import { releaseVersionFromPath } from "./runner-protocol";
 import { startServer } from "./server";
-import { activeRunnerReadiness } from "./settings";
+import { activeAgentFleet, activeRunnerReadiness } from "./settings";
 import {
   createRetroDispatcher,
   createRetroPreviewHttp,
@@ -1236,6 +1236,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     store,
     artifactRoot: join(paths.home, "retros"),
     catalogs: retroCatalog,
+    secrets: () => credentialSecrets(),
+    transcripts: () => runner?.transcripts,
   });
   const runnerHostRefusals = createRunnerHostRefusals();
   const storageUsage = createStorageUsage({ paths, store, runners: async () => runner?.work });
@@ -1280,6 +1282,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             (await storageUsage.fetch(request, runnerId)) ??
             storageCleanup.fetch(request, runnerId),
           issueVms: (request, runnerId) => handleVmHostRunnerRequest(request, runnerId, store),
+          observeRequest: (labels, ms) => recordDuration("http.request", labels, ms),
           slackReplyAuthority: (q, input) => slackReplyAllowedSteps(q, paths.home, input),
           repositorySummaryAuthority: repositorySummaryAllowedSteps,
           probeAuthority: probeCollectionAllowedSteps,
@@ -1294,6 +1297,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             artifactRoot: join(paths.home, "retros"),
             sign: value.signRetroCommand,
             credentials: value.attachCredentials,
+            transcripts: () => value.transcripts,
+            secrets: () => credentialSecrets(),
           });
           return value;
         });
@@ -1758,6 +1763,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       agentSettings: {
         applyToWaiting: async () => (await orchestrator?.applyAgentSettingsToWaiting()) ?? 0,
         runnerReadiness: (agent) => activeRunnerReadiness(store, agent),
+        fleet: () => activeAgentFleet(store),
         ...(linear?.tracker?.readBriefIssue
           ? {
               readIssue: (identifier: string, signal: AbortSignal) =>

@@ -9,7 +9,12 @@ import { and, desc, eq, gt, inArray, lt, notInArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { createCommandStore } from "./commands-ddl";
 import { attachCredentialStore } from "./credential-store";
-import { IssueVmHostViewSchema, type IssueVmHostView } from "./issue-vm-machines";
+import {
+  ISSUE_VM_DISKS_QUERY,
+  IssueVmHostViewSchema,
+  type IssueVmHostView,
+  type IssueVmSleepRefusal,
+} from "./issue-vm-machines";
 import {
   agentCredential,
   commandReceipt,
@@ -47,6 +52,7 @@ import {
   RunnerRepositoryCommandResultSchema,
   RunnerRetroCommandSchema,
   RunnerRetroInputRequestSchema,
+  RunnerRetroTranscriptRequestSchema,
   RunnerRetroResultSchema,
   SignedRunnerCommandSchema,
   verifyRunnerCommand,
@@ -66,6 +72,7 @@ import {
   type RunnerRetroCommand,
   type RunnerRetroCommandRejection,
   type RunnerRetroInputRequest,
+  type RunnerRetroTranscriptRequest,
   type RunnerRetroResult,
   type RunnerInstalledAgent,
   type RunnerInstalledRuntime,
@@ -77,6 +84,8 @@ import {
   RunnerInstalledRuntimesSchema,
   RunnerInstalledSkillsSchema,
   RunnerSkillSchema,
+  runnerReleaseAtLeast,
+  type RunnerVersion,
 } from "../runner-protocol";
 import {
   RunnerTranscriptChunkSchema,
@@ -203,6 +212,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   let state = readState(options.root);
   let closed = false;
   let observedAt = 0;
+  let belowMinimum = false;
   let rejection: { error: RunnerRequestError; attemptAt: number } | null = null;
   if (
     state &&
@@ -903,6 +913,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       return stored?.phase === "paired" && stored.certificate !== state.certificate;
     },
     capacity: () => applied,
+    belowMinimum: () => belowMinimum,
     ceiling: () => ceiling,
     conversationCapacity: () => conversations ?? 0,
     pendingCommands,
@@ -1042,6 +1053,12 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         }
       }
       const response = RunnerHeartbeatSchema.parse(reply);
+      const level = response.protocolLevel?.split(".").map(Number);
+      belowMinimum =
+        body.runnerVersion !== undefined &&
+        level?.length === 3 &&
+        level.every(Number.isSafeInteger) &&
+        !runnerReleaseAtLeast(body.runnerVersion, level as unknown as RunnerVersion);
       if (response.observedAt !== undefined) observedAt = Math.max(observedAt, response.observedAt);
       if (options.concurrency !== undefined && response.concurrency !== undefined)
         applied = Math.min(response.concurrency, ceiling);
@@ -1077,8 +1094,22 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         .strictObject({ duplicate: z.boolean() })
         .parse(await authenticated("/v1/storage-report", "POST", body));
     },
-    async issueVmHost(): Promise<IssueVmHostView> {
-      return IssueVmHostViewSchema.parse(await authenticated("/v1/issue-vms", "GET"));
+    async issueVmHost(
+      running: string[],
+      refused: IssueVmSleepRefusal[] = [],
+    ): Promise<IssueVmHostView> {
+      const post = async (body: object) =>
+        IssueVmHostViewSchema.parse(
+          await authenticated(`/v1/issue-vms?${ISSUE_VM_DISKS_QUERY}`, "POST", body),
+        );
+      const checked = { running, sleepCheck: true, ...(refused.length > 0 ? { refused } : {}) };
+      try {
+        return await post(checked);
+      } catch (error) {
+        // An older Paws refuses the extra fields with a 400; it then gets the bare report.
+        if (!(error instanceof RunnerRequestError) || error.status !== 400) throw error;
+        return post({ running });
+      }
     },
     async postStorageCleanup(result: RunnerStorageCleanupResult) {
       const body = RunnerStorageCleanupResultSchema.parse(result);
@@ -1459,8 +1490,13 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         throw new Error("Runner retro acknowledgement differs from the admitted command.");
       return receipt;
     },
-    async retroInput(request: RunnerRetroInputRequest): Promise<unknown> {
-      const body = RunnerRetroInputRequestSchema.parse(request);
+    async retroInput(
+      request: RunnerRetroInputRequest | RunnerRetroTranscriptRequest,
+    ): Promise<unknown> {
+      const body =
+        request.kind === "transcript"
+          ? RunnerRetroTranscriptRequestSchema.parse(request)
+          : RunnerRetroInputRequestSchema.parse(request);
       retroCommand(body.commandId);
       return authenticated(retroPath(body.commandId, "input"), "POST", body);
     },

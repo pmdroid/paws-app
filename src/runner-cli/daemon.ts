@@ -4,9 +4,14 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   isIdentityRejected,
+  issueVmDisks,
   reconcileIssueVms,
+  runningIssueVmIds,
+  systemdIssueVmDiskHelper,
   systemdIssueVmUnits,
+  type IssueVmDisks,
   type IssueVmHostView,
+  type IssueVmSleepRefusal,
   type IssueVmUnits,
   type RunnerDaemon,
 } from "../runner-daemon";
@@ -27,14 +32,18 @@ import { createRunnerStorageReporter } from "../storage-usage";
 export const RUNNER_WORK_ROOT = "/var/lib/paws-agent/work";
 
 const ISSUE_VM_UNIT = "/etc/systemd/system/paws-issue-vm@.service";
+const ISSUE_VM_DISK_UNIT = "/etc/systemd/system/paws-issue-vm-disk@.service";
 const ISSUE_VM_EVERY_MS = 30_000;
 const ISSUE_VM_ENROLL_DIR = "/var/lib/paws-runner/issue-vm-enroll";
 
 export function issueVmReconciler(
-  daemon: { issueVmHost(): Promise<IssueVmHostView> },
+  daemon: {
+    issueVmHost(running: string[], refused?: IssueVmSleepRefusal[]): Promise<IssueVmHostView>;
+  },
   units: IssueVmUnits | null,
   now: () => number = Date.now,
   enrollDir = ISSUE_VM_ENROLL_DIR,
+  disks: IssueVmDisks | null = null,
 ) {
   let at = 0;
   const stage = (id: string, token: string) => {
@@ -47,7 +56,13 @@ export function issueVmReconciler(
     if (units === null || now() < at) return;
     at = now() + ISSUE_VM_EVERY_MS;
     try {
-      await reconcileIssueVms(units, await daemon.issueVmHost(), stage);
+      const running = async () => runningIssueVmIds(await units.active());
+      const view = await daemon.issueVmHost(await running());
+      const result = await reconcileIssueVms(units, view, stage, disks);
+      const refused = result.refused.map(({ machine, reason }) => ({ id: machine.id, reason }));
+      const changed = result.started.length > 0 || result.stopped.length > 0;
+      if (view.vmHost && (changed || refused.length > 0))
+        await daemon.issueVmHost(await running(), refused);
     } catch (error) {
       journalCaught(error, "runner-cli/daemon.issueVmReconciler", null);
     }
@@ -159,9 +174,13 @@ export async function runPairedDaemon(
       ]);
     cleaner = createRunnerWorkCleaner({ workRoot: RUNNER_WORK_ROOT, signal, holds });
     const spool = createRunnerSpoolCleaner({ spool: shared.spool, signal, holds });
+    const vmHost = existsSync(ISSUE_VM_UNIT);
     const reconcileVms = issueVmReconciler(
       daemon,
-      existsSync(ISSUE_VM_UNIT) ? systemdIssueVmUnits() : null,
+      vmHost ? systemdIssueVmUnits() : null,
+      Date.now,
+      ISSUE_VM_ENROLL_DIR,
+      vmHost && existsSync(ISSUE_VM_DISK_UNIT) ? issueVmDisks(systemdIssueVmDiskHelper()) : null,
     );
     let sweepAt = 0;
     while (!signal.aborted) {

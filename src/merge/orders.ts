@@ -429,25 +429,8 @@ export async function mergeQueueTurn(
       queued: true,
       reason: "review",
     };
-  if (review === "required" || review === "changes_requested") {
-    await store.run((q) => leaveMergeQueueSteps(q, item.id));
-    // Reviewers do not approve a conflicting pull request, so the rebase does not wait for them.
-    const conflict = await waitConflict({ store, item, caps }, pull.number, {
-      for: "a review",
-    });
-    if (await caps.stopped()) return undefined;
-    if (conflict) return conflict;
-    const body =
-      review === "required"
-        ? `Waiting for an approving review on pull request #${prNumber}. It joins the ${name} merge queue once approved.`
-        : `Changes were requested on pull request #${prNumber}. It joins the ${name} merge queue once approved.`;
-    const notice = reviewWaitNotice(review, prNumber, pull.url, name);
-    const key = await reviewWaitKey(store, item, caps, review, pull.head);
-    caps.voice.afterPullRequest(item, notice, key);
-    await observeHeldCi({ store, item, caps }, pull);
-    if (await caps.stopped()) return undefined;
-    return { message: body, queued: true, reason: "review" };
-  }
+  if (review === "required" || review === "changes_requested")
+    return reviewWait({ store, item, caps }, review, name, pull);
   const lane = await caps.mergeLane(item);
   await store.run((q) =>
     joinMergeQueueSteps(q, {
@@ -476,7 +459,56 @@ export async function mergeQueueTurn(
   }
   if (place.nextItemId === null) return undefined;
   if (await mergesAlongside({ store, item, caps }, place, pull, held)) return undefined;
+  await observeHeldCi({ store, item, caps }, pull);
+  if (await caps.stopped()) return undefined;
   return { message: `${mergeQueueLine(place)}. ${first}`, queued: true, reason: "ahead" };
+}
+
+async function reviewWait(
+  merge: MergeContext,
+  review: "required" | "changes_requested",
+  name: string,
+  pull: { number: number; url: string | null; head: string },
+): Promise<MergeWait | Extract<MergeStep, { kind: "returned" | "asked" }> | undefined> {
+  const { store, item, caps } = merge;
+  const prNumber = pull.number;
+  await store.run((q) => leaveMergeQueueSteps(q, item.id));
+  // Reviewers do not approve a conflicting pull request, so the rebase does not wait for them.
+  const conflict = await waitConflict(merge, pull.number, {
+    for: "a review",
+  });
+  if (await caps.stopped()) return undefined;
+  if (conflict) return conflict;
+  const body =
+    review === "required"
+      ? `Waiting for an approving review on pull request #${prNumber}. It joins the ${name} merge queue once approved.`
+      : `Changes were requested on pull request #${prNumber}. It joins the ${name} merge queue once approved.`;
+  const notice = reviewWaitNotice(review, prNumber, pull.url, name);
+  const key = await reviewWaitKey(store, item, caps, review, pull.head);
+  caps.voice.afterPullRequest(item, notice, key);
+  await observeHeldCi(merge, pull);
+  if (await caps.stopped()) return undefined;
+  return { message: body, queued: true, reason: "review" };
+}
+
+export async function reviewBeforeGit(
+  merge: MergeContext,
+  open: MergePull,
+): Promise<MergeStep | null> {
+  const { repository, github, pull, head } = open;
+  const review = await readPullReview({
+    client: github.client,
+    owner: repository.owner,
+    repo: repository.repo,
+    prNumber: pull.number,
+    ...credentials(github),
+  });
+  if (await merge.caps.stopped()) return { kind: "obsolete" };
+  if (review !== "required" && review !== "changes_requested") return null;
+  const name = `${repository.owner}/${repository.repo}`;
+  const wait = await reviewWait(merge, review, name, { ...pull, head });
+  if (wait === undefined) return { kind: "obsolete" };
+  return "kind" in wait ? wait : { kind: "wait", ...wait };
 }
 
 /**

@@ -16,10 +16,11 @@ export type SubIssueRequest = {
   /** `owner/repo` for the repository label, when the plan ran against a repository. */
   repository?: string | null;
   delegate?: boolean;
+  blocksParent?: boolean;
 };
 
 const PARENT = `query SubIssueParent($id: String!) {
-  issue(id: $id) { id team { id } project { id } }
+  issue(id: $id) { id team { id } project { id } projectMilestone { id } }
 }`;
 
 const VIEWER = `query SubIssueDelegate { viewer { id } }`;
@@ -35,6 +36,10 @@ const EXISTING = `query SubIssuesFiled($ids: [ID!]!) {
 
 const CREATE = `mutation SubIssueCreate($input: IssueCreateInput!) {
   issueCreate(input: $input) { success issue { id identifier url } }
+}`;
+
+const DELEGATE = `mutation SubIssueDelegateAfter($id: String!, $input: IssueUpdateInput!) {
+  issueUpdate(id: $id, input: $input) { success }
 }`;
 
 const RELATE = `mutation SubIssueBlocks($input: IssueRelationCreateInput!) {
@@ -95,6 +100,9 @@ export function createLinearSubIssueMethods(
         throw new Error("Linear returned no parent issue for the sub-issues");
       const project = dig(parent, "project");
       const projectId = isRecord(project) ? readString(project, "id") : null;
+      const milestone = dig(parent, "projectMilestone");
+      const projectMilestoneId = isRecord(milestone) ? readString(milestone, "id") : null;
+      const delegateLater = request.blocksParent === true;
       const viewer = request.delegate
         ? dig(await client.query(VIEWER, {}, options), "viewer")
         : null;
@@ -128,7 +136,8 @@ export function createLinearSubIssueMethods(
                   teamId,
                   parentId,
                   ...(projectId ? { projectId } : {}),
-                  ...(delegateId ? { delegateId } : {}),
+                  ...(projectMilestoneId ? { projectMilestoneId } : {}),
+                  ...(delegateId && !delegateLater ? { delegateId } : {}),
                   title: draft.title,
                   description: subIssueDescription(draft),
                 },
@@ -183,6 +192,46 @@ export function createLinearSubIssueMethods(
             throw new Error(
               `Linear did not record that sub-issue ${blocker + 1} blocks ${index + 1}`,
             );
+        }
+      if (request.blocksParent)
+        for (const [index, issue] of filed.entries()) {
+          options?.signal?.throwIfAborted();
+          const existing = nodes(dig(found.get(issue.id) ?? {}, "relations"))
+            .filter(isRecord)
+            .some(
+              (relation) =>
+                relation["type"] === "blocks" &&
+                isRecord(relation["relatedIssue"]) &&
+                relation["relatedIssue"]["id"] === parentId,
+            );
+          if (existing) continue;
+          const related = dig(
+            await client.query(
+              RELATE,
+              {
+                input: {
+                  id: stableUuid(`paws:sub-issue-blocks-parent:${request.key}:${index}`),
+                  type: "blocks",
+                  issueId: issue.id,
+                  relatedIssueId: parentId,
+                },
+              },
+              options,
+            ),
+            "issueRelationCreate",
+          );
+          if (!isRecord(related) || related["success"] !== true)
+            throw new Error(`Linear did not record that sub-issue ${index + 1} blocks its parent`);
+        }
+      if (delegateLater && delegateId)
+        for (const [index, issue] of filed.entries()) {
+          options?.signal?.throwIfAborted();
+          const updated = dig(
+            await client.query(DELEGATE, { id: issue.id, input: { delegateId } }, options),
+            "issueUpdate",
+          );
+          if (!isRecord(updated) || updated["success"] !== true)
+            throw new Error(`Linear did not delegate sub-issue ${index + 1}`);
         }
       return filed;
     },

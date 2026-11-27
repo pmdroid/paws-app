@@ -3,7 +3,7 @@ import { boundHeartbeat, boundResultSubmissions } from "../bound-runner-account"
 import { migratedHome, withHomeStore } from "../helpers";
 import assert from "node:assert/strict";
 import { and, eq, inArray, isNotNull, type SQL } from "drizzle-orm";
-import { seed } from "../pglite-fixtures";
+import { offerFixtureModels, seed } from "../pglite-fixtures";
 import { generateKeyPairSync } from "node:crypto";
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -48,6 +48,7 @@ import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../
 import { githubClient } from "../e2e-harness";
 import { workspaceAdmission } from "../fake-workspace";
 import { runtimeProcess } from "./runner-runtime-process";
+import { waitFor } from "../wait-for";
 
 setJournalSink(() => {});
 // Match CI even when the parent runner has a restrictive umask.
@@ -326,6 +327,8 @@ let releaseCleanup: (() => void) | undefined;
 let cleanupGate: Promise<void> | undefined;
 let cleanupEntered = false;
 await bindFixtureAccounts(paws.store, runnerId);
+await offerFixtureModels(paws.store, runnerId, "claude", ["implement-model"]);
+await offerFixtureModels(paws.store, runnerId, "codex", ["review-model"]);
 let heartbeats = 0;
 const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
   root: runnerRoot,
@@ -486,14 +489,22 @@ async function commandRows(where: (q: Q) => SQL | undefined) {
 }
 
 async function until(label: string, done: () => boolean | Promise<boolean>) {
-  const deadline = performance.now() + 30_000;
-  while (!(await done()) && performance.now() < deadline) {
-    await runtime.tick();
-    await Bun.sleep(5);
-  }
-  assert(
-    await done(),
-    `${label}: ${JSON.stringify({ errors, items: await listWorkItems(paws.store), commands: [...commands.values()], activities: (await listOutbox(paws.store)).map((row) => row.payload) })}`,
+  await waitFor(
+    async () => {
+      if (await done()) return true;
+      await runtime.tick();
+      return false;
+    },
+    {
+      timeoutMs: 30_000,
+      what: label,
+      observe: async () => ({
+        errors,
+        items: await listWorkItems(paws.store),
+        commands: [...commands.values()],
+        activities: (await listOutbox(paws.store)).map((row) => row.payload),
+      }),
+    },
   );
 }
 async function addItem(id: string, answer = false) {
@@ -598,12 +609,14 @@ async function restartMidTurn(command: RunnerCommand) {
   await until("activity consumed", async () => (await consumed()) > previous);
   await paws.stop();
   down = true;
-  // Keep ticking the same runtime while its coordinator and database are closed.
-  for (let i = 0; i < 3; i++) {
-    await runtime.tick();
-    await Bun.sleep(100);
-  }
-  assert(offlineCalls > 0);
+  const offlineBefore = offlineCalls;
+  await waitFor(
+    async () => {
+      await runtime.tick();
+      return offlineCalls > offlineBefore;
+    },
+    { timeoutMs: 30_000, what: "the runner to reach Paws while it is down", observe: () => errors },
+  );
   assert.equal(stops, 0);
   assert.equal(
     (runtime as Awaited<ReturnType<typeof openRunnerRuntime>>).status().active?.executionId,
@@ -676,9 +689,10 @@ try {
           return value;
         });
     }
-    const observedCleanup = () => cleanupEntered;
-    for (let i = 0; i < 2000 && !observedCleanup(); i++) await Bun.sleep(5);
-    assert(cleanupEntered, "restart must reach broker cleanup");
+    await waitFor(() => cleanupEntered, {
+      timeoutMs: 30_000,
+      what: "restart to reach broker cleanup",
+    });
     runtime = await reopening;
     assert(opened, "restart keeps heartbeats running while cleanup is unconfirmed");
     for (let i = 0; i < 5; i++) await runtime.tick();

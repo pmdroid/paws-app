@@ -30,6 +30,7 @@ import {
   lastRunResultSteps,
   leasedRunnerWorkCommandSteps,
   onlineMemberRunnersSteps,
+  runnerHostVersionSteps,
   runnerLastSeenSteps,
   runnerNameSteps,
   runnerOnlineSteps,
@@ -72,6 +73,7 @@ import {
   unassignedRunnerReservationsSteps,
   type Db,
   type Q,
+  modelUnofferedReason,
 } from "../db";
 import {
   ArtifactRejectedError,
@@ -96,11 +98,13 @@ import type { RunnerHealth } from "../runner-health";
 import type { RunnerArtifactStore } from "../runner-artifacts";
 import {
   HOST_TOOL_LIMITS,
+  MINIMUM_RUNNER_VERSION,
   REVIEW_BRIEF_LIMIT,
   REVIEW_EXPLANATION_LIMIT,
   REVIEW_LOCATION_LIMIT,
   RUNNER_LEASE_GRACE_MS,
   redactedJson,
+  runnerReleaseAtLeast,
   withSignedOutAuth,
   type HostToolDefinitions,
   type RunnerCommand,
@@ -144,6 +148,7 @@ import {
   type FailoverLedger,
   type UsageLimit,
 } from "./failover";
+import { busyRunners, modelMissWait, NO_FREE_CAPACITY } from "./model-wait";
 import {
   AgentHungError,
   HANG_ASK_AFTER,
@@ -202,10 +207,9 @@ const RUN_LOST_THOUGHT = "The runner lost this run after it restarted; continuin
 const RUN_HUNG_THOUGHT = (minutes: number) =>
   `The agent sent nothing for ${minutes} minutes, so Paws stopped it; continuing from the branch.`;
 const RUN_LOST_MESSAGE = "The runner no longer runs this command.";
+const BELOW_MINIMUM_THOUGHT = `Runner below minimum version ${MINIMUM_RUNNER_VERSION.join(".")}: it did not finish this run within its limit, so Paws released it; continuing from the branch.`;
 export const restoredCheckpointNote = (sha: string) =>
   `This checkout holds the work saved at the last checkpoint (${sha.slice(0, 8)}) of the turn before this one, as uncommitted changes. Read git status and git diff, keep that work, and continue from it.`;
-const NO_FREE_CAPACITY = ": no free capacity";
-const ACCOUNT_CONCURRENCY_LIMIT = ": account at its concurrency limit";
 
 async function earlierSession(
   store: Db,
@@ -404,16 +408,14 @@ export function createRemoteAgentRunner(options: {
       placement.session !== undefined &&
       offered.length === 1 &&
       offered[0] === placement.session.runnerId;
-    const busy = [
-      ...new Set(
-        rejected
-          .filter(
-            (reason) =>
-              reason.includes(NO_FREE_CAPACITY) || reason.endsWith(ACCOUNT_CONCURRENCY_LIMIT),
-          )
-          .map((reason) => reason.slice(0, reason.indexOf(":"))),
-      ),
-    ];
+    const busy = busyRunners(rejected);
+    const model = placement.profile?.model;
+    const modelWait = Boolean(
+      busy.length === 0 &&
+      agent &&
+      model &&
+      rejected.some((reason) => reason.endsWith(modelUnofferedReason(agent, model))),
+    );
     if (
       (resetsAt === null || heldForSession || busy.length > 0) &&
       (busy.length > 0 ||
@@ -427,6 +429,7 @@ export function createRemoteAgentRunner(options: {
             : undefined
           : Math.min(heldForSession ? SESSION_GRACE_MS : Infinity, Math.max(0, resetsAt - now())),
         details,
+        modelWait,
       );
     const readyRunners = options.placement
       ? async () => {
@@ -538,6 +541,27 @@ export function createRemoteAgentRunner(options: {
     );
     return new RunnerCapacityWait([], undefined, [`${name}: ${error.message}`]);
   }
+  async function modelMissing(
+    itemId: string,
+    runnerId: string,
+    model: string,
+    placement: Parameters<RunnerPlacement["candidates"]>[0],
+  ) {
+    const name = await runnerName(runnerId);
+    journal(`item ${itemId} runner ${runnerId} no longer offers model ${model}; placing again`);
+    const rejected: string[] = [];
+    const offered = options.placement
+      ? await options.placement.candidates({
+          ...placement,
+          onRejected: (id, reason) => rejected.push(`${id}: ${reason}`),
+        })
+      : [];
+    return modelMissWait(
+      rejected,
+      offered.map((runner) => runner.id),
+      `${name}: the agent no longer offers ${model}`,
+    );
+  }
   /** Whether any runner has already run work, not just preparation, for the item. */
   function startedWork(itemId: string) {
     return store.run((q) => itemStartedRunnerWorkSteps(q, itemId));
@@ -587,7 +611,11 @@ export function createRemoteAgentRunner(options: {
         runnerOnlineSteps(q, placement.pinnedRunnerId!, now() - RUNNER_ONLINE_MS),
       )),
     );
-    if (pinnedOnline && !(options.placement && placement.role === "reviewer"))
+    if (
+      pinnedOnline &&
+      !(options.placement && placement.role === "reviewer") &&
+      (!options.placement || candidates.some((runner) => runner.id === placement.pinnedRunnerId))
+    )
       candidates = candidates.filter((runner) => runner.id === placement.pinnedRunnerId);
     else if (placement.preferRunnerId)
       candidates = [
@@ -1029,6 +1057,13 @@ export function createRemoteAgentRunner(options: {
                     }))
                   );
                 });
+                if (disposition?.modelMissing)
+                  throw await modelMissing(
+                    itemId,
+                    selected.id,
+                    disposition.modelMissing,
+                    placementRequest,
+                  );
                 if (
                   disposition?.retryable &&
                   result.agentExited &&
@@ -1871,6 +1906,32 @@ export function createRemoteAgentRunner(options: {
               true,
             );
           };
+          const releasedBelowMinimum = async () => {
+            const version = await store.run((q) => runnerHostVersionSteps(q, selected.id));
+            if (
+              !options.placement ||
+              version === null ||
+              runnerReleaseAtLeast(version, MINIMUM_RUNNER_VERSION)
+            )
+              return null;
+            const at = now();
+            const released = await store.transaction(function* (q) {
+              yield* endLostRunnerWorkSteps(q, assigned.runId, assigned.generation, at);
+              return (
+                options.placement &&
+                (yield* options.placement.finishedSteps(q, {
+                  commandId: assigned.id,
+                  runnerId: selected.id,
+                  profile,
+                  failure: "heartbeat_lost",
+                  finishedAt: at,
+                }))
+              );
+            });
+            return released?.retryable
+              ? await lostRun("runner below minimum version", BELOW_MINIMUM_THOUGHT)
+              : null;
+          };
           const unlessFenced = async <T>(read: () => Promise<T>): Promise<T | typeof FENCED> => {
             try {
               return await read();
@@ -1891,6 +1952,8 @@ export function createRemoteAgentRunner(options: {
             } catch (error) {
               if (!(error instanceof RunnerWorkFencedError) || !options.placement) throw error;
               signal.throwIfAborted();
+              const released = now() >= deadline ? await releasedBelowMinimum() : null;
+              if (released) throw released;
               // The runner's heartbeat no longer names this work, so it is gone, not just quiet.
               if ((await liveness())?.lostAt != null) {
                 const recovered = await store.transaction(function* (q) {
@@ -1956,6 +2019,15 @@ export function createRemoteAgentRunner(options: {
                   }))
                 );
               });
+            if (complete && disposition?.modelMissing) {
+              await cancelItem(itemId, signal);
+              throw await modelMissing(
+                itemId,
+                selected.id,
+                disposition.modelMissing,
+                placementRequest,
+              );
+            }
             if (complete && disposition?.retryable && input.role === "reviewer")
               throw new RetryableRunnerError(
                 selected.id,
@@ -2476,7 +2548,7 @@ export function createRemoteAgentRunner(options: {
             }
             await delay(interval, undefined, { signal });
           }
-          if (!complete) throw new Error("Remote run timed out");
+          if (!complete) throw (await releasedBelowMinimum()) ?? new Error("Remote run timed out");
           // A handover can stop the agent while Paws still posts its question, whether the
           // handover then succeeds or fails after the interrupt; the question stays either way.
           if (question && (complete.handedOver || complete.handoverFailure)) await question;

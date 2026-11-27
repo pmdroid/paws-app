@@ -54,6 +54,11 @@ export {
   type RetroWindow,
 } from "./digest";
 export {
+  boundRetroTranscripts,
+  type RetroTranscriptReader,
+  type RetroTranscriptSection,
+} from "./transcripts";
+export {
   emptyRetroReport,
   renderRetroReport,
   RETRO_ACTION_STEPS,

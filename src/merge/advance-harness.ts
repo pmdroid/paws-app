@@ -183,7 +183,7 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
     /** The checks on main's head; none by default. */
     baseCi: (): CheckNodes | undefined => undefined,
     pullHead: (head: string): string => head,
-    reviews: new Map<number, "REVIEW_REQUIRED" | "CHANGES_REQUESTED" | "APPROVED">(),
+    reviews: new Map<number, "REVIEW_REQUIRED" | "CHANGES_REQUESTED" | "APPROVED" | "UNREADABLE">(),
     /** The digest the lane reads now; acceptances record {@link CLOSEOUT_DIGEST}. */
     policyDigest: CLOSEOUT_DIGEST as string | null,
     /**
@@ -265,6 +265,8 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
         const update = await updateBranch(req.body as GraphqlBody);
         if (update) return update;
         const variables = (req.body as { variables: { number: number; head?: string } }).variables;
+        if (variables.head === undefined && state.reviews.get(variables.number) === "UNREADABLE")
+          return { status: 502, body: {} };
         if (variables.head === undefined)
           return {
             status: 200,
@@ -597,6 +599,25 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
         afterPullRequest: (_, body, key) => say("afterPullRequest", body, key),
         flush: async () => {},
       },
+      openPull: async (current) => ({
+        github: {
+          appId: "1",
+          installationId: "2",
+          privateKeyPem: "unused",
+          client,
+          tokenProvider: {
+            mode: "app",
+            tokenFor: async (purpose: string) => {
+              state.beforeMergeToken(purpose);
+              return "ghs_test";
+            },
+          },
+        },
+        repository: { owner: "acme", repo: "app", remoteUrl: bare },
+        pull: { number: item.pull, url: `https://github.com/acme/app/pull/${item.pull}` },
+        head: current.checkpoint?.wipCommit ?? item.accepted,
+        signal: state.publication.signal,
+      }),
       publish: async (current) => {
         publishedIds.push(current.id);
         return {

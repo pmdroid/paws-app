@@ -76,6 +76,25 @@ test("repeated consenting coauthor trailers are accepted but unknown coauthors a
       commitCoauthorTrailers(`${message}Co-authored-by: Unknown <unknown@example.test>\n`),
     ),
   ).toThrow("Co-authored-by trailers must match the consenting identities");
+  expect(() =>
+    validateCommitAttribution(
+      policy,
+      metadata,
+      commitCoauthorTrailers(`${message}Co-Authored-By: Claude <noreply@anthropic.com>\n`),
+      "0123456789abcdef0123456789abcdef01234567",
+    ),
+  ).toThrow(
+    `Commit 0123456789ab has unexpected Co-authored-by: Claude <noreply@anthropic.com>; expected ${credit.name} <${credit.email}>.`,
+  );
+  expect(() =>
+    validateCommitAttribution(
+      policy,
+      metadata,
+      commitCoauthorTrailers("change\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n"),
+    ),
+  ).toThrow(
+    `A commit has unexpected Co-authored-by: Claude <noreply@anthropic.com> and is missing Co-authored-by: ${credit.name} <${credit.email}>; expected`,
+  );
 });
 
 async function fixture() {

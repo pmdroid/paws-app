@@ -48,6 +48,8 @@ export type {
 } from "./lifecycle";
 export { createBoatIssueVmDriver } from "./boat";
 export { createInstaBoxIssueVmDriver } from "./instabox";
+export { createHostIssueVmDriver } from "./host";
+export type { HostIssueVmDriverOptions } from "./host";
 export { issueVmName } from "./driver";
 export type { IssueVmDriverOptions } from "./driver";
 export { createIssueVmReplacer } from "./replace";

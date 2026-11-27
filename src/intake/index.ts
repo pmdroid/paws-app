@@ -1,6 +1,7 @@
 export { asksForFreshStart, intakeDelegatedIssue, cycleMessage, queueMessage } from "./intake";
 export type { EarlierBranch, IntakeResult } from "./intake";
 export { orderByBlocks } from "./order";
+export { ulid } from "./ulid";
 export type { OrderNode, OrderResult } from "./order";
 export { listWorkItems } from "./store";
 export { createParentDelegations, PARENT_REFUSAL } from "./parent-delegation";

@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gt, isNull, lt, max, notInArray, or } from "drizzle-orm";
+import { and, count, desc, eq, gt, inArray, isNull, lt, max, notInArray, or } from "drizzle-orm";
 import { type Q } from "./db";
 import { ulid } from "./ulid";
 
@@ -169,12 +169,114 @@ export function* liveHostIssueVmsSteps(q: Q, hostRunnerId: string) {
   const { issueVm: v } = q.t;
   const rows = yield* q.all(
     q.orm
-      .select({ id: v.id, state: v.state })
+      .select({ id: v.id, state: v.state, want: v.want })
       .from(v)
       .where(and(eq(v.hostRunnerId, hostRunnerId), notInArray(v.state, ENDED_STATES)))
       .orderBy(v.id),
   );
-  return rows.map((row) => ({ id: row.id, state: row.state as IssueVmState }));
+  return rows.map((row) => ({
+    id: row.id,
+    state: row.state as IssueVmState,
+    want: row.want as IssueVm["want"],
+  }));
+}
+
+export function* reportHostIssueVmUnitsSteps(
+  q: Q,
+  input: {
+    hostRunnerId: string;
+    running: string[];
+    refused?: { id: string; reason: string }[];
+    now: number;
+  },
+) {
+  const { issueVm: v } = q.t;
+  const live = and(eq(v.hostRunnerId, input.hostRunnerId), isNull(v.deletedAt));
+  yield* q.exec(
+    q.orm
+      .update(v)
+      .set({
+        unitRunning: input.running.length === 0 ? false : inArray(v.id, input.running),
+        unitSeenAt: input.now,
+      })
+      .where(live),
+  );
+  for (const { id, reason } of input.refused ?? [])
+    yield* q.exec(
+      q.orm
+        .update(v)
+        .set({ sleepRefusal: reason, sleepRefusedAt: input.now })
+        .where(and(live, eq(v.id, id))),
+    );
+}
+
+/** Host issue VMs still creating with no enrolled runner, and whether their member may still own one. */
+export function* hostIssueVmsAwaitingEnrollmentSteps(q: Q, hostRunnerId: string) {
+  const { issueVm: v, workspaceMember: m } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        id: v.id,
+        workspaceId: v.workspaceId,
+        memberUserId: v.memberUserId,
+        active: m.active,
+        revokedAt: m.revokedAt,
+      })
+      .from(v)
+      .leftJoin(m, and(eq(m.workspaceId, v.workspaceId), eq(m.userId, v.memberUserId)))
+      .where(
+        and(
+          eq(v.hostRunnerId, hostRunnerId),
+          eq(v.state, "creating"),
+          isNull(v.runnerId),
+          isNull(v.deletedAt),
+        ),
+      )
+      .orderBy(v.id),
+  );
+  return rows.map(({ active, revokedAt, ...row }) => ({
+    ...row,
+    memberUsable: active === 1 && revokedAt === null,
+  }));
+}
+
+/** Notes that Paws gave the VM a bootstrap token, so its host enrolls it and create waits for that. */
+export function* markIssueVmTokenMintedSteps(q: Q, input: { id: string; now: number }) {
+  const { issueVm: v } = q.t;
+  yield* q.exec(q.orm.update(v).set({ tokenMintedAt: input.now }).where(eq(v.id, input.id)));
+}
+
+export type HostIssueVmUnit = {
+  state: IssueVmState;
+  hostRunnerId: string | null;
+  runnerId: string | null;
+  deletedAt: number | null;
+  unitRunning: boolean | null;
+  unitSeenAt: number | null;
+  sleepRefusal: string | null;
+  sleepRefusedAt: number | null;
+  tokenMintedAt: number | null;
+};
+
+export function* hostIssueVmUnitSteps(q: Q, id: string) {
+  const { issueVm: v } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        state: v.state,
+        hostRunnerId: v.hostRunnerId,
+        runnerId: v.runnerId,
+        deletedAt: v.deletedAt,
+        unitRunning: v.unitRunning,
+        unitSeenAt: v.unitSeenAt,
+        sleepRefusal: v.sleepRefusal,
+        sleepRefusedAt: v.sleepRefusedAt,
+        tokenMintedAt: v.tokenMintedAt,
+      })
+      .from(v)
+      .where(eq(v.id, id)),
+  );
+  return (row ?? null) as HostIssueVmUnit | null;
 }
 
 export function* issueVmsInUseSteps(q: Q, input: { workspaceId: string; memberUserId?: string }) {

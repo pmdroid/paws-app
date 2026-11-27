@@ -10,6 +10,7 @@ import {
   type StageLimits,
 } from "../core";
 import { startFreshBudgetSteps } from "./time-budget";
+import { answerSplitSteps } from "./issue-split";
 import {
   agentTurnStageSteps,
   announceLinearTurnSteps,
@@ -58,6 +59,7 @@ import { RETRY_CLOSEOUT, retriesCloseout, rewrittenRestart } from "./closeout-re
 import { retriesMerge } from "../merge";
 import { worktreeBranch } from "./sources";
 import { answerRunnerRepositorySteps } from "./runner-repository";
+import { UNCHANGING_ERROR_REASON } from "./unchanging-error";
 import { AGENT_HUNG_REASON, AGENT_HUNG_STOP, REVIEWER_MODEL_REASON } from "./runner-wait";
 import { recordVisualReviewOutcomeSteps, visualReviewHandoffSteps } from "./visual-review";
 import { replyListSection } from "./review-replies";
@@ -119,6 +121,7 @@ export function questionEffects(
     jobKey: string,
     /** Handoffs the time limit held back, handed over before the answers. */
     held: readonly HeldHandoff[] = [],
+    freshRun = false,
   ): Steps<void> {
     const item = yield* getWorkItemSteps(q, question.itemId);
     if (!item) return;
@@ -146,6 +149,7 @@ export function questionEffects(
       body: [...held.map((entry) => entry.handoff), ...answers].join("\n\n"),
       jobKey,
       now: input.now,
+      ...(freshRun ? { freshRun } : {}),
     });
     if (restarted !== null) {
       yield* markHandoffsCarriedSteps(q, held);
@@ -158,6 +162,7 @@ export function questionEffects(
     question: StoredQuestion,
     held: readonly HeldHandoff[] = [],
     replyList = "",
+    freshRun = false,
   ) {
     if (input.redirect && question.answerEventKey !== null)
       yield* announceLinearTurnSteps(q, question.sessionId, question.answerEventKey, input.now);
@@ -178,6 +183,7 @@ export function questionEffects(
         .join("\n\n"),
       `resume:answer:${question.id}`,
       held,
+      freshRun,
     );
   }
   /** A reply is guidance for the agent. It never bypasses a check: that is decided on the item page. */
@@ -273,7 +279,7 @@ export function questionEffects(
       const held = yield* heldHandoffsSteps(q, question.itemId);
       if (plain && held.length === 0 && question.reason === TIME_LIMIT_VERIFYING_REASON)
         yield* verifyAgainSteps(q, question, { now: input.now });
-      else yield* resume(q, question, held);
+      else yield* resume(q, question, held, "", true);
       return;
     }
     yield* consumeTurn(q, question);
@@ -389,7 +395,11 @@ export function questionEffects(
     if (item?.state === "awaiting_input")
       yield* applyWorkItemEventSteps(q, item.id, "pause", { now: input.now });
   }
-  function* outOfMemory(q: Q, question: StoredQuestion): Steps<void> {
+  function* outOfMemory(
+    q: Q,
+    question: StoredQuestion,
+    cause = "the runner ran out of memory",
+  ): Steps<void> {
     if (!/^\s*stop\b/i.test(question.answer ?? "")) {
       yield* resume(q, question);
       return;
@@ -401,17 +411,25 @@ export function questionEffects(
       q,
       item,
       "run_error",
-      `Stopped after the runner ran out of memory, as asked in Linear. The work is on branch \`${item.branchName || worktreeBranch(item)}\`.`,
+      `Stopped after ${cause}, as asked in Linear. The work is on branch \`${item.branchName || worktreeBranch(item)}\`.`,
       input.now,
       { stoppedByAnswer: true },
     );
   }
   return {
     "plan-approval": planApproval,
+    split: function* (q, question) {
+      yield* consumeTurn(q, question);
+      yield* answerSplitSteps(q, question, input.now);
+    },
     "visual-review": visualReview,
     "runner-wait": function* (q, question) {
       if (question.reason === OUT_OF_MEMORY_REASON) {
         yield* outOfMemory(q, question);
+        return;
+      }
+      if (question.reason === UNCHANGING_ERROR_REASON) {
+        yield* outOfMemory(q, question, "an error waiting can't change");
         return;
       }
       if (question.reason === AGENT_HUNG_REASON) {

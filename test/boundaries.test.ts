@@ -92,6 +92,7 @@ const MODULES = [
   "storage-usage",
   "storage-cleanup",
   "metrics",
+  "alerts",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -180,8 +181,10 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "notebook",
     "vm-hosts",
     "metrics",
+    "alerts",
   ],
   settings: [
+    "runner-placement",
     "acp",
     "metrics",
     "closeout-spec",
@@ -402,6 +405,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-protocol",
   ],
   "runner-retro-runtime": [
+    "runner-answers",
     "runner-journal",
     "journal",
     "db",
@@ -436,9 +440,10 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   provisioning: ["journal", "config"],
   "member-vm": ["journal", "config", "db", "provisioning", "vm-provider-checks", "workspace"],
   "issue-vm": ["config", "db", "journal", "provisioning", "settings", "vm-hosts", "workspace"],
-  "vm-hosts": ["db", "journal", "workspace"],
+  "vm-hosts": ["db", "journal", "webhook-body", "workspace"],
   "vm-provider-checks": ["config", "db", "journal", "provisioning"],
   "review-score": ["db"],
+  alerts: ["db"],
 };
 
 describe("module boundaries", () => {

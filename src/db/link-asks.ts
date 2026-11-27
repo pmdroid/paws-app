@@ -23,7 +23,14 @@ export const LINK_ASK_KINDS: readonly LinkAskKind[] = [
  * request left open. A Linear reply is none of the first three; on a `rounds` ask it is
  * `rethink` with the reply as the note.
  */
-export type LinkAskDecision = "approve" | "changes" | "answer" | "rethink" | "continue" | "stop";
+export type LinkAskDecision =
+  | "approve"
+  | "changes"
+  | "answer"
+  | "rethink"
+  | "continue"
+  | "split"
+  | "stop";
 
 /** The decisions each kind takes on the item page. */
 export const LINK_ASK_DECISIONS: Record<LinkAskKind, readonly LinkAskDecision[]> = {
@@ -31,7 +38,7 @@ export const LINK_ASK_DECISIONS: Record<LinkAskKind, readonly LinkAskDecision[]>
   screenshots: ["approve", "changes"],
   risk: ["approve", "changes", "stop"],
   question: ["answer"],
-  rounds: ["rethink", "continue", "stop"],
+  rounds: ["rethink", "continue", "split", "stop"],
   rule: ["approve", "changes"],
 };
 
@@ -54,6 +61,7 @@ export type LinkAskRounds = {
   limit: number | null;
   /** The findings as the fixer gets them, for the restart. */
   handoff: string;
+  split?: number;
 };
 
 export type LinkAskClosed = "decided" | "guidance" | "head_moved" | "cancelled";

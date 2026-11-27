@@ -20,7 +20,7 @@ import { journalCaught } from "../journal";
 import type { RunnerCodingAgent, RunnerHelperResult } from "../runner-protocol";
 import {
   RUNNER_ONLINE_MS,
-  signInFitSteps,
+  resolveRunnerAccountSteps,
   type PlacementAccount,
   type RunnerPlacement,
 } from "../runner-placement";
@@ -96,7 +96,7 @@ export function createRepositorySummaries(options: {
         if (runner.ownerUserId !== userId || runner.status !== "active") continue;
         const standing = yield* runnerStandingSteps(q, runner.id);
         if (!standing?.lastSeenAt || standing.lastSeenAt <= at - RUNNER_ONLINE_MS) continue;
-        const fit = yield* signInFitSteps(q, runner, workspaceId, {
+        const fit = yield* resolveRunnerAccountSteps(q, runner, workspaceId, {
           agent: profile.agent,
           model: profile.model,
           purpose: "helper",

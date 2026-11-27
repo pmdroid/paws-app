@@ -14,7 +14,7 @@ import {
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "../merge";
 
 export const CI_REVIEW_WAIT_SOURCE =
-  "The pull request's own checks failed on its current head while it waited for review. Fixing them does not approve the pull request: it still needs its review before it merges.";
+  "The pull request's own checks failed on its current head while it waited in the merge lane. Fixing them does not approve the pull request: a review it needs still has to approve it before it merges.";
 
 /**
  * What a feedback job may hand the agent. `head` is the pull request's head read after the job's

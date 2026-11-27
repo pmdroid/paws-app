@@ -34,6 +34,7 @@ import { journalCaught } from "../journal";
 import type { AgentModelCatalog } from "../runner-models";
 import { isWorkspaceAdmin } from "../workspace";
 import { collectRetroDigest, type RetroDigest } from "./digest";
+import type { RetroTranscriptReader } from "./transcripts";
 import { retroGenerationViewSteps, type RetroGenerationView } from "./dispatch";
 import { retroNeedsGeneration } from "./result";
 import {
@@ -315,6 +316,7 @@ export function createRetroScheduler(options: {
   catalogs: RetroCatalogSource;
   now?: () => number;
   secrets?: () => readonly string[];
+  transcripts?: () => RetroTranscriptReader | undefined;
 }) {
   const { store, artifactRoot } = options;
   const now = options.now ?? Date.now;
@@ -472,6 +474,7 @@ export function createRetroScheduler(options: {
         artifactRoot,
         now: retro.createdAt,
         ...(options.secrets ? { secrets: options.secrets() } : {}),
+        transcripts: options.transcripts?.(),
       });
       if (!collected.ok && collected.reason === "busy")
         journalCaught(

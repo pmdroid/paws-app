@@ -43,6 +43,7 @@ const WORKSPACE_PAGE_IDS = [
   "linear",
   "storage",
   "limits",
+  "splits",
   "issue-vms",
   "runner-vms",
   "brief",
@@ -269,6 +270,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     "findings",
     "hooks",
     "issue-vm",
+    "splits",
     "linear-comments",
     "vm-sizes",
     "merging",
@@ -325,6 +327,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   api("GET", "/api/metrics", "preserved", "src/settings", {
     sample: "/api/metrics?names=http.request&step=hour",
   }),
+  api("GET", "/api/alerts", "canonical", "src/alerts", { sample: "/api/alerts", member: 403 }),
   api("GET", "/api/metrics/stages", "preserved", "src/settings", {
     sample: "/api/metrics/stages?repository=acme/app",
   }),

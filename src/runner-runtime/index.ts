@@ -275,6 +275,7 @@ export async function openRunnerRuntime(options: {
         | "credentialRecipient"
         | "restoreCredentials"
         | "returnCredentials"
+        | "belowMinimum"
       >
     >;
   spool: RunnerSpool;
@@ -2193,7 +2194,7 @@ export async function openRunnerRuntime(options: {
         if (!entry.task) prepare(entry);
       }
     }
-    if (!unreachable && active.size < concurrency()) {
+    if (!unreachable && !options.daemon.belowMinimum?.() && active.size < concurrency()) {
       for (const command of commands) {
         if (command.type !== "run" && command.type !== "review" && command.type !== "task")
           continue;

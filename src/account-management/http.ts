@@ -20,6 +20,8 @@ import {
   ClaudeOAuthTokenSchema,
   claudeTokenHealth,
   RUNNER_CODING_AGENTS,
+  runnerAgentSignInRefusal,
+  type RunnerAgentSignIn,
   type RunnerCodingAgent,
 } from "../runner-protocol";
 import { API_KEY_PROVIDER } from "../agent-auth";
@@ -90,6 +92,11 @@ export function createAccountManagement(
           );
       };
       if (accountId) await requireOwner(accountId);
+      const refusal = async (signIn: RunnerAgentSignIn) => {
+        const account = await store.run((q) => getAgentAccountSteps(q, workspaceId, accountId!));
+        const refused = runnerAgentSignInRefusal(account.agent as RunnerCodingAgent, signIn);
+        return refused ? json({ error: refused }, 400) : null;
+      };
       if (!order && !accountId && method === "GET") {
         const accounts = await store.run((q) =>
           agentAccountOverviewSteps(q, workspaceId, now(), userId),
@@ -136,6 +143,8 @@ export function createAccountManagement(
       }
       if (action === "device" && (method === "POST" || method === "GET")) {
         if (!options.agentAuth) return json({ error: "Device sign-in is unavailable." }, 503);
+        const refused = await refusal("central");
+        if (refused) return refused;
         return json(await options.agentAuth.device(workspaceId, accountId!, method === "POST"));
       }
       if (method === "GET") return json({ error: "Unsupported agent account request." }, 405);
@@ -215,9 +224,8 @@ export function createAccountManagement(
         const { secretsDir } = options;
         if (!secretsDir || !options.checkClaudeToken)
           return json({ error: "Token sign-in is unavailable." }, 503);
-        const account = await store.run((q) => getAgentAccountSteps(q, workspaceId, accountId!));
-        if (account.agent !== "claude")
-          return json({ error: "Only Claude accounts take a setup token." }, 400);
+        const refused = await refusal("oauth_token");
+        if (refused) return refused;
         const createdAt = now();
         const value = ClaudeOAuthTokenSchema.parse({
           kind: "oauth_token",
@@ -256,6 +264,8 @@ export function createAccountManagement(
         const { secretsDir, checkApiKey } = options;
         if (!secretsDir || !checkApiKey)
           return json({ error: "API key sign-in is unavailable." }, 503);
+        const refused = await refusal("api_key");
+        if (refused) return refused;
         const account = await store.run((q) => getAgentAccountSteps(q, workspaceId, accountId!));
         const codingAgent = account.agent as RunnerCodingAgent;
         const provider = API_KEY_PROVIDER[codingAgent];

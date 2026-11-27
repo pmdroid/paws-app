@@ -78,7 +78,8 @@ async function plan(runner: JavaScriptRunner, context: TestContext): Promise<Tes
   }
   if (reasons.length > 0 && (sharesEverything || item.select.over_max !== "direct"))
     return fullPlan(runner, context, reasons);
-  if (reasons.length > 0) return directPlan(runner, context, { changed, head, always, reasons });
+  if (reasons.length > 0)
+    return directPlan(runner, context, { changed, head, always, opaque, reasons });
   return {
     selection: {
       mode: "selected",
@@ -102,21 +103,23 @@ function directPlan(
     changed: ReadonlySet<string>;
     head: Snapshot;
     always: readonly string[];
+    opaque: readonly string[];
     reasons: readonly string[];
   },
 ): TestPlan {
-  const { changed, head, always, reasons } = input;
+  const { changed, head, always, opaque, reasons } = input;
   const siblings = new Set([...changed].map(sourceStem));
   const importers = new Set(directTests(head, changed));
   const direct = testFilesOf(head).filter(
     (path) => !always.includes(path) && (importers.has(path) || siblings.has(testStem(path))),
   );
+  const opaqueOnly = opaque.filter((path) => !direct.includes(path) && !always.includes(path));
   if (direct.length === 0 && always.length === 0)
     return fullPlan(runner, context, [
       ...reasons,
       "the change has no direct test, and select.always is empty",
     ]);
-  const targets = [...direct, ...always].sort();
+  const targets = [...direct, ...always, ...opaqueOnly].sort();
   return {
     selection: {
       mode: "selected",
@@ -126,6 +129,9 @@ function directPlan(
         "running the change's direct tests and leaving the rest to CI",
         ...direct.map((path) => `${path} is a direct test of the change`),
         ...always.map((path) => `${path} is in select.always`),
+        ...opaqueOnly.map(
+          (path) => `${path} has a non-literal dynamic import or require, so it always runs`,
+        ),
       ],
     },
     ...runner.invocation(context, targets),

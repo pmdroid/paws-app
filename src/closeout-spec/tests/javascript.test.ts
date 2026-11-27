@@ -337,6 +337,23 @@ test("a test with a non-literal import always runs, and the rest of the selectio
   );
 });
 
+test("over_max direct still runs an unchanged test with a non-literal import", async () => {
+  const plan = await planned(
+    { "lib/math.ts": "export const add = 2;\n" },
+    { max_selected: 1, over_max: "direct" },
+    undefined,
+    bunTestAdapter,
+    ["bun", "test"],
+    (root) =>
+      writeFileSync(
+        join(root, "test/opaque.test.ts"),
+        "await import(`../lib/${process.env.X}`);\n",
+      ),
+  );
+  expect(plan.selection.mode).toBe("selected");
+  expect(targets(plan)).toContain("test/opaque.test.ts");
+});
+
 test("the bun runner runs the full suite when it can't prove the selection", async () => {
   const math = { "lib/math.ts": "export const add = 2;\n" };
   const reasons = async (...args: Parameters<typeof planned>) => {

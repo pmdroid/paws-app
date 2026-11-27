@@ -81,6 +81,35 @@ test("a merge waiting on a GitHub review checks every 15 minutes without expirin
   expect((await getJob(db, id))!.runAt).toBe(clock.now());
 });
 
+test("a merge waiting behind the task ahead reads again within 15 minutes, and a finished check wakes it", async () => {
+  const { db, close, clock } = await queue();
+  try {
+    await insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    const push = { deliveryId: "push", event: "push", payload: "{}" };
+    expect(await acceptGitHubDelivery(db, push, clock.now())).toBe(true);
+    const id = await enqueueJob(db, {
+      queue: JOB_KIND.merge,
+      payload: { itemId: "eng-1", head: "h" },
+      now: clock.now(),
+    });
+    const loop = new JobLoop(db, clock);
+    loop.register(JOB_KIND.merge, async (job) => {
+      await parkMerge(db, job, clock.now(), { queued: true, reason: "ahead", message: "Second." });
+    });
+    expect((await loop.tick())?.id).toBe(id);
+    expect((await getJob(db, id))!.runAt).toBeLessThanOrEqual(clock.now() + 15 * 60_000);
+    const payload = JSON.stringify({
+      action: "completed",
+      check_run: { head_sha: "h", conclusion: "failure" },
+    });
+    const failed = { deliveryId: "check-failed", event: "check_run", payload };
+    expect(await acceptGitHubDelivery(db, failed, clock.now())).toBe(true);
+    expect((await getJob(db, id))!.runAt).toBe(clock.now());
+  } finally {
+    await close();
+  }
+});
+
 test("unknown merge outcomes back off without expiring or spending job attempts", async () => {
   const { db, close, clock } = await queue();
   try {

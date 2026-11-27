@@ -21,6 +21,7 @@ import { jsonField, jsonFromText, jsonText, jsonValue } from "./json-text";
 import { auditWorkspaceAccessSteps, workspaceMemberUsableWhere } from "./workspace";
 import { endRevokedRunnerAuthoritySteps, runnerLeaseCutoff } from "./runner-lease";
 import { emitJobReady } from "./jobs";
+import { setIssueVmRunnerSteps } from "./issue-vms";
 import { enqueueRunnerSetupChecksSteps } from "./runner-setup-hold";
 import { bindSignedInAccountsToRunnerSteps, boundAgentAccountWhere } from "./agent-accounts";
 import {
@@ -604,6 +605,8 @@ type RunnerEnrollmentRequest = {
   expiresAt: number;
   now: number;
   adminRepositories?: readonly string[];
+  /** The issue VM this token enrolls; minting one replaces the VM's earlier unused tokens. */
+  issueVmId?: string;
 };
 
 export async function createRunnerEnrollment(
@@ -620,6 +623,12 @@ export function* createRunnerEnrollmentSteps(q: Q, input: RunnerEnrollmentReques
       .delete(enrollment)
       .where(and(isNull(enrollment.usedAt), lte(enrollment.expiresAt, input.now))),
   );
+  if (input.issueVmId !== undefined)
+    yield* q.exec(
+      q.orm
+        .delete(enrollment)
+        .where(and(eq(enrollment.issueVmId, input.issueVmId), isNull(enrollment.usedAt))),
+    );
   const pending = yield* q.one(
     q.orm
       .select({ count: count() })
@@ -643,6 +652,7 @@ export function* createRunnerEnrollmentSteps(q: Q, input: RunnerEnrollmentReques
       expiresAt: input.expiresAt,
       adminRepositories:
         input.adminRepositories === undefined ? null : jsonValue(q, input.adminRepositories),
+      issueVmId: input.issueVmId ?? null,
     }),
   );
 }
@@ -654,6 +664,7 @@ type RunnerEnrollment = {
   name: string;
   expiresAt: number;
   adminRepositories: string | null;
+  issueVmId: string | null;
 };
 
 /**
@@ -682,6 +693,7 @@ export function* findRunnerEnrollmentSteps(
         name: enrollment.name,
         expiresAt: enrollment.expiresAt,
         adminRepositories: jsonText(q, enrollment.adminRepositories),
+        issueVmId: enrollment.issueVmId,
       })
       .from(enrollment)
       .innerJoin(
@@ -751,6 +763,8 @@ export function* enrollRunnerSteps(q: Q, input: RunnerEnrollInput): Steps<Runner
       .returning({ id: runnerEnrollment.id }),
   );
   if (used.length !== 1) throw new Error("Runner enrollment is invalid or expired.");
+  if (enrollment.issueVmId !== null)
+    yield* setIssueVmRunnerSteps(q, { id: enrollment.issueVmId, runnerId: input.runnerId });
   yield* auditWorkspaceAccessSteps(q, {
     workspaceId: enrollment.workspaceId,
     userId: enrollment.userId,
@@ -1617,6 +1631,31 @@ export function* runnerAgentReadinessSteps(q: Q, agent: string) {
       .from(r)
       .where(and(eq(r.status, "active"), isNull(r.revokedAt)))
       .orderBy(r.name),
+  );
+}
+
+export function* activeAgentRunnersSteps(q: Q) {
+  const { runner: r, runnerAgentPolicy: p } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({ runnerId: r.id, name: r.name, agent: p.agent })
+      .from(r)
+      .innerJoin(p, eq(p.runnerId, r.id))
+      .where(
+        and(eq(r.status, "active"), isNull(r.revokedAt), boundAgentAccountWhere(q, r.id, p.agent)),
+      )
+      .orderBy(r.name, p.agent),
+  );
+}
+
+export function* verifyingItemsSteps(q: Q) {
+  const { workItem: w } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({ id: w.id, identifier: w.linearIdentifier })
+      .from(w)
+      .where(eq(w.state, "verifying"))
+      .orderBy(w.linearIdentifier),
   );
 }
 

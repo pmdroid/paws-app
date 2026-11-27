@@ -380,7 +380,11 @@ type RecoveryResult = { ids: string[]; armed: boolean };
 export function* requeueOrphanedWorkSteps(q: Q, now: number): Steps<RecoveryResult> {
   const orphans = yield* q.all(
     q.orm
-      .select({ id: sql<string>`i.id` })
+      .select({
+        id: sql<string>`i.id`,
+        finished: sql<number>`(SELECT MAX(j.finished_at) FROM job j
+          WHERE ${jobPayloadText(q, "j", "itemId")} = i.id)`.mapWith(Number),
+      })
       .from(sql`work_item i`)
       .where(
         sql`i.state IN ('running','verifying','recovering','merge_queue') AND i.cancel_requested = 0
@@ -393,16 +397,27 @@ export function* requeueOrphanedWorkSteps(q: Q, now: number): Steps<RecoveryResu
   );
   const requeued: string[] = [];
   let armed = false;
-  for (const { id } of orphans) {
+  for (const { id, finished } of orphans) {
     const found = yield* getWorkItemSteps(q, id);
     if (!found) continue;
+    const runless = yield* runlessSinceSteps(q, found, finished);
+    if (runless !== null && runless > now - RUNLESS_BREACH_MS) continue;
+    if (runless !== null && (yield* runlessRestartedSteps(q, found.id, now))) {
+      journal(`item ${found.linearIdentifier} is running without an active run again; asking`);
+      armed = (yield* applyDecisionSteps(q, found, { type: "ask_restart" }, now)) || armed;
+      continue;
+    }
+    if (runless !== null)
+      journal(
+        `item ${found.linearIdentifier} is running without an active run or a pending start for 10 minutes; starting a fresh run`,
+      );
     const hold = yield* q.transaction((tx) => ensureRestartQuestionSteps(tx, found, now));
     armed ||= hold.armed;
     if (hold.held) continue;
     if (found.state === "merge_queue")
       yield* q.transaction((tx) => applyWorkItemEventSteps(tx, found.id, "lease_expired"));
     const item = (yield* getWorkItemSteps(q, id)) ?? found;
-    const key = `orphan:${item.id}:${now}`;
+    const key = `${runless === null ? "orphan" : "runless"}:${item.id}:${now}`;
     const { inserted } = yield* enqueueJobOnceSteps(q, {
       queue: item.state === "verifying" ? JOB_KIND.reverify : JOB_KIND.resume,
       jobKey: key,
@@ -415,6 +430,7 @@ export function* requeueOrphanedWorkSteps(q: Q, now: number): Steps<RecoveryResu
               freshSession: true,
               checkpoint: item.checkpoint,
               reason: "orphaned",
+              ...(runless === null ? {} : { freshRun: true }),
               ...(yield* pendingRestartHandoffSteps(q, item.id)),
             },
       now,
@@ -438,6 +454,32 @@ export function* requeueOrphanedWorkSteps(q: Q, now: number): Steps<RecoveryResu
     requeued.push(item.id);
   }
   return { ids: requeued, armed };
+}
+
+const RUNLESS_BREACH_MS = 10 * 60_000;
+const RUNLESS_RESTART_WINDOW_MS = 60 * 60_000;
+
+function* runlessSinceSteps(q: Q, item: WorkItemRecord, finished: number): Steps<number | null> {
+  if (item.state !== "running" || (yield* runActiveSteps(q, item))) return null;
+  const run = item.currentRunId === null ? null : yield* getRunSteps(q, item.currentRunId);
+  return Math.max(run?.updatedAt ?? 0, finished);
+}
+
+function* runlessRestartedSteps(q: Q, itemId: string, now: number): Steps<boolean> {
+  const { job } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: job.id })
+      .from(job)
+      .where(
+        and(
+          like(job.jobKey, `runless:${itemId}:%`),
+          sql`${job.createdAt} > ${now - RUNLESS_RESTART_WINDOW_MS}`,
+        ),
+      )
+      .limit(1),
+  );
+  return row !== undefined;
 }
 
 export async function requeueOrphanedWork(store: Db, now: number): Promise<string[]> {

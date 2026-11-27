@@ -106,6 +106,7 @@ import {
 } from "./runner-repository";
 import { acceptedResumeNeedsTurn, mergeAcceptedWork, settleRejectedPush } from "./accepted-work";
 import { restartForPushConflict } from "./push-conflict";
+import { attributionReturnHandoff } from "./attribution-return";
 import { arrivalsPrompt, arrivalsThought, branchMovedHandoff } from "./branch-arrivals";
 import {
   NOTHING_TO_PUBLISH_OPTIONS,
@@ -140,6 +141,7 @@ import { journal, journalCaught } from "../journal";
 import { rerunItemCi } from "./ci-rerun";
 import { LINEAR_TOOLS_NOTE, linearToolScope, linearToolsFor } from "./linear-tools";
 import { notebookBrief, notebookToolsFor } from "./notebook-tools";
+import { fileAutoSplitSteps, splitLimit, splitToolsFor } from "./issue-split";
 import { joinHostTools, repositoryNote, repositoryTools } from "./repositories";
 import { confirmDecisionSteps, suggestDecisionsSteps } from "../decisions";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
@@ -429,6 +431,7 @@ import {
   failedCloseoutReviewsSteps,
   getLinkAskSteps,
   getPublishedHeadSteps,
+  carriedAcceptForSteps,
   latestRunningAnswerSteps,
   listCloseoutRecoveriesSteps,
   listCloseoutRoundsSteps,
@@ -676,6 +679,7 @@ import {
   wakeMergesBehind,
   postMergeConflictSteps,
   type MergePublication,
+  type MergePull,
   type MergeStep,
   type MergeWait,
   type OrderCapabilities,
@@ -800,6 +804,13 @@ import { createRuntimeLists } from "./runtime-lists";
 import { startFreshBudgetSteps } from "./time-budget";
 import { HOST_DISK_FULL_THOUGHT, hostDiskFullThoughtKeySteps } from "./disk-full";
 import { questionEffects } from "./question-effects";
+import {
+  UNCHANGING_ERROR_REASON,
+  UNCHANGING_ERROR_RETRY,
+  UNCHANGING_ERROR_STOP,
+  signedOutQuestion,
+  unchangingErrorQuestion,
+} from "./unchanging-error";
 import { GitHubInstallationCheck, type GitHubIntegration } from "./github-integration";
 import {
   interpretRepositoryAnswer,
@@ -1012,19 +1023,7 @@ export class Orchestrator {
   private readonly pullRequestReads = new Set<string>();
   private readonly runStartHeads = new Map<string, string>();
   private releasingBlocks: Promise<void> | null = null;
-  private readonly live = new Map<
-    string,
-    {
-      itemId: string;
-      version: number;
-      sessionId: string | null;
-      generation: number;
-      controller: AbortController;
-      progress: string | null;
-      done: Promise<void>;
-      finish(): void;
-    }
-  >();
+  private readonly live = new Map<string, LiveOperation>();
   private readonly stopEvents = new Map<string, Promise<void>>();
   private readonly sessionEvents = new Map<string, Promise<void | boolean>>();
   private readonly linearEvents = new Set<Promise<unknown>>();
@@ -2791,6 +2790,16 @@ export class Orchestrator {
         );
         return;
       }
+      if (capacityWaitIn(error)?.modelWait && (await this.requeueForModel(item, job))) {
+        journalCaught(
+          error,
+          "orchestrator.executeRetried.executeQueued",
+          item.id,
+          "queued until a runner offers the model",
+          this.options.journal,
+        );
+        return;
+      }
       const refused = repositoryRefusedIn(error);
       if (refused && (await this.askRunnerRepository(item, refused))) {
         journalCaught(
@@ -2866,6 +2875,17 @@ export class Orchestrator {
           "orchestrator.executeRetried.executeQueued",
           readString(job.payload, "itemId"),
           undefined,
+          this.options.journal,
+        );
+        return;
+      }
+      const unchanging = unchangingErrorQuestion(error, item.linearIdentifier);
+      if (unchanging && (await this.askUnchangingError(item, unchanging))) {
+        journalCaught(
+          error,
+          "orchestrator.executeRetried.executeQueued",
+          item.id,
+          "asked about an error waiting can't change",
           this.options.journal,
         );
         return;
@@ -2980,6 +3000,45 @@ export class Orchestrator {
     );
     if (held) emitJobReady(this.store);
     return held;
+  }
+
+  private async requeueForModel(item: WorkItemRecord, job: Job): Promise<boolean> {
+    const now = this.now();
+    const handoff = readString(job.payload, "handoff");
+    const carried =
+      handoff === null
+        ? undefined
+        : Object.fromEntries(
+            ["reason", "limit", "fixRound", "fixRoundsAfter"].flatMap((key) =>
+              key in (job.payload as object)
+                ? [[key, (job.payload as Record<string, unknown>)[key]]]
+                : [],
+            ),
+          );
+    const queued = await this.store.transaction(function* (q) {
+      const current = yield* getWorkItemSteps(q, item.id);
+      if (
+        !current ||
+        current.cancelRequested ||
+        (current.state !== "running" && current.state !== "recovering")
+      )
+        return false;
+      if (current.currentRunId !== null) {
+        const run = yield* getRunSteps(q, current.currentRunId);
+        if (run && (run.status === "active" || run.status === "provisioning"))
+          yield* markRunSteps(q, run.id, "lost", now);
+      }
+      return (
+        (yield* restartSteps(q, current, {
+          reason: "follow_up",
+          body: handoff ?? "Retry once a runner offers the selected model.",
+          now,
+          ...(carried ? { carried } : {}),
+        })) !== null
+      );
+    });
+    if (queued) emitJobReady(this.store);
+    return queued;
   }
 
   private *holdForRunnerSetupSteps(
@@ -3134,6 +3193,43 @@ export class Orchestrator {
         this.options.journal,
       );
     });
+    return true;
+  }
+
+  private async askUnchangingError(item: WorkItemRecord, body: string): Promise<boolean> {
+    const now = this.now();
+    await this.settleItemAwake(item.id);
+    const asked = await this.store.transaction(function* (q) {
+      const current = yield* getWorkItemSteps(q, item.id);
+      const sessionId = current?.sessionKey;
+      if (
+        !current ||
+        !sessionId ||
+        current.cancelRequested ||
+        !["running", "verifying", "recovering"].includes(current.state)
+      )
+        return false;
+      if (current.currentRunId !== null) {
+        const run = yield* getRunSteps(q, current.currentRunId);
+        if (run && (run.status === "active" || run.status === "provisioning"))
+          yield* markRunSteps(q, run.id, "lost", now);
+      }
+      yield* askSteps(
+        q,
+        { itemId: current.id, runId: current.currentRunId, sessionId, version: current.version },
+        "runner-wait",
+        body,
+        {
+          reason: UNCHANGING_ERROR_REASON,
+          options: [UNCHANGING_ERROR_RETRY, UNCHANGING_ERROR_STOP],
+          now,
+        },
+      );
+      return true;
+    });
+    if (!asked) return false;
+    this.options.journal?.(`item ${item.linearIdentifier} asked: ${body}`);
+    await this.flush();
     return true;
   }
 
@@ -3403,7 +3499,12 @@ export class Orchestrator {
         );
         return undefined;
       });
-      await this.runItem(item, handoff);
+      await this.runItem(
+        item,
+        handoff,
+        (payload as { freshRun?: unknown }).freshRun === true &&
+          readString(payload, "runId") === item.currentRunId,
+      );
     }
   }
 
@@ -3630,8 +3731,7 @@ export class Orchestrator {
         );
       return true;
     } finally {
-      this.live.delete(run.id);
-      live.finish();
+      this.endLive(run.id, live);
     }
   }
 
@@ -3860,8 +3960,7 @@ export class Orchestrator {
     } finally {
       clearInterval(keepAlive);
       await this.releaseAskedRun(run.id);
-      this.live.delete(run.id);
-      live.finish();
+      this.endLive(run.id, live);
       await this.flush();
     }
   }
@@ -3913,7 +4012,7 @@ export class Orchestrator {
     yield* closeActiveRunSteps(q, runId, this.now());
   }
 
-  private async runItem(item: WorkItemRecord, handoff?: string): Promise<void> {
+  private async runItem(item: WorkItemRecord, handoff?: string, freshRun = false): Promise<void> {
     const repository = await this.repositoryForItem(item);
     if (repository === null || repository === undefined) {
       await this.fail(item, "no_repository", "No repository is selected for this item.");
@@ -3925,7 +4024,7 @@ export class Orchestrator {
     if (item.branchName !== branch) {
       await this.store.run((q) => setItemBranchNameSteps(q, item.id, branch));
     }
-    const run = await this.ensureRun(item);
+    const run = await this.ensureRun(item, freshRun);
     if (!(await this.checkProfileLabels(item, run.id))) return;
     item = (await this.store.run((q) => getWorkItemSteps(q, item.id)))!;
     const profiles = await this.profileSnapshot(run.id);
@@ -4189,7 +4288,13 @@ export class Orchestrator {
           await this.retryAuthError(finished, run.id, profiles.implementer.agent, controller.signal)
         )
           throw new AgentServiceError(message);
-        await this.fail(finished, "auth", message);
+        const body = signedOutQuestion(
+          finished.linearIdentifier,
+          runnerAgentName(profiles.implementer.agent),
+          message,
+        );
+        if (!(await this.askUnchangingError(finished, body)))
+          await this.fail(finished, "auth", message);
         return;
       }
       // A run handed over to another runner keeps its question; the item waits for the answer.
@@ -4237,6 +4342,15 @@ export class Orchestrator {
         return;
       if (executed.run.stopReason === "error" && isAgentServiceError(executed.run.errorMessage))
         throw new AgentServiceError(executed.run.errorMessage!);
+      const attribution = attributionReturnHandoff(executed.run.errorMessage, handoff);
+      if (attribution !== null && finished.state === "running") {
+        await restart(this.store, finished, {
+          reason: "follow_up",
+          body: attribution,
+          now: this.now(),
+        });
+        return;
+      }
       if (executed.run.stopReason !== "end_turn") {
         await this.fail(
           finished,
@@ -4415,7 +4529,11 @@ export class Orchestrator {
         } else if (rewritten) {
           await this.store.run((q) => closeActiveRunSteps(q, run.id, this.now()));
           await this.askPreparationHelp(current, rewrittenSummary(rewritten));
-        } else await this.fail(current, "run_error", message, error);
+        } else {
+          const unchanging = unchangingErrorQuestion(error, current.linearIdentifier);
+          if (!unchanging || !(await this.askUnchangingError(current, unchanging)))
+            await this.fail(current, "run_error", message, error);
+        }
       }
 
       journalCaught(
@@ -4444,8 +4562,7 @@ export class Orchestrator {
       try {
         await this.flush();
       } finally {
-        this.live.delete(run.id);
-        live.finish();
+        this.endLive(run.id, live);
       }
     }
   }
@@ -6014,6 +6131,7 @@ export class Orchestrator {
           return size ? { ...round, lines: size.lines, files: size.files } : round;
         }),
         limit: reviewRoundLimit(exhausted?.message),
+        split: await splitLimit(this.store, this.tracker, item),
         handoff: result?.handoff ?? [help.summary, findings].filter(Boolean).join("\n"),
       },
       publicUrl: this.options.publicUrl ?? null,
@@ -6407,6 +6525,7 @@ export class Orchestrator {
       {
         ...this.orderCapabilities(itemId),
         publish: (item) => this.publishForMerge(item, run),
+        openPull: (item) => this.openPullForMerge(item),
         ...(this.options.runnerRebase ? { runnerRebase: this.options.runnerRebase } : {}),
         settings: (item, signal) => this.mergeSettingsFor(item, signal, mergePolicy),
         policyDigests,
@@ -6551,6 +6670,23 @@ export class Orchestrator {
     )
       throw new LinearReconciliationPendingError("Another Linear task owns this session");
     yield* activateLinearItemSteps(q, sessionId, item.id);
+  }
+
+  private async openPullForMerge(item: WorkItemRecord): Promise<MergePull | null> {
+    const accepted = item.acceptedHead;
+    const repository = await this.repositoryForItem(item);
+    const github = repository ? this.githubForRepository(repository) : null;
+    if (accepted === null || !repository || !github) return null;
+    const open = await this.store.run(function* (q) {
+      const pull = yield* getItemPullRequestSteps(q, item.id);
+      const head = yield* getPublishedHeadSteps(q, item.id);
+      if (pull === null || head === null) return null;
+      const at = head === accepted || (yield* carriedAcceptForSteps(q, item.id, head)) === accepted;
+      return at ? { pull: { number: pull.pullNumber, url: pull.pullUrl }, head } : null;
+    });
+    if (open === null) return null;
+    const signal = (await this.signalForItem(item.id)) ?? new AbortController().signal;
+    return { github, repository, ...open, signal };
   }
 
   private async publishForMerge(
@@ -6798,9 +6934,9 @@ export class Orchestrator {
           body: publishedPullRequestBody({
             issue: item.linearIdentifier,
             ...(draft ? { description: withLeftForLater(draft.body, draft.remaining ?? []) } : {}),
-            evidence,
+            evidence: published.pull.evidence ?? evidence,
           }),
-          evidence,
+          evidence: published.pull.evidence ?? evidence,
         },
         this.now(),
       ),
@@ -7624,6 +7760,10 @@ export class Orchestrator {
   }
 
   private async keepAskedWork(itemId: string, runId: string): Promise<void> {
+    if (await this.store.transaction((q) => fileAutoSplitSteps(q, itemId, this.now()))) {
+      await this.flush();
+      return;
+    }
     let current = await this.store.run((q) => getWorkItemSteps(q, itemId));
     if (!current || current.state === "cancelled" || current.cancelRequested) return;
     // Accepted work that went to the merge queue keeps its accepted head, not the rejected turn's.
@@ -8289,6 +8429,7 @@ export class Orchestrator {
   }
 
   async reconcileExecution(): Promise<void> {
+    await this.releaseStaleOperations();
     await this.dispatch();
   }
 
@@ -8755,8 +8896,8 @@ export class Orchestrator {
     }
   }
 
-  private async ensureRun(item: WorkItemRecord): Promise<{ id: string }> {
-    if (item.currentRunId !== null) {
+  private async ensureRun(item: WorkItemRecord, fresh = false): Promise<{ id: string }> {
+    if (item.currentRunId !== null && !fresh) {
       const existing = await this.store.run((q) => getRunSteps(q, item.currentRunId!));
       if (existing && (existing.status === "active" || existing.status === "ended")) {
         await this.applyAgentSettingsToWaiting();
@@ -9575,8 +9716,7 @@ export class Orchestrator {
       );
     } finally {
       this.conversations.delete(itemId);
-      this.live.delete(key);
-      live.finish();
+      this.endLive(key, live);
     }
   }
 
@@ -9587,6 +9727,7 @@ export class Orchestrator {
       sessionId === null
         ? 0
         : await this.store.run((q) => getLinearSessionGenerationSteps(q, sessionId));
+    if (this.live.has(key)) await this.releaseStaleOperations([key]);
     if (this.live.has(key)) throw new Error("Run already has an owned live operation");
     const authority = this.jobContexts.get(itemId);
     const controller = new AbortController();
@@ -9594,8 +9735,9 @@ export class Orchestrator {
     authority?.signal.addEventListener("abort", abort, { once: true });
     if (authority && !(await authority.isCurrent())) abort();
     let finish!: () => void;
-    const live = {
+    const live: LiveOperation = {
       itemId,
+      authority,
       version: item?.version ?? 0,
       sessionId,
       generation,
@@ -9611,6 +9753,42 @@ export class Orchestrator {
     };
     this.live.set(key, live);
     return live;
+  }
+
+  private endLive(key: string, live: LiveOperation): void {
+    if (this.live.get(key) === live) this.live.delete(key);
+    live.finish();
+  }
+
+  async releaseStaleOperations(keys: readonly string[] = [...this.live.keys()]): Promise<void> {
+    if (this.shuttingDown) return;
+    for (const key of keys) {
+      const live = this.live.get(key);
+      if (!live) continue;
+      const reason = await this.staleOperationReason(key, live);
+      if (reason === null || this.live.get(key) !== live) continue;
+      this.live.delete(key);
+      live.controller.abort();
+      (this.options.journal ?? journal)(
+        `item ${live.itemId} live operation ${key} released: ${reason}`,
+      );
+    }
+  }
+
+  private async staleOperationReason(key: string, live: LiveOperation): Promise<string | null> {
+    const { run, item } = await this.store.run(function* (q) {
+      return { run: yield* getRunSteps(q, key), item: yield* getWorkItemSteps(q, live.itemId) };
+    });
+    if (run?.status === "lost") return "its run is lost";
+    if (!item || item.state === "cancelled") return "its item is cancelled";
+    const { authority } = live;
+    if (
+      authority &&
+      this.jobContexts.get(live.itemId) !== authority &&
+      !(await authority.isCurrent())
+    )
+      return "its job no longer runs";
+    return null;
   }
 
   private taskAccess(): LinearTaskAccess | undefined {
@@ -11698,6 +11876,17 @@ export class Orchestrator {
       working
         ? await notebookToolsFor({ store: this.store, item, repository, now: () => this.now() })
         : undefined,
+      working
+        ? await splitToolsFor({
+            store: this.store,
+            tracker: this.tracker,
+            item,
+            runId: input.runId,
+            repository: `${repository.owner}/${repository.repo}`,
+            now: () => this.now(),
+            onProposed: (runId) => this.askedRuns.add(runId),
+          })
+        : undefined,
     );
     const { home, policyRoot } = await this.closeoutHome(item);
     const pull = await this.store.run((q) => getItemPullRequestSteps(q, item.id));
@@ -12475,8 +12664,7 @@ export class Orchestrator {
         });
       throw error;
     } finally {
-      this.live.delete(liveKey);
-      live.finish();
+      this.endLive(liveKey, live);
     }
   }
 
@@ -12591,6 +12779,18 @@ function* closeActiveRunSteps(
   const run = yield* getRunSteps(q, runId);
   if (run && run.status === "active") yield* markRunSteps(q, runId, status, now);
 }
+
+type LiveOperation = {
+  itemId: string;
+  authority: JobContext | undefined;
+  version: number;
+  sessionId: string | null;
+  generation: number;
+  controller: AbortController;
+  progress: string | null;
+  done: Promise<void>;
+  finish(): void;
+};
 
 type Deferred<T> = T | ((q: Q) => Steps<T>);
 

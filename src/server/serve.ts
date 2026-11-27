@@ -5,6 +5,7 @@ import { journalCaught } from "../journal";
 import type { DoctorCheck } from "../doctor";
 import { recordDuration } from "../metrics";
 import { observeRequest, type RequestMetrics } from "./request-metrics";
+import { ALERTS_PATH, readAlerts } from "../alerts";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
 import { createGitHubStatusCache, type GitHubStatusCache } from "./github-status-cache";
@@ -76,12 +77,14 @@ import {
   handleMemberVmSettingsRequest,
   handleIssueVmSettingsRequest,
   ISSUE_VM_SETTINGS_PATH,
+  SPLIT_SETTINGS_PATH,
   handleRunnerVmKeysSettingsRequest,
   RUNNER_VM_KEYS_SETTINGS_PATH,
   handleVmProvidersSettingsRequest,
   VM_PROVIDERS_CHECK_PATH,
   VM_PROVIDERS_SETTINGS_PATH,
   handleTimeLimitSettingsRequest,
+  handleSplitSettingsRequest,
   handleLinearCommentSettingsRequest,
   LINEAR_COMMENT_SETTINGS_PATH,
   handleGitHubAccessSettingsRequest,
@@ -593,7 +596,9 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       const privileged =
         (path.startsWith("/api/settings/") &&
           !(
-            (path === ISSUE_VM_MEMBERS_PATH || path === ISSUE_VM_SPEND_PATH) &&
+            (path === ISSUE_VM_MEMBERS_PATH ||
+              path === ISSUE_VM_SPEND_PATH ||
+              path === SPLIT_SETTINGS_PATH) &&
             request.method === "GET"
           )) ||
         (path === "/api/linear/sessions" && request.method !== "GET");
@@ -903,6 +908,13 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       })) ?? Response.json({ error: "Not found" }, { status: 404 })
     );
   }
+  if (path === ALERTS_PATH && secrets.store) {
+    if (request.method !== "GET")
+      return Response.json({ error: "Method not allowed" }, { status: 405 });
+    if (principal !== undefined && !isWorkspaceAdmin(principal.role))
+      return Response.json({ error: "Workspace admin required." }, { status: 403 });
+    return Response.json(await readAlerts(secrets.store));
+  }
   if (path === "/api/settings/doctor" && secrets.doctor) {
     if (request.method !== "GET")
       return Response.json({ error: "Method not allowed" }, { status: 405 });
@@ -988,6 +1000,25 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     return (await handleIssueVmSettingsRequest(request, {
       configPath: secrets.agentSettings.configPath,
       csrfToken,
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(store, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
+  if (path === SPLIT_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
+    const store = secrets.store;
+    return (await handleSplitSettingsRequest(request, {
+      configPath: secrets.agentSettings.configPath,
+      csrfToken,
+      store,
+      workspaceId: principal?.workspaceId ?? null,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
         auditWorkspaceAccess(store, {

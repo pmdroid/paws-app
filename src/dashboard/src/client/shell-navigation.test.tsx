@@ -84,13 +84,18 @@ test("admins and members see the Settings submenu on a Settings page, marking th
       current: page.id === "agent-accounts" ? "page" : null,
       group: "Settings pages",
     }));
-    const issueVms = {
-      text: "Issue VMs",
-      href: "/workspace/issue-vms",
+    const member = (
+      [
+        ["Issue splits", "splits"],
+        ["Issue VMs", "issue-vms"],
+      ] as const
+    ).map(([text, id]) => ({
+      text,
+      href: `/workspace/${id}`,
       current: null,
       group: "Settings pages",
-    };
-    expect(links.slice(settings + 1)).toEqual(admin ? own : [...own, issueVms]);
+    }));
+    expect(links.slice(settings + 1)).toEqual(admin ? own : [...own, ...member]);
   }
 });
 

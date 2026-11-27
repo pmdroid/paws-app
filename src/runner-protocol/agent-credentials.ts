@@ -15,12 +15,55 @@ import { z } from "zod";
 import type { RunnerAccount } from "./accounts";
 import type { RunnerCodingAgent } from "./agents";
 
+const API_KEY_FILE = ".paws/api-key.json";
+
 export const RUNNER_AGENT_CREDENTIAL_FILES: Record<RunnerCodingAgent, readonly string[]> = {
-  claude: [".claude/.credentials.json", ".claude/.claude.json", ".claude/paws-oauth.json"],
-  codex: [".codex/auth.json"],
-  grok: [".grok/auth.json"],
-  opencode: [".local/share/opencode/auth.json", ".paws/opencode-credential.json"],
+  claude: [
+    ".claude/.credentials.json",
+    ".claude/.claude.json",
+    ".claude/paws-oauth.json",
+    API_KEY_FILE,
+  ],
+  codex: [".codex/auth.json", API_KEY_FILE],
+  grok: [".grok/auth.json", API_KEY_FILE],
+  opencode: [".local/share/opencode/auth.json", ".paws/opencode-credential.json", API_KEY_FILE],
 };
+
+export type RunnerAgentSignIn = "stored" | "central" | "api_key" | "oauth_token";
+
+export const RUNNER_AGENT_SIGN_INS: Record<RunnerCodingAgent, readonly RunnerAgentSignIn[]> = {
+  claude: ["stored", "oauth_token", "api_key"],
+  codex: ["stored", "central", "api_key"],
+  grok: ["stored", "central", "api_key"],
+  opencode: ["stored", "central", "api_key"],
+};
+
+const AGENT_NAMES: Record<RunnerCodingAgent, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  grok: "Grok",
+  opencode: "OpenCode",
+};
+
+const SIGN_IN_NAMES: Record<RunnerAgentSignIn, string> = {
+  stored: "a runner sign-in",
+  central: "a browser sign-in",
+  api_key: "an API key",
+  oauth_token: "a setup token",
+};
+
+export function runnerAgentSignInRefusal(
+  agent: RunnerCodingAgent,
+  signIn: RunnerAgentSignIn,
+): string | null {
+  const supported = Object.hasOwn(RUNNER_AGENT_SIGN_INS, agent) ? RUNNER_AGENT_SIGN_INS[agent] : [];
+  if (supported.includes(signIn)) return null;
+  const name = Object.hasOwn(AGENT_NAMES, agent) ? AGENT_NAMES[agent] : agent;
+  const options = new Intl.ListFormat("en", { type: "disjunction" }).format(
+    supported.map((mode) => SIGN_IN_NAMES[mode]),
+  );
+  return `${name} accounts can't sign in with ${SIGN_IN_NAMES[signIn]}.${options ? ` Use ${options}.` : ""}`;
+}
 
 export const RunnerAgentCredentialFilesSchema = z
   .array(
@@ -107,13 +150,15 @@ export function agentCredentialReturnContext(executionId: string) {
 }
 
 const OPENCODE_AUTH = ".paws/opencode-credential.json";
+const GROK_AUTH = ".grok/auth.json";
 
 export function accessCredentialFiles(blob: string): RunnerAgentCredentialFiles {
   return RunnerAgentCredentialFilesSchema.parse(JSON.parse(blob)).map((file) => {
-    if (file.path !== ".codex/auth.json" && file.path !== OPENCODE_AUTH)
+    if (![".codex/auth.json", OPENCODE_AUTH, GROK_AUTH].includes(file.path))
       throw new Error("Unsupported central credential");
     const auth = JSON.parse(Buffer.from(file.data, "base64").toString());
     if (file.path === OPENCODE_AUTH) auth.refresh = "";
+    else if (file.path === GROK_AUTH) auth.refresh_token = null;
     else auth.tokens.refresh_token = "";
     return { ...file, data: Buffer.from(JSON.stringify(auth)).toString("base64") };
   });

@@ -609,6 +609,7 @@ test.skipIf(!linux)("an implement turn is not offered start_work and goes on", a
   const result = await context.execute([
     context.sessionFile,
     { type: "start_work", plan: "Change the acme checkout button." },
+    { type: "host_tool", name: "list_transcripts", arguments: {} },
     { type: "write_file", path: join(context.checkout, "after.txt"), content: "after\n" },
     { type: "end" },
   ]);
@@ -618,6 +619,9 @@ test.skipIf(!linux)("an implement turn is not offered start_work and goes on", a
     .value.split(",");
   expect(tools).toContain("reply");
   expect(tools).not.toContain("start_work");
+  expect(tools).not.toContain("list_transcripts");
+  expect(tools).not.toContain("read_transcript");
+  expect(trace.hostTools).toMatchObject([{ name: "list_transcripts", ok: false }]);
   expect(trace.updates[0]).toMatchObject({ ok: false });
   expect(result.run).toMatchObject({ stopReason: "end_turn", cancelled: false });
   expect(existsSync(join(context.checkout, "after.txt"))).toBe(true);

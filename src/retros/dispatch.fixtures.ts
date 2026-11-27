@@ -18,6 +18,7 @@ import {
   type RunnerRetroCommand,
 } from "../runner-protocol";
 import { collectRetroDigest, createRetroDispatcher, type RetroCommandCredentials } from "./index";
+import type { RetroTranscriptReader } from "./transcripts";
 import { FIXTURE_END, FIXTURE_REPO, FIXTURE_START } from "./result.fixtures";
 
 export const keys = generateKeyPairSync("ed25519");
@@ -193,7 +194,7 @@ export function seedWorkspacePg(db: Db) {
 
 export async function worldPg(
   stores: { open(root: string): Promise<Store>; reopen?(root: string): Promise<Store> },
-  options: { activity?: boolean; retries?: number } = {},
+  options: { activity?: boolean; retries?: number; before?: (db: Db) => Promise<void> } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "paws-retro-dispatch-"));
   let store = await stores.open(root);
@@ -224,6 +225,7 @@ export async function worldPg(
     agentProfile: { agent: "codex", model: "gpt-x", effort: null },
     now: FIXTURE_END,
   });
+  await options.before?.(db);
   const collected = await collectRetroDigest(db, {
     retroId: "r1",
     artifactRoot: root,
@@ -231,13 +233,19 @@ export async function worldPg(
   });
   if (!collected.ok) throw new Error(collected.reason);
   const clock = { now: FIXTURE_END + 10_000 };
-  const open = (database: Db, credentials?: RetroCommandCredentials) =>
+  const open = (
+    database: Db,
+    credentials?: RetroCommandCredentials,
+    extra: { transcripts?: RetroTranscriptReader; secrets?: readonly string[] } = {},
+  ) =>
     createRetroDispatcher({
       store: database,
       artifactRoot: root,
       sign,
       now: () => clock.now,
       ...(credentials ? { credentials } : {}),
+      transcripts: () => extra.transcripts,
+      secrets: () => extra.secrets ?? [],
     });
   const restart = async () => {
     await store.close();

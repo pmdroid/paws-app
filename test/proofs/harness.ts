@@ -28,6 +28,7 @@ import {
   createFakeGitHub,
   createFakeMergeQueue,
   createGitHubGitReader,
+  defaultGitExec,
   fakeMergeReadiness,
   fakeRequiredChecks,
   type FakeGitHub,
@@ -113,6 +114,8 @@ function scriptedAgent(
   return { launch, launches };
 }
 
+export const REMOTE_GIT = ["fetch", "ls-remote", "push"];
+
 export type GitHubCall = { method: string; path: string; outcome: string; token: string };
 
 function fixtureGitHub(input: {
@@ -129,7 +132,15 @@ function fixtureGitHub(input: {
   client: GitHubClient;
   queue: FakeMergeQueue | null;
   /** `dirty`: GitHub reports the pull request conflicting with main and runs no checks on it. */
-  ci: { pending: boolean; failed: boolean; dirty: boolean; unreadable: boolean };
+  ci: {
+    pending: boolean;
+    failed: boolean;
+    dirty: boolean;
+    unreadable: boolean;
+    review: "REVIEW_REQUIRED" | "APPROVED" | null;
+  };
+  /** `failRemote`: publication git calls to a remote throw, as when git cleanup cannot be verified. */
+  git: { failRemote: boolean; calls: string[][] };
   calls: GitHubCall[];
   comments: Map<number, { id: number; body: string; html_url: string }[]>;
   closed: Set<number>;
@@ -142,7 +153,14 @@ function fixtureGitHub(input: {
   const calls: GitHubCall[] = [];
   const closed = new Set<number>();
   const merged = new Map<number, string>();
-  const ci = { pending: input.ciPending ?? false, failed: false, dirty: false, unreadable: false };
+  const ci = {
+    pending: input.ciPending ?? false,
+    failed: false,
+    dirty: false,
+    unreadable: false,
+    review: null as "REVIEW_REQUIRED" | "APPROVED" | null,
+  };
+  const publication = { failRemote: false, calls: [] as string[][] };
   const comments = new Map<number, { id: number; body: string; html_url: string }[]>();
   let serverErrors = input.mergeServerErrors ?? 0;
   const pullJson = (number: number) => ({
@@ -299,6 +317,11 @@ function fixtureGitHub(input: {
       );
       if (update) return update;
       if (ci.unreadable) return { status: 502, body: { message: "Bad Gateway" } };
+      if ((request.body as { query: string }).query.startsWith("query PullReview"))
+        return {
+          status: 200,
+          body: { data: { repository: { pullRequest: { reviewDecision: ci.review } } } },
+        };
       const { head } = (request.body as { variables: { head: string } }).variables;
       const body = fakeMergeReadiness(head);
       if (input.noCi || ci.dirty) {
@@ -413,6 +436,7 @@ function fixtureGitHub(input: {
     client,
     queue,
     ci,
+    git: publication,
     calls,
     comments,
     closed,
@@ -630,6 +654,12 @@ export async function runProof(name: string, proof: Proof, dir: string) {
         tokenProvider: { mode: "token", tokenFor: async () => "proof-fake-token" },
       }),
       launch,
+      publicationGitExec: async (args, options) => {
+        github.git.calls.push(args);
+        if (github.git.failRemote && REMOTE_GIT.some((command) => args.includes(command)))
+          throw new Error("fetch failed: Git process cleanup could not be verified");
+        return defaultGitExec()(args, options);
+      },
       githubMirrors: proof.forbidRepos ? false : undefined,
       ...(proof.member ? { pullRequestMember: async () => proof.member! } : {}),
       ...(proof.runnerSignIn ? { runnerSignIn: async () => proof.runnerSignIn! } : {}),

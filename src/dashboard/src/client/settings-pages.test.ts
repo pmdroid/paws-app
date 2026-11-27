@@ -117,7 +117,9 @@ test("every Settings and Workspace page shows its title and description with no 
 test("a member opening a workspace page gets Your account", () => {
   setSettingsAdmin(false);
   const account = USER_SETTINGS_PAGES.find((entry) => entry.id === "account")!;
-  for (const page of WORKSPACE_PAGES.filter((entry) => entry.id !== "issue-vms")) {
+  for (const page of WORKSPACE_PAGES.filter(
+    (entry) => !["issue-vms", "splits"].includes(entry.id),
+  )) {
     const doc = new Window().document;
     doc.body.innerHTML = renderSettingsPage(page.id);
     expect(doc.querySelectorAll("nav").length).toBe(0);
