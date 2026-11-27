@@ -38,7 +38,7 @@ const ISSUE_VM_ENROLL_DIR = "/var/lib/paws-runner/issue-vm-enroll";
 
 export function issueVmReconciler(
   daemon: {
-    issueVmHost(running?: string[], refused?: IssueVmSleepRefusal[]): Promise<IssueVmHostView>;
+    issueVmHost(running: string[], refused?: IssueVmSleepRefusal[]): Promise<IssueVmHostView>;
   },
   units: IssueVmUnits | null,
   now: () => number = Date.now,

@@ -57,7 +57,7 @@ const view = (slots: number, vms: Record<string, IssueVmState>): IssueVmHostView
   vmHost: true,
   slots,
   size: SIZE,
-  vms: Object.entries(vms).map(([id, state]) => ({ id, state })),
+  vms: Object.entries(vms).map(([id, state]) => ({ id, state, want: "awake" })),
 });
 
 test("awake VMs start in the lowest free slots up to the limit, once, and wait for a freed slot", async () => {
@@ -409,9 +409,13 @@ test("Paws gives a VM host its slots, VM size and live issue VMs", async () => {
   await host(db);
   const read = async () =>
     (await (await handleVmHostRunnerRequest(
-      request("/v1/issue-vms"),
+      new Request("https://runner.paws.test/v1/issue-vms", {
+        method: "POST",
+        body: JSON.stringify({ running: [] }),
+      }),
       HOST,
       db,
+      () => 10,
     ))!.json()) as VmHostRunnerView;
   expect(await read()).toEqual({ vmHost: false });
   await db.run((q) =>
@@ -439,14 +443,15 @@ test("Paws gives a VM host its slots, VM size and live issue VMs", async () => {
     slots: 3,
     size: { vcpus: 2, memoryGb: 4 },
     vms: [
-      { id: A, state: "awake" },
-      { id: D, state: "creating" },
+      { id: A, state: "awake", want: "awake" },
+      { id: D, state: "creating", want: "awake" },
     ],
   });
   expect(await handleVmHostRunnerRequest(request("/v1/other"), HOST, db)).toBeNull();
-  expect((await handleVmHostRunnerRequest(request("/v1/issue-vms", "PUT"), HOST, db))!.status).toBe(
-    405,
-  );
+  for (const method of ["GET", "PUT"])
+    expect(
+      (await handleVmHostRunnerRequest(request("/v1/issue-vms", method), HOST, db))!.status,
+    ).toBe(405);
 
   const report = async (body: unknown) =>
     handleVmHostRunnerRequest(
@@ -962,14 +967,8 @@ test("Paws mints one live bootstrap token for a creating host VM whose unit isn'
       expiresAt: 50 + 10 * 60_000,
     },
   ]);
-  // A running unit already took its token, and a GET from an older runner never gets one.
+  // A running unit already took its token.
   expect(tokenOf(await report([A]))).toBeUndefined();
-  const listed = (await (await handleVmHostRunnerRequest(
-    request("/v1/issue-vms"),
-    HOST,
-    db,
-  ))!.json()) as Extract<VmHostRunnerView, { vmHost: true }>;
-  expect(listed.vms.find((row) => row.id === A)).toEqual({ id: A, state: "creating" });
 
   await db.transaction((q) =>
     enrollRunnerSteps(q, {
