@@ -432,6 +432,44 @@ try {
     await expect(admin.locator("#content")).toContainText("Grant revoked.");
     await expect(admin.getByRole("button", { name: "Revoke", exact: true })).toHaveCount(0);
     await admin.unroute("**/api/runners", vmRunners);
+    let splits = { enabled: true, maxSubIssues: 2, approvalsBeforeAuto: 2 };
+    const splitRoute = async (route: Route) => {
+      const body = route.request().method() === "PUT" ? route.request().postDataJSON() : null;
+      if (body && body.maxSubIssues > 5) {
+        const error = "splits.maxSubIssues must be a whole number from 1 to 5";
+        await route.fulfill({ status: 400, json: { error } });
+        return;
+      }
+      if (body) splits = body;
+      await route.fulfill({ json: { ...splits, approvedSplits: 1 } });
+    };
+    await admin.route("**/api/settings/splits", splitRoute);
+    await visit(admin, width, "splits", "/dashboard/workspace/splits", "Issue splits");
+    await expect(admin.locator("#split-progress")).toHaveText(
+      "1 approved split so far; splits are automatic after 2.",
+    );
+    await admin.locator("#split-max-sub-issues").fill("9");
+    await admin.getByRole("button", { name: "Save split settings", exact: true }).click();
+    await expect(admin.getByRole("alert")).toHaveText(
+      "splits.maxSubIssues must be a whole number from 1 to 5",
+    );
+    await admin.getByRole("switch").uncheck();
+    await admin.locator("#split-max-sub-issues").fill("4");
+    await admin.locator("#split-approvals").fill("5");
+    await admin.getByRole("button", { name: "Save split settings", exact: true }).click();
+    await expect(admin.locator("#split-settings")).toContainText("Saved");
+    expect(splits).toEqual({ enabled: false, maxSubIssues: 4, approvalsBeforeAuto: 5 });
+    await expect(admin.locator("#split-progress")).toContainText("automatic after 5.");
+    await admin.screenshot({ path: join(out, `splits-saved-${width}.png`), fullPage: true });
+    const splitMember = await open(width);
+    await splitMember.route("**/api/settings/splits", splitRoute);
+    await visit(splitMember, width, "splits-member", "/dashboard/workspace/splits", "Issue splits");
+    await expect(splitMember.locator("#split-settings input:disabled")).toHaveCount(3);
+    await expect(splitMember.getByRole("button", { name: "Save split settings" })).toHaveCount(0);
+    await expect(splitMember.locator("#split-settings")).toContainText(
+      "Only workspace admins can change splits.",
+    );
+    await splitMember.context().close();
     const fact = (name: string, text: string, level = "ok") => ({ name, text, level });
     const checked = (state: string, message: string, facts: unknown[]) => ({
       ...{ state, message, facts, checkedAt: Date.now() - 600_000, lastWorkingAt: null },
@@ -973,7 +1011,7 @@ try {
       .getByRole("navigation", { name: "Main navigation" })
       .getByRole("list", { name: "Workspace pages" })
       .getByRole("link");
-    await expect(submenu).toHaveCount(14);
+    await expect(submenu).toHaveCount(15);
     await expect(submenu.and(admin.locator('[aria-current="page"]'))).toHaveText("Agents");
     await admin.screenshot({
       path: join(out, `workspace-submenu-${width}.png`),
