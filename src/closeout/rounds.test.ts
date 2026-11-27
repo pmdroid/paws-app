@@ -97,20 +97,20 @@ test("no review records means no rounds and no class", () => {
   expect(summarizeReviewRounds([])).toEqual({ rounds: [], open: [], bugClass: null });
 });
 
-function round(head: string, ...explanations: string[]) {
+function roundAt(head: string, ...explanations: string[]) {
   const findings = explanations.map((text, index) => finding(`src/${head}.ts:${index}`, text));
   return { itemId: "independent-review", head, attempt: 1, findings };
 }
 
 test("a class is named only when two heads report it and an open finding has it", () => {
-  expect(summarizeReviewRounds([round("a", "race: x"), round("b", "race: y")]).bugClass).toBe(
+  expect(summarizeReviewRounds([roundAt("a", "race: x"), roundAt("b", "race: y")]).bugClass).toBe(
     "race",
   );
-  expect(summarizeReviewRounds([round("a", "race: x", "race: y")]).bugClass).toBeNull();
+  expect(summarizeReviewRounds([roundAt("a", "race: x", "race: y")]).bugClass).toBeNull();
   const gone = summarizeReviewRounds([
-    round("a", "host driver: x", "host driver: y"),
-    round("b", "host driver: z"),
-    round("c", "caller drift: the caller passes the old shape. It breaks."),
+    roundAt("a", "host driver: x", "host driver: y"),
+    roundAt("b", "host driver: z"),
+    roundAt("c", "caller drift: the caller passes the old shape. It breaks."),
   ]);
   expect(gone.bugClass).toBeNull();
   expect(gone.open).toEqual([
