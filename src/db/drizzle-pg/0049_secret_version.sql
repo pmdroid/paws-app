@@ -1,0 +1,1 @@
+ALTER TABLE "secret" ADD COLUMN "version" bigint DEFAULT 1 NOT NULL;

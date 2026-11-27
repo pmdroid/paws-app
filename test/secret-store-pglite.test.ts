@@ -8,16 +8,24 @@ import {
   readSecretFile,
   removeSecret,
   saveSecret,
+  storedSecrets,
   storeSecretKeys,
   useDatabaseSecrets,
   writeSecretFile,
 } from "../src/credentials";
-import { secretRowsSteps, writeSecretRowSteps, type Db } from "../src/db";
+import {
+  readSecretSteps,
+  SecretConflictError,
+  secretRowsSteps,
+  writeSecretSteps,
+  type Db,
+} from "../src/db";
 import { realProbe } from "../src/doctor";
 import { configureRunnerTranscriptStorage } from "../src/runner-transcript-config";
 import { setJournalSink } from "../src/journal";
 import { describePglite, type PgliteTestDb } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
+import { waitFor } from "./wait-for";
 
 const open: PgliteTestDb[] = [];
 const cleanup: (() => unknown)[] = [];
@@ -228,15 +236,70 @@ describePglite((connect) => {
     const winner = (await db.run(secretRowsSteps)).find(
       (entry) => entry.name === "runner-file.key",
     )!;
-    const write = (ciphertext: string | null) =>
-      db.run((q) =>
-        writeSecretRowSteps(q, { name: "runner-file.key", ciphertext, now: 1, exclusive: false }),
-      );
+    const write = async (ciphertext: string | null) => {
+      const current = await db.run((q) => readSecretSteps(q, "runner-file.key"));
+      await db.run((q) => writeSecretSteps(q, "runner-file.key", ciphertext, current!.version));
+    };
     await write(null);
     await install(db, dir);
     expect(readSecretFile(key)).toBeNull();
     await write(winner.ciphertext);
     await storeSecretKeys([key]);
     expect(readSecretFile(key)).toBe(stored);
+  });
+
+  test("two writers race a replacement: one wins and the other gets the conflict", async () => {
+    const { db } = await setup(connect);
+    expect(await db.run((q) => writeSecretSteps(q, "linear-webhook", "marker-a", null))).toBe(1);
+    const race = await Promise.allSettled(
+      ["marker-b", "marker-c"].map((value) =>
+        db.transaction((q) => writeSecretSteps(q, "linear-webhook", value, 1)),
+      ),
+    );
+    expect(race.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const lost = race.find((result) => result.status === "rejected");
+    expect(lost?.reason).toBeInstanceOf(SecretConflictError);
+    const stored = await db.run((q) => readSecretSteps(q, "linear-webhook"));
+    expect(stored?.version).toBe(2);
+    await expect(
+      db.run((q) => writeSecretSteps(q, "linear-webhook", "marker-d", null)),
+    ).rejects.toBeInstanceOf(SecretConflictError);
+  });
+
+  test("a rolled-back write leaves no row, and a tombstone survives the import", async () => {
+    const { db, dir } = await setup(connect);
+    await expect(
+      db.transaction(function* (q) {
+        yield* writeSecretSteps(q, "github-webhook", "marker", null);
+        throw new Error("rolled back");
+      }),
+    ).rejects.toThrow("rolled back");
+    expect(await db.run((q) => readSecretSteps(q, "github-webhook"))).toBeNull();
+
+    writeSecretFile(join(dir, "tailscale-authkey"), "marker-file");
+    await install(db, dir);
+    await removeSecret(join(dir, "tailscale-authkey"));
+    const tombstone = { value: null, version: 2 };
+    expect(await db.run((q) => readSecretSteps(q, "tailscale-authkey"))).toEqual(tombstone);
+    await install(db, dir);
+    expect(await db.run((q) => readSecretSteps(q, "tailscale-authkey"))).toEqual(tombstone);
+    expect(readSecretFile(join(dir, "tailscale-authkey"))).toBeNull();
+  });
+
+  test("a rotation another process writes is read here on the next refresh", async () => {
+    const { db, dir } = await setup(connect);
+    const path = join(dir, "linear-webhook");
+    const secrets = await useDatabaseSecrets(db, dir, { refreshMs: 10 });
+    cleanup.push(() => secrets.close());
+    const sealed = () => storedSecrets()!.find((row) => row.name === "linear-webhook")!.ciphertext;
+    await saveSecret(path, "marker-first");
+    const first = sealed();
+    await saveSecret(path, "marker-second");
+    expect(readSecretFile(path)).toBe("marker-second");
+    await db.run((q) => writeSecretSteps(q, "linear-webhook", first, 2));
+    await waitFor(() => readSecretFile(path) === "marker-first", { what: "the rotated secret" });
+    await db.run((q) => writeSecretSteps(q, "linear-webhook", null, 3));
+    await waitFor(() => readSecretFile(path) === null, { what: "the removed secret" });
+    await expect(saveSecret(path, "marker-third", true)).resolves.toBe(true);
   });
 });
