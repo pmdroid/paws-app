@@ -192,9 +192,9 @@ const SLEEPING_TESTS = new Set([
 ]);
 
 test("rejects fixed sleeps in test files", () => {
-  expect(SLEEPS.test("await Bun." + "sleep(100);")).toBe(true);
-  expect(SLEEPS.test("void Bun." + "sleep(5);")).toBe(true);
-  expect(SLEEPS.test("await " + "sleep(50);")).toBe(true);
+  expect(SLEEPS.test("await Bun.sleep(100);")).toBe(true);
+  expect(SLEEPS.test("void Bun.sleep(5);")).toBe(true);
+  expect(SLEEPS.test("await sleep(50);")).toBe(true);
   expect(SLEEPS.test("await waitFor(() => done, { timeoutMs: 5_000 });")).toBe(false);
 });
 
@@ -202,7 +202,8 @@ test("test files wait for completion signals instead of sleeping", () => {
   const root = new URL("./", import.meta.url).pathname;
   const sleeping: string[] = [];
   for (const file of readdirSync(root, { recursive: true })) {
-    if (typeof file !== "string" || !file.endsWith(".test.ts")) continue;
+    if (typeof file !== "string" || !file.endsWith(".test.ts") || file === "empty-catches.test.ts")
+      continue;
     if (SLEEPS.test(readFileSync(join(root, file), "utf8"))) sleeping.push(file);
   }
   expect(sleeping.filter((file) => !SLEEPING_TESTS.has(file))).toEqual([]);
