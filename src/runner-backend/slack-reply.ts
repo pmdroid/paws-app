@@ -18,7 +18,7 @@ import {
 } from "../runner-protocol";
 import {
   RUNNER_ONLINE_MS,
-  signInFitSteps,
+  resolveRunnerAccountSteps,
   type PlacementAccount,
   type RunnerPlacement,
 } from "../runner-placement";
@@ -95,7 +95,7 @@ export function createSlackReplies(options: {
       const standing = yield* runnerStandingSteps(q, runner.id);
       if (!standing?.lastSeenAt || standing.lastSeenAt <= at - RUNNER_ONLINE_MS) continue;
       if ((yield* runnerConversationLaneSteps(q, runner.id, at)) === "closed") continue;
-      const fit = yield* signInFitSteps(q, runner, request.workspaceId, {
+      const fit = yield* resolveRunnerAccountSteps(q, runner, request.workspaceId, {
         agent: request.profile.agent,
         model: request.profile.model,
         purpose: "helper",

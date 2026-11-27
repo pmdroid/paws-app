@@ -16,7 +16,13 @@ import {
   type PlacementRequest,
 } from "../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { currentRunnerHost, offerFixtureModels, seed, seedCredential } from "./pglite-fixtures";
+import {
+  currentRunnerHost,
+  offerFixtureModels,
+  reportFixtureBindings,
+  seed,
+  seedCredential,
+} from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const open: (() => Promise<void>)[] = [];
@@ -101,8 +107,17 @@ async function acme() {
     await seedCredential(db, account.id, "claude", now);
     return account;
   };
-  const bind = (runnerId: string, accountId: string) =>
-    bindAgentAccount(db, { userId: ada, workspaceId: workspace.id, runnerId, accountId, now });
+  const bind = async (runnerId: string, accountId: string) => {
+    const binding = await bindAgentAccount(db, {
+      userId: ada,
+      workspaceId: workspace.id,
+      runnerId,
+      accountId,
+      now,
+    });
+    await reportFixtureBindings(db, workspace.id, runnerId, now);
+    return binding;
+  };
   return { db, now, workspaceId: workspace.id, item, placement, place, createAccount, bind };
 }
 

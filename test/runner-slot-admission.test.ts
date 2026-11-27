@@ -37,7 +37,7 @@ import { dispatch } from "../src/scheduler";
 import { workspaceAdmission } from "./fake-workspace";
 import { workspaceWithRunners, REPOSITORY, NOW } from "./runner-slot-fixture";
 import { tempStore } from "./pglite";
-import { json, seed } from "./pglite-fixtures";
+import { json, reportFixtureBindings, seed } from "./pglite-fixtures";
 
 const closeStores: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -249,6 +249,7 @@ test("a parked item is placed on a runner as soon as it reports the repository a
       runId,
     ),
   ).toBe(true);
+  await reportFixtureBindings(db, workspace.id, goldbox, clock.now);
   const placement = createRunnerPlacement({ store: db, now: () => clock.now });
   const candidates = await placement.candidates({
     itemId: "parked",

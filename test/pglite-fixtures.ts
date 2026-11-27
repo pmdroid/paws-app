@@ -211,18 +211,27 @@ export async function bindFixtureAccounts(db: Db, runnerId?: string, agent?: str
         now: row.now,
       });
     }
-    await recordRunnerAccountCapability(
-      db,
-      row.runnerId,
-      {
-        protocol: RUNNER_MEMORY_ACCOUNT_PROTOCOL,
-        bindings: (await listAgentBindings(db, row.workspaceId))
-          .filter((b) => b.runnerId === row.runnerId && b.removedAt === null)
-          .map((b) => ({ bindingId: b.id, agent: b.agent })),
-      },
-      row.now,
-    );
+    await reportFixtureBindings(db, row.workspaceId, row.runnerId, row.now);
   }
+}
+
+export async function reportFixtureBindings(
+  db: Db,
+  workspaceId: string,
+  runnerId: string,
+  now: number,
+) {
+  await recordRunnerAccountCapability(
+    db,
+    runnerId,
+    {
+      protocol: RUNNER_MEMORY_ACCOUNT_PROTOCOL,
+      bindings: (await listAgentBindings(db, workspaceId))
+        .filter((b) => b.runnerId === runnerId && b.removedAt === null)
+        .map((b) => ({ bindingId: b.id, agent: b.agent })),
+    },
+    now,
+  );
 }
 
 export async function signInFixtureRunner(db: Db, runnerId: string, agent: string) {

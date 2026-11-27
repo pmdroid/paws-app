@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { accountAgentEnv } from "../src/acp";
 import { writeAgentCredentialSteps } from "../src/credentials";
-import { createAgentAccountSteps, writeAgentAuthSteps } from "../src/db";
+import {
+  bindAgentAccountSteps,
+  createAgentAccountSteps,
+  recordRunnerAccountCapabilitySteps,
+  writeAgentAuthSteps,
+} from "../src/db";
 import {
   openRunnerAccountHome,
   returnRunnerAgentCredentials,
@@ -13,12 +18,14 @@ import {
   runnerSignInsLeft,
 } from "../src/runner-execution";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
+import { RETRO_ACCOUNT_CHECKS, resolveRunnerAccountSteps } from "../src/runner-placement";
 import {
   agentCredentialContext,
   openForRunner,
   RUNNER_AGENT_CREDENTIAL_FILES,
   RUNNER_AGENT_SIGN_INS,
   RUNNER_CODING_AGENTS,
+  RUNNER_MEMORY_ACCOUNT_PROTOCOL,
   RUNNER_RETRO_CAPABILITY,
   RunnerAgentCredentialFilesSchema,
   RunnerCommandSchema,
@@ -30,7 +37,6 @@ import {
   signRunnerRetroCommand,
   verifyRunnerCommand,
   verifyRunnerRetroCommand,
-  type RunnerAccount,
   type RunnerAgentSignIn,
   type RunnerCodingAgent,
   type RunnerCommand,
@@ -179,6 +185,15 @@ function input(kind: "digest" | "prompt") {
   return { kind, workspaceId: "acme", retroId: "retro", sha256: "b".repeat(64), sizeBytes: 10 };
 }
 
+const ACCOUNT_CHECKS = (path: string) =>
+  path === "retro"
+    ? RETRO_ACCOUNT_CHECKS
+    : path === "review"
+      ? ({ purpose: "work", role: "reviewer" } as const)
+      : path === "run" || path === "task"
+        ? ({ purpose: "work" } as const)
+        : ({ purpose: "helper" } as const);
+
 const launchPaths = [
   ...RunnerCommandSchema.options
     .filter((option) => "account" in option.shape)
@@ -230,7 +245,7 @@ describePglite((connect) => {
         .insert(q.t.workspace)
         .values({ id: "acme", linearOrganizationId: "acme", name: "acme", createdAt: 0 }),
     );
-    await seedRunner(db, "runner");
+    await seedRunner(db, "runner", { lastSeenAt: NOW });
     await seed(db, (q) =>
       q.orm.insert(q.t.runnerCertificate).values({
         fingerprint: issued.fingerprint,
@@ -253,7 +268,12 @@ describePglite((connect) => {
       now: () => NOW,
     });
     const privateKey = readFileSync(key.keyPath, "utf8");
-    const cells: { agent: RunnerCodingAgent; mode: RunnerAgentSignIn; accountId: string }[] = [];
+    const cells: {
+      agent: RunnerCodingAgent;
+      mode: RunnerAgentSignIn;
+      accountId: string;
+      bindingId: string;
+    }[] = [];
     for (const agent of RUNNER_CODING_AGENTS)
       for (const mode of RUNNER_AGENT_SIGN_INS[agent]) {
         const { id } = await db.transaction((q) =>
@@ -276,8 +296,53 @@ describePglite((connect) => {
           if (mode === "central")
             yield* writeAgentAuthSteps(q, id, JSON.stringify({ state: "signed-in" }));
         });
-        cells.push({ agent, mode, accountId: id });
+        const binding = await db.transaction((q) =>
+          bindAgentAccountSteps(q, {
+            workspaceId: "acme",
+            userId: "owner",
+            accountId: id,
+            runnerId: "runner",
+            now: NOW,
+          }),
+        );
+        cells.push({ agent, mode, accountId: id, bindingId: binding.id });
       }
+
+    const resolve = (path: string, agent: RunnerCodingAgent, bindingId?: string) =>
+      db.run((q) =>
+        resolveRunnerAccountSteps(q, { id: "runner" }, "acme", {
+          agent,
+          model: null,
+          at: NOW,
+          ...ACCOUNT_CHECKS(path),
+          ...(bindingId ? { bindingId } : {}),
+        }),
+      );
+    const report = (bindings: { bindingId: string; agent: RunnerCodingAgent }[]) =>
+      db.run((q) =>
+        recordRunnerAccountCapabilitySteps(
+          q,
+          "runner",
+          { protocol: RUNNER_MEMORY_ACCOUNT_PROTOCOL, bindings },
+          NOW,
+        ),
+      );
+    await report([]);
+    for (const path of launchPaths)
+      for (const { agent, mode, accountId, bindingId } of cells) {
+        const fit = await resolve(path, agent, bindingId);
+        if (path === "retro" || mode === "stored")
+          expect(fit, `${path} ${agent} ${mode}`).toMatchObject({
+            code: "account-home",
+            reason: "The runner has not reported this account binding",
+          });
+        else
+          expect(fit, `${path} ${agent} ${mode}`).toEqual({
+            account: { accountId, bindingId, named: true },
+            low: false,
+          });
+      }
+    await report(cells.map(({ bindingId, agent }) => ({ bindingId, agent })));
 
     const trustedKeys = new Map([["coordinator", signing.publicKey]]);
     const verify = (path: string, envelope: SignedRunnerCommand) => {
@@ -307,9 +372,17 @@ describePglite((connect) => {
           });
 
     for (const [row, path] of launchPaths.entries())
-      for (const { agent, mode, accountId } of cells) {
+      for (const { agent, mode, accountId, bindingId } of cells) {
         const cell = `${path} ${agent} ${mode}`;
-        const account: RunnerAccount = { accountId, bindingId: `b${row}-${accountId}` };
+        const picked = await resolve(path, agent);
+        if ("reason" in picked) throw new Error(`${cell}: ${picked.reason}`);
+        expect(cells.find((entry) => entry.bindingId === picked.account.bindingId)?.agent).toBe(
+          agent,
+        );
+        const fit = await resolve(path, agent, bindingId);
+        if ("reason" in fit) throw new Error(`${cell}: ${fit.reason}`);
+        const account = { accountId: fit.account.accountId, bindingId: fit.account.bindingId };
+        expect(account, cell).toEqual({ accountId, bindingId });
         const unsigned = {
           id: `cmd${row}-${accountId}`,
           runnerId: "runner",

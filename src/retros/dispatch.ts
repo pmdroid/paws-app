@@ -14,7 +14,6 @@ import {
   retroGenerationSteps,
   listRetroAttemptsSteps,
   listWorkspaceMembersSteps,
-  listAgentBindingsSteps,
   markRetroDispatchFetchedSteps,
   newRetroCommandId,
   openRetroDispatchSteps,
@@ -30,7 +29,6 @@ import {
   RETRO_WAIT_DIAGNOSTICS,
   retroArtifactSteps,
   retroDispatchesNotStartedSteps,
-  runnerAccountUnsupportedSteps,
   runnerHasCapacitySteps,
   runnerOccupancySteps,
   runnerSlotsHeldBetweenCommandsSteps,
@@ -51,8 +49,10 @@ import {
 } from "../db";
 import {
   BINDING_REASON_TEXT,
-  bindingReadinessSteps,
   eligibleRunnersSteps,
+  resolveRunnerAccountSteps,
+  RETRO_ACCOUNT_CHECKS,
+  type AccountRefusal,
   type BindingUnavailableReason,
   type EligibleRunner,
 } from "../runner-placement";
@@ -298,42 +298,33 @@ function* retroBindingSteps(
     agent: RunnerCodingAgent;
     model: string;
     now: number;
+    bindingId?: string;
   },
 ): Steps<BindingPick> {
-  const pick: BindingPick = { account: null, busy: false, hold: null, refusal: null };
-  for (const binding of yield* listAgentBindingsSteps(q, input.workspaceId)) {
-    if (
-      binding.runnerId !== input.runnerId ||
-      binding.agent !== input.agent ||
-      binding.removedAt !== null
-    )
-      continue;
-    const unsupported = yield* runnerAccountUnsupportedSteps(
-      q,
-      input.runnerId,
-      binding.id,
-      input.agent,
-      { reported: true },
-    );
-    if (unsupported) {
-      pick.refusal ??= unsupported;
-      continue;
-    }
-    const readiness = yield* bindingReadinessSteps(q, {
-      bindingId: binding.id,
-      model: input.model,
-      now: input.now,
-      runnerCapacity: false,
-    });
-    const account = { accountId: binding.accountId, bindingId: binding.id };
-    if (readiness.ready) return { ...pick, account, busy: false };
-    if (readiness.reason === "busy") {
-      if (pick.account === null) Object.assign(pick, { account, busy: true });
-    } else if (HEALTH_HOLDS.has(readiness.reason))
-      pick.hold ??= { reason: readiness.reason, until: readiness.until };
-    else pick.refusal ??= BINDING_REASON_TEXT[readiness.reason];
+  const fit = yield* resolveRunnerAccountSteps(q, { id: input.runnerId }, input.workspaceId, {
+    agent: input.agent,
+    model: input.model,
+    ...RETRO_ACCOUNT_CHECKS,
+    at: input.now,
+    ...(input.bindingId ? { bindingId: input.bindingId } : {}),
+  });
+  if (!("reason" in fit)) {
+    const { accountId, bindingId } = fit.account;
+    return { account: { accountId, bindingId }, busy: false, hold: null, refusal: null };
   }
-  return pick;
+  const refusals = fit.refusals?.length ? fit.refusals : [fit];
+  const held = (code: AccountRefusal["code"]): code is BindingUnavailableReason =>
+    HEALTH_HOLDS.has(code as BindingUnavailableReason);
+  const hold = refusals.find((refusal) => held(refusal.code));
+  return {
+    account: null,
+    busy: refusals.some((refusal) => refusal.code === "busy"),
+    hold: hold
+      ? { reason: hold.code as BindingUnavailableReason, until: hold.until ?? null }
+      : null,
+    refusal:
+      refusals.find((refusal) => refusal.code !== "busy" && !held(refusal.code))?.reason ?? null,
+  };
 }
 
 function profileOf(retro: Retro): RetroAgentProfile {
@@ -631,7 +622,10 @@ export function createRetroDispatcher(options: {
           }),
         ),
       );
-    const healthy = candidates.filter((runner) => picks.get(runner.id)!.account !== null);
+    const healthy = candidates.filter((runner) => {
+      const pick = picks.get(runner.id)!;
+      return pick.account !== null || pick.busy;
+    });
     if (healthy.length === 0) {
       const blocks = [...picks.values()];
       const holds = blocks.flatMap((pick) => (pick.hold ? [pick.hold] : []));
@@ -682,7 +676,7 @@ export function createRetroDispatcher(options: {
         "capacity_wait",
         `${available.length} compatible runner${available.length === 1 ? " is" : "s are"} busy. Waiting for a free slot.`,
       );
-    const ready = free.filter((runner) => !picks.get(runner.id)!.busy);
+    const ready = free.filter((runner) => picks.get(runner.id)!.account !== null);
     if (ready.length === 0)
       return note(
         retro.id,
@@ -724,12 +718,14 @@ export function createRetroDispatcher(options: {
         identity === null ||
         identity.workspaceId !== retro.workspaceId ||
         !(yield* runnerHasWorkspaceAuthoritySteps(q, identity)) ||
-        !(yield* bindingReadinessSteps(q, {
-          bindingId: account.bindingId,
+        (yield* retroBindingSteps(q, {
+          workspaceId: retro.workspaceId,
+          runnerId,
+          agent,
           model,
           now: at,
-          runnerCapacity: false,
-        })).ready ||
+          bindingId: account.bindingId,
+        })).account === null ||
         !(yield* runnerHasCapacitySteps(
           q,
           runnerId,
