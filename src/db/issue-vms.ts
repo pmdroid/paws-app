@@ -183,9 +183,15 @@ export function* liveHostIssueVmsSteps(q: Q, hostRunnerId: string) {
 
 export function* reportHostIssueVmUnitsSteps(
   q: Q,
-  input: { hostRunnerId: string; running: string[]; now: number },
+  input: {
+    hostRunnerId: string;
+    running: string[];
+    refused?: { id: string; reason: string }[];
+    now: number;
+  },
 ) {
   const { issueVm: v } = q.t;
+  const live = and(eq(v.hostRunnerId, input.hostRunnerId), isNull(v.deletedAt));
   yield* q.exec(
     q.orm
       .update(v)
@@ -193,8 +199,15 @@ export function* reportHostIssueVmUnitsSteps(
         unitRunning: input.running.length === 0 ? false : inArray(v.id, input.running),
         unitSeenAt: input.now,
       })
-      .where(and(eq(v.hostRunnerId, input.hostRunnerId), isNull(v.deletedAt))),
+      .where(live),
   );
+  for (const { id, reason } of input.refused ?? [])
+    yield* q.exec(
+      q.orm
+        .update(v)
+        .set({ sleepRefusal: reason, sleepRefusedAt: input.now })
+        .where(and(live, eq(v.id, id))),
+    );
 }
 
 export type HostIssueVmUnit = {
@@ -203,6 +216,8 @@ export type HostIssueVmUnit = {
   deletedAt: number | null;
   unitRunning: boolean | null;
   unitSeenAt: number | null;
+  sleepRefusal: string | null;
+  sleepRefusedAt: number | null;
 };
 
 export function* hostIssueVmUnitSteps(q: Q, id: string) {
@@ -215,6 +230,8 @@ export function* hostIssueVmUnitSteps(q: Q, id: string) {
         deletedAt: v.deletedAt,
         unitRunning: v.unitRunning,
         unitSeenAt: v.unitSeenAt,
+        sleepRefusal: v.sleepRefusal,
+        sleepRefusedAt: v.sleepRefusedAt,
       })
       .from(v)
       .where(eq(v.id, id)),

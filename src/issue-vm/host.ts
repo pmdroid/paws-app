@@ -35,12 +35,16 @@ export function createHostIssueVmDriver(options: HostIssueVmDriverOptions): Issu
     return { ...row, hostRunnerId: row.hostRunnerId };
   }
 
-  async function until(id: string, signal: AbortSignal, running: boolean) {
+  async function until(id: string, signal: AbortSignal, running: boolean, sleeping = false) {
     const since = now();
     for (;;) {
       signal.throwIfAborted();
       const row = await unit(id);
       if (row.unitSeenAt !== null && row.unitSeenAt >= since && row.unitRunning === running) return;
+      if (sleeping && row.sleepRefusedAt !== null && row.sleepRefusedAt >= since)
+        throw new Error(
+          `Issue VM ${id} can't sleep yet: ${row.sleepRefusal ?? "the sign-in check failed"}`,
+        );
       await wait(pollMs, signal);
     }
   }
@@ -53,7 +57,7 @@ export function createHostIssueVmDriver(options: HostIssueVmDriverOptions): Issu
   return {
     create: (id, call) => until(id, call.signal, true),
     wake: (id, call) => until(id, call.signal, true),
-    sleep: (id, call) => until(id, call.signal, false),
+    sleep: (id, call) => until(id, call.signal, false, true),
     async delete(id, call) {
       const { hostRunnerId } = await unit(id);
       const at = now();

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
 import { journal, journalCaught } from "../journal";
 
@@ -6,11 +8,15 @@ const ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 const MAX_SLOT = 254;
 const LIVE = new Set(["active", "activating", "deactivating", "reloading", "refreshing"]);
 const KEPT_STATES = new Set(["creating", "awake", "asleep", "unknown"]);
+const SLEEP_CHECK_OUTPUT = "/run/paws-issue-vm-sleep-check";
+const MAX_REFUSAL = 300;
 
 export type IssueVmUnits = {
   active(): Promise<string[]>;
   start(unit: string): Promise<void>;
   stop(unit: string): Promise<void>;
+  /** Runs the sign-in check in the VM; null when it may stop, otherwise why not. */
+  sleepCheck(unit: string): Promise<string | null>;
 };
 
 export type IssueVmMachineSize = { vcpus: number; memoryGb: number };
@@ -24,7 +30,10 @@ export type IssueVmReconcile = {
   stopped: { machine: IssueVmMachine; reason: IssueVmStopReason }[];
   started: IssueVmMachine[];
   waiting: string[];
+  refused: { machine: IssueVmMachine; reason: string }[];
 };
+
+export type IssueVmSleepRefusal = { id: string; reason: string };
 
 export function issueVmUnit(id: string, slot: number, size: IssueVmMachineSize): string {
   return `paws-issue-vm@${id}-${slot}-${size.vcpus}-${size.memoryGb}.service`;
@@ -60,7 +69,13 @@ export async function reconcileIssueVms(
 ): Promise<IssueVmReconcile> {
   const known = host.vmHost ? host.vms : [];
   const rows = new Map(known.map((row) => [row.id, row]));
-  const result: IssueVmReconcile = { kept: [], stopped: [], started: [], waiting: [] };
+  const result: IssueVmReconcile = {
+    kept: [],
+    stopped: [],
+    started: [],
+    waiting: [],
+    refused: [],
+  };
   const ids = new Set<string>();
   const used = new Set<number>();
   const limit = host.vmHost ? Math.min(host.slots, MAX_SLOT) : 0;
@@ -82,10 +97,15 @@ export async function reconcileIssueVms(
               : ids.size >= limit
                 ? "over_limit"
                 : null;
-    if (reason === null) {
+    const refusal = reason === "asleep" ? await sleepRefusal(units, found) : null;
+    if (refusal !== null) {
+      journal(`issue_vm_sleep_refused vm=${found.id} slot=${found.slot}`);
+      result.refused.push({ machine: found, reason: refusal });
+    }
+    if (reason === null || refusal !== null) {
       ids.add(found.id);
       used.add(found.slot);
-      result.kept.push(found);
+      if (refusal === null) result.kept.push(found);
       continue;
     }
     await units.stop(found.unit);
@@ -118,7 +138,22 @@ export async function reconcileIssueVms(
   return result;
 }
 
-export function systemdIssueVmUnits(spawn: typeof Bun.spawn = Bun.spawn): IssueVmUnits {
+async function sleepRefusal(units: IssueVmUnits, found: IssueVmMachine): Promise<string | null> {
+  try {
+    const refusal = await units.sleepCheck(found.unit);
+    return refusal === null
+      ? null
+      : refusal.trim().slice(0, MAX_REFUSAL) || "The sign-in check failed";
+  } catch (error) {
+    journalCaught(error, "runner-daemon.reconcileIssueVms.sleepCheck", null);
+    return "The sign-in check could not run";
+  }
+}
+
+export function systemdIssueVmUnits(
+  spawn: typeof Bun.spawn = Bun.spawn,
+  checks = SLEEP_CHECK_OUTPUT,
+): IssueVmUnits {
   const systemctl = async (args: string[]): Promise<string> => {
     const child = spawn(["/usr/bin/systemctl", ...args], {
       stdin: "ignore",
@@ -156,11 +191,30 @@ export function systemdIssueVmUnits(spawn: typeof Bun.spawn = Bun.spawn): IssueV
     async stop(unit) {
       await systemctl(["stop", "--no-ask-password", unit]);
     },
+    async sleepCheck(unit) {
+      if (machine(unit) === null) throw new Error(`${unit} is not an issue VM unit`);
+      const instance = unit.slice("paws-issue-vm@".length, -".service".length);
+      const ran = await systemctl([
+        "start",
+        "--no-ask-password",
+        `paws-issue-vm-sleep-check@${instance}.service`,
+      ]).then(
+        () => true,
+        () => false,
+      );
+      if (ran) return null;
+      try {
+        return readFileSync(join(checks, `${instance}.out`), "utf8").slice(0, MAX_REFUSAL);
+      } catch {
+        return "The sign-in check in the VM failed";
+      }
+    },
   };
 }
 
 export function createFakeIssueVmUnits() {
   const active = new Set<string>();
+  const refusals = new Map<string, string>();
   const calls: string[] = [];
   const units: IssueVmUnits = {
     async active() {
@@ -177,8 +231,13 @@ export function createFakeIssueVmUnits() {
       await Promise.resolve();
       active.delete(unit);
     },
+    async sleepCheck(unit) {
+      calls.push(`check ${unit}`);
+      await Promise.resolve();
+      return refusals.get(unit) ?? null;
+    },
   };
-  return { units, active, calls };
+  return { units, active, refusals, calls };
 }
 
 const VmId = z.string().regex(ID);

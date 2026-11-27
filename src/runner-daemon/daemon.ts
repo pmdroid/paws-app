@@ -9,7 +9,11 @@ import { and, desc, eq, gt, inArray, lt, notInArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { createCommandStore } from "./commands-ddl";
 import { attachCredentialStore } from "./credential-store";
-import { IssueVmHostViewSchema, type IssueVmHostView } from "./issue-vm-machines";
+import {
+  IssueVmHostViewSchema,
+  type IssueVmHostView,
+  type IssueVmSleepRefusal,
+} from "./issue-vm-machines";
 import {
   agentCredential,
   commandReceipt,
@@ -1077,15 +1081,23 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         .strictObject({ duplicate: z.boolean() })
         .parse(await authenticated("/v1/storage-report", "POST", body));
     },
-    async issueVmHost(running?: string[]): Promise<IssueVmHostView> {
-      if (running !== undefined)
-        try {
-          return IssueVmHostViewSchema.parse(
-            await authenticated("/v1/issue-vms", "POST", { running }),
-          );
-        } catch (error) {
-          if (!(error instanceof RunnerRequestError) || error.status !== 405) throw error;
-        }
+    async issueVmHost(
+      running?: string[],
+      refused: IssueVmSleepRefusal[] = [],
+    ): Promise<IssueVmHostView> {
+      if (running !== undefined) {
+        // An older Paws refuses the extra fields with a 400; it then gets the bare report.
+        const checked = { running, sleepCheck: true, ...(refused.length > 0 ? { refused } : {}) };
+        const bodies = [checked, { running }];
+        for (const [index, body] of bodies.entries())
+          try {
+            return IssueVmHostViewSchema.parse(await authenticated("/v1/issue-vms", "POST", body));
+          } catch (error) {
+            if (!(error instanceof RunnerRequestError)) throw error;
+            if (error.status === 405) break;
+            if (error.status !== 400 || index === bodies.length - 1) throw error;
+          }
+      }
       return IssueVmHostViewSchema.parse(await authenticated("/v1/issue-vms", "GET"));
     },
     async postStorageCleanup(result: RunnerStorageCleanupResult) {

@@ -309,6 +309,13 @@
       "when": 1795739520603,
       "tag": "0043_issue_vm_unit_report",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1795741250363,
+      "tag": "0044_issue_vm_sleep_refusal",
+      "breakpoints": true
     }
   ]
 }

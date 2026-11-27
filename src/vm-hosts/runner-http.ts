@@ -21,22 +21,44 @@ export type VmHostRunnerView =
       vms: HostVm[];
     };
 
+const VmId = z.string().regex(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
+
 const UnitReportSchema = z.strictObject({
-  running: z.array(z.string().regex(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/)).max(254),
+  running: z.array(VmId).max(254),
+  refused: z
+    .array(z.strictObject({ id: VmId, reason: z.string().min(1).max(300) }))
+    .max(254)
+    .optional(),
+  sleepCheck: z.literal(true).optional(),
 });
 
-function* viewSteps(q: Q, runnerId: string, running: string[] | null, now: number) {
+type UnitReport = z.infer<typeof UnitReportSchema>;
+
+// A host stops a VM it is told wants asleep. Only a host that runs the guest's sign-in check
+// before that stop says `sleepCheck: true`; any other host never hears that a VM wants asleep,
+// so it keeps the VM running and the sleep fails at its deadline instead of losing sign-ins.
+function* viewSteps(q: Q, runnerId: string, report: UnitReport | null, now: number) {
+  const running = report?.running ?? null;
   const runner = yield* getRunnerSteps(q, runnerId);
   const machine = runner ? yield* vmHostMachineSteps(q, runner.workspaceId, runnerId) : null;
   if (!machine?.host) return { vmHost: false } as VmHostRunnerView;
   if (running !== null)
-    yield* reportHostIssueVmUnitsSteps(q, { hostRunnerId: runnerId, running, now });
+    yield* reportHostIssueVmUnitsSteps(q, {
+      hostRunnerId: runnerId,
+      running,
+      refused: report?.refused,
+      now,
+    });
   const vms = yield* liveHostIssueVmsSteps(q, runnerId);
   return {
     vmHost: true,
     slots: vmHostSlots(machine, machine.host).slots,
     size: { vcpus: machine.host.vmVcpus, memoryGb: machine.host.vmMemoryGb },
-    vms: running === null ? vms.map(({ id, state }) => ({ id, state })) : vms,
+    vms: vms.map(({ id, state, want }) =>
+      running === null || (want === "asleep" && report?.sleepCheck !== true)
+        ? { id, state }
+        : { id, state, want },
+    ),
   } as VmHostRunnerView;
 }
 
@@ -62,7 +84,5 @@ export async function handleVmHostRunnerRequest(
   const report = UnitReportSchema.safeParse(parsed);
   if (!report.success)
     return Response.json({ error: "The unit report is not valid." }, { status: 400 });
-  return Response.json(
-    await db.transaction((q) => viewSteps(q, runnerId, report.data.running, now())),
-  );
+  return Response.json(await db.transaction((q) => viewSteps(q, runnerId, report.data, now())));
 }

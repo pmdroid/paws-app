@@ -44,8 +44,35 @@ PAWS_RUNNER_DOCKER_ACCESS=grant apt-get -y install "$deb"
 fetch "$workdir/kind" "https://github.com/kubernetes-sigs/kind/releases/download/$KIND_VERSION/kind-linux-$arch" "$kind_sha256"
 install -m 0755 "$workdir/kind" /usr/local/bin/kind
 
+cat > /etc/systemd/system/paws-sleep-check.socket <<'EOF'
+[Unit]
+Description=Paws sign-in check before the VM host stops this VM
+
+[Socket]
+ListenStream=vsock::7101
+Accept=yes
+MaxConnections=1
+
+[Install]
+WantedBy=sockets.target
+EOF
+cat > /etc/systemd/system/paws-sleep-check@.service <<'EOF'
+[Unit]
+Description=Paws sign-in check before the VM host stops this VM
+
+[Service]
+User=paws-runner
+StandardInput=null
+StandardOutput=socket
+StandardError=socket
+ExecStart=/bin/sh -c '/opt/paws-runner/bin/paws-runner runner sleep-check 2>&1; echo "paws-sleep-check-exit=$$?"'
+RuntimeMaxSec=50s
+EOF
+chmod 0644 /etc/systemd/system/paws-sleep-check.socket /etc/systemd/system/paws-sleep-check@.service
+systemctl daemon-reload
+
 apt-get -y autoremove --purge
-systemctl enable docker.service ssh.service
+systemctl enable docker.service ssh.service paws-sleep-check.socket
 
 install -d -m 0755 /etc/paws-issue-vm
 install -m 0644 "$1" /etc/paws-issue-vm/image.env
