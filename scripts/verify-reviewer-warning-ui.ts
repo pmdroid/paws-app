@@ -11,7 +11,7 @@ const directory = process.argv[2];
 if (!directory) throw new Error("Provide a proof directory");
 mkdirSync(directory, { recursive: true });
 const root = mkdtempSync(join(tmpdir(), "paws-reviewer-warning-"));
-const configPath = join(root, "config.toml");
+const configPath = root;
 useMemorySettings(configPath);
 const snapshot = fullStatusFixture();
 const server = Bun.serve({

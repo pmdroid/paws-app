@@ -5,7 +5,7 @@ import {
   policySummary,
   type PolicySummary,
 } from "../closeout-spec";
-import { closeoutPolicyRoot, loadConfigFile } from "../config";
+import { closeoutPolicyRoot, loadSettings } from "../config";
 import { listWorkspaceRepositoryNamesSteps, type Db } from "../db";
 import { journalCaught } from "../journal";
 import { isWorkspaceAdmin } from "../workspace";
@@ -19,7 +19,7 @@ export type CloseoutSummaryOptions = {
   store: Db;
   workspaceId: string;
   pawsHome: string;
-  configPath: string;
+  home: string;
   trustedOrigin?: string;
   role?: string;
   now?: () => number;
@@ -51,7 +51,7 @@ export async function handleCloseoutSummaryRequest(
     const names = await options.store.run((q) =>
       listWorkspaceRepositoryNamesSteps(q, options.workspaceId),
     );
-    const config = loadConfigFile(options.configPath);
+    const config = loadSettings(options.home);
     const now = options.now ?? Date.now;
     const repositories = await Promise.all(
       [...names]

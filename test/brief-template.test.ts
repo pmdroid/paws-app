@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  loadConfigFile,
+  loadSettings,
   resolveBriefTemplate,
   useMemorySettings,
   writeBriefTemplates,
@@ -65,12 +65,12 @@ describe("brief templates", () => {
   test("the saved workspace template resolves on each read", async () => {
     const dir = mkdtempSync(join(tmpdir(), "brief-test-"));
     try {
-      const path = join(dir, "config.toml");
+      const path = dir;
       useMemorySettings(path);
       await writeBriefTemplates(path, { template: "First" });
-      expect(resolveBriefTemplate(loadConfigFile(path))).toBe("First");
+      expect(resolveBriefTemplate(loadSettings(path))).toBe("First");
       await writeBriefTemplates(path, { template: "Second" });
-      expect(resolveBriefTemplate(loadConfigFile(path))).toBe("Second");
+      expect(resolveBriefTemplate(loadSettings(path))).toBe("Second");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -97,7 +97,7 @@ describe("brief templates", () => {
       fake.briefParents.set("child", "parent");
       fake.projectOverviews.set("child", { name: "Project", content: "Project context" });
       const options = {
-        configPath: join(dir, "config.toml"),
+        home: dir,
         csrfToken: "token",
         readIssue: (identifier: string, signal: AbortSignal) =>
           fake.readBriefIssue(identifier, { signal }),
@@ -157,14 +157,14 @@ describe("brief templates", () => {
     try {
       const audit: string[] = [];
       const options = {
-        configPath: join(dir, "config.toml"),
+        home: dir,
         csrfToken: "token",
         repos: ["a/b"],
         audit: async (action: string, subject: string) => {
           audit.push(`${action}: ${subject}`);
         },
       };
-      useMemorySettings(options.configPath);
+      useMemorySettings(options.home);
       const put = (body: unknown, token = "token", origin = "http://localhost") =>
         handleBriefSettingsRequest(
           new Request("http://localhost/api/settings/brief", {
@@ -187,9 +187,9 @@ describe("brief templates", () => {
         "placeholders",
         "template",
       ]);
-      expect(resolveBriefTemplate(loadConfigFile(options.configPath))).toBe("Workspace");
+      expect(resolveBriefTemplate(loadSettings(options.home))).toBe("Workspace");
       expect((await put({ template: null }))?.status).toBe(200);
-      expect(resolveBriefTemplate(loadConfigFile(options.configPath))).toBeNull();
+      expect(resolveBriefTemplate(loadSettings(options.home))).toBeNull();
       expect(audit).toHaveLength(2);
     } finally {
       rmSync(dir, { recursive: true, force: true });

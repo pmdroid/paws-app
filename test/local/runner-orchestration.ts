@@ -408,7 +408,7 @@ export async function probeRunnerOrchestration(
     const crashed = scenario.startsWith("crashed-");
     // These scenarios check that a rebase before the merge runs Closeout again on the runner.
     const mergeSettings = '[merge]\nmain_moved = "closeout"\n';
-    useMemorySettings(join(home, "config.toml"), mergeSettings);
+    useMemorySettings(home, mergeSettings);
     const orchestrator = attachOrchestrator({
       store: db,
       admission: workspaceAdmission(db),

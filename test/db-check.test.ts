@@ -1,20 +1,31 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { databaseUrlOf, loadRuntime } from "../src/config";
+import { CONFIG_FILE_RETIRED, databaseUrlOf, loadRuntime, startupSettings } from "../src/config";
 import { openPawsStore, PgliteInUseError } from "../src/db";
 import { tempHome } from "./helpers";
 import { copyMigratedPglite } from "./pglite";
 
 describe("PAWS_DATABASE_URL", () => {
-  test("a config.toml [database] url is not read and the variable sets the URL", () => {
+  test("a config.toml in the home refuses startup until the variable is set, and is then ignored", () => {
     const home = tempHome();
-    writeFileSync(join(home, "config.toml"), `[database]\nurl = "postgres://a:b@file-host/one"\n`);
-    expect(databaseUrlOf({ PAWS_HOME: home })).toBeNull();
-    expect(loadRuntime({ PAWS_HOME: home }).databaseUrl).toBeNull();
+    const file = join(home, "config.toml");
+    writeFileSync(file, `[database]\nurl = "postgres://a:b@file-host/one"\n`);
+    expect(() => startupSettings({ PAWS_HOME: home })).toThrow(CONFIG_FILE_RETIRED);
+    expect(() => databaseUrlOf({ PAWS_HOME: home })).toThrow(CONFIG_FILE_RETIRED);
+    expect(databaseUrlOf({ PAWS_HOME: home, PAWS_DATABASE_URL: "postgresql://env-host/two" })).toBe(
+      "postgresql://env-host/two",
+    );
     expect(
       loadRuntime({ PAWS_HOME: home, PAWS_DATABASE_URL: "postgresql://env-host/two" }).databaseUrl,
     ).toBe("postgresql://env-host/two");
+    expect(existsSync(file)).toBe(true);
+  });
+
+  test("with neither the variable nor a config.toml, Paws uses PGlite in the home", () => {
+    const home = tempHome();
+    expect(startupSettings({ PAWS_HOME: home }).databaseUrl).toBeNull();
+    expect(loadRuntime({ PAWS_HOME: home }).databaseUrl).toBeNull();
   });
 
   test("a URL that is not Postgres is a config error that does not repeat it", () => {

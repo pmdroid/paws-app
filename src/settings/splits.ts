@@ -13,7 +13,7 @@ import { json, localRequest, readJson, sameToken } from "./handler";
 export const SPLIT_SETTINGS_PATH = "/api/settings/splits";
 
 export type SplitSettingsOptions = {
-  configPath: string;
+  home: string;
   csrfToken: string;
   trustedOrigin?: string;
   role?: string;
@@ -34,7 +34,7 @@ export async function handleSplitSettingsRequest(
       approvedSplitCountSteps(q, options.workspaceId),
     );
     return json({
-      ...splitSettings(readSettingSections(options.configPath)["splits"]),
+      ...splitSettings(readSettingSections(options.home)["splits"]),
       approvedSplits,
     });
   };
@@ -51,7 +51,7 @@ export async function handleSplitSettingsRequest(
     journalCaught(error, "splits.handleSplitSettingsRequest.parse", null);
     return json({ error: error instanceof Error ? error.message : "Invalid split settings" }, 400);
   }
-  await writeSplitSettings(options.configPath, settings);
+  await writeSplitSettings(options.home, settings);
   await options.audit(
     "settings.splits",
     `Set issue splits ${settings.enabled ? "on" : "off"}: at most ${settings.maxSubIssues} sub-issues, ${settings.approvalsBeforeAuto} approvals before automatic splits`,

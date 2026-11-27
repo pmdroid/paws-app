@@ -34,7 +34,7 @@ export default {
         ]
       : [],
   async run(proof) {
-    const configPath = join(process.env.PAWS_HOME!, "config.toml");
+    const configPath = process.env.PAWS_HOME!;
     useMemorySettings(
       configPath,
       `${readConfigText(configPath)}\n[merge]\nmain_moved = "ci"\n\n[[merge.rules]]\nlabel = "Hotfix"\nmain_moved = "closeout"\n`,

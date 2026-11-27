@@ -58,8 +58,8 @@ export function parseSplitSettings(value: unknown): SplitSettings {
   };
 }
 
-export function writeSplitSettings(path: string, settings: SplitSettings): Promise<void> {
-  return saveSettingsSection(path, "splits", {
+export function writeSplitSettings(home: string, settings: SplitSettings): Promise<void> {
+  return saveSettingsSection(home, "splits", {
     enabled: settings.enabled,
     max_sub_issues: settings.maxSubIssues,
     approvals_before_auto: settings.approvalsBeforeAuto,

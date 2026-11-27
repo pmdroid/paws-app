@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import {
   activeAgentFleet,
@@ -7,7 +6,7 @@ import {
   type AgentFleet,
   type AgentSettingsOptions,
 } from "../src/settings";
-import { loadConfigFile, readAgentSettings, useMemorySettings } from "../src/config";
+import { loadSettings, readAgentSettings, useMemorySettings } from "../src/config";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
 import { offerFixtureModels, seed, signInFixtureRunner } from "./pglite-fixtures";
@@ -17,10 +16,10 @@ const SOL = "gpt-6.2-sol";
 const HOUR = 60 * 60 * 1000;
 
 function fixture(fleet: AgentFleet) {
-  const configPath = join(tempHome(), "config.toml");
-  useMemorySettings(configPath);
+  const home = tempHome();
+  useMemorySettings(home);
   const options: AgentSettingsOptions = {
-    configPath,
+    home,
     csrfToken: "test-token",
     fleet: async () => fleet,
     now: () => NOW,
@@ -63,7 +62,7 @@ const fleet: AgentFleet = {
 };
 
 const saved = (options: AgentSettingsOptions) =>
-  readAgentSettings(loadConfigFile(options.configPath)).defaults;
+  readAgentSettings(loadSettings(options.home)).defaults;
 
 describe("agent defaults checked against the fleet", () => {
   test("a model no runner offers is refused and the file keeps the old defaults", async () => {

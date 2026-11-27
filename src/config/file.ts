@@ -121,8 +121,8 @@ export function emptyConfigFile(): PawsConfigFile {
   };
 }
 
-export function loadConfigFile(path: string): PawsConfigFile {
-  return configFromSections(readSettingSections(path));
+export function loadSettings(home: string): PawsConfigFile {
+  return configFromSections(readSettingSections(home));
 }
 
 export function parseConfigToml(text: string): PawsConfigFile {

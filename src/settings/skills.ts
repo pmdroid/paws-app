@@ -1,6 +1,6 @@
 import { isWorkspaceAdmin } from "../workspace";
 import {
-  loadConfigFile,
+  loadSettings,
   parseProjectSkillRoots,
   readProjectSkillRoots,
   writeProjectSkills,
@@ -40,7 +40,7 @@ export const SKILL_SETTINGS_PATH = "/api/settings/skills";
 
 export type SkillSettingsOptions = {
   store: Db;
-  configPath?: string;
+  home?: string;
   /** `~/.paws/skills`. */
   root: string;
   resolver: SkillResolver;
@@ -77,9 +77,7 @@ export async function handleSkillSettingsRequest(
       ...(options.updates ? { updates: await options.updates.available(skills) } : {}),
       agents: SKILL_AGENTS,
       limitBytes: options.limit ?? SKILL_BUNDLE_LIMIT,
-      ...(options.configPath
-        ? { projectRoots: readProjectSkillRoots(loadConfigFile(options.configPath)) }
-        : {}),
+      ...(options.home ? { projectRoots: readProjectSkillRoots(loadSettings(options.home)) } : {}),
       ...(notice ? { notice } : {}),
       ...(found ? { found } : {}),
     });
@@ -88,12 +86,12 @@ export async function handleSkillSettingsRequest(
     await options.updates?.check(await store.run(listSkillsSteps));
     return await listing();
   }
-  const configPath = request.method === "PUT" ? options.configPath : undefined;
-  if (request.method !== "POST" && configPath === undefined)
+  const home = request.method === "PUT" ? options.home : undefined;
+  if (request.method !== "POST" && home === undefined)
     return json({ error: "Method not allowed" }, 405);
   if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))
     return json({ error: "CSRF token missing" }, 403);
-  if (configPath !== undefined) {
+  if (home !== undefined) {
     let projects: ProjectSkills[];
     try {
       const body = await readJson(request);
@@ -105,7 +103,7 @@ export async function handleSkillSettingsRequest(
         400,
       );
     }
-    await writeProjectSkills(configPath, projects);
+    await writeProjectSkills(home, projects);
     await options.audit(
       "settings.skill.project_roots",
       `Set project skill roots: ${projects.map(({ repo, root }) => `${repo} ${root}`).join(", ") || "none"}`,

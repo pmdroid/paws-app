@@ -1,6 +1,6 @@
 import type { IssueBrief } from "../core";
 import { journalCaught } from "../journal";
-import { loadConfigFile, writeBriefTemplates, type BriefTemplates } from "../config";
+import { loadSettings, writeBriefTemplates, type BriefTemplates } from "../config";
 import {
   BRIEF_PLACEHOLDERS,
   BRIEF_RUN_SAMPLES,
@@ -72,14 +72,14 @@ async function putBrief(request: Request, options: BriefSettingsOptions): Promis
   }
   let previous: BriefTemplates;
   try {
-    previous = stored(options.configPath);
+    previous = stored(options.home);
   } catch (error) {
     journalCaught(error, "brief.handleBriefSettingsRequest.stored", null);
     return json({ error: "Brief settings could not be read" }, 503);
   }
   if (previous.template === template) return json(listing(options));
   try {
-    await writeBriefTemplates(options.configPath, { template });
+    await writeBriefTemplates(options.home, { template });
   } catch (error) {
     journalCaught(error, "brief.handleBriefSettingsRequest.write", null);
     const problem = error instanceof Error ? error.message : "";
@@ -139,12 +139,12 @@ async function previewBrief(request: Request, options: BriefSettingsOptions): Pr
 }
 
 function stored(path: string): BriefTemplates {
-  return { template: loadConfigFile(path).briefTemplate ?? null };
+  return { template: loadSettings(path).briefTemplate ?? null };
 }
 
 function listing(options: BriefSettingsOptions) {
   return {
-    template: stored(options.configPath).template,
+    template: stored(options.home).template,
     defaultTemplate: defaultBriefTemplate(),
     placeholders: BRIEF_PLACEHOLDERS,
   };

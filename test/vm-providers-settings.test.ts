@@ -1,7 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import { join } from "node:path";
-import { loadConfigFile, useSettingsStore } from "../src/config";
+import { loadSettings, useSettingsStore } from "../src/config";
 import { failMemberVmStep, insertMemberVm } from "../src/db";
 import { sectionSettings } from "./saved-settings";
 import { createFakeExeDev } from "../src/provisioning";
@@ -25,7 +24,7 @@ afterEach(async () => {
 async function instance() {
   const { db, close } = await tempStore();
   const home = tempHome();
-  const configPath = join(home, "config.toml");
+  const configPath = home;
   const settings = await useSettingsStore(configPath, sectionSettings(db));
   cleanups.push(close, () => {
     settings.release();
@@ -56,7 +55,7 @@ async function instance() {
   const providers = async (request: Request, role = "admin", workspaceId?: string) =>
     (await handleVmProvidersSettingsRequest(request, {
       ...common(role),
-      configPath,
+      home: configPath,
       store: db,
       ...(workspaceId === undefined ? {} : { workspaceId }),
       now: () => clock,
@@ -92,13 +91,13 @@ test("GET lists each provider, PUT turns boat off and on, and tailscale can't be
   >;
   expect(listed.boat?.off).toBe(true);
   expect(listed["exe-dev"]?.off).toBe(false);
-  expect(loadConfigFile(configPath).vmSizes?.offProviders).toEqual(["boat"]);
+  expect(loadSettings(configPath).vmSizes?.offProviders).toEqual(["boat"]);
   const tailscale = await providers(
     send("PUT", "/vm-providers", { provider: "tailscale", off: true }),
   );
   expect(tailscale.status).toBe(400);
   await providers(send("PUT", "/vm-providers", { provider: "boat", off: false }));
-  expect(loadConfigFile(configPath).vmSizes?.offProviders).toBeUndefined();
+  expect(loadSettings(configPath).vmSizes?.offProviders).toBeUndefined();
   expect(audits).toEqual(["Turned boat off", "Turned boat on"]);
 });
 
@@ -148,10 +147,7 @@ test("overlapping toggles of different providers both stay saved", async () => {
     providers(send("PUT", "/vm-providers", { provider: "boat", off: true })),
     providers(send("PUT", "/vm-providers", { provider: "instabox", off: true })),
   ]);
-  expect(loadConfigFile(configPath).vmSizes?.offProviders?.toSorted()).toEqual([
-    "boat",
-    "instabox",
-  ]);
+  expect(loadSettings(configPath).vmSizes?.offProviders?.toSorted()).toEqual(["boat", "instabox"]);
 });
 
 test("saving a key returns its check result beside the set flags", async () => {

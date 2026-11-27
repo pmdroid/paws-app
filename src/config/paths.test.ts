@@ -24,7 +24,7 @@ test("mirrors turned off in Settings leave repos absent at startup", () => {
   const home = mkdtempSync(join(tmpdir(), "paws-home-"));
   homes.push(home);
   const paths = pawsPaths(home);
-  useMemorySettings(paths.configFile, "[github_access]\nmirrors = false\n");
+  useMemorySettings(paths.home, "[github_access]\nmirrors = false\n");
   ensureLayout(paths);
   expect(existsSync(paths.reposDir)).toBe(false);
 });

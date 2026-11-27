@@ -102,8 +102,8 @@ async function scenario(
   const bare = join(dir, "origin.git");
   const seed = join(dir, "seed");
   mkdirSync(pawsRoot, { recursive: true });
-  useMemorySettings(join(pawsRoot, "config.toml"), `[agents]\nimplementer = "${implementer}"\n`);
-  if (settings) await writeAgentSettings(join(pawsRoot, "config.toml"), settings);
+  useMemorySettings(pawsRoot, `[agents]\nimplementer = "${implementer}"\n`);
+  if (settings) await writeAgentSettings(pawsRoot, settings);
   await git("init", "--bare", "-b", "main", bare);
   await git("clone", bare, seed);
   mkdirSync(join(seed, ".agents/skills/local-review"), { recursive: true });

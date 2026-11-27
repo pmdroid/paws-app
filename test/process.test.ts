@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
-import { pawsPaths, ensureLayout } from "../src/config";
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { CONFIG_FILE_RETIRED, ensureLayout, pawsPaths } from "../src/config";
 import { startPaws } from "../src/index";
 import { EXECUTION_TAG_ENV } from "../src/process";
-import { migratedHome } from "./helpers";
+import { migratedHome, tempHome } from "./helpers";
 
 describe("process", () => {
   test("startPaws migrates and serves health", async () => {
@@ -57,15 +58,22 @@ describe("process", () => {
     expect(text).toMatch(/dashboard http:\/\/127\.0\.0\.1:\d+\/dashboard/);
   });
 
-  test("a written config listens on loopback and serves live status", async () => {
-    const home = await migratedHome();
-    const paths = pawsPaths(home);
-    ensureLayout(paths);
+  test("a config.toml left in the home refuses startup without PAWS_DATABASE_URL", async () => {
+    const home = tempHome();
     writeFileSync(
-      paths.configFile,
-      '[linear]\nteam = "ENG"\nteam_id = "team_eng"\nviewer_id = "viewer_1"\nsecret = "secrets/linear-api-key"\n\n[github]\nrepo = "pmdroid/paws-demo"\n',
-      { mode: 0o600 },
+      join(home, "config.toml"),
+      '[database]\nurl = "postgres://file@localhost/paws"\n',
     );
+    await expect(startPaws({ PAWS_HOME: home, PAWS_PORT: "0" })).rejects.toThrow(
+      CONFIG_FILE_RETIRED,
+    );
+    expect(existsSync(join(home, "config.toml"))).toBe(true);
+    expect(existsSync(pawsPaths(home).pgliteDir)).toBe(false);
+  });
+
+  test("without PAWS_DATABASE_URL Paws opens PGlite and listens on loopback", async () => {
+    const home = await migratedHome();
+    ensureLayout(pawsPaths(home));
     const paws = await startPaws({
       PAWS_HOME: home,
       PAWS_PORT: "0",

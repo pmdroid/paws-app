@@ -4,7 +4,7 @@ import { join } from "node:path";
 import {
   parseConfigToml,
   emptyConfigFile,
-  loadConfigFile,
+  loadSettings,
   loadRuntime,
   readMergeSettings,
   resolveAgentProfiles,
@@ -36,7 +36,7 @@ afterEach(async () => {
 
 async function instance(store: Db) {
   const home = tempHome();
-  const configPath = join(home, "config.toml");
+  const configPath = home;
   const settings = await useSettingsStore(configPath, sectionSettings(store));
   cleanups.push(() => {
     settings.release();
@@ -60,47 +60,50 @@ function saveTimeLimits(configPath: string, implementationMinutes: number) {
         default: { implementationMinutes, fixesMinutes: 0, closeoutMinutes: 0 },
       }),
     }),
-    { configPath, csrfToken: "csrf", role: "admin", audit: async () => {} },
+    { home: configPath, csrfToken: "csrf", role: "admin", audit: async () => {} },
   );
 }
 
 test("a config.toml with a [merge] section in PAWS_HOME changes nothing", async () => {
   const a = await instance(await shared());
-  writeFileSync(a.configPath, `${BOOTSTRAP}\n[merge.projects.abc]\nmain_moved = "ci"\n`);
+  writeFileSync(
+    join(a.configPath, "config.toml"),
+    `${BOOTSTRAP}\n[merge.projects.abc]\nmain_moved = "ci"\n`,
+  );
   expect(await savedSettingsText(a.db)).toBe("");
   expect(readConfigText(a.configPath)).toBe("");
-  expect(loadConfigFile(a.configPath)).toEqual(emptyConfigFile());
-  expect(loadRuntime({ PAWS_HOME: join(a.configPath, "..") }).linearTeam).toBeNull();
+  expect(loadSettings(a.configPath)).toEqual(emptyConfigFile());
+  expect(loadRuntime({ PAWS_HOME: a.configPath }).linearTeam).toBeNull();
 });
 
 test("a setting saved through a Settings route is read back from the database after a restart", async () => {
   const db = await shared();
   const before = await instance(db);
   expect((await saveTimeLimits(before.configPath, 45))?.status).toBe(200);
-  expect(existsSync(before.configPath)).toBe(false);
+  expect(existsSync(join(before.configPath, "config.toml"))).toBe(false);
   for (const cleanup of cleanups.splice(1).reverse()) await cleanup();
   const after = await instance(db);
-  expect(existsSync(after.configPath)).toBe(false);
-  expect(loadConfigFile(after.configPath).timeLimits?.implementationMinutes).toBe(45);
+  expect(existsSync(join(after.configPath, "config.toml"))).toBe(false);
+  expect(loadSettings(after.configPath).timeLimits?.implementationMinutes).toBe(45);
 });
 
 test("a setting saved on instance A is read by instance B after its next refresh", async () => {
   const db = await shared();
   const a = await instance(db);
   const b = await instance(db);
-  expect(loadConfigFile(b.configPath).timeLimits).toBeUndefined();
+  expect(loadSettings(b.configPath).timeLimits).toBeUndefined();
 
   expect((await saveTimeLimits(a.configPath, 45))?.status).toBe(200);
-  expect(loadConfigFile(a.configPath).timeLimits?.implementationMinutes).toBe(45);
-  expect(loadConfigFile(b.configPath).timeLimits).toBeUndefined();
+  expect(loadSettings(a.configPath).timeLimits?.implementationMinutes).toBe(45);
+  expect(loadSettings(b.configPath).timeLimits).toBeUndefined();
 
   await b.refresh();
-  expect(loadConfigFile(b.configPath).timeLimits?.implementationMinutes).toBe(45);
-  expect(existsSync(a.configPath)).toBe(false);
+  expect(loadSettings(b.configPath).timeLimits?.implementationMinutes).toBe(45);
+  expect(existsSync(join(a.configPath, "config.toml"))).toBe(false);
 
   expect((await saveTimeLimits(b.configPath, 30))?.status).toBe(200);
   await a.refresh();
-  expect(loadConfigFile(a.configPath).timeLimits?.implementationMinutes).toBe(30);
+  expect(loadSettings(a.configPath).timeLimits?.implementationMinutes).toBe(30);
 });
 
 const SAVED_AGENTS = [
@@ -223,7 +226,7 @@ function gatedStore(initial: string) {
 
 async function gatedInstance(initial: string) {
   const home = tempHome();
-  const configPath = join(home, "config.toml");
+  const configPath = home;
   const gated = gatedStore(initial);
   const settings = await useSettingsStore(configPath, gated.store);
   cleanups.push(() => {
@@ -240,19 +243,19 @@ test("a refresh that read before a local save does not overwrite the save", asyn
   expect((await saveTimeLimits(configPath, 45))?.status).toBe(200);
   gate.resolve();
   await refreshing;
-  expect(loadConfigFile(configPath).timeLimits?.implementationMinutes).toBe(45);
+  expect(loadSettings(configPath).timeLimits?.implementationMinutes).toBe(45);
 });
 
 test("a failed refresh keeps the last settings", async () => {
   const { configPath, settings, gated } = await gatedInstance('[merge]\norder = "ci-green"\n');
   gated.fail(new Error("database unavailable"));
   await expect(settings.refresh()).rejects.toThrow("database unavailable");
-  expect(readMergeSettings(loadConfigFile(configPath)).default.order).toBe("ci-green");
+  expect(readMergeSettings(loadSettings(configPath)).default.order).toBe("ci-green");
 });
 
 test("project skill roots save to the database and the next turn's skill loading uses them", async () => {
   const a = await instance(await shared());
-  const home = join(a.configPath, "..");
+  const home = a.configPath;
   const skills = (name: string) => {
     const root = join(home, name);
     mkdirSync(join(root, name), { recursive: true });
@@ -267,7 +270,7 @@ test("project skill roots save to the database and the next turn's skill loading
   const request = (role: string, init?: RequestInit) =>
     handleSkillSettingsRequest(new Request("http://127.0.0.1:8787/api/settings/skills", init), {
       store: a.db,
-      configPath: a.configPath,
+      home: a.configPath,
       root: join(home, "skills"),
       resolver: fakeSkillResolver(),
       csrfToken: "csrf",
@@ -329,7 +332,7 @@ lane = "project"
 `;
   await seedSettings(a.db, initial);
   await a.refresh();
-  const options = { configPath: a.configPath, csrfToken: "csrf", role: "admin" };
+  const options = { home: a.configPath, csrfToken: "csrf", role: "admin" };
   const get = async () =>
     (await handleMergeSettingsRequest(
       new Request("http://localhost/api/settings/merging"),
@@ -364,7 +367,7 @@ lane = "project"
   expect(await response!.json()).toMatchObject(body);
   expect(await savedSettingsText(a.db)).toContain('review_apps = ["acme-review"]');
   expect(await get()).toMatchObject(body);
-  expect(readMergeSettings(loadConfigFile(a.configPath))).toMatchObject({
+  expect(readMergeSettings(loadSettings(a.configPath))).toMatchObject({
     repositories: {
       "acme/web": {
         ...body.repositories["acme/web"],
@@ -382,7 +385,7 @@ lane = "project"
   expect(await disabledResponse!.json()).toMatchObject(disabled);
   expect(await get()).toMatchObject(disabled);
   expect(
-    readMergeSettings(loadConfigFile(a.configPath)).repositories["acme/web"]?.suggestedFindings,
+    readMergeSettings(loadSettings(a.configPath)).repositories["acme/web"]?.suggestedFindings,
   ).toBe("off");
   expect((await put({ default: body.default, repositories: {}, projects: {} }))?.status).toBe(200);
   expect(await get()).toMatchObject({

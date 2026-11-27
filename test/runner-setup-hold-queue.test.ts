@@ -1,6 +1,5 @@
 import { bindFixtureAccounts } from "./pglite-fixtures";
 import { expect, test } from "bun:test";
-import { join } from "node:path";
 import { FakeClock, JOB_KIND } from "../src/core";
 import {
   JobLoop,
@@ -484,8 +483,8 @@ test("two triggers at once resume the item once", async () => {
 /** Acme's default implementer is Claude; the Codex preset is reachable only through its label. */
 async function labelled(db: Db, clock: FakeClock, jobs: JobLoop, presets = true) {
   const pawsRoot = tempHome();
-  useMemorySettings(join(pawsRoot, "config.toml"));
-  await writeAgentSettings(join(pawsRoot, "config.toml"), {
+  useMemorySettings(pawsRoot);
+  await writeAgentSettings(pawsRoot, {
     defaults: {
       implementer: { agent: "claude", model: "acme-claude" },
       reviewer: { agent: "codex", model: "acme-review" },

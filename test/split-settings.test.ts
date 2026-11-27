@@ -1,6 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import { join } from "node:path";
 import { useSettingsStore } from "../src/config";
 import { readSettingSectionsSteps } from "../src/db";
 import { sectionSettings } from "./saved-settings";
@@ -18,15 +17,14 @@ afterEach(async () => {
 async function instance() {
   const { db, close } = await tempStore();
   const home = tempHome();
-  const configPath = join(home, "config.toml");
-  const settings = await useSettingsStore(configPath, sectionSettings(db));
+  const settings = await useSettingsStore(home, sectionSettings(db));
   cleanups.push(close, () => {
     settings.release();
     rmSync(home, { recursive: true, force: true });
   });
   const audits: string[] = [];
   const options = (role: string): SplitSettingsOptions => ({
-    configPath,
+    home,
     csrfToken: "csrf",
     role,
     store: db,

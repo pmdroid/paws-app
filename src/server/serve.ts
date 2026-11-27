@@ -277,7 +277,7 @@ export type ServerOptions = {
   };
   /** Registered agent skills: bundles under `root` (`~/.paws/skills`), pins in `db`. */
   skillSettings?: {
-    configPath?: string;
+    home?: string;
     root: string;
     resolver: SkillResolver;
     updates?: SkillUpdates;
@@ -778,12 +778,12 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     const store = secrets.store;
     const workspaceId = principal?.workspaceId ?? (await store.run(firstWorkspaceIdSteps));
     if (!workspaceId) return Response.json({ error: "Connect Linear first." }, { status: 404 });
-    const configPath = secrets.agentSettings?.configPath;
+    const home = secrets.agentSettings?.home;
     return (await handleFindingSettingsRequest(request, {
       store,
       csrfToken,
       workspaceId,
-      ...(configPath === undefined ? {} : { configPath }),
+      ...(home === undefined ? {} : { home }),
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
         auditWorkspaceAccess(store, {
@@ -819,7 +819,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (path === GITHUB_ACCESS_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
     const store = secrets.store;
     return (await handleGitHubAccessSettingsRequest(request, {
-      configPath: secrets.agentSettings.configPath,
+      home: secrets.agentSettings.home,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
@@ -836,7 +836,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (path === CLOSEOUT_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
     const store = secrets.store;
     return (await handleCloseoutSettingsRequest(request, {
-      configPath: secrets.agentSettings.configPath,
+      home: secrets.agentSettings.home,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
@@ -858,7 +858,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       store,
       workspaceId,
       pawsHome: loadRuntime(secrets.statusEnv ?? process.env).env.home,
-      configPath: secrets.agentSettings.configPath,
+      home: secrets.agentSettings.home,
       ...(principal === undefined ? {} : { role: principal.role }),
       ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     }))!;
@@ -979,8 +979,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   ) {
     const store = secrets.store;
     return (await handleVmProvidersSettingsRequest(request, {
-      home: loadRuntime(secrets.statusEnv ?? process.env).env.home,
-      configPath: secrets.agentSettings.configPath,
+      home: secrets.agentSettings.home,
       store,
       checks: secrets.vmProviderChecks,
       csrfToken,
@@ -1002,7 +1001,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     const store = secrets.store;
     const { instaBoxSizes } = secrets.agentSettings;
     return (await handleMemberVmSettingsRequest(request, {
-      configPath: secrets.agentSettings.configPath,
+      home: secrets.agentSettings.home,
       csrfToken,
       ...(instaBoxSizes === undefined ? {} : { instaBoxSizes }),
       ...(principal === undefined ? {} : { role: principal.role }),
@@ -1028,7 +1027,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (path === ISSUE_VM_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
     const store = secrets.store;
     return (await handleIssueVmSettingsRequest(request, {
-      configPath: secrets.agentSettings.configPath,
+      home: secrets.agentSettings.home,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
@@ -1045,7 +1044,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (path === SPLIT_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
     const store = secrets.store;
     return (await handleSplitSettingsRequest(request, {
-      configPath: secrets.agentSettings.configPath,
+      home: secrets.agentSettings.home,
       csrfToken,
       store,
       workspaceId: principal?.workspaceId ?? null,
@@ -1064,7 +1063,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (path === LINEAR_COMMENT_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
     const store = secrets.store;
     return (await handleLinearCommentSettingsRequest(request, {
-      configPath: secrets.agentSettings.configPath,
+      home: secrets.agentSettings.home,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
@@ -1081,7 +1080,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (path === TIME_LIMIT_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
     const store = secrets.store;
     return (await handleTimeLimitSettingsRequest(request, {
-      configPath: secrets.agentSettings.configPath,
+      home: secrets.agentSettings.home,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>

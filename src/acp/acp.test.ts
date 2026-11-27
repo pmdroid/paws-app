@@ -2576,7 +2576,7 @@ test("a read-only session does not install a closeout stop hook", async () => {
 });
 
 function writeGrokConfig(pawsRoot: string): void {
-  useMemorySettings(join(pawsRoot, "config.toml"), `[agents]\nimplementer = "grok"\n`);
+  useMemorySettings(pawsRoot, `[agents]\nimplementer = "grok"\n`);
 }
 
 async function writeScript(

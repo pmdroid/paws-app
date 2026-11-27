@@ -1,14 +1,10 @@
 import { journalCaught } from "../journal";
 import { readSecretFile, secretFileExists } from "../credentials";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_MAX_AWAKE_MS } from "../core";
 import { loadEnv, type EnvSource, type PawsEnv } from "./env";
-import {
-  emptyConfigFile,
-  loadConfigFile,
-  type GitHubConfigAuth,
-  type PawsConfigFile,
-} from "./file";
+import { emptyConfigFile, loadSettings, type GitHubConfigAuth, type PawsConfigFile } from "./file";
 import { pawsPaths } from "./paths";
 import { loadGitHubAppCredentials } from "./github-app";
 import { checkDatabaseUrl } from "./database";
@@ -47,9 +43,15 @@ export type RuntimeConfig = {
   databaseUrl: string | null;
 };
 
+const RETIRED_CONFIG_FILE = "config.toml";
+
+export const CONFIG_FILE_RETIRED = `Set PAWS_DATABASE_URL in the service environment; ${RETIRED_CONFIG_FILE} is no longer read`;
+
 export function startupSettings(source: EnvSource = process.env) {
   const env = loadEnv(source);
   const url = optional(source, "PAWS_DATABASE_URL");
+  if (url === null && existsSync(join(env.home, RETIRED_CONFIG_FILE)))
+    throw new Error(CONFIG_FILE_RETIRED);
   return {
     env,
     publicUrl: env.publicUrl ?? null,
@@ -75,13 +77,12 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     env.githubAppInstallationId = app.installationId;
     env.githubAppPrivateKeyPath = app.privateKeyPath;
   }
-  const configPath = pawsPaths(env.home).configFile;
   let file = emptyConfigFile();
   let configError: string | null = null;
   try {
-    file = loadConfigFile(configPath);
+    file = loadSettings(env.home);
   } catch (error) {
-    journalCaught(error, "runtime.loadRuntime.loadConfigFile", null);
+    journalCaught(error, "runtime.loadRuntime.loadSettings", null);
     configError = error instanceof Error ? error.message : "Saved settings could not be parsed";
   }
 

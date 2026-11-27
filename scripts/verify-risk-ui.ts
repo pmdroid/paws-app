@@ -7,7 +7,7 @@ import { chromium, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { highRiskPaths, loadConfigFile, readMergeSettings, useMemorySettings } from "../src/config";
+import { highRiskPaths, loadSettings, readMergeSettings, useMemorySettings } from "../src/config";
 import { handleMergeSettingsRequest } from "../src/settings";
 import { handleStatusRequest } from "../src/dashboard";
 import type { IssueDetailResponse, StatusItemRisk } from "../src/dashboard/src/contract";
@@ -120,9 +120,10 @@ try {
       await platform.getByLabel("Paws settings").fill("src/auth/**\n.github/workflows/**\n");
       await page.getByRole("button", { name: "Save", exact: true }).click();
       await expect(page.getByText("Merging settings saved.")).toBeVisible();
-      expect(highRiskPaths(readMergeSettings(loadConfigFile(configPath)), "acme/platform")).toEqual(
-        ["src/auth/**", ".github/workflows/**"],
-      );
+      expect(highRiskPaths(readMergeSettings(loadSettings(configPath)), "acme/platform")).toEqual([
+        "src/auth/**",
+        ".github/workflows/**",
+      ]);
       await page.reload();
       await expect(platform.locator("textarea")).toHaveValue("src/auth/**\n.github/workflows/**");
       await expect(platform).toContainText("Read-only, from origin/main at 4b317d5.");

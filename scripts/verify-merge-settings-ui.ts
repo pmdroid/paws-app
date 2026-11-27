@@ -6,7 +6,7 @@ import { chromium, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfigFile, readMergeSettings, useMemorySettings } from "../src/config";
+import { loadSettings, readMergeSettings, useMemorySettings } from "../src/config";
 import { readConfigText } from "../test/saved-settings";
 import { handleMergeSettingsRequest } from "../src/settings";
 import { handleStatusRequest } from "../src/dashboard";
@@ -90,7 +90,7 @@ try {
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText("Merging settings saved.")).toBeVisible();
 
-    const saved = readMergeSettings(loadConfigFile(configPath));
+    const saved = readMergeSettings(loadSettings(configPath));
     expect(saved.default).toEqual({ order: "queue", mainMoved: "closeout" });
     expect(readConfigText(configPath)).not.toContain("[[merge.rules]]");
     expect(saved.repositories).toEqual({
@@ -112,7 +112,7 @@ try {
       .fill("<!-- add-pr-comment:todo-count -->\n<!-- deploy-security-proof -->");
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText("Merging settings saved.")).toBeVisible();
-    expect(readMergeSettings(loadConfigFile(configPath)).repositories["acme/platform"]).toEqual({
+    expect(readMergeSettings(loadSettings(configPath)).repositories["acme/platform"]).toEqual({
       packages: ["apps/*", "packages/*"],
       reviewApps: [],
       ignoreCommentBots: ["codecov[bot]", "deploy-bot"],

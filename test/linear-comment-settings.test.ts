@@ -1,8 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import { join } from "node:path";
 import {
-  loadConfigFile,
+  loadSettings,
   resolveLinearCommentAgents,
   useMemorySettings,
   useSettingsStore,
@@ -20,7 +19,7 @@ afterEach(async () => {
 
 async function instance(withStore: boolean) {
   const home = tempHome();
-  const configPath = join(home, "config.toml");
+  const configPath = home;
   cleanups.push(() => rmSync(home, { recursive: true, force: true }));
   if (!withStore) {
     const settings = useMemorySettings(configPath, "");
@@ -35,7 +34,7 @@ async function instance(withStore: boolean) {
 
 function request(configPath: string, init?: RequestInit, role = "admin") {
   return handleLinearCommentSettingsRequest(new Request(url, init), {
-    configPath,
+    home: configPath,
     csrfToken: "csrf",
     role,
     audit: async () => {},
@@ -54,7 +53,7 @@ function put(configPath: string, body: unknown, role = "admin") {
   );
 }
 
-const agents = (configPath: string) => resolveLinearCommentAgents(loadConfigFile(configPath));
+const agents = (configPath: string) => resolveLinearCommentAgents(loadSettings(configPath));
 
 test("while nothing is saved, GET and the reader return no agents", async () => {
   const configPath = await instance(true);

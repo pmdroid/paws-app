@@ -1,5 +1,5 @@
 import {
-  loadConfigFile,
+  loadSettings,
   parseLinearCommentSettings,
   readLinearCommentSettings,
   writeLinearCommentAgents,
@@ -11,7 +11,7 @@ import { json, localRequest, readJson, sameToken } from "./handler";
 export const LINEAR_COMMENT_SETTINGS_PATH = "/api/settings/linear-comments";
 
 export type LinearCommentSettingsOptions = {
-  configPath: string;
+  home: string;
   csrfToken: string;
   trustedOrigin?: string;
   role?: string;
@@ -30,7 +30,7 @@ export async function handleLinearCommentSettingsRequest(
     );
   const listing = () => {
     try {
-      return json(readLinearCommentSettings(loadConfigFile(options.configPath)));
+      return json(readLinearCommentSettings(loadSettings(options.home)));
     } catch (error) {
       journalCaught(error, "linear-comments.handleLinearCommentSettingsRequest.read", null);
       return json({ error: "Linear comment settings could not be read" }, 503);
@@ -52,7 +52,7 @@ export async function handleLinearCommentSettingsRequest(
       400,
     );
   }
-  await writeLinearCommentAgents(options.configPath, agents);
+  await writeLinearCommentAgents(options.home, agents);
   await options.audit(
     "settings.linear_comments",
     agents.length === 0

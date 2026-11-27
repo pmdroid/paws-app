@@ -17,7 +17,7 @@ const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
 mkdirSync(directory, { recursive: true });
 const root = mkdtempSync(join(tmpdir(), "paws-queue-limits-"));
-const configPath = join(root, "config.toml");
+const configPath = root;
 const db = openDatabase(join(root, "paws.sqlite"));
 migrate(db);
 const snapshot = fullStatusFixture();
@@ -51,7 +51,7 @@ const server = Bun.serve({
         audit: () => {},
       });
     return (
-      (await handleAgentSettingsRequest(request, { configPath, csrfToken: "fixture" })) ??
+      (await handleAgentSettingsRequest(request, { home: configPath, csrfToken: "fixture" })) ??
       (await handleTimeLimitSettingsRequest(request, {
         configPath,
         csrfToken: "fixture",

@@ -1,6 +1,5 @@
 import { sql } from "drizzle-orm";
 import { afterEach, describe, expect, test } from "bun:test";
-import { join } from "node:path";
 import { useMemorySettings } from "../src/config";
 import {
   enqueueOutbox,
@@ -318,9 +317,9 @@ describe("the session setting on the Merging settings API", () => {
   test("GET and PUT read and save it in the database; invalid values are refused", async () => {
     const store = await tempStore();
     close = store.close;
-    const configPath = join(tempHome(), "config.toml");
+    const configPath = tempHome();
     useMemorySettings(configPath);
-    const options = { configPath, csrfToken: "test-token", store: store.db };
+    const options = { home: configPath, csrfToken: "test-token", store: store.db };
     const read = async () => (await handleMergeSettingsRequest(request(), options))!.json();
     expect(await read()).toMatchObject({ sessionDone: "pull_request", sessionQuietMinutes: 10 });
     const put = (body: object) =>

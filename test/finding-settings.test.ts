@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfigFile, useSettingsStore } from "../src/config";
+import { loadSettings, useSettingsStore } from "../src/config";
 import { findingGroupingEnabled, type Db } from "../src/db";
 import { savedSettingsText, sectionSettings, seedSettings } from "./saved-settings";
 import { handleFindingSettingsRequest, type FindingSettingsOptions } from "../src/settings";
@@ -26,7 +26,7 @@ beforeEach(async () => {
   );
   audits = [];
   dir = mkdtempSync(join(tmpdir(), "paws-finding-settings-"));
-  configPath = join(dir, "config.toml");
+  configPath = dir;
   await seedSettings(db, SEEDED);
   ({ release } = await useSettingsStore(configPath, sectionSettings(db)));
 });
@@ -42,7 +42,7 @@ function options(role?: string): FindingSettingsOptions {
     store: db,
     csrfToken: "csrf",
     workspaceId: "ws",
-    configPath,
+    home: configPath,
     ...(role ? { role } : {}),
     audit: async (action, subject) => {
       audits.push([action, subject]);
@@ -97,7 +97,7 @@ test("an admin saves the grouping time to the database", async () => {
   expect(saved!.status).toBe(200);
   expect(await saved!.json()).toEqual({ grouping: true, groupingTime: "21:15" });
   expect(await savedSettingsText(db)).toContain('grouping_time = "21:15"');
-  expect(loadConfigFile(configPath).findingsGroupingTime).toBe("21:15");
+  expect(loadSettings(configPath).findingsGroupingTime).toBe("21:15");
   const listed = await handleFindingSettingsRequest(new Request(url), options("admin"));
   expect(await listed!.json()).toEqual({ grouping: true, groupingTime: "21:15" });
   expect(audits).toEqual([

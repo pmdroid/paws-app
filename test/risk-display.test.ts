@@ -6,7 +6,7 @@ import { count, eq, sql, type SQL } from "drizzle-orm";
 import { RiskDisplayReader, riskApprovalFor } from "../src/loop";
 import { createLiveStatusProvider } from "../src/dashboard";
 import {
-  loadConfigFile,
+  loadSettings,
   readMergeSettings,
   useMemorySettings,
   type MergeSettings,
@@ -371,7 +371,7 @@ test("saved settings are observed outside the status read path", async () => {
   const f = await fixture();
   const home = tempHome();
   cleanup.push(() => rmSync(home, { recursive: true, force: true }));
-  const path = join(home, "config.toml");
+  const path = home;
   const settings = useMemorySettings(path, "[merge]\nauto_approve_high_risk = true\n");
   cleanup.push(() => settings.release());
   let reads = 0;
@@ -380,7 +380,7 @@ test("saved settings are observed outside the status read path", async () => {
     publicUrl: "https://paws.example",
     readSettings: () => {
       reads++;
-      return readMergeSettings(loadConfigFile(path));
+      return readMergeSettings(loadSettings(path));
     },
   });
   cleanup.push(() => reader.close());
