@@ -19,4 +19,5 @@ export const secret = pgTable("secret", {
   name: text().primaryKey(),
   ciphertext: text().notNull(),
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+  version: bigint({ mode: "number" }).notNull().default(1),
 });
