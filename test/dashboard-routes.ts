@@ -43,6 +43,7 @@ const WORKSPACE_PAGE_IDS = [
   "linear",
   "storage",
   "limits",
+  "telemetry",
   "splits",
   "issue-vms",
   "runner-vms",
