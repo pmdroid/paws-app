@@ -133,6 +133,10 @@ export class OwnedProcess extends EventEmitter {
   }
 
   private async teardown(graceMs: number): Promise<boolean> {
+    if (this.anchor.pid === undefined) {
+      await this.closed;
+      return true;
+    }
     if (!this.anchorClosed) {
       const drained = new Promise((resolve) => this.once("drained", resolve));
       this.killGroup("SIGTERM");
