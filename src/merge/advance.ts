@@ -58,6 +58,7 @@ import {
   mergeHeld,
   mergeQueueTurn,
   mergeThroughGitHubQueue,
+  reviewBeforeGit,
   reviewHold,
   sendBack,
   waitConflict,
@@ -121,6 +122,8 @@ export type MergeCapabilities = OrderCapabilities & {
     signal: AbortSignal,
   ): Promise<RunnerRebase>;
   publish(item: WorkItemRecord): Promise<MergePublication | MergeStep>;
+  /** The pull request already open at the item's accepted head, read without any git work. */
+  openPull?(item: WorkItemRecord): Promise<MergePull | null>;
   settings(item: WorkItemRecord, signal: AbortSignal): Promise<TaskMergeSettings>;
   /**
    * Closeout's policy digest for the item's worktree or mirror now, and the digest of its checks marked
@@ -160,6 +163,22 @@ export type MergeCapabilities = OrderCapabilities & {
   rerunCi?(item: WorkItemRecord, pullNumber: number, reason: string): Promise<string>;
   completed(): unknown;
 };
+
+async function reviewBeforePublish(
+  merge: MergeContext,
+  caps: MergeCapabilities,
+): Promise<MergeStep | null> {
+  const open = await caps.openPull?.(merge.item);
+  if (!open) return null;
+  const { order } = await caps.settings(merge.item, open.signal);
+  if (
+    order !== "queue" &&
+    order !== "github-queue" &&
+    !(await baseHasMergeQueue(merge.store, open, caps.now()))
+  )
+    return null;
+  return reviewBeforeGit(merge, open);
+}
 
 const CANCELLED_CI_RERUN = "cancelled or timed-out CI job";
 const FAILED_CI_RERUN = "failed CI job on a head Closeout accepted";
@@ -227,6 +246,8 @@ export async function advanceMerge(
   if (held) return held;
   const waiting = await dependencyWait(store, item, caps);
   if (waiting) return waiting;
+  const early = await reviewBeforePublish(merge, caps);
+  if (early) return early;
   const published = await caps.publish(item);
   if ("kind" in published) return published;
   // A high-risk head waits for a person in Paws before it joins any merge queue.
