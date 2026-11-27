@@ -222,6 +222,8 @@ export {
 
 export {
   RUNNER_AGENT_CREDENTIAL_FILES,
+  RUNNER_AGENT_SIGN_INS,
+  runnerAgentSignInRefusal,
   RunnerAgentCredentialSchema,
   accessCredentialFiles,
   accessCredentialExpiry,
@@ -238,6 +240,7 @@ export {
   type RunnerAgentCredential,
   type RunnerAgentCredentialFiles,
   type RunnerAgentCredentialStore,
+  type RunnerAgentSignIn,
 } from "./agent-credentials";
 
 export { RunnerTerminationSchema, type RunnerTermination } from "./teardown";
