@@ -1226,6 +1226,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     store,
     artifactRoot: join(paths.home, "retros"),
     catalogs: retroCatalog,
+    transcripts: () => runner?.transcripts,
   });
   const runnerHostRefusals = createRunnerHostRefusals();
   const storageUsage = createStorageUsage({ paths, store, runners: async () => runner?.work });

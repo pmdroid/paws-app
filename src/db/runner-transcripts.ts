@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { type Q, type Steps, type Db } from "./db";
 
 export type RunnerTranscriptRow = {
@@ -146,4 +146,35 @@ export async function plaintextTranscriptChunks(
   limit: number,
 ): Promise<PlaintextTranscriptChunk[]> {
   return store.run((q) => plaintextTranscriptChunksSteps(q, after, limit));
+}
+
+export type RetroTranscriptRow = {
+  runId: string;
+  generation: number;
+  commandKind: string | null;
+  sizeBytes: number;
+  sealedSize: number | null;
+};
+
+export function* retroTranscriptRowsSteps(
+  q: Q,
+  workspaceId: string,
+  runIds: readonly string[],
+): Steps<RetroTranscriptRow[]> {
+  if (runIds.length === 0) return [];
+  const { runnerTranscript: t, runnerCommand: c } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({
+        runId: t.runId,
+        generation: t.generation,
+        commandKind: c.kind,
+        sizeBytes: t.sizeBytes,
+        sealedSize: t.sealedSize,
+      })
+      .from(t)
+      .leftJoin(c, eq(c.id, t.commandId))
+      .where(and(eq(t.workspaceId, workspaceId), inArray(t.runId, [...runIds])))
+      .orderBy(asc(t.runId), asc(t.generation)),
+  );
 }

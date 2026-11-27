@@ -14,6 +14,13 @@ import {
   type Db,
 } from "../db";
 import { dailyFindingKey } from "../improvements";
+import {
+  collectRetroTranscripts,
+  renderRetroTranscripts,
+  RETRO_TRANSCRIPT_PROMPT_CHARS,
+  type RetroTranscriptReader,
+  type RetroTranscriptSection,
+} from "./transcripts";
 
 export const RETRO_DIGEST_VERSION = 1;
 export const RETRO_PROMPT_DIGEST_CHARS = 120_000;
@@ -176,7 +183,11 @@ export type RetroDigest = {
   records: RetroDigestRecord[];
   outcomeContext: RetroOutcomeContext;
   coverage: RetroDigestCoverage;
+  transcripts?: RetroTranscriptSection;
 };
+
+const TRANSCRIPTS_UNAVAILABLE =
+  "runner transcripts and agent tool output are not read; evidence comes from database records";
 
 const REQUESTED_RESTARTS = new Set(["answer", "follow_up"]);
 const EXECUTION_STATES = new Set(["running", "verifying", "recovering"]);
@@ -361,7 +372,7 @@ export function buildRetroDigest(
     transitionGaps: [],
     unknownIntervals: [],
     unavailable: [
-      "runner transcripts and agent tool output are not read; evidence comes from database records",
+      TRANSCRIPTS_UNAVAILABLE,
       "selected-provider quota cooldowns are not recorded per item; capacity wait is time spent queued",
     ],
   };
@@ -941,11 +952,21 @@ export function boundRetroDigest(
     "Counts above include every counted record, including any this view omits.",
   ].join("\n");
   const footer = "</session_digest>";
+  const transcripts =
+    digest.transcripts === undefined || digest.transcripts.entries.length === 0
+      ? ""
+      : renderRetroTranscripts(
+          digest.transcripts,
+          Math.min(RETRO_TRANSCRIPT_PROMPT_CHARS, Math.floor(maxChars / 3)),
+        );
   const recordsBySession = new Map<string, RetroDigestRecord[]>();
   for (const record of digest.records)
     recordsBySession.set(record.itemId, [...(recordsBySession.get(record.itemId) ?? []), record]);
   const sessions = digest.sessions;
-  const available = Math.max(0, maxChars - header.length - footer.length - 2);
+  const available = Math.max(
+    0,
+    maxChars - header.length - footer.length - 2 - (transcripts ? transcripts.length + 1 : 0),
+  );
   const fit = Math.min(sessions.length, Math.floor(available / SESSION_MIN_CHARS));
   const budget = fit === 0 ? 0 : Math.floor(available / fit);
   const blocks: string[] = [];
@@ -990,7 +1011,7 @@ export function boundRetroDigest(
   });
   const omitted = perSession.filter((entry) => !entry.included).map((entry) => entry.identifier);
   if (omitted.length > 0) blocks.push(`Sessions omitted from this view: ${omitted.length}`);
-  const text = [header, ...blocks, footer].join("\n");
+  const text = [header, ...blocks, ...(transcripts ? [transcripts] : []), footer].join("\n");
   return {
     text,
     manifest: {
@@ -1000,6 +1021,24 @@ export function boundRetroDigest(
       sessionsOmitted: omitted,
       perSession,
     },
+  };
+}
+
+export function attachRetroTranscripts(
+  digest: RetroDigest,
+  transcripts: RetroTranscriptSection,
+): RetroDigest {
+  return {
+    ...digest,
+    coverage: {
+      ...digest.coverage,
+      unavailable: digest.coverage.unavailable.map((line) =>
+        line === TRANSCRIPTS_UNAVAILABLE
+          ? "raw runner transcripts are not in the digest; the transcripts section has a redacted index and per-run summary"
+          : line,
+      ),
+    },
+    transcripts,
   };
 }
 
@@ -1030,6 +1069,7 @@ export async function collectRetroDigest(
     now: number;
     secrets?: readonly string[];
     maxPromptChars?: number;
+    transcripts?: RetroTranscriptReader | undefined;
   },
 ): Promise<RetroCollection> {
   const retro = await getRetro(store, input.retroId);
@@ -1054,13 +1094,47 @@ export async function collectRetroDigest(
     repositories: retro.repositories,
     before: Math.max(cut, ...windows.map((window) => window.end)),
   });
-  const digest = buildRetroDigest(snapshot, {
+  const built = buildRetroDigest(snapshot, {
     retroId: retro.id,
     windows,
     cut,
     collectedAt: input.now,
     ...(input.secrets === undefined ? {} : { secrets: input.secrets }),
   });
+  const sessionIndex = new Map(built.sessions.map((session, index) => [session.itemId, index]));
+  const runs = snapshot.runs
+    .filter((run) => {
+      const session = built.sessions[sessionIndex.get(run.itemId) ?? -1];
+      const window = built.windows.find((entry) => entry.repository === session?.repository);
+      return (
+        window !== undefined &&
+        normalizeTime(run.updatedAt) >= window.start &&
+        normalizeTime(run.createdAt) < window.end
+      );
+    })
+    .sort(
+      (a, b) =>
+        sessionIndex.get(a.itemId)! - sessionIndex.get(b.itemId)! ||
+        a.createdAt - b.createdAt ||
+        byText(a.id, b.id),
+    )
+    .map((run) => ({
+      runId: run.id,
+      itemId: run.itemId,
+      identifier: built.sessions[sessionIndex.get(run.itemId)!]!.identifier,
+      kind: run.kind,
+      agent: run.agent,
+    }));
+  const secrets = input.secrets ?? [];
+  const digest = attachRetroTranscripts(
+    built,
+    await collectRetroTranscripts(store, {
+      workspaceId: retro.workspaceId,
+      runs,
+      reader: input.transcripts,
+      clip: (text, limit) => excerpt(text, secrets, limit),
+    }),
+  );
   await recordRetroEvidence(
     store,
     retro.id,
