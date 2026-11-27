@@ -2080,7 +2080,6 @@ const PAWS_ANSWER_KINDS: ReadonlySet<string> = new Set([
   "closeout-help",
   "ci-help",
   "plan-approval",
-  "split",
   "push-outage",
   "policy-outage",
 ]);
