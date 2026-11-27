@@ -11,9 +11,11 @@ import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs";
 import { MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { BatchSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
+import type { MetricMinuteRow } from "../db";
 import { journal, journalCaught } from "../journal";
 import { incrementCounter } from "../metrics";
 import { OTLP_EXPORTERS, type ExporterConfig, type ExporterLoaders } from "./exporters";
+import { createMinuteProducer, type MinuteTotals } from "./minutes";
 import { DEFAULT_TELEMETRY_SETTINGS, type TelemetrySettings } from "./settings";
 
 export type TelemetrySignal = "metrics" | "logs" | "traces";
@@ -33,6 +35,7 @@ export type Telemetry = {
   readonly logs: Logger;
   readonly traces: Tracer;
   settings(): TelemetrySettings;
+  exportMetricMinutes(rows: readonly MetricMinuteRow[]): void;
   apply(settings: TelemetrySettings, headerValue: string | null): Promise<void>;
   check(settings: TelemetrySettings, headerValue: string | null): Promise<TelemetryCheck>;
   status(): TelemetryStatus;
@@ -84,6 +87,7 @@ type Active = {
   meter: Meter;
   logger: Logger;
   tracer: Tracer;
+  minutes(rows: readonly MetricMinuteRow[]): void;
   flush(): Promise<void>;
   close(): void;
 };
@@ -101,6 +105,7 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
   };
   const failures: Record<TelemetrySignal, number[]> = { metrics: [], logs: [], traces: [] };
   const journaledAt: Record<TelemetrySignal, number> = { metrics: 0, logs: 0, traces: 0 };
+  const minuteTotals: MinuteTotals = new Map();
   let loadError: string | null = null;
   let generation = 0;
 
@@ -109,6 +114,7 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
     meter: createNoopMeter(),
     logger: createNoopLogger(),
     tracer: trace.getTracer("paws"),
+    minutes() {},
     flush: async () => {},
     close() {},
   });
@@ -164,7 +170,14 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
     const next = off(settings);
     const providers: { forceFlush(): Promise<void>; shutdown(): Promise<void> }[] = [];
     if (settings.metrics.enabled) {
+      const minutes = createMinuteProducer(
+        settings.metrics,
+        res,
+        { name: "paws", version: options.version },
+        minuteTotals,
+      );
       const reader = new PeriodicExportingMetricReader({
+        metricProducers: [minutes.producer],
         exporter: tracked(set.metrics(exporterConfig), record("metrics"), shut),
         exportIntervalMillis: settings.metrics.intervalMinutes * 60_000,
         exportTimeoutMillis: EXPORT_TIMEOUT_MS,
@@ -172,6 +185,7 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
       const provider = new MeterProvider({ resource: res, readers: [reader] });
       providers.push(provider);
       next.meter = provider.getMeter("paws", options.version);
+      next.minutes = (rows) => (closed ? undefined : minutes.add(rows));
     }
     if (settings.alerts.enabled || settings.items.enabled) {
       const exporter = tracked(set.logs(exporterConfig), record("logs"), shut);
@@ -226,6 +240,13 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
       return active.tracer;
     },
     settings: () => active.settings,
+    exportMetricMinutes(rows) {
+      try {
+        active.minutes(rows);
+      } catch (error) {
+        journalCaught(error, "telemetry.metrics", null);
+      }
+    },
     async apply(settings, headerValue) {
       const mine = ++generation;
       active.close();

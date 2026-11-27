@@ -2545,7 +2545,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         now: Date.now(),
       });
       created.jobs.register(METRICS_FLUSH_JOB, async () => {
-        await flushMetrics(store);
+        const { rows } = await flushMetrics(store);
+        telemetry.exportMetricMinutes(rows);
       });
       await enqueueJobOnce(store, {
         queue: METRICS_FLUSH_JOB,

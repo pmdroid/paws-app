@@ -37,7 +37,7 @@ export type MetricSeries = { name: string; labels: Record<string, string>; point
 export async function flushMetrics(
   db: Db,
   options: { recorder?: MetricsRecorder; now?: number } = {},
-): Promise<{ written: number; deleted: number }> {
+): Promise<{ written: number; deleted: number; rows: readonly MetricMinuteRow[] }> {
   const now = options.now ?? Date.now();
   const recorder = options.recorder ?? defaultRecorder;
   const rows = recorder.drain(Math.floor(now / MINUTE_MS) * MINUTE_MS);
@@ -45,7 +45,7 @@ export async function flushMetrics(
     const result = await db.transaction(function* (q) {
       yield* insertMetricMinutesSteps(q, rows);
       const deleted = yield* deleteMetricMinutesBeforeSteps(q, now - METRICS_RETENTION_MS);
-      return { written: rows.length, deleted };
+      return { written: rows.length, deleted, rows };
     });
     recorder.release(rows);
     return result;
