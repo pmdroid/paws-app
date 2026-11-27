@@ -168,6 +168,7 @@ export * from "./vm-provider-checks";
 export * from "./metrics";
 export * from "./alerts";
 export * from "./stage-times";
+export * from "./trace-exports";
 export * from "./runner-file-objects";
 export * from "./run-file-chunks";
 export * from "./runner-transcripts";
