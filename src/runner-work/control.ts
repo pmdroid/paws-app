@@ -813,6 +813,7 @@ export function createRunnerWork(options: {
         yield* recordRunnerAccountCapabilitySteps(q, runnerId, accounts, at);
         if ((reconnected || versionChanged) && (yield* wakeRunnerSlotWaitsSteps(q, runnerId, at)))
           woke = true;
+        if (versionChanged) woke = true;
         let targets: RunnerAgentTarget[] | undefined;
         if (agents) {
           targets = [];
