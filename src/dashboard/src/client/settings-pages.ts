@@ -98,6 +98,13 @@ export const WORKSPACE_PAGES = [
     ],
   },
   {
+    id: "telemetry",
+    name: "Telemetry",
+    description: "Export metrics, alerts, item events and traces to an OpenTelemetry collector.",
+
+    sections: ["Export to OpenTelemetry", "Destination", "What to export", "Send test"],
+  },
+  {
     id: "limits",
     name: "Queue and limits",
     description: "How long work may wait and run, and how much runs at once.",
@@ -268,5 +275,5 @@ export function settingsRedirect(path: string): string | null {
 export function renderSettingsPage(requested: SettingsPage = "account"): string {
   const page = settingsAdmin || memberCanOpen(requested) ? requested : "account";
   const current = SETTINGS_PAGES.find((entry) => entry.id === page)!;
-  return `<h1>${current.name}</h1><div class="settings-body min-w-0 space-y-4"><p class="sub">${current.description}</p>${page === "repositories" || page === "linear" ? `<div id="${page}-settings"></div>` : page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div>' : page === "agent-accounts" ? '<div id="agent-account-settings" class="agent-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "storage" ? '<div id="storage-settings" class="agent-settings"></div><div id="storage-disk-settings" class="agent-settings"></div>' : page === "issue-vms" ? '<div id="issue-vm-settings" class="agent-settings"></div>' : page === "splits" ? '<div id="split-settings" class="skill-settings"></div>' : page === "runner-vms" ? '<div id="runner-vm-keys" class="agent-settings"></div>' : page === "closeout" ? '<div id="closeout-settings" class="agent-settings"></div>' : page === "performance" ? '<div id="performance-settings"></div>' : page === "limits" ? '<div id="queue-settings" class="skill-settings"></div><div id="time-limit-settings" class="skill-settings"></div>' : page === "integrations" ? '<div id="doctor-checks"></div>' : ""}</div>`;
+  return `<h1>${current.name}</h1><div class="settings-body min-w-0 space-y-4"><p class="sub">${current.description}</p>${page === "repositories" || page === "linear" ? `<div id="${page}-settings"></div>` : page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div>' : page === "agent-accounts" ? '<div id="agent-account-settings" class="agent-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "storage" ? '<div id="storage-settings" class="agent-settings"></div><div id="storage-disk-settings" class="agent-settings"></div>' : page === "telemetry" ? '<div id="telemetry-settings" class="agent-settings"></div>' : page === "issue-vms" ? '<div id="issue-vm-settings" class="agent-settings"></div>' : page === "splits" ? '<div id="split-settings" class="skill-settings"></div>' : page === "runner-vms" ? '<div id="runner-vm-keys" class="agent-settings"></div>' : page === "closeout" ? '<div id="closeout-settings" class="agent-settings"></div>' : page === "performance" ? '<div id="performance-settings"></div>' : page === "limits" ? '<div id="queue-settings" class="skill-settings"></div><div id="time-limit-settings" class="skill-settings"></div>' : page === "integrations" ? '<div id="doctor-checks"></div>' : ""}</div>`;
 }

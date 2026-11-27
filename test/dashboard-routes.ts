@@ -42,6 +42,7 @@ const WORKSPACE_PAGE_IDS = [
   "closeout",
   "linear",
   "storage",
+  "telemetry",
   "limits",
   "splits",
   "issue-vms",
