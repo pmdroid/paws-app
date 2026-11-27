@@ -18,7 +18,8 @@ import {
   type AnyColumn,
   type SQL,
 } from "drizzle-orm";
-import type { Db, Q, Steps } from "./db";
+import { afterCommit, type Db, type Q, type Steps } from "./db";
+import { journalCaught } from "../journal";
 import { haltSteps } from "./halt";
 import { jsonField as jsonPath } from "./json-text";
 import { wakeMergesBehindSteps } from "./merge-queue";
@@ -279,7 +280,63 @@ export function* applyWorkItemEventSteps(
   journal(
     `transition ${next.linearIdentifier} ${current.state} --${event}--> ${next.state} v${next.version}`,
   );
+  const listener = transitionListener;
+  if (listener !== null) {
+    const { workItemRepository, runnerWork } = q.t;
+    const where = yield* q.one(
+      q.orm
+        .select({
+          owner: workItemRepository.owner,
+          repo: workItemRepository.repo,
+          runnerId: runnerWork.runnerId,
+        })
+        .from(workItem)
+        .leftJoin(workItemRepository, eq(workItemRepository.itemId, workItem.id))
+        .leftJoin(runnerWork, eq(runnerWork.runId, workItem.currentRunId))
+        .where(eq(workItem.id, id)),
+    );
+    const committed: CommittedTransition = {
+      issue: next.linearIdentifier,
+      itemId: id,
+      from: current.state,
+      event,
+      to: next.state,
+      version: next.version,
+      repository: where?.owner && where.repo ? `${where.owner}/${where.repo}` : null,
+      runnerId: where?.runnerId ?? null,
+    };
+    afterCommit(q, () => {
+      try {
+        listener(committed);
+      } catch (error) {
+        journalCaught(error, "items.transitionListener", id);
+      }
+    });
+  }
   return next;
+}
+
+export type CommittedTransition = {
+  issue: string;
+  itemId: string;
+  from: WorkItemState;
+  event: WorkItemEvent;
+  to: WorkItemState;
+  version: number;
+  repository: string | null;
+  runnerId: string | null;
+};
+
+let transitionListener: ((transition: CommittedTransition) => void) | null = null;
+
+export function onCommittedTransition(
+  listener: (transition: CommittedTransition) => void,
+): () => void {
+  const previous = transitionListener;
+  transitionListener = listener;
+  return () => {
+    transitionListener = previous;
+  };
 }
 
 /**

@@ -1,4 +1,5 @@
 export { createTelemetry } from "./telemetry";
+export { itemTransitionLogs } from "./items";
 export type { Telemetry, TelemetryCheck, TelemetrySignal, TelemetryStatus } from "./telemetry";
 export type { ExporterConfig, ExporterLoaders, ExporterSet } from "./exporters";
 export {
