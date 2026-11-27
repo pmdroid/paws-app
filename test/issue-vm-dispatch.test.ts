@@ -1,0 +1,215 @@
+import { afterEach, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
+import {
+  listItemHolds,
+  saveIssueVmSpendSettingsSteps,
+  schedulerRunnerSlotsSteps,
+  setIssueVmRunnerSteps,
+  type Db,
+  type IssueVm,
+  type Q,
+} from "../src/db";
+import {
+  createFakeIssueVmDriver,
+  createIssueVmDrivers,
+  createIssueVmSweep,
+  issueVmPlacementSteps,
+  recordIssueVmSteps,
+  type IssueVmDrivers,
+} from "../src/issue-vm";
+import { workspaceDispatchPg } from "./fake-workspace";
+import { seed, withoutForeignKeys } from "./pglite-fixtures";
+import { tempStore } from "./pglite";
+
+const GIB = 1024 ** 3;
+const closers: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of closers.splice(0)) await close();
+});
+
+async function world() {
+  const { db, close } = await tempStore();
+  closers.push(close);
+  await withoutForeignKeys(db);
+  await seed(
+    db,
+    (q) =>
+      q.orm.insert(q.t.workItem).values({
+        id: "PAS-1",
+        delegationId: "delegation",
+        linearIssueId: "issue-PAS-1",
+        linearIdentifier: "PAS-1",
+        title: "PAS-1",
+        state: "queued",
+        branchName: "paws/PAS-1",
+        position: 0,
+        createdAt: 0,
+      }),
+    (q) =>
+      q.orm.insert(q.t.runner).values({
+        id: "runner",
+        workspaceId: "ws",
+        ownerUserId: "owner",
+        name: "Runner",
+        status: "active",
+        createdAt: 0,
+        lastSeenAt: Date.now(),
+      }),
+  );
+  return db;
+}
+
+function vmHost(db: Db) {
+  return seed(
+    db,
+    (q) =>
+      q.orm.insert(q.t.runner).values({
+        id: "host",
+        workspaceId: "ws",
+        ownerUserId: "owner",
+        name: "Host",
+        status: "active",
+        createdAt: 0,
+        lastSeenAt: Date.now(),
+      }),
+    (q) =>
+      q.orm
+        .insert(q.t.runnerHostStatus)
+        .values({ runnerId: "host", cpuCount: 16, memoryTotalBytes: 64 * GIB, reportedAt: 0 }),
+    (q) =>
+      q.orm.insert(q.t.vmHost).values({
+        runnerId: "host",
+        vmVcpus: 2,
+        vmMemoryGb: 4,
+        vmDiskGb: 30,
+        reserveVcpus: 4,
+        reserveMemoryGb: 8,
+        slotCap: null,
+        updatedAt: 0,
+        updatedBy: "owner",
+      }),
+  );
+}
+
+const tick = (db: Db, drivers: IssueVmDrivers) =>
+  workspaceDispatchPg(db, {
+    now: Date.now(),
+    issueVm: (q: Q, itemId: string) =>
+      issueVmPlacementSteps(q, {
+        workspaceId: "ws",
+        memberUserId: "owner",
+        itemId,
+        providers: Object.keys(drivers) as (keyof IssueVmDrivers)[],
+        now: Date.now(),
+      }),
+  });
+
+const vms = (db: Db) =>
+  db.run((q) => q.all(q.orm.select().from(q.t.issueVm).orderBy(q.t.issueVm.id))) as Promise<
+    IssueVm[]
+  >;
+
+const setState = (db: Db, state: string) =>
+  seed(db, (q) => q.orm.update(q.t.workItem).set({ state }).where(eq(q.t.workItem.id, "PAS-1")));
+
+test("production startup without an override registers only the VM-host driver", async () => {
+  const db = await world();
+  expect(Object.keys(createIssueVmDrivers(db))).toEqual(["host"]);
+  const host = createFakeIssueVmDriver();
+  expect(createIssueVmDrivers(db, { host })).toEqual({ host });
+});
+
+test("with a VM host on, an item waits for its VM, runs in it and sleeps on awaiting_input", async () => {
+  const db = await world();
+  await vmHost(db);
+  const driver = createFakeIssueVmDriver();
+  const drivers = { host: driver };
+  const sweep = createIssueVmSweep(db, { drivers });
+  const created = [
+    {
+      itemId: "PAS-1",
+      reason: "slot" as const,
+      blockers: ["Waiting for its issue VM to be created"],
+    },
+  ];
+
+  expect(await tick(db, drivers)).toEqual([]);
+  expect(await listItemHolds(db)).toEqual(created);
+  expect(await tick(db, drivers)).toEqual([]);
+  expect(await listItemHolds(db)).toEqual(created);
+  const [vm, ...others] = await vms(db);
+  expect(others).toEqual([]);
+  expect(vm).toMatchObject({ provider: "host", hostRunnerId: "host", state: "creating" });
+
+  await sweep();
+  await db.run((q) => setIssueVmRunnerSteps(q, { id: vm!.id, runnerId: "vm-runner" }));
+  expect(await tick(db, drivers)).toEqual(["PAS-1"]);
+  expect(await listItemHolds(db)).toEqual([]);
+  const placed = await db.run((q) => schedulerRunnerSlotsSteps(q, Date.now()));
+  expect(placed.map((row) => row.runnerId)).toEqual(["vm-runner"]);
+
+  await setState(db, "running");
+  await sweep();
+  expect((await vms(db))[0]).toMatchObject({ state: "awake", want: "awake" });
+
+  await setState(db, "awaiting_input");
+  await sweep();
+  expect((await vms(db))[0]).toMatchObject({ state: "asleep", want: "asleep" });
+  expect(driver.calls.map((call) => call.op)).toEqual(["create", "sleep"]);
+
+  await setState(db, "running");
+  await sweep();
+  expect((await vms(db))[0]).toMatchObject({ state: "awake", want: "awake" });
+});
+
+test("without a VM host the item runs on a normal runner", async () => {
+  const db = await world();
+  expect(await tick(db, { host: createFakeIssueVmDriver() })).toEqual(["PAS-1"]);
+  expect(await vms(db)).toEqual([]);
+});
+
+test("PAS-2545 boundary: with only boat and InstaBox on, the item runs on a normal runner", async () => {
+  const db = await world();
+  await db.run((q) =>
+    saveIssueVmSpendSettingsSteps(q, {
+      workspaceId: "ws",
+      changes: { boatHourlyUsd: 1, instaboxHourlyUsd: 1 },
+      defaultLimitUsd: 50,
+      updatedBy: "owner",
+      now: Date.now(),
+    }),
+  );
+  const drivers = {
+    host: createFakeIssueVmDriver(),
+    boat: createFakeIssueVmDriver(),
+    instabox: createFakeIssueVmDriver(),
+  };
+  expect(await tick(db, drivers)).toEqual(["PAS-1"]);
+  expect(await listItemHolds(db)).toEqual([]);
+  expect(await vms(db)).toEqual([]);
+});
+
+test("an item whose owner is over their issue VM budget waits with the reason", async () => {
+  const db = await world();
+  await vmHost(db);
+  await db.run(function* (q) {
+    for (const itemId of ["PAS-8", "PAS-9"])
+      yield* recordIssueVmSteps(q, {
+        workspaceId: "ws",
+        itemId,
+        memberUserId: "owner",
+        provider: "host",
+        hostRunnerId: "host",
+        now: Date.now(),
+      });
+  });
+  expect(await tick(db, { host: createFakeIssueVmDriver() })).toEqual([]);
+  expect(await listItemHolds(db)).toEqual([
+    {
+      itemId: "PAS-1",
+      reason: "slot",
+      blockers: ["Waiting for an issue VM: its owner already has 2 of 2"],
+    },
+  ]);
+  expect((await vms(db)).map((vm) => vm.itemId)).toEqual(["PAS-8", "PAS-9"]);
+});

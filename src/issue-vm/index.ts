@@ -59,3 +59,11 @@ export type {
   IssueVmReplacer,
   IssueVmSession,
 } from "./replace";
+export {
+  createIssueVmDrivers,
+  createIssueVmSweep,
+  ISSUE_VM_SWEEP_EVERY_MS,
+  ISSUE_VM_SWEEP_JOB,
+  issueVmPlacementSteps,
+} from "./dispatch";
+export type { IssueVmDrivers } from "./dispatch";

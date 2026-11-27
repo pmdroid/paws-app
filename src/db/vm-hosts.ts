@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, gt, isNull } from "drizzle-orm";
 import { type Q } from "./db";
 
 export type VmHostSettings = {
@@ -53,4 +53,30 @@ export function* deleteVmHostSteps(q: Q, runnerId: string) {
     q.orm.delete(vmHost).where(eq(vmHost.runnerId, runnerId)).returning({ id: vmHost.runnerId }),
   );
   return removed.length > 0;
+}
+
+export function* workspaceVmHostsSteps(q: Q, workspaceId: string, now: number) {
+  const { runner, runnerHostStatus: status, vmHost } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        runnerId: runner.id,
+        cpuCount: status.cpuCount,
+        memoryTotalBytes: status.memoryTotalBytes,
+        host: vmHost,
+      })
+      .from(vmHost)
+      .innerJoin(runner, eq(runner.id, vmHost.runnerId))
+      .leftJoin(status, eq(status.runnerId, runner.id))
+      .where(
+        and(
+          eq(runner.workspaceId, workspaceId),
+          isNull(runner.revokedAt),
+          eq(runner.status, "active"),
+          gt(runner.lastSeenAt, now - 60_000),
+        ),
+      )
+      .orderBy(runner.id),
+  );
+  return rows as (VmHostMachine & { host: VmHostRow })[];
 }
