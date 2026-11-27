@@ -44,7 +44,7 @@ import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { seedCandidate } from "./helpers";
-import { seed } from "./pglite-fixtures";
+import { offerFixtureModels, seed } from "./pglite-fixtures";
 import { copyMigratedPglite } from "./pglite";
 
 const REMOTE = "https://github.com/acme/fixture.git";
@@ -127,6 +127,7 @@ async function fixture(agentRead?: AgentRead) {
         .insert(q.t.runnerHostStatus)
         .values({ runnerId, runnerVersion: "9.0.0", reportedAt: now }),
   );
+  await offerFixtureModels(db, runnerId, "claude", ["review-model"]);
   const item = await insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
   const { run } = await beginImplementRun(db, item.id, now);
   await recordLinearInstallation(db, {

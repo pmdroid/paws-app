@@ -6,7 +6,9 @@ import {
   getRunnerSteps,
   runnerHostVersionSteps,
   getWorkItemRepositorySteps,
+  latestModelCatalogSteps,
   listAgentBindingsSteps,
+  modelUnofferedReason,
   runnerRepositoryRefusalSteps,
   type ItemRunnerVerdict,
   type ItemRunnerVerdicts,
@@ -16,6 +18,7 @@ import {
 } from "../db";
 import {
   REVIEW_COMMAND_OAUTH_RUNNER_VERSION,
+  RunnerHealthResultSchema,
   runnerReleaseAtLeast,
   type RunnerCodingAgent,
 } from "../runner-protocol";
@@ -46,6 +49,7 @@ type SignInInput = {
   excludeBindingIds?: readonly string[];
   bindingId?: string;
   role?: "implementer" | "reviewer";
+  catalog?: boolean;
 };
 
 export function* repositoryRejectionSteps(
@@ -77,6 +81,18 @@ export function credentialRefreshable(blob: string | null | undefined): boolean 
   }
 }
 
+export function* runnerOffersModelSteps(
+  q: Q,
+  runnerId: string,
+  agent: string,
+  model: string,
+): Steps<boolean> {
+  const resultJson = yield* latestModelCatalogSteps(q, runnerId, agent);
+  const parsed = resultJson ? RunnerHealthResultSchema.safeParse(JSON.parse(resultJson)) : null;
+  const ids = new Set((parsed?.success ? (parsed.data.models ?? []) : []).map((entry) => entry.id));
+  return ids.has(model);
+}
+
 export function* signInFitSteps(
   q: Q,
   runner: SignInRunner,
@@ -91,6 +107,14 @@ export function* signInFitSteps(
   const bindings = (yield* listAgentBindingsSteps(q, workspaceId)).filter(
     (binding) => binding.runnerId === runner.id && binding.agent === input.agent,
   );
+  if (
+    bindings.length &&
+    input.role !== "reviewer" &&
+    input.catalog !== false &&
+    input.model &&
+    !(yield* runnerOffersModelSteps(q, runner.id, input.agent, input.model))
+  )
+    return { reason: modelUnofferedReason(input.agent, input.model), refusals: [] };
   const refusals: AccountRefusal[] = [];
   for (const binding of bindings) {
     if (
@@ -274,6 +298,7 @@ export function* itemRunnerVerdictsSteps(
   return {
     repository,
     agent: input.agent,
+    model: input.model ?? null,
     runners,
     ...(placement.pinnedRunnerId &&
     order.length &&

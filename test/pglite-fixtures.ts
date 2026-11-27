@@ -4,7 +4,9 @@ import {
   bindAgentAccount,
   createAgentAccount,
   listAgentBindings,
+  latestModelCatalogSteps,
   recordRunnerAccountCapability,
+  saveAgentModelCatalog,
   type Db,
   type Q,
 } from "../src/db";
@@ -228,4 +230,43 @@ export async function signInFixtureRunner(db: Db, runnerId: string, agent: strin
     q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent }).onConflictDoNothing(),
   );
   await bindFixtureAccounts(db, runnerId, agent);
+}
+
+export async function offerFixtureModels(
+  db: Db,
+  runnerId: string,
+  agent: string,
+  models: readonly string[],
+  updatedAt = 0,
+) {
+  const [owner] = await db.run((q) =>
+    q.all(
+      q.orm
+        .select({ userId: q.t.runner.ownerUserId })
+        .from(q.t.runner)
+        .where(eq(q.t.runner.id, runnerId)),
+    ),
+  );
+  const current = await db.run((q) => latestModelCatalogSteps(q, runnerId, agent));
+  const offered = current
+    ? (JSON.parse(current) as { models: { id: string }[] }).models.map((entry) => entry.id)
+    : [];
+  await saveAgentModelCatalog(db, {
+    runnerId,
+    userId: owner!.userId,
+    agent,
+    model: "",
+    resultJson: JSON.stringify({
+      executionId: "01M5GCQ27RE0YMKT767K0P3451",
+      commandId: `probe-${runnerId}`,
+      role: "implementer",
+      stopReason: "end_turn",
+      timedOut: false,
+      cancelled: false,
+      authRequired: false,
+      agentExited: true,
+      models: [...new Set([...offered, ...models])].map((id) => ({ id, name: id })),
+    }),
+    updatedAt,
+  });
 }

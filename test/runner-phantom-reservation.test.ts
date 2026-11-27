@@ -30,7 +30,7 @@ import type { RunnerCommand } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { seed, signInFixtureRunner } from "./pglite-fixtures";
+import { offerFixtureModels, seed, signInFixtureRunner } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const roots: string[] = [];
@@ -216,6 +216,7 @@ async function failOnAgentbox(f: Awaited<ReturnType<typeof fixture>>, fail = tru
     expect((await failed).errorMessage).toBe("agent exited with code 1");
   }
   await signInFixtureRunner(f.db, f.goldbox, "codex");
+  await offerFixtureModels(f.db, f.goldbox, "codex", ["model"]);
   f.tick(90_000);
   await f.heartbeat(f.goldbox);
 }
@@ -251,6 +252,7 @@ test("a run held between commands keeps its slot, and the rejection names what f
 test("a run holding its slot between commands resumes there even while others are admitted to that runner", async () => {
   const f = await fixture();
   await signInFixtureRunner(f.db, f.goldbox, "codex");
+  await offerFixtureModels(f.db, f.goldbox, "codex", ["model"]);
   f.tick(90_000);
   await f.heartbeat(f.goldbox);
   await insertQueuedItem(f.db, { id: "admitted", now: 0 });

@@ -216,3 +216,34 @@ export function* pruneFinishedAgentModelProbesSteps(
   );
   return deleted.length;
 }
+
+export function* dropCatalogModelSteps(
+  q: Q,
+  entry: { runnerId: string; agent: string; model: string },
+) {
+  const { agentModelCatalog: m } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ userId: m.userId, resultJson: jsonText(q, m.resultJson) })
+      .from(m)
+      .where(and(eq(m.runnerId, entry.runnerId), eq(m.agent, entry.agent), eq(m.model, ""))),
+  );
+  for (const row of rows) {
+    const result = JSON.parse(row.resultJson) as { models?: { id: string }[] };
+    if (!result.models?.some((model) => model.id === entry.model)) continue;
+    result.models = result.models.filter((model) => model.id !== entry.model);
+    yield* q.exec(
+      q.orm
+        .update(m)
+        .set({ resultJson: jsonFromText(q, JSON.stringify(result)), updatedAt: 0 })
+        .where(
+          and(
+            eq(m.runnerId, entry.runnerId),
+            eq(m.userId, row.userId),
+            eq(m.agent, entry.agent),
+            eq(m.model, ""),
+          ),
+        ),
+    );
+  }
+}

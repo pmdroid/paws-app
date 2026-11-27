@@ -18,6 +18,7 @@ export type RestartHandoff = {
   limit?: number;
   fixRound?: boolean;
   fix?: FixRound;
+  carried?: Record<string, unknown>;
 };
 
 export async function restart(
@@ -56,7 +57,7 @@ export function* restartSteps(
   if (item.checkpoint)
     yield* saveCheckpointSteps(q, item.id, { ...item.checkpoint, phase: "running" });
   const fixReason = handoff.fix?.reason ?? (handoff.reason === "answer" ? null : handoff.reason);
-  if (fixReason !== null)
+  if (fixReason !== null && !handoff.carried)
     yield* fixRecordSteps(q, item, {
       reason: fixReason,
       triggers: handoff.fix?.triggers ?? {},
@@ -72,6 +73,7 @@ export function* restartSteps(
     reason: handoff.reason,
     ...(handoff.limit !== undefined ? { limit: handoff.limit } : {}),
     ...(handoff.fixRound ? { fixRound: true } : {}),
+    ...(handoff.carried ? { ...handoff.carried, fixRounds: 0 } : {}),
   };
   const job = yield* reenqueueJobSteps(
     q,
@@ -82,7 +84,8 @@ export function* restartSteps(
       now: handoff.now,
     },
     (previous) => {
-      if (!FIX_REASONS.includes(handoff.reason) && !handoff.fixRound) return payload;
+      if (handoff.carried || (!FIX_REASONS.includes(handoff.reason) && !handoff.fixRound))
+        return payload;
       const old = previous?.payload as { fixRoundsAfter?: number; fixRounds?: number } | undefined;
       const inWindow =
         old?.fixRoundsAfter === after ||
