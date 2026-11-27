@@ -58,6 +58,7 @@ export async function recoveryOptions(
       linkAsk.decision === "changes" ||
       linkAsk.decision === "rethink" ||
       linkAsk.decision === "continue" ||
+      linkAsk.decision === "split" ||
       linkAsk.closedReason === "guidance"
     )
       for (const key of recovery.retryBaseline) retryBaseline.add(key);

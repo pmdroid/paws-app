@@ -140,6 +140,7 @@ import { journal, journalCaught } from "../journal";
 import { rerunItemCi } from "./ci-rerun";
 import { LINEAR_TOOLS_NOTE, linearToolScope, linearToolsFor } from "./linear-tools";
 import { notebookBrief, notebookToolsFor } from "./notebook-tools";
+import { fileAutoSplitSteps, splitLimit, splitToolsFor } from "./issue-split";
 import { joinHostTools, repositoryNote, repositoryTools } from "./repositories";
 import { confirmDecisionSteps, suggestDecisionsSteps } from "../decisions";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
@@ -6061,6 +6062,7 @@ export class Orchestrator {
           return size ? { ...round, lines: size.lines, files: size.files } : round;
         }),
         limit: reviewRoundLimit(exhausted?.message),
+        split: await splitLimit(this.store, this.tracker, item),
         handoff: result?.handoff ?? [help.summary, findings].filter(Boolean).join("\n"),
       },
       publicUrl: this.options.publicUrl ?? null,
@@ -7671,6 +7673,10 @@ export class Orchestrator {
   }
 
   private async keepAskedWork(itemId: string, runId: string): Promise<void> {
+    if (await this.store.transaction((q) => fileAutoSplitSteps(q, itemId, this.now()))) {
+      await this.flush();
+      return;
+    }
     let current = await this.store.run((q) => getWorkItemSteps(q, itemId));
     if (!current || current.state === "cancelled" || current.cancelRequested) return;
     // Accepted work that went to the merge queue keeps its accepted head, not the rejected turn's.
@@ -11741,6 +11747,17 @@ export class Orchestrator {
       repositories,
       working
         ? await notebookToolsFor({ store: this.store, item, repository, now: () => this.now() })
+        : undefined,
+      working
+        ? await splitToolsFor({
+            store: this.store,
+            tracker: this.tracker,
+            item,
+            runId: input.runId,
+            repository: `${repository.owner}/${repository.repo}`,
+            now: () => this.now(),
+            onProposed: (runId) => this.askedRuns.add(runId),
+          })
         : undefined,
     );
     const { home, policyRoot } = await this.closeoutHome(item);

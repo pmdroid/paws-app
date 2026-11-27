@@ -49,6 +49,8 @@ export { MEMBER_VM_SETTINGS_PATH, handleMemberVmSettingsRequest } from "./member
 export type { MemberVmSettingsOptions } from "./member-vm";
 export { ISSUE_VM_SETTINGS_PATH, handleIssueVmSettingsRequest } from "./issue-vm";
 export type { IssueVmSettingsOptions } from "./issue-vm";
+export { SPLIT_SETTINGS_PATH, handleSplitSettingsRequest } from "./splits";
+export type { SplitSettingsOptions } from "./splits";
 export { RUNNER_VM_KEYS_SETTINGS_PATH, handleRunnerVmKeysSettingsRequest } from "./runner-vm-keys";
 export type { RunnerVmKeysSettingsOptions, VmProviderCheckService } from "./runner-vm-keys";
 export {

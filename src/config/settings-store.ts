@@ -19,6 +19,7 @@ export const SETTINGS_SECTIONS = [
   "time_limits",
   "skills",
   "checkout",
+  "splits",
 ] as const;
 
 export const SAVED_SETTINGS_SECTIONS = [...SETTINGS_SECTIONS, "member_vm"];
@@ -140,7 +141,7 @@ export async function updateSettingSections(
 
 export function knownConfigSection(section: string): boolean {
   return (
-    /^(github_access|closeout|merge|queue|findings|agents|member_vm|vm_sizes|issue_vm|brief|linear_comments|time_limits|skills)$/.test(
+    /^(github_access|closeout|merge|queue|findings|agents|member_vm|vm_sizes|issue_vm|brief|linear_comments|time_limits|skills|splits)$/.test(
       section,
     ) ||
     /^vm_sizes\.(exe-dev|boat|instabox)$/.test(section) ||

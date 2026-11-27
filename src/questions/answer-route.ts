@@ -22,6 +22,7 @@ const PAWS_ANSWER_KINDS = [
   "closeout-help",
   "ci-help",
   "plan-approval",
+  "split",
   "push-outage",
   "policy-outage",
 ] as const;

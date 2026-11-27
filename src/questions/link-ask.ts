@@ -99,6 +99,7 @@ function decided(ask: LinkAsk, decision: LinkAskDecision): string {
       : `requested changes to ${commit} in Paws`;
   if (decision === "rethink") return "asked the agent to rethink the approach in Paws";
   if (decision === "continue") return `allowed ${moreRounds(ask)} in Paws`;
+  if (decision === "split") return "asked the agent to split the issue in Paws";
   if (decision === "stop") return `stopped the work at ${commit} in Paws`;
   return {
     bypass: `bypassed the failed checks on ${commit} in Paws`,
@@ -163,9 +164,11 @@ export function linkAskHandoff(
 function roundsHandoff(ask: LinkAsk, decision: LinkAskDecision | "guidance", note: string): string {
   const count = ask.rounds?.rounds.length ?? 0;
   const lead =
-    decision === "continue"
-      ? `The independent review failed ${count} rounds in a row. A person allowed ${moreRounds(ask)}: fix the open findings.`
-      : `The independent review failed ${count} rounds in a row and the fixes kept missing. A person asked you to rethink the approach: step back from patching each finding, find what the findings have in common${ask.rounds?.bugClass ? ` (most are ${ask.rounds.bugClass})` : ""}, and change the design so that class of bug cannot occur.`;
+    decision === "split"
+      ? `The independent review failed ${count} rounds in a row. A person asked you to split this issue instead of fixing more findings: call propose_split with at most ${ask.rounds?.split ?? 2} sub-issues that together finish the issue, each small enough for one pull request, then end your turn.`
+      : decision === "continue"
+        ? `The independent review failed ${count} rounds in a row. A person allowed ${moreRounds(ask)}: fix the open findings.`
+        : `The independent review failed ${count} rounds in a row and the fixes kept missing. A person asked you to rethink the approach: step back from patching each finding, find what the findings have in common${ask.rounds?.bugClass ? ` (most are ${ask.rounds.bugClass})` : ""}, and change the design so that class of bug cannot occur.`;
   return [
     "Handoff from the previous session.",
     lead,
@@ -186,7 +189,7 @@ export function reviewRoundsDetail(rounds: LinkAskRounds): string {
             ? ` (${rounds.open.filter((finding) => finding.bugClass === rounds.bugClass).length} of ${open} open findings)`
             : ""
         }.`;
-  return `The independent review failed ${count} ${count === 1 ? "round" : "rounds"} and ${open} ${open === 1 ? "finding is" : "findings are"} still open.${roundSizes(rounds)}${recurring} Rethink the approach, keep going, or stop.`;
+  return `The independent review failed ${count} ${count === 1 ? "round" : "rounds"} and ${open} ${open === 1 ? "finding is" : "findings are"} still open.${roundSizes(rounds)}${recurring} Rethink the approach, keep going, ${rounds.split ? "split the issue, " : ""}or stop.`;
 }
 
 function roundSizes(rounds: LinkAskRounds): string {

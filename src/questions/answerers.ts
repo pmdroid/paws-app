@@ -14,6 +14,7 @@ export type AnswerableQuestion =
   | { kind: "visual-review"; delegatorId: string | null; leadId: string | null }
   | { kind: "github-auth"; actorId: string }
   | { kind: "plan-approval" }
+  | { kind: "split" }
   | { kind: "link"; allowedIds: readonly string[] }
   | { kind: "push-outage" }
   | { kind: "policy-outage" };
@@ -53,6 +54,7 @@ export const ANSWER_POLICY: Policy = {
   "visual-review": canAnswer,
   "github-auth": canAnswer,
   "plan-approval": canAnswer,
+  split: canAnswer,
   link: canAnswer,
   "push-outage": canAnswer,
   "policy-outage": canAnswer,

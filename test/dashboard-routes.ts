@@ -269,6 +269,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     "findings",
     "hooks",
     "issue-vm",
+    "splits",
     "linear-comments",
     "vm-sizes",
     "merging",
