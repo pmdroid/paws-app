@@ -916,63 +916,6 @@ describe("transcript summaries", () => {
             sealedSize: FIXTURE.length,
           })),
         ),
-      (q) =>
-        q.orm.insert(q.t.runnerCommand).values(
-          [
-            ["command-run-implement", "run-implement", "run"],
-            ["check-1", "run-implement", "check"],
-            ["command-run-review", "run-review", "review"],
-            ["cancel-1", "run-review", "cancel"],
-          ].map(([cid, runId, kind]) => ({
-            id: cid!,
-            runnerId: "box",
-            runId,
-            generation: 1,
-            kind: kind!,
-            envelope: {},
-            expiresAt: at(2),
-          })),
-        ),
-      (q) =>
-        q.orm.insert(q.t.runnerHelper).values({
-          id: "helper-1",
-          runnerId: "box",
-          workspaceId: "ws",
-          sessionId: "session-PAS-1",
-          sessionGeneration: 1,
-          runnerFence: 1,
-          envelope: {},
-          expiresAt: at(2),
-          endedAt: at(1, 500),
-          purpose: "classify",
-        }),
-      (q) =>
-        q.orm.insert(q.t.retroRepository).values(
-          [
-            ["old", REPO],
-            ["elsewhere", OTHER],
-          ].map(([retroId, repository]) => ({
-            retroId: retroId!,
-            repository: repository!,
-            startCursor: 0,
-          })),
-        ),
-      (q) =>
-        q.orm.insert(q.t.retroDispatch).values(
-          ["old", "elsewhere"].map((retroId) => ({
-            commandId: `retro-${retroId}`,
-            retroId,
-            attempt: 1,
-            workspaceId: "ws",
-            runnerId: "box",
-            runnerFence: 1,
-            command: {},
-            envelope: {},
-            createdAt: at(1),
-            issuedAt: at(1),
-            expiresAt: at(2),
-          })),
-        ),
     );
     const reads: string[] = [];
     const digest = await collect(db, root, {
@@ -989,16 +932,12 @@ describe("transcript summaries", () => {
       },
     });
     expect(reads).toEqual(["run-implement", "run-review"]);
-    const [implement, check, fix, review, helper, retro, ...rest] = digest.transcripts!.entries;
-    expect(rest).toEqual([]);
-    expect(check).toMatchObject({ kind: "implement/check", status: "missing" });
+    const [implement, fix, review] = digest.transcripts!.entries;
     expect(fix).toMatchObject({ runId: "run-fix", kind: "fix", status: "missing", summary: null });
-    expect(review).toMatchObject({ kind: "review/review", status: "unreadable: bad seal" });
-    expect(helper).toMatchObject({ runId: "helper-1", kind: "helper/classify", status: "missing" });
-    expect(retro).toMatchObject({ runId: "retro-old", identifier: "retro:old", kind: "retro" });
+    expect(review).toMatchObject({ status: "unreadable: bad seal", summary: null });
     expect(implement).toMatchObject({
       identifier: "PAS-1",
-      kind: "implement/run",
+      kind: "implement",
       status: "available",
     });
     expect(implement!.summary).toEqual({
@@ -1028,22 +967,6 @@ describe("transcript summaries", () => {
     expect(JSON.stringify(digest)).not.toContain("planted-secret-value");
   });
 
-  const summary = (failed: number): RetroTranscriptEntry["summary"] => ({
-    agent: "codex",
-    model: null,
-    firstEventAt: null,
-    lastEventAt: null,
-    turns: 1,
-    stopReasons: {},
-    toolCalls: failed,
-    failedTools: failed,
-    topFailedTools: [],
-    blockedWaits: 0,
-    runCloseoutCalls: 0,
-    getCloseoutCalls: 0,
-    lastMessages: [{ at: null, before: "failure", text: "x".repeat(600) }],
-  });
-
   test("an oversized window keeps the most failed runs and trims the rest to index lines", () => {
     const entries: RetroTranscriptEntry[] = Array.from({ length: 300 }, (_, index) => ({
       runId: `run-${index}`,
@@ -1053,7 +976,21 @@ describe("transcript summaries", () => {
       kind: "implement",
       sizeBytes: 10,
       status: "available",
-      summary: summary(index),
+      summary: {
+        agent: "codex",
+        model: null,
+        firstEventAt: null,
+        lastEventAt: null,
+        turns: 1,
+        stopReasons: {},
+        toolCalls: index,
+        failedTools: index,
+        topFailedTools: [],
+        blockedWaits: 0,
+        runCloseoutCalls: 0,
+        getCloseoutCalls: 0,
+        lastMessages: [{ at: null, before: "failure", text: "x".repeat(600) }],
+      },
     }));
     const section = boundRetroTranscripts(entries, 0);
     const kept = section.entries.filter((entry) => entry.summary !== null);
@@ -1064,27 +1001,5 @@ describe("transcript summaries", () => {
     expect(section.note).toBe(
       `Summaries for ${section.trimmed} runs were trimmed to their index line; the runs with the most failed tools kept theirs.`,
     );
-  });
-
-  test("an index too long for the section lists the runs with the most failed tools", () => {
-    const entries: RetroTranscriptEntry[] = Array.from({ length: 2_000 }, (_, index) => ({
-      runId: `01JF${String(index).padStart(22, "0")}`,
-      generation: 1,
-      itemId: "item",
-      identifier: "PAS-1",
-      kind: "implement/run",
-      sizeBytes: 1_000_000,
-      status: index % 2 ? "missing" : "available",
-      summary: null,
-    }));
-    entries[1_999] = { ...entries[1_999]!, summary: summary(9) };
-    const section = boundRetroTranscripts(entries, 0);
-    expect(section.indexOmitted).toBe(2_000 - section.entries.length);
-    expect(section.indexOmitted).toBeGreaterThan(0);
-    expect(section.entries[section.entries.length - 1]!.runId).toBe(entries[1_999]!.runId);
-    expect(section.note).toContain(
-      `Index lines for ${section.indexOmitted} of 2000 runs did not fit`,
-    );
-    expect(section.entries.length).toBeGreaterThan(300);
   });
 });

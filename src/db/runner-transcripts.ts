@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, inArray, isNull, lt, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { type Q, type Steps, type Db } from "./db";
 
 export type RunnerTranscriptRow = {
@@ -148,102 +148,33 @@ export async function plaintextTranscriptChunks(
   return store.run((q) => plaintextTranscriptChunksSteps(q, after, limit));
 }
 
-export type RetroTranscriptInventory = {
-  transcripts: {
-    runId: string;
-    generation: number;
-    commandId: string;
-    sizeBytes: number;
-    sealedSize: number | null;
-  }[];
-  commands: { id: string; runId: string; kind: string; generation: number | null }[];
-  helpers: { id: string; itemId: string; purpose: string | null; at: number }[];
-  retros: { retroId: string; attempt: number; commandId: string; createdAt: number }[];
+export type RetroTranscriptRow = {
+  runId: string;
+  generation: number;
+  commandKind: string | null;
+  sizeBytes: number;
+  sealedSize: number | null;
 };
 
-export function* retroTranscriptInventorySteps(
+export function* retroTranscriptRowsSteps(
   q: Q,
-  input: {
-    workspaceId: string;
-    retroId: string;
-    repositories: readonly string[];
-    runIds: readonly string[];
-    itemIds: readonly string[];
-    from: number;
-    to: number;
-  },
-): Steps<RetroTranscriptInventory> {
-  const { runnerTranscript: t, runnerCommand: c, runnerHelper: h, workItem: w } = q.t;
-  const { retroDispatch: d, retroRepository: r } = q.t;
-  const runIds = input.runIds.length === 0 ? [""] : [...input.runIds];
-  const transcripts = yield* q.all(
+  workspaceId: string,
+  runIds: readonly string[],
+): Steps<RetroTranscriptRow[]> {
+  if (runIds.length === 0) return [];
+  const { runnerTranscript: t, runnerCommand: c } = q.t;
+  return yield* q.all(
     q.orm
       .select({
         runId: t.runId,
         generation: t.generation,
-        commandId: t.commandId,
+        commandKind: c.kind,
         sizeBytes: t.sizeBytes,
         sealedSize: t.sealedSize,
       })
       .from(t)
-      .where(and(eq(t.workspaceId, input.workspaceId), inArray(t.runId, runIds)))
+      .leftJoin(c, eq(c.id, t.commandId))
+      .where(and(eq(t.workspaceId, workspaceId), inArray(t.runId, [...runIds])))
       .orderBy(asc(t.runId), asc(t.generation)),
   );
-  const commands = yield* q.all(
-    q.orm
-      .select({ id: c.id, runId: sql<string>`${c.runId}`, kind: c.kind, generation: c.generation })
-      .from(c)
-      .where(and(inArray(c.runId, runIds), inArray(c.kind, ["run", "review", "task", "check"])))
-      .orderBy(asc(c.ordinal)),
-  );
-  const at = sql<number>`coalesce(${h.endedAt}, ${h.expiresAt})`.mapWith(Number);
-  const helpers = yield* q.all(
-    q.orm
-      .select({ id: h.id, itemId: w.id, purpose: h.purpose, at })
-      .from(h)
-      .innerJoin(w, eq(w.sessionKey, h.sessionId))
-      .where(
-        and(
-          eq(h.workspaceId, input.workspaceId),
-          inArray(w.id, input.itemIds.length === 0 ? [""] : [...input.itemIds]),
-          sql`${at} >= ${input.from} AND ${at} < ${input.to}`,
-        ),
-      )
-      .orderBy(asc(at), asc(h.id)),
-  );
-  const dispatched = yield* q.all(
-    q.orm
-      .select({
-        retroId: d.retroId,
-        attempt: d.attempt,
-        commandId: d.commandId,
-        createdAt: d.createdAt,
-      })
-      .from(d)
-      .where(
-        and(
-          eq(d.workspaceId, input.workspaceId),
-          ne(d.retroId, input.retroId),
-          gte(d.createdAt, input.from),
-          lt(d.createdAt, input.to),
-        ),
-      )
-      .orderBy(asc(d.createdAt), asc(d.commandId)),
-  );
-  const allowed = new Set(input.repositories.map((repository) => repository.toLowerCase()));
-  const outside = new Set<string>();
-  if (dispatched.length > 0)
-    for (const row of yield* q.all(
-      q.orm
-        .select({ retroId: r.retroId, repository: sql<string>`${r.repository}` })
-        .from(r)
-        .where(inArray(r.retroId, [...new Set(dispatched.map((entry) => entry.retroId))])),
-    ))
-      if (!allowed.has(row.repository.toLowerCase())) outside.add(row.retroId);
-  return {
-    transcripts,
-    commands,
-    helpers,
-    retros: dispatched.filter((row) => !outside.has(row.retroId)),
-  };
 }
