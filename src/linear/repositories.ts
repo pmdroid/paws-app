@@ -1,5 +1,5 @@
 import type { TrackerRequestOptions } from "./adapter";
-import type { LinearClient } from "./graphql";
+import { LinearGraphQLError, type LinearClient } from "./graphql";
 import { isRecord } from "./read";
 
 export type CandidateRepository = { hostname: string; repositoryFullName: string };
@@ -77,6 +77,12 @@ const LABELS_IN_GROUP = `query RepositoryLabels($group: ID!, $name: String!) {
   }
 }`;
 
+const LABELS_NAMED = `query RepositoryLabelsNamed($name: String!) {
+  issueLabels(first: 1, filter: { name: { eqIgnoreCase: $name } }) {
+    nodes { id }
+  }
+}`;
+
 const CREATE_LABEL = `mutation RepositoryLabelCreate($input: IssueLabelCreateInput!) {
   issueLabelCreate(input: $input) { success issueLabel { id } }
 }`;
@@ -107,6 +113,11 @@ function repoLabels(connection: unknown): string[] {
       ? [label["name"]]
       : [],
   );
+}
+
+function labelId(data: unknown): string | null {
+  const found = nodes(dig(data, "issueLabels"))[0];
+  return isRecord(found) && typeof found["id"] === "string" ? found["id"] : null;
 }
 
 export function createLinearRepositoryMethods(client: LinearClient): LinearRepositoryAdapter {
@@ -168,25 +179,32 @@ export function createLinearRepositoryMethods(client: LinearClient): LinearRepos
         typeof existing === "string"
           ? existing
           : await createLabel({ name: "repo", isGroup: true });
-      const found =
+      const inGroup =
         typeof existing === "string"
-          ? nodes(
-              dig(
-                await client.query(LABELS_IN_GROUP, { group, name: input.repository }, options),
-                "issueLabels",
-              ),
-            )
-          : [];
+          ? labelId(await client.query(LABELS_IN_GROUP, { group, name: input.repository }, options))
+          : null;
       const label =
-        isRecord(found[0]) && typeof found[0]["id"] === "string"
-          ? found[0]["id"]
-          : await createLabel({ name: input.repository, parentId: group });
+        inGroup ?? (await namedLabel()) ?? (await createRepositoryLabel(input.repository, group));
       const added = dig(
         await client.query(ADD_LABEL, { id: input.issueId, labelId: label }, options),
         "issueAddLabel",
       );
       if (!isRecord(added) || added["success"] !== true)
         throw new Error("Linear did not add the repository label");
+      async function namedLabel(): Promise<string | null> {
+        return labelId(await client.query(LABELS_NAMED, { name: input.repository }, options));
+      }
+      async function createRepositoryLabel(name: string, parentId: string): Promise<string> {
+        try {
+          return await createLabel({ name, parentId });
+        } catch (error) {
+          if (!(error instanceof LinearGraphQLError && /duplicate label name/i.test(error.message)))
+            throw error;
+          const raced = await namedLabel();
+          if (raced === null) throw error;
+          return raced;
+        }
+      }
       async function createLabel(labelInput: Record<string, unknown>): Promise<string> {
         const created = dig(
           await client.query(CREATE_LABEL, { input: labelInput }, options),
