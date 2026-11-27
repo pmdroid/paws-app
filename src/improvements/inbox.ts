@@ -184,46 +184,6 @@ export function inboxCounts(items: readonly InboxItem[]): InboxCounts {
   };
 }
 
-export function itemsForIssue(
-  items: readonly InboxItem[],
-  issue: { id?: string; identifier?: string },
-): InboxItem[] {
-  return items.filter(
-    (i) =>
-      i.issue !== null &&
-      ((issue.id !== undefined && i.issue.id === issue.id) ||
-        (issue.identifier !== undefined && i.issue.identifier === issue.identifier)),
-  );
-}
-
-export type ReuseChoice =
-  | { kind: "create" }
-  | { kind: "reuse"; issue: KnownIssue }
-  | {
-      kind: "review";
-      issue: KnownIssue;
-      reason: "closed" | "unconfirmed" | "scope_changed" | "recurred";
-    };
-
-export function reuseChoice(
-  item: InboxItem,
-  issueState: "open" | "closed" | "unknown",
-): ReuseChoice {
-  const issue = item.issue;
-  if (!issue) return { kind: "create" };
-  if (issueState === "closed") return { kind: "review", issue, reason: "closed" };
-  const verifiedAt = item.improvement.verificationAt ?? 0;
-  if (
-    item.verification === "verified" &&
-    item.members.some((m) => m.status === "open" && m.lastSeenAt > verifiedAt)
-  )
-    return { kind: "review", issue, reason: "recurred" };
-  const scopeChanged = item.improvement.reviewedProposal !== item.proposal.version;
-  if (scopeChanged) return { kind: "review", issue, reason: "scope_changed" };
-  if (issueState === "unknown") return { kind: "review", issue, reason: "unconfirmed" };
-  return { kind: "reuse", issue };
-}
-
 export type ImprovementSourceStatus = {
   daily: { enabled: boolean; lastRun: FindingGroupRun | null };
   weekly: {
