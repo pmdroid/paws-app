@@ -6,6 +6,7 @@ import { acknowledgeNewSession } from "./acknowledge";
 import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 import { linearCaller, linearItem, LinearRateLimitError, type LinearLedger } from "./budget";
 import type { AcceptedLinearEvent } from "./events";
+import { LinearForeignInstallationError } from "./access";
 import { LinearEntityNotFoundError } from "./graphql";
 import type { InboxStore, QueuedLinearEvent } from "./inbox";
 
@@ -165,6 +166,13 @@ export function createIntakeQueue(options: {
           if (stopped) return;
           if (error instanceof LinearEntityNotFoundError && error.entity === "AgentSession") {
             log(`linear session ${event.sessionId ?? "unknown"} no longer exists; skipped`);
+            await store.markHandled(event.dedupeKey);
+            return;
+          }
+          if (error instanceof LinearForeignInstallationError) {
+            log(
+              `linear session ${event.sessionId ?? "unknown"} belongs to another installation; skipped`,
+            );
             await store.markHandled(event.dedupeKey);
             return;
           }
