@@ -309,6 +309,7 @@ import {
   repositoryGrant,
   recordMissingProjectTeams,
   createRepositoryGit,
+  convertLinearUploadManifests,
 } from "./loop";
 import {
   PROBE_COLLECT_JOB,
@@ -603,6 +604,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const store = observeDb(database.store, (ms) => recordDuration("db.transaction", {}, ms));
   const transcriptStorage = earlyTranscripts ?? loadTranscripts();
   const transcriptObjects = transcriptStorage?.objects;
+  await convertLinearUploadManifests(paths.secretsDir);
   await importLinearTokenFile(store, paths.secretsDir, runtime.linearTokenFile);
   await importCredentialFile(
     store,
