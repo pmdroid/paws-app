@@ -27,8 +27,13 @@ export function createRunnerReleaseLookup(
       token: await acquireOperationToken(repository, "pr"),
       ...(signal ? { signal } : {}),
     });
-    const releases = (await get("/releases?per_page=30")) as unknown as Release[];
-    if (!Array.isArray(releases)) throw new Error("GitHub returned no release list");
+    const releases: Release[] = [];
+    for (let page = 1; ; page++) {
+      const batch = (await get(`/releases?per_page=100&page=${page}`)) as unknown as Release[];
+      if (!Array.isArray(batch)) throw new Error("GitHub returned no release list");
+      releases.push(...batch);
+      if (batch.length < 100) break;
+    }
     let found: string | null = null;
     for (const release of releases) {
       if (release.draft === true || typeof release.tag_name !== "string") continue;

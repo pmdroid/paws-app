@@ -10,7 +10,8 @@ test("the earliest release whose tag contains the merge is found with one compar
   const client: GitHubClient = {
     async request({ path }) {
       paths.push(path);
-      if (path.endsWith("/releases?per_page=30")) return { status: 200, body: releases };
+      const page = Number(path.match(/[?&]page=(\d+)/)?.[1] ?? 0);
+      if (page) return { status: 200, body: releases.slice((page - 1) * 100, page * 100) };
       const tag = decodeURIComponent(path.split("...")[1]!.split("?")[0]!);
       return { status: 200, body: { status: inside.has(tag) ? "ahead" : "behind" } };
     },
@@ -31,4 +32,6 @@ test("the earliest release whose tag contains the merge is found with one compar
   expect(await lookup("owner/repo", merge)).toBe("v0.1.110");
   expect(paths.filter((path) => path.includes("/compare/"))).toHaveLength(4);
   expect(await lookup("other/repo", merge)).toBeNull();
+  releases.unshift(...Array.from({ length: 120 }, (_, n) => ({ tag_name: `v1.0.${n}` })));
+  expect(await lookup("owner/repo", merge)).toBe("v0.1.110");
 });

@@ -382,7 +382,11 @@ async function releaseBlocker(f: Awaited<ReturnType<typeof fixture>>, label: str
   const runner = { workspaceId: "workspace", ownerUserId: "person", name: "r", status: "active" };
   await seed(
     f.db,
-    (q) => q.orm.insert(q.t.workItemRepository).values({ itemId: f.target.itemId, ...repository }),
+    (q) =>
+      q.orm.insert(q.t.repositoryCatalog).values({
+        ...{ repository: "owner/repo", ...repository },
+        ...{ defaultBranch: "main", refreshedAt: 1 },
+      }),
     (q) =>
       q.orm
         .insert(q.t.workItemRepository)
