@@ -42,13 +42,15 @@ export const ONLY_A = ["session-a"];
 
 type Extra = Partial<Parameters<typeof createImprovementsHttp>[0]>;
 
-export async function worldPg(extra: Extra = {}) {
+const EVIDENCE = ["ev-a1", "ev-a2", "ev-b1", "ev-b2"] as const;
+
+export async function worldPg(extra: Extra = {}, ids: readonly string[] = EVIDENCE) {
   const root = mkdtempSync(join(tmpdir(), "paws-improvement-review-"));
   const { db, close } = await tempStore();
-  return { ...(await worldOn(db, root, extra)), db, close };
+  return { ...(await worldOn(db, root, extra, ids)), db, close };
 }
 
-async function worldOn(db: Db, root: string, extra: Extra) {
+async function worldOn(db: Db, root: string, extra: Extra, ids: readonly string[]) {
   await db.run(function* (q) {
     yield* q.exec(
       q.orm.insert(q.t.workspace).values([
@@ -116,7 +118,7 @@ async function worldOn(db: Db, root: string, extra: Extra) {
       ),
     );
   }
-  const retro = await publishTwoRepositoryRetro(db, root);
+  const retro = await publishTwoRepositoryRetro(db, root, ids);
   const lookup = createFakeIssueLookup([
     { id: "issue-open", identifier: "PAS-60", url: null, teamId: "team-a", state: "open" },
     { id: "issue-closed", identifier: "PAS-61", url: null, teamId: "team-a", state: "closed" },
@@ -162,7 +164,7 @@ async function worldOn(db: Db, root: string, extra: Extra) {
   return { root, people, lookup, api, retroApi, retro, now, improvements };
 }
 
-async function publishTwoRepositoryRetro(db: Db, root: string) {
+async function publishTwoRepositoryRetro(db: Db, root: string, ids: readonly string[]) {
   const { revision } = await saveRetroSettingsRevision(db, {
     workspaceId: "ws",
     prompt: "Review {{period}}.\n\n{{digest}}",
@@ -185,10 +187,10 @@ async function publishTwoRepositoryRetro(db: Db, root: string) {
   });
   await beginRetroCollection(db, { retroId: "r1", now: END });
   const records = [
-    ["ev-a1", "item-a", "PAS-1", A],
-    ["ev-a2", "item-a", "PAS-1", A],
-    ["ev-b1", "item-b", "OPS-1", B],
-    ["ev-b2", "item-b", "OPS-1", B],
+    [ids[0]!, "item-a", "PAS-1", A],
+    [ids[1]!, "item-a", "PAS-1", A],
+    [ids[2]!, "item-b", "OPS-1", B],
+    [ids[3]!, "item-b", "OPS-1", B],
   ] as const;
   await recordRetroEvidence(
     db,
@@ -250,7 +252,12 @@ async function publishTwoRepositoryRetro(db: Db, root: string) {
     byKind: { question: 2 },
     byWorkItem: [{ identifier, events: 2 }],
   });
-  const pattern = (itemId: string, repository: string, ids: string[], identifier: string) => ({
+  const pattern = (
+    itemId: string,
+    repository: string,
+    evidenceIds: string[],
+    identifier: string,
+  ) => ({
     itemId,
     repository,
     area: "Git recovery",
@@ -258,7 +265,7 @@ async function publishTwoRepositoryRetro(db: Db, root: string) {
     explanation: `People answered the same push question in ${repository}.`,
     hypothesis: "A durable recovery removes the question.",
     expectedBenefit: "Fewer questions.",
-    evidenceIds: ids,
+    evidenceIds,
     action: { step: "Issue", change: "Make branch-tip recovery durable." },
     verification: "No push-recovery question in the next two retros.",
     existingIssues: [],
@@ -266,8 +273,8 @@ async function publishTwoRepositoryRetro(db: Db, root: string) {
     priorWork: [],
   });
   const items = [
-    pattern("p1", A, ["ev-a1", "ev-a2"], "PAS-1"),
-    pattern("p2", B, ["ev-b1", "ev-b2"], "OPS-1"),
+    pattern("p1", A, [ids[0]!, ids[1]!], "PAS-1"),
+    pattern("p2", B, [ids[2]!, ids[3]!], "OPS-1"),
   ];
   const report = {
     version: 1,
@@ -284,7 +291,7 @@ async function publishTwoRepositoryRetro(db: Db, root: string) {
       {
         repository: B,
         observation: "Review caught gaps in acme/b.",
-        evidenceIds: ["ev-b1"],
+        evidenceIds: [ids[2]!],
         counts: counts("OPS-1"),
       },
     ],

@@ -117,7 +117,7 @@ function proposal(step: ImprovementActionStep, title = `Fix ${step}`) {
     proposedChange: `Make the ${step} change durable.`,
     actionStep: step,
     verificationCriterion: "No such question in the next two retros.",
-    evidence: [`retro_evidence:r1:${step}-1`, `retro_evidence:r1:${step}-2`],
+    evidence: [`retro:r1:${step}-1`, `retro:r1:${step}-2`],
   };
 }
 
