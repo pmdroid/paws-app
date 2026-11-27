@@ -57,3 +57,4 @@ export {
   type StartIssueSession,
   type VerificationRequest,
 } from "./outcomes";
+export { parseRetroEvidenceRef } from "./evidence-ref";

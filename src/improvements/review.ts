@@ -23,6 +23,7 @@ import {
   type Db,
 } from "../db";
 import { inboxCounts, listInboxItemsSteps, type ImprovementAccess, type InboxItem } from "./inbox";
+import { parseRetroEvidenceRef } from "./evidence-ref";
 
 export type ImprovementReviewer = ImprovementAccess & {
   userId: string;
@@ -330,7 +331,9 @@ function* evidenceOfSteps(q: Q, access: ImprovementAccess, item: InboxItem) {
   const byRetro = new Map<string, Map<string, RetroEvidence>>();
   const evidence = [];
   for (const ref of item.proposal.evidence) {
-    const [, retroId = "", evidenceId = ""] = ref.split(":");
+    const parsed = parseRetroEvidenceRef(ref);
+    if (!parsed) continue;
+    const { retroId, evidenceId } = parsed;
     if (!byRetro.has(retroId))
       byRetro.set(
         retroId,
