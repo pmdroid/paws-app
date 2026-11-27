@@ -200,6 +200,7 @@ import {
   memberVmProviderId,
   observeDb,
   readAgentAuthSteps,
+  onCommittedTransition,
 } from "./db";
 import {
   METRICS_FLUSH_EVERY_MS,
@@ -356,7 +357,12 @@ import {
   type RetroDispatcher,
 } from "./retros";
 import { createStorageUsage } from "./storage-usage";
-import { createTelemetry, readTelemetrySettings, telemetryHeader } from "./telemetry";
+import {
+  createTelemetry,
+  itemTransitionLogs,
+  readTelemetrySettings,
+  telemetryHeader,
+} from "./telemetry";
 import { handleVmHostRunnerRequest } from "./vm-hosts";
 import {
   STORAGE_CLEANUP_JOB,
@@ -1237,6 +1243,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     instanceId: runtime.publicUrl === null ? hostname() : new URL(runtime.publicUrl).hostname,
   });
   await telemetry.apply(await readTelemetrySettings(store), telemetryHeader.read(paths.home));
+  onCommittedTransition(itemTransitionLogs(telemetry));
   const storageCleanup = createStorageCleanup({
     paths,
     store,

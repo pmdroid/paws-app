@@ -18,7 +18,8 @@ import {
   type AnyColumn,
   type SQL,
 } from "drizzle-orm";
-import type { Db, Q, Steps } from "./db";
+import { afterCommit, type Db, type Q, type Steps } from "./db";
+import { journalCaught } from "../journal";
 import { haltSteps } from "./halt";
 import { jsonField as jsonPath } from "./json-text";
 import { wakeMergesBehindSteps } from "./merge-queue";
@@ -279,7 +280,52 @@ export function* applyWorkItemEventSteps(
   journal(
     `transition ${next.linearIdentifier} ${current.state} --${event}--> ${next.state} v${next.version}`,
   );
+  const listener = transitionListener;
+  if (listener !== null) {
+    const { workItemRepository: repo, runnerWork } = q.t;
+    const where = yield* q.one(
+      q.orm
+        .select({ owner: repo.owner, repo: repo.repo, runnerId: runnerWork.runnerId })
+        .from(workItem)
+        .leftJoin(repo, eq(repo.itemId, workItem.id))
+        .leftJoin(runnerWork, eq(runnerWork.runId, workItem.currentRunId))
+        .where(eq(workItem.id, id)),
+    );
+    const repository = where?.owner && where.repo ? `${where.owner}/${where.repo}` : null;
+    const { linearIdentifier: issue, version } = next;
+    const done = { issue, itemId: id, from: current.state, event, to: next.state, version };
+    afterCommit(q, () => {
+      try {
+        listener({ ...done, repository, runnerId: where?.runnerId ?? null });
+      } catch (error) {
+        journalCaught(error, "items.transitionListener", id);
+      }
+    });
+  }
   return next;
+}
+
+export type CommittedTransition = {
+  issue: string;
+  itemId: string;
+  from: WorkItemState;
+  event: WorkItemEvent;
+  to: WorkItemState;
+  version: number;
+  repository: string | null;
+  runnerId: string | null;
+};
+
+let transitionListener: ((transition: CommittedTransition) => void) | null = null;
+
+export function onCommittedTransition(
+  listener: (transition: CommittedTransition) => void,
+): () => void {
+  const previous = transitionListener;
+  transitionListener = listener;
+  return () => {
+    transitionListener = previous;
+  };
 }
 
 /**
