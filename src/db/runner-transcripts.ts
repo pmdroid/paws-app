@@ -1,4 +1,4 @@
-import { and, asc, count, eq, gte, inArray, isNull, lt, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, lt, ne, sql } from "drizzle-orm";
 import { type Q, type Steps, type Db } from "./db";
 
 export type RunnerTranscriptRow = {
@@ -179,24 +179,30 @@ export function* retroTranscriptRowsSteps(
   );
 }
 
-export function* retroUnstoredTurnsSteps(
+export type RetroUntranscribedTurns = {
+  helpers: { id: string; itemId: string; purpose: string | null; at: number }[];
+  retros: { commandId: string; retroId: string; at: number }[];
+};
+
+export function* retroUntranscribedTurnsSteps(
   q: Q,
   input: {
     workspaceId: string;
     retroId: string;
+    repositories: readonly string[];
     itemIds: readonly string[];
     from: number;
     to: number;
   },
-): Steps<{ helpers: number; retros: number }> {
-  const { runnerHelper: h, workItem: w, retroDispatch: d } = q.t;
-  const at = sql`coalesce(${h.endedAt}, ${h.expiresAt})`;
+): Steps<RetroUntranscribedTurns> {
+  const { runnerHelper: h, workItem: w, retroDispatch: d, retroRepository: r } = q.t;
+  const at = sql<number>`coalesce(${h.endedAt}, ${h.expiresAt})`.mapWith(Number);
   const helpers =
     input.itemIds.length === 0
-      ? undefined
-      : yield* q.one(
+      ? []
+      : yield* q.all(
           q.orm
-            .select({ n: count() })
+            .select({ id: h.id, itemId: w.id, purpose: h.purpose, at })
             .from(h)
             .innerJoin(w, eq(w.sessionKey, h.sessionId))
             .where(
@@ -205,11 +211,12 @@ export function* retroUnstoredTurnsSteps(
                 inArray(w.id, [...input.itemIds]),
                 sql`${at} >= ${input.from} AND ${at} < ${input.to}`,
               ),
-            ),
+            )
+            .orderBy(asc(at), asc(h.id)),
         );
-  const retros = yield* q.one(
+  const dispatched = yield* q.all(
     q.orm
-      .select({ n: count() })
+      .select({ commandId: d.commandId, retroId: d.retroId, at: d.createdAt })
       .from(d)
       .where(
         and(
@@ -218,7 +225,18 @@ export function* retroUnstoredTurnsSteps(
           gte(d.createdAt, input.from),
           lt(d.createdAt, input.to),
         ),
-      ),
+      )
+      .orderBy(asc(d.createdAt), asc(d.commandId)),
   );
-  return { helpers: helpers?.n ?? 0, retros: retros?.n ?? 0 };
+  const allowed = new Set(input.repositories.map((repository) => repository.toLowerCase()));
+  const outside = new Set<string>();
+  if (dispatched.length > 0)
+    for (const row of yield* q.all(
+      q.orm
+        .select({ retroId: r.retroId, repository: sql<string>`${r.repository}` })
+        .from(r)
+        .where(inArray(r.retroId, [...new Set(dispatched.map((entry) => entry.retroId))])),
+    ))
+      if (!allowed.has(row.repository.toLowerCase())) outside.add(row.retroId);
+  return { helpers, retros: dispatched.filter((row) => !outside.has(row.retroId)) };
 }

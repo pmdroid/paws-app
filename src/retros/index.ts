@@ -36,7 +36,6 @@ export {
 } from "./http";
 export { retroReaderAccess, retroReaderAccessSteps, type RetroReaderAccess } from "./access";
 export {
-  attachRetroTranscripts,
   boundRetroDigest,
   buildRetroDigest,
   collectRetroDigest,
@@ -56,8 +55,6 @@ export {
 } from "./digest";
 export {
   boundRetroTranscripts,
-  summarizeRetroTranscript,
-  type RetroTranscriptEntry,
   type RetroTranscriptReader,
   type RetroTranscriptSection,
 } from "./transcripts";

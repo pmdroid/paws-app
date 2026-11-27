@@ -1,4 +1,4 @@
-import { retroTranscriptRowsSteps, retroUnstoredTurnsSteps, type Db } from "../db";
+import { retroTranscriptRowsSteps, retroUntranscribedTurnsSteps, type Db } from "../db";
 
 const RETRO_TRANSCRIPT_RUN_LIMIT = 2_000;
 export const RETRO_TRANSCRIPT_PROMPT_CHARS = 40_000;
@@ -29,12 +29,13 @@ type RetroTranscriptSummary = {
   lastMessages: { at: number | null; before: "question" | "failure"; text: string }[];
 };
 
-export type RetroTranscriptEntry = {
+type RetroTranscriptEntry = {
   runId: string;
   generation: number | null;
   itemId: string;
   identifier: string;
   kind: string;
+  at: number | null;
   sizeBytes: number;
   status: string;
   summary: RetroTranscriptSummary | null;
@@ -44,16 +45,15 @@ export type RetroTranscriptSection = {
   entries: RetroTranscriptEntry[];
   runsNotRead: number;
   trimmed: number;
-  notStored: { helpers: number; retros: number };
   note: string | null;
 };
 
 type RetroTranscriptRun = {
-  runId: string;
+  id: string;
   itemId: string;
-  identifier: string;
   kind: string;
   agent: string;
+  createdAt: number;
 };
 
 type Clip = (text: string, limit: number) => string;
@@ -62,7 +62,7 @@ type Tool = { title: string; input: string; failed: boolean; output: string };
 const text = (value: unknown): string =>
   typeof value === "string" ? value : (JSON.stringify(value) ?? "");
 
-export function summarizeRetroTranscript(
+function summarizeRetroTranscript(
   bytes: Uint8Array,
   agent: string,
   clip: Clip,
@@ -184,7 +184,7 @@ export function summarizeRetroTranscript(
 const iso = (value: number | null) => (value === null ? "unknown" : new Date(value).toISOString());
 
 function transcriptIndexLine(entry: RetroTranscriptEntry): string {
-  return `- run:${entry.runId}${entry.generation === null ? "" : `#${entry.generation}`} ${entry.identifier} ${entry.kind} ${entry.sizeBytes} bytes ${entry.status}`;
+  return `- run:${entry.runId}${entry.generation === null ? "" : `#${entry.generation}`} ${entry.identifier} ${entry.kind} ${iso(entry.at)} ${entry.sizeBytes} bytes ${entry.status}`;
 }
 
 function transcriptSummaryBlock(entry: RetroTranscriptEntry): string {
@@ -208,7 +208,7 @@ function transcriptSummaryBlock(entry: RetroTranscriptEntry): string {
 }
 
 const TRANSCRIPT_HEADER =
-  "## transcripts\nOne index line per run transcript in the window (run, item, kind, bytes, status). Summaries count turns, tool calls, failed tools, blocked waits (failed sleep or pgrep commands) and Closeout calls; their text is redacted. A run marked missing or unreadable has no transcript evidence.";
+  "## transcripts\nOne index line per run, helper and retro turn in the window (id, item, kind, time, bytes, status). Summaries count turns, tool calls, failed tools, blocked waits (failed sleep or pgrep commands) and Closeout calls; their text is redacted. Entries marked missing, unreadable or not stored by design have no transcript evidence.";
 
 function indexView(entries: readonly RetroTranscriptEntry[], room: number): string[] {
   const index = entries.map(transcriptIndexLine);
@@ -216,7 +216,7 @@ function indexView(entries: readonly RetroTranscriptEntry[], room: number): stri
   const counts = new Map<string, Record<string, number>>();
   for (const entry of entries) {
     const tally = counts.get(entry.identifier) ?? {};
-    const status = entry.status.startsWith("unreadable") ? "unreadable" : entry.status;
+    const status = entry.status.split(":")[0]!;
     tally.runs = (tally.runs ?? 0) + 1;
     tally[status] = (tally[status] ?? 0) + 1;
     counts.set(entry.identifier, tally);
@@ -225,17 +225,19 @@ function indexView(entries: readonly RetroTranscriptEntry[], room: number): stri
     `Index lines for ${index.length} runs do not fit this view; the digest keeps every one. Per item:`,
     ...[...counts].map(
       ([identifier, c]) =>
-        `- ${identifier}: ${c.runs} runs, ${c.available ?? 0} available, ${c.missing ?? 0} missing, ${c.unreadable ?? 0} unreadable`,
+        `- ${identifier}: ${c.runs} runs, ${c.available ?? 0} available, ${c.missing ?? 0} missing, ${c.unreadable ?? 0} unreadable, ${c["not stored by design"] ?? 0} not stored by design`,
     ),
   ];
 }
+
+const NOT_STORED = "not stored by design: helper and retro turns keep no runner transcript";
 
 export function boundRetroTranscripts(
   entries: RetroTranscriptEntry[],
   runsNotRead: number,
   maxChars = RETRO_TRANSCRIPT_PROMPT_CHARS,
   maxBytes = RETRO_TRANSCRIPT_SECTION_BYTES,
-): Omit<RetroTranscriptSection, "notStored"> {
+): RetroTranscriptSection {
   const reserve = 400;
   let chars =
     TRANSCRIPT_HEADER.length +
@@ -275,9 +277,6 @@ export function boundRetroTranscripts(
   };
 }
 
-export const notStoredLine = (turns: RetroTranscriptSection["notStored"]) =>
-  `${turns.helpers} helper and ${turns.retros} retro turns in the window: not stored by design (helper and retro turns keep no runner transcript)`;
-
 export function renderRetroTranscripts(section: RetroTranscriptSection, maxChars: number): string {
   const lines = [TRANSCRIPT_HEADER];
   let size = TRANSCRIPT_HEADER.length;
@@ -297,7 +296,6 @@ export function renderRetroTranscripts(section: RetroTranscriptSection, maxChars
   }
   if (omitted > 0) lines.push(`${omitted} transcript lines are omitted from this view.`);
   if (tail.length > 0) lines.push(tail);
-  lines.push(notStoredLine(section.notStored));
   return lines.join("\n");
 }
 
@@ -306,7 +304,8 @@ export async function collectRetroTranscripts(
   input: {
     workspaceId: string;
     retroId: string;
-    itemIds: readonly string[];
+    repositories: readonly string[];
+    items: readonly { itemId: string; identifier: string }[];
     from: number;
     to: number;
     runs: readonly RetroTranscriptRun[];
@@ -314,48 +313,79 @@ export async function collectRetroTranscripts(
     clip: Clip;
   },
 ): Promise<RetroTranscriptSection> {
-  const runs = input.runs.slice(0, RETRO_TRANSCRIPT_RUN_LIMIT);
-  const rows = await store.run((q) =>
-    retroTranscriptRowsSteps(
-      q,
-      input.workspaceId,
-      runs.map((run) => run.runId),
-    ),
+  const ordered = input.items.flatMap((item) =>
+    input.runs.filter((run) => run.itemId === item.itemId).map((run) => ({ run, item })),
   );
+  const runs = ordered.slice(0, RETRO_TRANSCRIPT_RUN_LIMIT);
+  const itemIds = input.items.map((item) => item.itemId);
+  const [rows, turns] = await store.run(function* (q) {
+    return [
+      yield* retroTranscriptRowsSteps(
+        q,
+        input.workspaceId,
+        runs.map(({ run }) => run.id),
+      ),
+      yield* retroUntranscribedTurnsSteps(q, { ...input, itemIds }),
+    ] as const;
+  });
   const entries: RetroTranscriptEntry[] = [];
-  for (const run of runs) {
-    const base = { runId: run.runId, itemId: run.itemId, identifier: run.identifier };
-    const own = rows.filter((row) => row.runId === run.runId);
-    if (own.length === 0)
-      entries.push({
-        ...base,
-        generation: null,
-        kind: run.kind,
-        sizeBytes: 0,
-        status: "missing",
-        summary: null,
-      });
-    for (const row of own) {
-      const entry = {
-        ...base,
-        generation: row.generation,
-        kind: row.commandKind === null ? run.kind : `${run.kind}/${row.commandKind}`,
-        sizeBytes: row.sealedSize ?? row.sizeBytes,
-      };
-      try {
-        if (input.reader === undefined) throw new Error("transcript storage is unavailable");
-        const bytes = await input.reader.download(run.runId, row.generation);
+  const notStored = { sizeBytes: 0, generation: null, status: NOT_STORED, summary: null };
+  for (const item of input.items) {
+    const base = { itemId: item.itemId, identifier: item.identifier };
+    for (const { run } of runs.filter((entry) => entry.item === item)) {
+      const own = rows.filter((row) => row.runId === run.id);
+      const at = run.createdAt;
+      if (own.length === 0)
         entries.push({
-          ...entry,
-          status: "available",
-          summary: summarizeRetroTranscript(bytes, run.agent, input.clip),
+          ...base,
+          runId: run.id,
+          generation: null,
+          kind: run.kind,
+          at,
+          sizeBytes: 0,
+          status: "missing",
+          summary: null,
         });
-      } catch (error) {
-        const reason = input.clip(error instanceof Error ? error.message : String(error), 200);
-        entries.push({ ...entry, status: `unreadable: ${reason}`, summary: null });
+      for (const row of own) {
+        const entry = {
+          ...base,
+          runId: run.id,
+          generation: row.generation,
+          kind: row.commandKind === null ? run.kind : `${run.kind}/${row.commandKind}`,
+          at,
+          sizeBytes: row.sealedSize ?? row.sizeBytes,
+        };
+        try {
+          if (input.reader === undefined) throw new Error("transcript storage is unavailable");
+          const bytes = await input.reader.download(run.id, row.generation);
+          entries.push({
+            ...entry,
+            status: "available",
+            summary: summarizeRetroTranscript(bytes, run.agent, input.clip),
+          });
+        } catch (error) {
+          const reason = input.clip(error instanceof Error ? error.message : String(error), 200);
+          entries.push({ ...entry, status: `unreadable: ${reason}`, summary: null });
+        }
       }
     }
+    for (const helper of turns.helpers.filter((entry) => entry.itemId === item.itemId))
+      entries.push({
+        ...base,
+        ...notStored,
+        runId: helper.id,
+        kind: `helper/${helper.purpose ?? "session"}`,
+        at: helper.at,
+      });
   }
-  const notStored = await store.run((q) => retroUnstoredTurnsSteps(q, input));
-  return { ...boundRetroTranscripts(entries, input.runs.length - runs.length), notStored };
+  for (const retro of turns.retros)
+    entries.push({
+      ...notStored,
+      runId: retro.commandId,
+      itemId: "",
+      identifier: `retro:${retro.retroId}`,
+      kind: "retro",
+      at: retro.at,
+    });
+  return boundRetroTranscripts(entries, ordered.length - runs.length);
 }

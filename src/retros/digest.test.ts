@@ -18,14 +18,12 @@ import {
   type Q,
 } from "../db";
 import {
-  attachRetroTranscripts,
   boundRetroDigest,
   buildRetroDigest,
   collectRetroDigest,
   redactRetroText,
   boundRetroTranscripts,
   type RetroDigest,
-  type RetroTranscriptEntry,
   type RetroTranscriptReader,
 } from "./index";
 import { json, seed, withoutForeignKeys } from "../../test/pglite-fixtures";
@@ -825,16 +823,13 @@ describe("October retro fixture", () => {
       before: at(28),
     });
     expect(
-      attachRetroTranscripts(
-        buildRetroDigest(snapshot, {
-          retroId: "october",
-          windows: digest.windows,
-          cut: digest.cut,
-          collectedAt: digest.collectedAt,
-        }),
-        digest.transcripts!,
-      ),
-    ).toEqual(digest);
+      buildRetroDigest(snapshot, {
+        retroId: "october",
+        windows: digest.windows,
+        cut: digest.cut,
+        collectedAt: digest.collectedAt,
+      }),
+    ).toEqual({ ...digest, transcripts: undefined });
   });
 });
 
@@ -928,6 +923,33 @@ describe("transcript summaries", () => {
           expiresAt: at(1, 600),
           purpose: "classify",
         }),
+      (q) =>
+        q.orm.insert(q.t.retroRepository).values(
+          [
+            ["old", REPO],
+            ["elsewhere", OTHER],
+          ].map(([retroId, repository]) => ({
+            retroId: retroId!,
+            repository: repository!,
+            startCursor: 0,
+          })),
+        ),
+      (q) =>
+        q.orm.insert(q.t.retroDispatch).values(
+          ["old", "elsewhere"].map((retroId) => ({
+            commandId: `retro-${retroId}`,
+            retroId,
+            attempt: 1,
+            workspaceId: "ws",
+            runnerId: "box",
+            runnerFence: 1,
+            command: {},
+            envelope: {},
+            createdAt: at(1, 700),
+            issuedAt: at(1, 700),
+            expiresAt: at(2),
+          })),
+        ),
     );
     const reads: string[] = [];
     const digest = await collect(db, root, {
@@ -944,7 +966,23 @@ describe("transcript summaries", () => {
       },
     });
     expect(reads).toEqual(["run-implement", "run-review"]);
-    const [implement, fix, review] = digest.transcripts!.entries;
+    const [implement, fix, review, helper, retro, ...rest] = digest.transcripts!.entries;
+    expect(rest).toEqual([]);
+    const notStored = "not stored by design: helper and retro turns keep no runner transcript";
+    expect(helper).toMatchObject({
+      runId: "helper-1",
+      identifier: "PAS-1",
+      kind: "helper/classify",
+      at: at(1, 600),
+      status: notStored,
+    });
+    expect(retro).toMatchObject({
+      runId: "retro-old",
+      identifier: "retro:old",
+      kind: "retro",
+      at: at(1, 700),
+      status: notStored,
+    });
     expect(fix).toMatchObject({ runId: "run-fix", kind: "fix", status: "missing", summary: null });
     expect(review).toMatchObject({ status: "unreadable: bad seal", summary: null });
     expect(implement).toMatchObject({
@@ -973,60 +1011,28 @@ describe("transcript summaries", () => {
       ],
     });
     const text = boundRetroDigest(digest).text;
-    expect(text).toContain("- run:run-fix PAS-1 fix 0 bytes missing");
-    expect(text).toContain("run_closeout 2; get_closeout 1");
-    expect(digest.transcripts!.notStored).toEqual({ helpers: 1, retros: 0 });
-    expect(digest.coverage.unavailable).toContain(
-      "1 helper and 0 retro turns in the window: not stored by design (helper and retro turns keep no runner transcript)",
+    expect(text).toContain(
+      `- run:run-fix PAS-1 fix ${new Date(at(1, 100)).toISOString()} 0 bytes missing`,
     );
+    expect(text).toContain("run_closeout 2; get_closeout 1");
     const many = Array.from({ length: 2_000 }, (_, index) => ({
-      ...fix!,
+      ...implement!,
       runId: `01JF${String(index).padStart(22, "0")}`,
     }));
-    const compact = boundRetroDigest({
-      ...digest,
-      transcripts: { ...digest.transcripts!, entries: [implement!, ...many] },
-    }).text;
-    expect(compact).toContain("Index lines for 2001 runs do not fit this view");
-    expect(compact).toContain("- PAS-1: 2001 runs, 1 available, 2000 missing, 0 unreadable");
-    expect(compact).toContain("run_closeout 2; get_closeout 1");
-    expect(JSON.stringify(digest)).not.toContain(TOKEN);
-    expect(JSON.stringify(digest)).not.toContain("planted-secret-value");
-  });
-
-  test("an oversized window keeps the most failed runs and trims the rest to index lines", () => {
-    const entries: RetroTranscriptEntry[] = Array.from({ length: 300 }, (_, index) => ({
-      runId: `run-${index}`,
-      generation: 1,
-      itemId: "item",
-      identifier: "PAS-1",
-      kind: "implement",
-      sizeBytes: 10,
-      status: "available",
-      summary: {
-        agent: "codex",
-        model: null,
-        firstEventAt: null,
-        lastEventAt: null,
-        turns: 1,
-        stopReasons: {},
-        toolCalls: index,
-        failedTools: index,
-        topFailedTools: [],
-        blockedWaits: 0,
-        runCloseoutCalls: 0,
-        getCloseoutCalls: 0,
-        lastMessages: [{ at: null, before: "failure", text: "x".repeat(600) }],
-      },
-    }));
-    const section = boundRetroTranscripts(entries, 0);
-    const kept = section.entries.filter((entry) => entry.summary !== null);
-    expect(kept.length).toBeGreaterThan(0);
-    expect(section.trimmed).toBe(300 - kept.length);
-    expect(Math.min(...kept.map((entry) => entry.summary!.failedTools))).toBe(300 - kept.length);
-    expect(section.entries).toHaveLength(300);
+    const section = boundRetroTranscripts([...many, fix!, helper!], 0);
+    expect(section.entries).toHaveLength(2_002);
+    expect(section.trimmed).toBeGreaterThan(0);
+    expect(section.entries.filter((entry) => entry.summary).length).toBe(2_000 - section.trimmed);
     expect(section.note).toBe(
       `Summaries for ${section.trimmed} runs were trimmed to their index line; the runs with the most failed tools kept theirs.`,
     );
+    const compact = boundRetroDigest({ ...digest, transcripts: section }).text;
+    expect(compact).toContain("Index lines for 2002 runs do not fit this view");
+    expect(compact).toContain(
+      "- PAS-1: 2002 runs, 2000 available, 1 missing, 0 unreadable, 1 not stored by design",
+    );
+    expect(compact).toContain("run_closeout 2; get_closeout 1");
+    expect(JSON.stringify(digest)).not.toContain(TOKEN);
+    expect(JSON.stringify(digest)).not.toContain("planted-secret-value");
   });
 });
