@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
-import { and, count, eq, gt, isNull } from "drizzle-orm";
+import { and, count, eq, gt, isNotNull, isNull } from "drizzle-orm";
 import { runAgent, type RunAgentOptions } from "../src/acp";
 import { JOB_KIND, systemClock } from "../src/core";
 import {
@@ -20,6 +20,7 @@ import {
   listWorkItems,
   putWorkspaceUser,
   recordLinearInstallation,
+  recordRunnerHostStatus,
   resumeUsagePauseNow,
   type Q,
 } from "../src/db";
@@ -34,7 +35,7 @@ import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
-import { createRunnerPlacement } from "../src/runner-placement";
+import { createRunnerPlacement, eligibleRunnersSteps } from "../src/runner-placement";
 import { RUNNER_LEASE_GRACE_MS, type RunnerCommand } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork, RUNNER_LIVE_GRACE_MS } from "../src/runner-work";
@@ -42,6 +43,7 @@ import { CHECKPOINT_COMMIT_MESSAGE } from "../src/runner-worker";
 import { restoredCheckpointNote } from "../src/runner-backend";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { tempStore } from "./pglite";
+import { CURRENT_RUNNER_RELEASE } from "./pglite-fixtures";
 
 type Fault =
   | "fenced"
@@ -57,12 +59,15 @@ type Fault =
   | "silent-unconfirmed"
   | "silent-hung"
   | "silent-hung-checkpoint"
-  | "silent-hung-always";
+  | "silent-hung-always"
+  | "below-minimum-finish"
+  | "below-minimum-expired";
 
 const RUN_LOST = "The runner lost this run after it restarted; continuing from the branch.";
 const SILENT_RUN_MS = 300;
 const HUNG_RUN_MS = 900;
 const RUN_HUNG = "The agent sent nothing for ";
+const BELOW_MINIMUM = "Runner below minimum version ";
 const GITHUB_URL = "https://github.com/acme/fixture.git";
 const fakeAgent = join(import.meta.dir, "../src/acp/testing/fake-agent.ts");
 const gitConfig = ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"] as const;
@@ -268,6 +273,31 @@ test("a usage limit while the implementer is prepared posts one thought naming t
   ]);
 }, 60_000);
 
+test("a runner that falls below the minimum version mid-run still finishes and reports it, and gets no new run", async () => {
+  const result = await runRemoteFault("below-minimum-finish");
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.errors, result.detail).toEqual([]);
+  expect(result.faultedAttempts, result.detail).toBe(1);
+  expect(
+    result.thoughts.some((body) => body.startsWith(BELOW_MINIMUM)),
+    result.detail,
+  ).toBe(false);
+  expect(result.runs, result.detail).toEqual(["implement:ended"]);
+  expect(result.outdated, result.detail).toBe(true);
+}, 60_000);
+
+test("a run on a runner below the minimum version is released after its limit and requeued with the reason", async () => {
+  const result = await runRemoteFault("below-minimum-expired");
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.errors, result.detail).toEqual([]);
+  expect(result.faultedAttempts, result.detail).toBe(1);
+  expect(
+    result.thoughts.filter((body) => body.startsWith(BELOW_MINIMUM)),
+    result.detail,
+  ).toHaveLength(1);
+  expect(result.runs, result.detail).toEqual(["implement:lost", "implement:ended"]);
+}, 60_000);
+
 async function runRemoteFault(fault: Fault) {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-faults-"));
   const source = join(root, "source");
@@ -402,18 +432,21 @@ async function runRemoteFault(fault: Fault) {
     deferredState: null as string | null,
     heldSlots: null as number | null,
     lostBeforeLease: null as boolean | null,
+    outdated: null as boolean | null,
     hungStopped: null as boolean | null,
     checkpointSha: null as string | null,
     recovered: null as { restore: string | undefined; prompt: string } | null,
   };
   // The work this fake runner names in its heartbeat, for faults where the runner reports it.
-  const reporting = fault === "restarted" || fault === "silent-live" || hung;
+  const reporting =
+    fault === "restarted" || fault === "silent-live" || fault === "below-minimum-expired" || hung;
   const live = new Map<
     string,
     {
       command: Extract<RunnerCommand, { type: "run" }>;
       at: number;
       hung?: boolean;
+      stuck?: boolean;
       events?: number;
       confirmed?: boolean;
       advanced?: boolean;
@@ -448,7 +481,7 @@ async function runRemoteFault(fault: Fault) {
       async read(runId, generation, commandId) {
         const entry = live.get(commandId);
         if (entry?.advanced) entry.checked = true;
-        if (entry?.confirmed && !entry.advanced) {
+        if (entry?.confirmed && !entry.advanced && !entry.stuck) {
           entry.advanced = true;
           clock.held = clockNow() + (entry.hung ? HUNG_RUN_MS : SILENT_RUN_MS);
         }
@@ -531,7 +564,13 @@ async function runRemoteFault(fault: Fault) {
       agentForItem(itemId) {
         return async (options: RunAgentOptions) => {
           if (options.role === "implementer")
-            return backend.forItem(itemId)({ ...options, networkGit: git });
+            return backend.forItem(itemId)({
+              ...options,
+              networkGit: git,
+              ...(fault === "below-minimum-expired" && runner.faultedAttempts === 0
+                ? { timeoutMs: 1_500 }
+                : {}),
+            });
           const script = join(root, `review-${++reviews}.json`);
           writeFileSync(
             script,
@@ -571,6 +610,26 @@ async function runRemoteFault(fault: Fault) {
   }
   async function recoverOnce() {
     if (!runner.faulty) return;
+    if (fault === "below-minimum-expired") {
+      const lost = await db.run((q) =>
+        q.one(
+          q.orm
+            .select({ runId: q.t.runnerWork.runId })
+            .from(q.t.runnerWork)
+            .where(isNotNull(q.t.runnerWork.lostAt)),
+        ),
+      );
+      if (!lost) return;
+      runner.faulty = false;
+      live.clear();
+      await recordRunnerHostStatus(
+        db,
+        runnerId,
+        { runnerVersion: CURRENT_RUNNER_RELEASE },
+        Date.now(),
+      );
+      return;
+    }
     const paused = await db.run((q) =>
       q.one(q.orm.select({ runId: q.t.usagePause.runId }).from(q.t.usagePause)),
     );
@@ -696,7 +755,7 @@ async function runRemoteFault(fault: Fault) {
         if (command.type === "run") await deliver(command);
       }
       for (const [key, entry] of live)
-        if (!entry.hung && entry.checked) {
+        if (!entry.hung && !entry.stuck && entry.checked) {
           live.delete(key);
           await deliver(entry.command);
         }
@@ -851,6 +910,26 @@ async function runRemoteFault(fault: Fault) {
           unreachable = { command, since: Date.now() };
           continue;
         }
+        if (fault.startsWith("below-minimum") && runner.faulty) {
+          runner.faultedAttempts++;
+          await recordRunnerHostStatus(db, runnerId, { runnerVersion: "0.1.0" }, Date.now());
+          if (fault === "below-minimum-expired") {
+            live.set(command.id, { command, at: Date.now(), stuck: true });
+            continue;
+          }
+          runner.faulty = false;
+          runner.outdated = (
+            await db.run((q) =>
+              eligibleRunnersSteps(q, {
+                workspaceId: workspace.id,
+                teamId: "team",
+                ownerUserId: userId,
+                agent: "claude",
+                purpose: "work",
+              }),
+            )
+          ).some((candidate) => candidate.id === runnerId && candidate.reason === "outdated");
+        }
         if (fault === "silent-hung-checkpoint" && runner.checkpointSha)
           runner.recovered = { restore: command.restoreCheckpoint?.sha, prompt: command.prompt };
         await deliver(command);
@@ -927,6 +1006,7 @@ async function runRemoteFault(fault: Fault) {
       deferredState: runner.deferredState,
       heldSlots: runner.heldSlots,
       lostBeforeLease: runner.lostBeforeLease,
+      outdated: runner.outdated,
       hungStopped: runner.hungStopped,
       checkpointSha: runner.checkpointSha,
       recovered: runner.recovered,
