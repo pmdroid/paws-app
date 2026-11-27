@@ -3494,7 +3494,12 @@ export class Orchestrator {
         );
         return undefined;
       });
-      await this.runItem(item, handoff);
+      await this.runItem(
+        item,
+        handoff,
+        (payload as { freshRun?: unknown }).freshRun === true &&
+          readString(payload, "runId") === item.currentRunId,
+      );
     }
   }
 
@@ -4002,7 +4007,7 @@ export class Orchestrator {
     yield* closeActiveRunSteps(q, runId, this.now());
   }
 
-  private async runItem(item: WorkItemRecord, handoff?: string): Promise<void> {
+  private async runItem(item: WorkItemRecord, handoff?: string, freshRun = false): Promise<void> {
     const repository = await this.repositoryForItem(item);
     if (repository === null || repository === undefined) {
       await this.fail(item, "no_repository", "No repository is selected for this item.");
@@ -4014,7 +4019,7 @@ export class Orchestrator {
     if (item.branchName !== branch) {
       await this.store.run((q) => setItemBranchNameSteps(q, item.id, branch));
     }
-    const run = await this.ensureRun(item);
+    const run = await this.ensureRun(item, freshRun);
     if (!(await this.checkProfileLabels(item, run.id))) return;
     item = (await this.store.run((q) => getWorkItemSteps(q, item.id)))!;
     const profiles = await this.profileSnapshot(run.id);
@@ -8856,8 +8861,8 @@ export class Orchestrator {
     }
   }
 
-  private async ensureRun(item: WorkItemRecord): Promise<{ id: string }> {
-    if (item.currentRunId !== null) {
+  private async ensureRun(item: WorkItemRecord, fresh = false): Promise<{ id: string }> {
+    if (item.currentRunId !== null && !fresh) {
       const existing = await this.store.run((q) => getRunSteps(q, item.currentRunId!));
       if (existing && (existing.status === "active" || existing.status === "ended")) {
         await this.applyAgentSettingsToWaiting();

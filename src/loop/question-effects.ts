@@ -121,6 +121,7 @@ export function questionEffects(
     jobKey: string,
     /** Handoffs the time limit held back, handed over before the answers. */
     held: readonly HeldHandoff[] = [],
+    freshRun = false,
   ): Steps<void> {
     const item = yield* getWorkItemSteps(q, question.itemId);
     if (!item) return;
@@ -148,6 +149,7 @@ export function questionEffects(
       body: [...held.map((entry) => entry.handoff), ...answers].join("\n\n"),
       jobKey,
       now: input.now,
+      ...(freshRun ? { freshRun } : {}),
     });
     if (restarted !== null) {
       yield* markHandoffsCarriedSteps(q, held);
@@ -160,6 +162,7 @@ export function questionEffects(
     question: StoredQuestion,
     held: readonly HeldHandoff[] = [],
     replyList = "",
+    freshRun = false,
   ) {
     if (input.redirect && question.answerEventKey !== null)
       yield* announceLinearTurnSteps(q, question.sessionId, question.answerEventKey, input.now);
@@ -180,6 +183,7 @@ export function questionEffects(
         .join("\n\n"),
       `resume:answer:${question.id}`,
       held,
+      freshRun,
     );
   }
   /** A reply is guidance for the agent. It never bypasses a check: that is decided on the item page. */
@@ -275,7 +279,7 @@ export function questionEffects(
       const held = yield* heldHandoffsSteps(q, question.itemId);
       if (plain && held.length === 0 && question.reason === TIME_LIMIT_VERIFYING_REASON)
         yield* verifyAgainSteps(q, question, { now: input.now });
-      else yield* resume(q, question, held);
+      else yield* resume(q, question, held, "", true);
       return;
     }
     yield* consumeTurn(q, question);
