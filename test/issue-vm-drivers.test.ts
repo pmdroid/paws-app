@@ -1,9 +1,16 @@
 import { afterEach, expect, test } from "bun:test";
 import { parseConfigToml } from "../src/config";
-import { saveIssueVmSpendSettingsSteps, type Db, type IssueVm } from "../src/db";
+import {
+  recordRunnerHostStatusSteps,
+  saveIssueVmSpendSettingsSteps,
+  saveVmHostSteps,
+  type Db,
+  type IssueVm,
+} from "../src/db";
 import {
   createBoatIssueVmDriver,
   createBoatIssueVms,
+  createHostIssueVmDriver,
   createInstaBoxIssueVmDriver,
   createInstaBoxIssueVms,
   createIssueVmLifecycle,
@@ -15,6 +22,9 @@ import {
   type IssueVmDriver,
 } from "../src/issue-vm";
 import { createFakeBoat, createFakeBootstrap, createFakeInstaBox } from "../src/provisioning";
+import { issueVmReconciler } from "../src/runner-cli/daemon";
+import { createFakeIssueVmUnits, type IssueVmHostView } from "../src/runner-daemon";
+import { handleVmHostRunnerRequest } from "../src/vm-hosts";
 import { describePglite, withoutForeignKeys, type PgliteTestDb } from "./pglite-fixtures";
 
 const NOW = Date.UTC(2026, 10, 10);
@@ -27,12 +37,15 @@ afterEach(async () => {
   for (const handle of opened.splice(0)) await handle.close();
 });
 
-type Provider = "boat" | "instabox";
+type Provider = "boat" | "instabox" | "host";
+
+const HOST = "01JRRNNER0000000000000000A";
 
 type Subject = {
   driver: IssueVmDriver;
-  sizeOf(name: string): unknown;
-  stateOf(name: string): string | undefined;
+  hostRunnerId?: string;
+  sizeOf(id: string): unknown;
+  stateOf(id: string): string | undefined;
   commands(): string[];
 };
 
@@ -62,8 +75,8 @@ function boatSubject(store: Db): Subject {
   });
   return {
     driver,
-    sizeOf: (name) => boat.sandboxes.get(name)?.size,
-    stateOf: (name) => boat.sandboxes.get(name)?.state,
+    sizeOf: (id) => boat.sandboxes.get(issueVmName(id))?.size,
+    stateOf: (id) => boat.sandboxes.get(issueVmName(id))?.state,
     commands: () => boat.calls.flatMap((call) => call.command ?? []),
   };
 }
@@ -88,15 +101,98 @@ function instaBoxSubject(store: Db): Subject {
   });
   return {
     driver,
-    sizeOf: (name) => instaBox.machines.get(name)?.size,
-    stateOf: (name) => instaBox.machines.get(name)?.state,
+    sizeOf: (id) => instaBox.machines.get(issueVmName(id))?.size,
+    stateOf: (id) => instaBox.machines.get(issueVmName(id))?.state,
     commands: () => instaBox.calls.flatMap((call) => call.command ?? []),
   };
 }
 
-const SUBJECTS: Record<Provider, { make: (store: Db) => Subject; size: object }> = {
-  boat: { make: boatSubject, size: { cpu: 8, memoryGb: 16 } },
-  instabox: { make: instaBoxSubject, size: { cpu: 4, memoryGb: 8 } },
+async function hostSubject(store: Db): Promise<Subject> {
+  await store.run((q) =>
+    q.exec(
+      q.orm.insert(q.t.runner).values({
+        id: HOST,
+        workspaceId: "acme",
+        ownerUserId: "ada",
+        name: "goldbox",
+        status: "active",
+        createdAt: 0,
+      }),
+    ),
+  );
+  await store.run((q) =>
+    recordRunnerHostStatusSteps(q, HOST, { cpuCount: 20, memoryTotalBytes: 121 * 1024 ** 3 }, 1),
+  );
+  await store.run((q) =>
+    saveVmHostSteps(q, {
+      runnerId: HOST,
+      vmVcpus: 2,
+      vmMemoryGb: 4,
+      vmDiskGb: 30,
+      reserveVcpus: 4,
+      reserveMemoryGb: 8,
+      slotCap: 3,
+      updatedAt: 1,
+      updatedBy: "ada",
+    }),
+  );
+  const units = createFakeIssueVmUnits();
+  const daemon = {
+    async issueVmHost(running?: string[]) {
+      const request = new Request("https://runner.paws.test/v1/issue-vms", {
+        method: "POST",
+        body: JSON.stringify({ running }),
+      });
+      const response = await handleVmHostRunnerRequest(request, HOST, store);
+      return (await response!.json()) as IssueVmHostView;
+    },
+  };
+  let clock = 0;
+  const tick = issueVmReconciler(daemon, units.units, () => (clock += 30_000));
+  const unitOf = (id: string) => [...units.active].find((unit) => unit.includes(`@${id}-`));
+  return {
+    driver: createHostIssueVmDriver({ store, wait: () => tick() }),
+    hostRunnerId: HOST,
+    sizeOf: (id) => {
+      const [, , vcpus, memoryGb] = unitOf(id)?.split("@")[1]?.split(/[-.]/) ?? [];
+      return { vcpus: Number(vcpus), memoryGb: Number(memoryGb) };
+    },
+    stateOf: (id) => (unitOf(id) === undefined ? undefined : "running"),
+    commands: () => [],
+  };
+}
+
+const SUBJECTS: Record<
+  Provider,
+  {
+    make: (store: Db) => Subject | Promise<Subject>;
+    size: object;
+    runner: (name: string) => string | null;
+    sleepCheck: boolean;
+    price: number | null;
+  }
+> = {
+  boat: {
+    make: boatSubject,
+    size: { cpu: 8, memoryGb: 16 },
+    runner: (name) => `runner-${name}`,
+    sleepCheck: true,
+    price: 0.5,
+  },
+  instabox: {
+    make: instaBoxSubject,
+    size: { cpu: 4, memoryGb: 8 },
+    runner: (name) => `runner-${name}`,
+    sleepCheck: true,
+    price: 0.25,
+  },
+  host: {
+    make: hostSubject,
+    size: { vcpus: 2, memoryGb: 4 },
+    runner: () => null,
+    sleepCheck: false,
+    price: null,
+  },
 };
 
 async function open(connect: () => Promise<PgliteTestDb>) {
@@ -124,10 +220,10 @@ async function row(db: Db): Promise<IssueVm> {
 const call = { generation: 0, signal: new AbortController().signal };
 
 describePglite((connect) => {
-  for (const provider of ["boat", "instabox"] as const) {
+  for (const provider of ["boat", "instabox", "host"] as const) {
     test(`the ${provider} driver creates, sleeps, wakes, reconciles and deletes its VM`, async () => {
       const db = await open(connect);
-      const subject = SUBJECTS[provider].make(db);
+      const subject = await SUBJECTS[provider].make(db);
       let t = NOW;
       const lifecycle = createIssueVmLifecycle(db, {
         drivers: { [provider]: subject.driver },
@@ -141,6 +237,7 @@ describePglite((connect) => {
             itemId: "item-1",
             memberUserId: "ada",
             provider,
+            hostRunnerId: subject.hostRunnerId ?? null,
             now: t,
           });
         });
@@ -149,14 +246,16 @@ describePglite((connect) => {
       await lifecycle.sweep();
       const created = await row(db);
       const name = issueVmName(created.id);
-      expect(created).toMatchObject({ state: "awake", runnerId: `runner-${name}`, failure: null });
-      expect(subject.sizeOf(name)).toMatchObject(SUBJECTS[provider].size);
+      const runnerId = SUBJECTS[provider].runner(name);
+      expect(created).toMatchObject({ state: "awake", runnerId, failure: null });
+      expect(subject.sizeOf(created.id)).toMatchObject(SUBJECTS[provider].size);
       expect(await subject.driver.reconcile(created.id, call)).toBe("awake");
 
       await want(false);
       await lifecycle.sweep();
       expect(await row(db)).toMatchObject({ state: "asleep", failure: null });
-      expect(subject.commands()).toContain(ISSUE_VM_SLEEP_CHECK);
+      if (SUBJECTS[provider].sleepCheck) expect(subject.commands()).toContain(ISSUE_VM_SLEEP_CHECK);
+      expect(subject.stateOf(created.id)).not.toBe("running");
       expect(await subject.driver.reconcile(created.id, call)).toBe("asleep");
 
       await want(true);
@@ -167,14 +266,14 @@ describePglite((connect) => {
       const spells = await db.run((q) =>
         q.all(q.orm.select().from(q.t.issueVmAwake).orderBy(q.t.issueVmAwake.startedAt)),
       );
-      const price = provider === "boat" ? 0.5 : 0.25;
+      const price = SUBJECTS[provider].price;
       expect(spells.map((spell) => [spell.hourlyUsd, spell.endedAt === null])).toEqual([
         [price, false],
         [price, true],
       ]);
 
       await subject.driver.delete(created.id, call);
-      expect(subject.stateOf(name)).toBeUndefined();
+      expect(subject.stateOf(created.id)).toBeUndefined();
       expect(await subject.driver.reconcile(created.id, call)).toBe("missing");
     });
   }

@@ -1077,7 +1077,15 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         .strictObject({ duplicate: z.boolean() })
         .parse(await authenticated("/v1/storage-report", "POST", body));
     },
-    async issueVmHost(): Promise<IssueVmHostView> {
+    async issueVmHost(running?: string[]): Promise<IssueVmHostView> {
+      if (running !== undefined)
+        try {
+          return IssueVmHostViewSchema.parse(
+            await authenticated("/v1/issue-vms", "POST", { running }),
+          );
+        } catch (error) {
+          if (!(error instanceof RunnerRequestError) || error.status !== 405) throw error;
+        }
       return IssueVmHostViewSchema.parse(await authenticated("/v1/issue-vms", "GET"));
     },
     async postStorageCleanup(result: RunnerStorageCleanupResult) {

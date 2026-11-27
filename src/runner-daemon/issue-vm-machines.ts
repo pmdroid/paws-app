@@ -5,7 +5,7 @@ const UNIT = /^paws-issue-vm@([0-7][0-9A-HJKMNP-TV-Z]{25})-([0-9]+)-([0-9]+)-([0
 const ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 const MAX_SLOT = 254;
 const LIVE = new Set(["active", "activating", "deactivating", "reloading", "refreshing"]);
-const KEPT_STATES = new Set(["creating", "awake", "asleep"]);
+const KEPT_STATES = new Set(["creating", "awake", "asleep", "unknown"]);
 
 export type IssueVmUnits = {
   active(): Promise<string[]>;
@@ -17,7 +17,7 @@ export type IssueVmMachineSize = { vcpus: number; memoryGb: number };
 
 export type IssueVmMachine = IssueVmMachineSize & { id: string; slot: number; unit: string };
 
-export type IssueVmStopReason = "unknown" | "deleting" | "duplicate" | "over_limit";
+export type IssueVmStopReason = "unknown" | "deleting" | "asleep" | "duplicate" | "over_limit";
 
 export type IssueVmReconcile = {
   kept: IssueVmMachine[];
@@ -28,6 +28,17 @@ export type IssueVmReconcile = {
 
 export function issueVmUnit(id: string, slot: number, size: IssueVmMachineSize): string {
   return `paws-issue-vm@${id}-${slot}-${size.vcpus}-${size.memoryGb}.service`;
+}
+
+function startable(row: IssueVmHostRow): boolean {
+  if (row.want === undefined) return row.state === "awake";
+  return (
+    row.state === "creating" || (row.want === "awake" && ["awake", "asleep"].includes(row.state))
+  );
+}
+
+export function runningIssueVmIds(units: string[]): string[] {
+  return [...new Set(units.flatMap((unit) => machine(unit)?.id ?? []))].sort();
 }
 
 function machine(unit: string): IssueVmMachine | null {
@@ -48,7 +59,7 @@ export async function reconcileIssueVms(
   stage?: (id: string, token: string) => void,
 ): Promise<IssueVmReconcile> {
   const known = host.vmHost ? host.vms : [];
-  const states = new Map(known.map((row) => [row.id, row.state]));
+  const rows = new Map(known.map((row) => [row.id, row]));
   const result: IssueVmReconcile = { kept: [], stopped: [], started: [], waiting: [] };
   const ids = new Set<string>();
   const used = new Set<number>();
@@ -58,17 +69,19 @@ export async function reconcileIssueVms(
     .filter((found): found is IssueVmMachine => found !== null)
     .sort((a, b) => a.slot - b.slot || a.unit.localeCompare(b.unit));
   for (const found of running) {
-    const state = states.get(found.id);
+    const row = rows.get(found.id);
     const reason: IssueVmStopReason | null =
-      state === undefined
+      row === undefined
         ? "unknown"
-        : !KEPT_STATES.has(state)
+        : !KEPT_STATES.has(row.state)
           ? "deleting"
-          : ids.has(found.id) || used.has(found.slot)
-            ? "duplicate"
-            : ids.size >= limit
-              ? "over_limit"
-              : null;
+          : row.want === "asleep" && row.state !== "creating"
+            ? "asleep"
+            : ids.has(found.id) || used.has(found.slot)
+              ? "duplicate"
+              : ids.size >= limit
+                ? "over_limit"
+                : null;
     if (reason === null) {
       ids.add(found.id);
       used.add(found.slot);
@@ -81,7 +94,7 @@ export async function reconcileIssueVms(
   }
   if (!host.vmHost) return result;
   for (const row of known) {
-    if (row.state !== "awake" || ids.has(row.id)) continue;
+    if (!startable(row) || ids.has(row.id)) continue;
     if (ids.size >= limit) {
       journal(`issue_vm_waiting vm=${row.id} slots=${limit}`);
       result.waiting.push(row.id);
@@ -180,6 +193,7 @@ export const IssueVmHostViewSchema = z.discriminatedUnion("vmHost", [
       z.strictObject({
         id: VmId,
         state: z.string(),
+        want: z.enum(["awake", "asleep"]).optional(),
         token: z
           .string()
           .regex(/^[A-Za-z0-9_-]{16,256}$/)
@@ -190,3 +204,5 @@ export const IssueVmHostViewSchema = z.discriminatedUnion("vmHost", [
 ]);
 
 export type IssueVmHostView = z.infer<typeof IssueVmHostViewSchema>;
+
+type IssueVmHostRow = Extract<IssueVmHostView, { vmHost: true }>["vms"][number];
