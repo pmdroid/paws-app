@@ -150,6 +150,7 @@ export type OpenedPull = {
   number: number;
   url: string | null;
   body: string;
+  evidence?: string;
   memberRefused?: { login: string; status: number };
 };
 
