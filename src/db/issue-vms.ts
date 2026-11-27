@@ -1,4 +1,17 @@
-import { and, count, desc, eq, gt, inArray, isNull, lt, max, notInArray, or } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  max,
+  notInArray,
+  or,
+} from "drizzle-orm";
 import { type Q } from "./db";
 import { ulid } from "./ulid";
 
@@ -489,4 +502,28 @@ export function* markFailedIssueVmGoneSteps(q: Q, input: { id: string; now: numb
       .set({ deletedAt: input.now })
       .where(and(eq(v.id, input.id), eq(v.state, "failed"), isNull(v.deletedAt))),
   );
+}
+
+export function* liveIssueVmItemsSteps(q: Q) {
+  const { issueVm: v, workItem: i } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ vm: v, itemState: i.state })
+      .from(v)
+      .innerJoin(i, eq(i.id, v.itemId))
+      .where(notInArray(v.state, [...ENDED_STATES, "deleting"]))
+      .orderBy(v.id),
+  );
+  return rows.map((row) => ({ vm: row.vm as IssueVm, itemState: row.itemState }));
+}
+
+export function* issueVmRunnersSteps(q: Q) {
+  const { issueVm: v } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ itemId: v.itemId, runnerId: v.runnerId })
+      .from(v)
+      .where(and(notInArray(v.state, ENDED_STATES), isNotNull(v.runnerId))),
+  );
+  return rows as { itemId: string; runnerId: string }[];
 }

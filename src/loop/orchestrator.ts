@@ -517,6 +517,7 @@ import {
   createAdmission,
   dispatch,
   projectLeadId,
+  type IssueVmPlacement,
   type ItemAdmission,
   type ItemWait,
   overlapLine,
@@ -940,6 +941,7 @@ export type OrchestratorOptions = {
     now: number,
   ) => Steps<ItemRunnerVerdicts | null>;
   onRunnerHostRefusals?: (refusals: readonly RunnerHostRefusal[], now: number) => void;
+  issueVm?: (q: Q, itemId: string, now: number) => Steps<IssueVmPlacement | null>;
   /**
    * Why the item's owner has no runner they may use for this agent, for the runner-setup hold
    * and its thought. Null when a runner is usable or only offline. SQLite only.
@@ -8637,6 +8639,9 @@ export class Orchestrator {
             overlapHold: merge.overlapHold,
             conflictProne: { conflicts: merge.conflictProneAfter, days: merge.conflictProneDays },
           }
+        : {}),
+      ...(this.options.issueVm
+        ? { issueVm: (q: Q, itemId: string) => this.options.issueVm!(q, itemId, this.now()) }
         : {}),
       onWaiting: (itemIds) => this.noteQueued(itemIds),
       onWaits: async (waits) => {

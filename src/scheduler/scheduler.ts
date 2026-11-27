@@ -77,8 +77,10 @@ type Admission = {
   repositoryKey: string;
   sessionId: string | null;
 };
+export type IssueVmPlacement = { runnerId: string } | { wait: string };
 export type SchedulerOptions = {
   now?: number;
+  issueVm?: (q: Q, itemId: string) => Steps<IssueVmPlacement | null>;
   admission?: ItemAdmission;
   defaultRepository?: RepositoryBinding | null;
   handoffForItem?: (q: Q, itemId: string) => Steps<string | undefined>;
@@ -795,12 +797,26 @@ async function admit(
     const order = fairOrder(unheld, running, cap);
     // Only checked while runners exist, so a workspace without runners behaves as before.
     const ownerHasRunner = slots === null ? undefined : options.ownerHasRunner;
+    const vms = new Map<string, IssueVmPlacement | null>();
+    function* vmFor(itemId: string): Steps<IssueVmPlacement | null> {
+      if (!options.issueVm) return null;
+      if (!vms.has(itemId)) vms.set(itemId, yield* options.issueVm(q, itemId));
+      return vms.get(itemId)!;
+    }
     const setup = new Set<string>();
     if (ownerHasRunner)
-      for (const { item } of order)
-        if ((yield* ownerHasRunner(q, item.id)) === false) setup.add(item.id);
+      for (const { item, capped } of order)
+        if (
+          (yield* ownerHasRunner(q, item.id)) === false &&
+          (capped || (yield* vmFor(item.id)) === null)
+        )
+          setup.add(item.id);
+    const vmWaits = new Map<string, string>();
     for (const { item, capped } of order) {
       if (capped || setup.has(item.id)) continue;
+      const vm = yield* vmFor(item.id);
+      if (vm && "runnerId" in vm && slots?.open.has(vm.runnerId))
+        slots.open.set(vm.runnerId, slots.open.get(vm.runnerId)! - 1);
       const pin = (yield* verdictsFor(item.id))?.pinnedRunnerId;
       if (pin) pinnedQueue.set(pin, (pinnedQueue.get(pin) ?? 0) + 1);
     }
@@ -808,9 +824,14 @@ async function admit(
     for (const { item, capped } of order) {
       if (capped || setup.has(item.id)) continue;
       yield* claimPinned(item);
-      const runnerId = yield* openRunner(item.id);
-      const reused = runnerId ? credit(item.id, runnerId) : 0;
-      if (free + reused <= 0) continue;
+      const vm = yield* vmFor(item.id);
+      if (vm && "wait" in vm) {
+        vmWaits.set(item.id, vm.wait);
+        continue;
+      }
+      const runnerId = vm ? vm.runnerId : yield* openRunner(item.id);
+      const reused = runnerId && !vm ? credit(item.id, runnerId) : 0;
+      if (!vm && free + reused <= 0) continue;
       const next = footprint(item, options);
       if (held.some((entry) => byId.get(entry.itemId)?.issueId === item.issueId)) continue;
       // Work admitted earlier in this tick runs too.
@@ -819,7 +840,8 @@ async function admit(
         overlaps.set(item.id, overlap);
         continue;
       }
-      if (!(yield* takeSlot(item.id))) continue;
+      if (vm) choices.set(item.id, vm.runnerId);
+      else if (!(yield* takeSlot(item.id))) continue;
       const pin = answers.get(item.id)?.pinnedRunnerId;
       if (pin) pinnedQueue.set(pin, pinnedQueue.get(pin)! - 1);
       yield* cancelPendingItemJobsSteps(q, JOB_KIND.start, item.id, now);
@@ -846,12 +868,16 @@ async function admit(
       held.push(next);
       occupants.push(item);
       admitted.push(item.id);
-      free -= 1 - reused;
+      if (!vm) free -= 1 - reused;
     }
     yield* claimPinned();
     yield* savePinnedSlotsSteps(q, reservedSlots);
     const waiting = order.filter(
-      ({ item }) => !admitted.includes(item.id) && !setup.has(item.id) && !overlaps.has(item.id),
+      ({ item }) =>
+        !admitted.includes(item.id) &&
+        !setup.has(item.id) &&
+        !overlaps.has(item.id) &&
+        !vmWaits.has(item.id),
     );
     function* noRunnerLine(itemId: string): Steps<string | null> {
       if ((yield* openRunner(itemId)) !== null) return null;
@@ -914,6 +940,7 @@ async function admit(
         blockers: noRunner === null ? [] : [noRunner],
       });
     }
+    for (const [itemId, wait] of vmWaits) holds.push({ itemId, reason: "slot", blockers: [wait] });
     holds.push(
       ...[...overlaps].map(([itemId, overlap]): ItemHold => ({
         itemId,

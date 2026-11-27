@@ -12,6 +12,8 @@ import {
   getWorkItemRepositorySteps,
   getWorkItemSteps,
   insertRunnerExecutionUsageSteps,
+  issueVmRunnersSteps,
+  latestItemIssueVmSteps,
   itemOwnerUserIdSteps,
   lastSuccessfulImplementationSteps,
   linearSessionInstallationSteps,
@@ -90,6 +92,8 @@ export class PlacementRaceError extends Error {
 
 /** How long a continuing task waits for the busy runner that holds its agent session. */
 export const PINNED_ELSEWHERE = "run pinned to another online runner";
+const ISSUE_VM_ELSEWHERE = "the item runs only in its own issue VM";
+const ISSUE_VM_TAKEN = "the issue VM of another item";
 export const SESSION_GRACE_MS = 2 * 60_000;
 /** How far back finished executions count toward a runner's recent load. */
 export const LOAD_HISTORY_MS = 6 * 60 * 60_000;
@@ -427,6 +431,19 @@ export function createRunnerPlacement(options: {
         "reason" in pinnedFit &&
         (pinnedFit.refusals ?? []).every((refusal) => UNUSABLE_PIN.has(refusal.reason))
       );
+    const vmRunners = yield* issueVmRunnersSteps(q);
+    const ownVm =
+      input.itemId && input.purpose !== "helper"
+        ? yield* latestItemIssueVmSteps(q, input.itemId)
+        : null;
+    const vmReason = (runnerId: string) =>
+      ownVm && ownVm.state !== "deleted"
+        ? ownVm.runnerId === runnerId && !["failed", "deleting"].includes(ownVm.state)
+          ? null
+          : ISSUE_VM_ELSEWHERE
+        : vmRunners.some((vm) => vm.runnerId === runnerId && vm.itemId !== input.itemId)
+          ? ISSUE_VM_TAKEN
+          : null;
     const rows: (EligibleRunner & { own: boolean })[] = [];
     for (const owner of scopes)
       for (const runner of yield* eligibleRunnersSteps(q, {
@@ -440,7 +457,7 @@ export function createRunnerPlacement(options: {
           ? eligibleReasonText(runner.reason)
           : pinnedOnline && runner.id !== pinnedRunnerId
             ? PINNED_ELSEWHERE
-            : null;
+            : vmReason(runner.id);
         if (reason) input.onRejected?.(runner.id, reason);
         else
           rows.push({
