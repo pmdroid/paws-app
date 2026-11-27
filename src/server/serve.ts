@@ -96,6 +96,10 @@ import {
   handleStorageSettingsRequest,
   STORAGE_CHECK_PATH,
   STORAGE_SETTINGS_PATH,
+  handleTelemetrySettingsRequest,
+  TELEMETRY_CHECK_PATH,
+  TELEMETRY_SETTINGS_PATH,
+  type TelemetrySettingsOptions,
   handleStorageCleanupRequest,
   handleStorageUsageRequest,
   handleMetricsRequest,
@@ -169,6 +173,7 @@ export type ServerOptions = {
   ) => Promise<Response | null>;
   storageUsage?: StorageUsageSettingsOptions["usage"];
   storageCleanup?: StorageCleanupSettingsOptions["cleanup"];
+  telemetry?: TelemetrySettingsOptions["telemetry"];
   probeCollection?: (
     request: Request,
     context: { csrfToken: string; workspaceId: string } & {
@@ -369,6 +374,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
           ...(options.retros ? { retros: options.retros } : {}),
           ...(options.storageUsage ? { storageUsage: options.storageUsage } : {}),
+          ...(options.telemetry ? { telemetry: options.telemetry } : {}),
           ...(options.vmProviderChecks ? { vmProviderChecks: options.vmProviderChecks } : {}),
           ...(options.doctor ? { doctor: options.doctor } : {}),
           ...(options.storageCleanup ? { storageCleanup: options.storageCleanup } : {}),
@@ -436,6 +442,7 @@ type Secrets = {
   retros?: ServerOptions["retros"];
   storageUsage?: ServerOptions["storageUsage"];
   storageCleanup?: ServerOptions["storageCleanup"];
+  telemetry?: ServerOptions["telemetry"];
   probeCollection?: ServerOptions["probeCollection"];
   vmProviderChecks?: ServerOptions["vmProviderChecks"];
   doctor?: ServerOptions["doctor"];
@@ -907,6 +914,29 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
       })) ?? Response.json({ error: "Not found" }, { status: 404 })
     );
+  }
+  if (
+    (path === TELEMETRY_SETTINGS_PATH || path === TELEMETRY_CHECK_PATH) &&
+    secrets.store &&
+    secrets.telemetry
+  ) {
+    const store = secrets.store;
+    return (await handleTelemetrySettingsRequest(request, {
+      home: loadRuntime(secrets.statusEnv ?? process.env).env.home,
+      store,
+      telemetry: secrets.telemetry,
+      csrfToken,
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(store, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
   }
   if (path === ALERTS_PATH && secrets.store) {
     if (request.method !== "GET")

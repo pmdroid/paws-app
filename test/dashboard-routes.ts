@@ -324,6 +324,12 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   api("POST", "/api/settings/storage/check", "preserved", "src/settings", {
     sample: "/api/settings/storage/check",
   }),
+  api("GET PUT", "/api/settings/telemetry", "canonical", "src/settings", {
+    sample: "/api/settings/telemetry",
+  }),
+  api("POST", "/api/settings/telemetry/check", "canonical", "src/settings", {
+    sample: "/api/settings/telemetry/check",
+  }),
   api("GET", "/api/metrics", "preserved", "src/settings", {
     sample: "/api/metrics?names=http.request&step=hour",
   }),
