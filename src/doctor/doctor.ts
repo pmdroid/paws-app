@@ -21,7 +21,6 @@ import {
 import { doctorAgentProfiles, type DoctorAgentConfig } from "./agents";
 import type { GrokLoginStatus } from "../install";
 import { realProbeFacts, type GitHubDoctorFacts, type ProbeFacts } from "./probe";
-import { DATABASE_HELD, withSavedStore, type SavedStore } from "./store";
 
 export type DoctorCheck = {
   name: string;
@@ -53,7 +52,6 @@ const FIX = {
   git: "Install git and put it on PATH.",
   bun: "Install Bun 1.4 or newer and run this process with bun.",
   home: "Create ~/.paws and make sure this user can write it.",
-  database: 'See "A database from an older Paws" in docs/postgres.md.',
   linear: "Open Paws in your browser and connect Linear.",
   mode: "Connect your Linear workspace in the Paws website.",
   team: "Choose the Linear teams in workspace settings.",
@@ -129,9 +127,6 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
   );
   if (context.deployLagUnavailable)
     checks.push(note("deploy-lag", `deploy lag can't be checked: ${context.deployLagUnavailable}`));
-  if (facts.databaseHeld) checks.push(note("database", DATABASE_HELD));
-  if (facts.databaseRefused)
-    checks.push(check("database", false, facts.databaseRefused, FIX.database));
   if (facts.secrets) checks.push(secretsCheck(facts.secrets));
   if (facts.exeDevToken !== undefined)
     checks.push(providerKeyCheck("exe-dev", "exe.dev", facts.exeDevToken, FIX.exeDev));
@@ -188,21 +183,17 @@ export function formatDoctor(checks: readonly DoctorCheck[]): string {
   return lines.join("\n");
 }
 
-export async function realProbe(env: EnvSource = process.env, store?: Db): Promise<DoctorProbe> {
-  const probeFacts = async (saved: SavedStore) => {
-    const secretsDir = pawsPaths(loadEnv(env).home).secretsDir;
-    const stored = storedSecrets()?.map((row) => resolve(secretsDir, row.name)) ?? null;
-    const secrets = { ...checkSecrets(secretsDir), stored };
-    try {
-      return { ...(await realProbeFacts(env, saved)), secrets };
-    } catch (error) {
-      if (secrets.failed.length === 0) throw error;
-      throw new Error(formatDoctor([secretsCheck(secrets)]), { cause: error });
-    }
-  };
-  const facts = await (store === undefined
-    ? withSavedStore(env, probeFacts)
-    : probeFacts({ store, held: false }));
+export async function realProbe(env: EnvSource, store: Db): Promise<DoctorProbe> {
+  const secretsDir = pawsPaths(loadEnv(env).home).secretsDir;
+  const stored = storedSecrets()?.map((row) => resolve(secretsDir, row.name)) ?? null;
+  const secrets = { ...checkSecrets(secretsDir), stored };
+  let facts: ProbeFacts;
+  try {
+    facts = { ...(await realProbeFacts(env, store)), secrets };
+  } catch (error) {
+    if (secrets.failed.length === 0) throw error;
+    throw new Error(formatDoctor([secretsCheck(secrets)]), { cause: error });
+  }
   return {
     env,
     facts,

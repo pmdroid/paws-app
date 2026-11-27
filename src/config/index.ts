@@ -26,10 +26,8 @@ export type {
   AgentsConfig,
   CloseoutSettings,
   SettingsSectionName,
-  GitHubConfigAuth,
   ImplementerName,
   PawsConfigFile,
-  TrackerKind,
 } from "./file";
 export {
   readSettingSections,

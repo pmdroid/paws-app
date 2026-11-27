@@ -7,13 +7,11 @@ import {
   loadSettings,
   loadRuntime,
   readMergeSettings,
-  resolveAgentProfiles,
   settingsSectionsOf,
   useSettingsStore,
   type SettingSections,
 } from "../src/config";
-import { openPawsStore, type Db } from "../src/db";
-import { withSavedStore } from "../src/doctor";
+import type { Db } from "../src/db";
 import { snapshotImplementationSkills } from "../src/acp";
 import {
   handleMergeSettingsRequest,
@@ -22,7 +20,7 @@ import {
 } from "../src/settings";
 import { fakeSkillResolver } from "../src/skills";
 import { tempHome } from "./helpers";
-import { copyMigratedPglite, pgliteServer, tempStore } from "./pglite";
+import { tempStore } from "./pglite";
 import { savedSettingsText, sectionSettings, seedSettings, readConfigText } from "./saved-settings";
 
 const BOOTSTRAP = `[merge]
@@ -105,70 +103,6 @@ test("a setting saved on instance A is read by instance B after its next refresh
   await a.refresh();
   expect(loadSettings(a.configPath).timeLimits?.implementationMinutes).toBe(30);
 });
-
-const SAVED_AGENTS = [
-  '[agents]\nimplementer = "codex"',
-  '[agents.defaults.implementer]\nagent = "codex"',
-  '[agents.defaults.reviewer]\nagent = "claude"',
-].join("\n\n");
-
-async function savedSettingsHome(): Promise<string> {
-  const home = tempHome();
-  cleanups.push(() => rmSync(home, { recursive: true, force: true }));
-  await copyMigratedPglite(join(home, "pglite"));
-  const database = await openPawsStore({ url: null, pgliteDir: join(home, "pglite") });
-  await seedSettings(database.store, SAVED_AGENTS);
-  await database.close();
-  return home;
-}
-
-test("a probe without a running Paws reads the saved settings", async () => {
-  const home = await savedSettingsHome();
-  const saved = await withSavedStore({ PAWS_HOME: home }, async ({ held }) => ({
-    held,
-    runtime: loadRuntime({ PAWS_HOME: home }),
-  }));
-  expect(saved.held).toBe(false);
-  expect(saved.runtime.configError).toBe(null);
-  expect(resolveAgentProfiles(saved.runtime.file)).toMatchObject({
-    implementer: { agent: "codex" },
-    reviewer: { agent: "claude" },
-  });
-  expect(resolveAgentProfiles(loadRuntime({ PAWS_HOME: home }).file).implementer.agent).toBe(
-    "claude",
-  );
-}, 30_000);
-
-test("while Paws holds PGlite a command reads the settings as empty and says so", async () => {
-  const home = await savedSettingsHome();
-  writeFileSync(join(home, "pglite.lock"), String(process.ppid));
-  const saved = await withSavedStore({ PAWS_HOME: home }, async ({ store, held }) => ({
-    store,
-    held,
-    runtime: loadRuntime({ PAWS_HOME: home }),
-  }));
-  expect(saved).toMatchObject({ store: null, held: true });
-  expect(resolveAgentProfiles(saved.runtime.file).implementer.agent).toBe("claude");
-}, 30_000);
-
-test("with PAWS_DATABASE_URL a command reads the saved settings from that Postgres", async () => {
-  const server = await pgliteServer();
-  const home = tempHome();
-  cleanups.push(() => rmSync(home, { recursive: true, force: true }));
-  try {
-    await seedSettings(server.store, SAVED_AGENTS);
-    const env = { PAWS_HOME: home, PAWS_DATABASE_URL: server.url };
-    const saved = await withSavedStore(env, async ({ held }) => ({
-      held,
-      runtime: loadRuntime(env),
-    }));
-    expect(saved.held).toBe(false);
-    expect(resolveAgentProfiles(saved.runtime.file).implementer.agent).toBe("codex");
-    expect(existsSync(join(home, "pglite"))).toBe(false);
-  } finally {
-    await server.close();
-  }
-}, 30_000);
 
 test("a table-like line inside a multiline string is not read as a section", async () => {
   const a = await instance(await shared());

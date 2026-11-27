@@ -18,7 +18,6 @@ import {
   type PawsConfigFile,
   type RuntimeConfig,
   type TailscaleAuthKeyStatus,
-  type TrackerKind,
 } from "../config";
 import { validate } from "../closeout-spec";
 import {
@@ -34,7 +33,6 @@ import { createFetchGitHubClient, mintInstallationToken, signAppJwt } from "../g
 import { checkDeveloperLogin, grokLoginStatus, type GrokLoginStatus } from "../install";
 import { createLinearClient, readStoredToken } from "../linear";
 import { doctorAgentProfiles } from "./agents";
-import type { SavedStore } from "./store";
 import { slackConnectionsSteps, type SlackCapabilities } from "../slack";
 
 /** Core REST calls left for the App installation. Below this, doctor reports no headroom. */
@@ -69,12 +67,9 @@ export type GitHubDoctorFacts = {
 
 export type ProbeFacts = {
   configError: string | null;
-  databaseHeld?: boolean;
-  databaseRefused?: string;
   secrets?: { where: string; count: number; failed: string[]; stored: string[] | null };
   agentProfiles?: AgentProfiles[];
   grokLogin?: GrokLoginStatus | null;
-  trackerKind: TrackerKind;
   githubDoctor: GitHubDoctorFacts;
   webhooks: boolean;
   linearWebhook?: LinearWebhookWarning | null;
@@ -112,8 +107,7 @@ export type ProbeFacts = {
 
 const LOGIN_TIMEOUT_MS = 2_500;
 
-export async function realProbeFacts(env: EnvSource, saved: SavedStore): Promise<ProbeFacts> {
-  const { store } = saved;
+export async function realProbeFacts(env: EnvSource, store: Db): Promise<ProbeFacts> {
   const runtime = loadRuntime(env);
   const repos = await chosenRepositories(runtime, store);
   const repo = splitRepo(repos[0] ?? null);
@@ -131,11 +125,8 @@ export async function realProbeFacts(env: EnvSource, saved: SavedStore): Promise
   ]);
   return {
     configError: runtime.configError,
-    databaseHeld: saved.held,
-    databaseRefused: saved.refused,
     agentProfiles,
     grokLogin,
-    trackerKind: runtime.trackerKind,
     githubDoctor,
     webhooks: runtime.webhooks,
     linearWebhook: await readPawsDb(store, (db) =>
