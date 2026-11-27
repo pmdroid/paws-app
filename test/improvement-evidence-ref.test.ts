@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import { listImprovementProposals } from "../src/db";
 import { deliverImprovements, parseRetroEvidenceRef } from "../src/improvements";
 import { setJournalSink } from "../src/journal";
@@ -63,11 +64,12 @@ test("a malformed retro evidence reference is skipped and journaled once", async
 
     const w = await worldPg();
     open.push(w.close);
+    const malformed = `retro:${randomUUID()}`;
     await w.db.run((q) =>
       q.exec(
         q.orm
           .update(q.t.improvementProposal)
-          .set({ evidence: ["retro:r1:ev-a1", "retro:r1"] })
+          .set({ evidence: ["retro:r1:ev-a1", malformed] })
           .where(eq(q.t.improvementProposal.improvementId, w.retro.a)),
       ),
     );
@@ -75,7 +77,7 @@ test("a malformed retro evidence reference is skipped and journaled once", async
     const inbox = await w.api("admin", "/api/improvements");
     await w.api("admin", "/api/improvements");
     expect(inbox.body.items.map((item: { id: string }) => item.id)).not.toContain(w.retro.a);
-    expect(lines.filter((line) => line.includes('"retro:r1"'))).toHaveLength(1);
+    expect(lines.filter((line) => line.includes(JSON.stringify(malformed)))).toHaveLength(1);
   } finally {
     restore();
   }
