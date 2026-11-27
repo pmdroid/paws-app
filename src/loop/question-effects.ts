@@ -58,6 +58,7 @@ import { RETRY_CLOSEOUT, retriesCloseout, rewrittenRestart } from "./closeout-re
 import { retriesMerge } from "../merge";
 import { worktreeBranch } from "./sources";
 import { answerRunnerRepositorySteps } from "./runner-repository";
+import { UNCHANGING_ERROR_REASON } from "./unchanging-error";
 import { AGENT_HUNG_REASON, AGENT_HUNG_STOP, REVIEWER_MODEL_REASON } from "./runner-wait";
 import { recordVisualReviewOutcomeSteps, visualReviewHandoffSteps } from "./visual-review";
 import { replyListSection } from "./review-replies";
@@ -389,7 +390,11 @@ export function questionEffects(
     if (item?.state === "awaiting_input")
       yield* applyWorkItemEventSteps(q, item.id, "pause", { now: input.now });
   }
-  function* outOfMemory(q: Q, question: StoredQuestion): Steps<void> {
+  function* outOfMemory(
+    q: Q,
+    question: StoredQuestion,
+    cause = "the runner ran out of memory",
+  ): Steps<void> {
     if (!/^\s*stop\b/i.test(question.answer ?? "")) {
       yield* resume(q, question);
       return;
@@ -401,7 +406,7 @@ export function questionEffects(
       q,
       item,
       "run_error",
-      `Stopped after the runner ran out of memory, as asked in Linear. The work is on branch \`${item.branchName || worktreeBranch(item)}\`.`,
+      `Stopped after ${cause}, as asked in Linear. The work is on branch \`${item.branchName || worktreeBranch(item)}\`.`,
       input.now,
       { stoppedByAnswer: true },
     );
@@ -412,6 +417,10 @@ export function questionEffects(
     "runner-wait": function* (q, question) {
       if (question.reason === OUT_OF_MEMORY_REASON) {
         yield* outOfMemory(q, question);
+        return;
+      }
+      if (question.reason === UNCHANGING_ERROR_REASON) {
+        yield* outOfMemory(q, question, "an error waiting can't change");
         return;
       }
       if (question.reason === AGENT_HUNG_REASON) {

@@ -799,6 +799,13 @@ import { createRuntimeLists } from "./runtime-lists";
 import { startFreshBudgetSteps } from "./time-budget";
 import { HOST_DISK_FULL_THOUGHT, hostDiskFullThoughtKeySteps } from "./disk-full";
 import { questionEffects } from "./question-effects";
+import {
+  UNCHANGING_ERROR_REASON,
+  UNCHANGING_ERROR_RETRY,
+  UNCHANGING_ERROR_STOP,
+  signedOutQuestion,
+  unchangingErrorQuestion,
+} from "./unchanging-error";
 import { GitHubInstallationCheck, type GitHubIntegration } from "./github-integration";
 import {
   interpretRepositoryAnswer,
@@ -2878,6 +2885,17 @@ export class Orchestrator {
         );
         return;
       }
+      const unchanging = unchangingErrorQuestion(error, item.linearIdentifier);
+      if (unchanging && (await this.askUnchangingError(item, unchanging))) {
+        journalCaught(
+          error,
+          "orchestrator.executeRetried.executeQueued",
+          item.id,
+          "asked about an error waiting can't change",
+          this.options.journal,
+        );
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       if (isTransient(error)) {
         const retry = retryCount(job.payload) + 1;
@@ -3181,6 +3199,43 @@ export class Orchestrator {
         this.options.journal,
       );
     });
+    return true;
+  }
+
+  private async askUnchangingError(item: WorkItemRecord, body: string): Promise<boolean> {
+    const now = this.now();
+    await this.settleItemAwake(item.id);
+    const asked = await this.store.transaction(function* (q) {
+      const current = yield* getWorkItemSteps(q, item.id);
+      const sessionId = current?.sessionKey;
+      if (
+        !current ||
+        !sessionId ||
+        current.cancelRequested ||
+        !["running", "verifying", "recovering"].includes(current.state)
+      )
+        return false;
+      if (current.currentRunId !== null) {
+        const run = yield* getRunSteps(q, current.currentRunId);
+        if (run && (run.status === "active" || run.status === "provisioning"))
+          yield* markRunSteps(q, run.id, "lost", now);
+      }
+      yield* askSteps(
+        q,
+        { itemId: current.id, runId: current.currentRunId, sessionId, version: current.version },
+        "runner-wait",
+        body,
+        {
+          reason: UNCHANGING_ERROR_REASON,
+          options: [UNCHANGING_ERROR_RETRY, UNCHANGING_ERROR_STOP],
+          now,
+        },
+      );
+      return true;
+    });
+    if (!asked) return false;
+    this.options.journal?.(`item ${item.linearIdentifier} asked: ${body}`);
+    await this.flush();
     return true;
   }
 
@@ -4236,7 +4291,13 @@ export class Orchestrator {
           await this.retryAuthError(finished, run.id, profiles.implementer.agent, controller.signal)
         )
           throw new AgentServiceError(message);
-        await this.fail(finished, "auth", message);
+        const body = signedOutQuestion(
+          finished.linearIdentifier,
+          runnerAgentName(profiles.implementer.agent),
+          message,
+        );
+        if (!(await this.askUnchangingError(finished, body)))
+          await this.fail(finished, "auth", message);
         return;
       }
       // A run handed over to another runner keeps its question; the item waits for the answer.
@@ -4462,7 +4523,11 @@ export class Orchestrator {
         } else if (rewritten) {
           await this.store.run((q) => closeActiveRunSteps(q, run.id, this.now()));
           await this.askPreparationHelp(current, rewrittenSummary(rewritten));
-        } else await this.fail(current, "run_error", message, error);
+        } else {
+          const unchanging = unchangingErrorQuestion(error, current.linearIdentifier);
+          if (!unchanging || !(await this.askUnchangingError(current, unchanging)))
+            await this.fail(current, "run_error", message, error);
+        }
       }
 
       journalCaught(
