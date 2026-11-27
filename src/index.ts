@@ -213,6 +213,7 @@ import {
   setGauge,
 } from "./metrics";
 import { doctorChecks, realProbe } from "./doctor";
+import { createDeployLagCheck, deployLagUnavailable } from "./alerts";
 import { runInstallCli } from "./installer";
 import {
   createGitHubTokenProvider,
@@ -234,6 +235,8 @@ import {
   createGitHubGitReader,
   createGitHubSnapshotReader,
   branchContains,
+  githubSourceRepository,
+  parseGitHubRemote,
   readRef,
   readCommit,
   useGitTempDirectory,
@@ -1458,22 +1461,23 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       }),
     exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
   });
-  const githubCommits = (repository: { owner: string; repo: string }): GitHubCommits => {
-    const read = () => {
-      const binding = githubBinding(
-        authProvider(
-          runtime,
-          { ...repository, remoteUrl: githubHttpsUrl(repository.owner, repository.repo) },
-          "read",
-          resolveApp,
-        ),
+  const githubRead = (repository: { owner: string; repo: string }) => () => {
+    const binding = githubBinding(
+      authProvider(
+        runtime,
+        { ...repository, remoteUrl: githubHttpsUrl(repository.owner, repository.repo) },
+        "read",
+        resolveApp,
+      ),
+    );
+    if (!binding)
+      throw new Error(
+        `The GitHub App installation does not cover ${repository.owner}/${repository.repo}.`,
       );
-      if (!binding)
-        throw new Error(
-          `The GitHub App installation does not cover ${repository.owner}/${repository.repo}.`,
-        );
-      return { ...binding, ...repository };
-    };
+    return { ...binding, ...repository };
+  };
+  const githubCommits = (repository: { owner: string; repo: string }): GitHubCommits => {
+    const read = githubRead(repository);
     return {
       ref: (ref, signal) => readRef({ ...read(), ref, signal }),
       contains: async (tip, sha, signal) =>
@@ -1481,6 +1485,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       commit: (sha, signal) => readCommit({ ...read(), sha, signal }),
     };
   };
+  const sourceRepository = installedSourceRepository();
+  const deployLag = createDeployLagCheck(
+    store,
+    sourceRepository && githubSourceRepository(sourceRepository, githubRead(sourceRepository)),
+  );
   const remote = placeOnRunner
     ? runnerReady.then((coordinator) => {
         if (!coordinator?.transcripts) throw new Error("Remote transcript storage is unavailable.");
@@ -1601,14 +1610,19 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     server = startServer({
       storageUsage,
       telemetry,
+      deployLag,
       doctor: () =>
-        realProbe(envSource, store).then(doctorChecks, (error: unknown) => [
-          {
-            name: "doctor",
-            ok: false,
-            detail: error instanceof Error ? error.message : String(error),
-          },
-        ]),
+        realProbe(envSource, store).then(
+          async (probe) =>
+            doctorChecks(probe, { deployLagUnavailable: await deployLagUnavailable(deployLag) }),
+          (error: unknown) => [
+            {
+              name: "doctor",
+              ok: false,
+              detail: error instanceof Error ? error.message : String(error),
+            },
+          ],
+        ),
       vmProviderChecks: {
         run: (name, signal) => vmProviderChecks.runVmProviderCheck(name, signal),
         nextCheckAt: () => store.run((q) => jobRunAtByKeySteps(q, VM_PROVIDER_CHECK_JOB)),
@@ -2804,6 +2818,19 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       return stopping;
     },
   };
+}
+
+function installedSourceRepository(): { owner: string; repo: string } | null {
+  try {
+    const origin = Bun.spawnSync(["git", "-C", import.meta.dir, "remote", "get-url", "origin"], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    return origin.exitCode === 0 ? parseGitHubRemote(origin.stdout.toString().trim()) : null;
+  } catch (error) {
+    journalCaught(error, "index.installedSourceRepository", null);
+    return null;
+  }
 }
 
 function installedPawsVersion(): string | null {

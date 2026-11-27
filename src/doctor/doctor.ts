@@ -37,6 +37,7 @@ export type DoctorContext = {
   config?: DoctorAgentConfig;
   /** Login probe for `agents.implementer = grok`. */
   grok?: GrokLoginStatus | null;
+  deployLagUnavailable?: string | null;
 };
 
 export type DoctorProbe = {
@@ -126,6 +127,8 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
       FIX.repo,
     ),
   );
+  if (context.deployLagUnavailable)
+    checks.push(note("deploy-lag", `deploy lag can't be checked: ${context.deployLagUnavailable}`));
   if (facts.databaseHeld) checks.push(note("database", DATABASE_HELD));
   if (facts.databaseRefused)
     checks.push(check("database", false, facts.databaseRefused, FIX.database));
