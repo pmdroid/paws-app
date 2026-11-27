@@ -1086,7 +1086,9 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       refused: IssueVmSleepRefusal[] = [],
     ): Promise<IssueVmHostView> {
       if (running !== undefined) {
-        const bodies = refused.length > 0 ? [{ running, refused }, { running }] : [{ running }];
+        // An older Paws refuses the extra fields with a 400; it then gets the bare report.
+        const checked = { running, sleepCheck: true, ...(refused.length > 0 ? { refused } : {}) };
+        const bodies = [checked, { running }];
         for (const [index, body] of bodies.entries())
           try {
             return IssueVmHostViewSchema.parse(await authenticated("/v1/issue-vms", "POST", body));

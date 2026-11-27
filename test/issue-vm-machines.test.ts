@@ -710,7 +710,9 @@ test("a refused sleep reaches Paws, which fails the host VM's sleep with the rea
   const daemon = {
     async issueVmHost(running?: string[], refused?: { id: string; reason: string }[]) {
       const body =
-        refused === undefined || refused.length === 0 ? { running } : { running, refused };
+        refused === undefined || refused.length === 0
+          ? { running, sleepCheck: true }
+          : { running, refused, sleepCheck: true };
       bodies.push(body);
       const posted = new Request("https://runner.paws.test/v1/issue-vms", {
         method: "POST",
@@ -730,8 +732,12 @@ test("a refused sleep reaches Paws, which fails the host VM's sleep with the rea
     driver.sleep(A, { generation: 0, signal: new AbortController().signal }),
   ).rejects.toThrow(`Issue VM ${A} can't sleep yet: Agent sign-ins remain: 1 sign-in file`);
   expect(bodies).toEqual([
-    { running: [A] },
-    { running: [A], refused: [{ id: A, reason: "Agent sign-ins remain: 1 sign-in file" }] },
+    { running: [A], sleepCheck: true },
+    {
+      running: [A],
+      refused: [{ id: A, reason: "Agent sign-ins remain: 1 sign-in file" }],
+      sleepCheck: true,
+    },
   ]);
   expect(fake.active.has(a)).toBe(true);
 
@@ -747,6 +753,18 @@ test("a refused sleep reaches Paws, which fails the host VM's sleep with the rea
   expect((await bad([{ id: A, reason: "" }]))!.status).toBe(400);
   expect((await bad([{ id: A, reason: "x", extra: 1 }]))!.status).toBe(400);
   expect((await bad([{ id: "nope", reason: "x" }]))!.status).toBe(400);
+
+  const unchecked = await handleVmHostRunnerRequest(
+    new Request("https://runner.paws.test/v1/issue-vms", {
+      method: "POST",
+      body: JSON.stringify({ running: [A] }),
+    }),
+    HOST,
+    db,
+  );
+  expect(((await unchecked!.json()) as IssueVmHostView & { vmHost: true }).vms).toEqual([
+    { id: A, state: "awake" },
+  ]);
 
   fake.refusals.delete(a);
   clock += 1;

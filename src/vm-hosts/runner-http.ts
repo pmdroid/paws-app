@@ -29,10 +29,14 @@ const UnitReportSchema = z.strictObject({
     .array(z.strictObject({ id: VmId, reason: z.string().min(1).max(300) }))
     .max(254)
     .optional(),
+  sleepCheck: z.literal(true).optional(),
 });
 
 type UnitReport = z.infer<typeof UnitReportSchema>;
 
+// A host stops a VM it is told wants asleep. Only a host that runs the guest's sign-in check
+// before that stop says `sleepCheck: true`; any other host never hears that a VM wants asleep,
+// so it keeps the VM running and the sleep fails at its deadline instead of losing sign-ins.
 function* viewSteps(q: Q, runnerId: string, report: UnitReport | null, now: number) {
   const running = report?.running ?? null;
   const runner = yield* getRunnerSteps(q, runnerId);
@@ -50,7 +54,11 @@ function* viewSteps(q: Q, runnerId: string, report: UnitReport | null, now: numb
     vmHost: true,
     slots: vmHostSlots(machine, machine.host).slots,
     size: { vcpus: machine.host.vmVcpus, memoryGb: machine.host.vmMemoryGb },
-    vms: running === null ? vms.map(({ id, state }) => ({ id, state })) : vms,
+    vms: vms.map(({ id, state, want }) =>
+      running === null || (want === "asleep" && report?.sleepCheck !== true)
+        ? { id, state }
+        : { id, state, want },
+    ),
   } as VmHostRunnerView;
 }
 
