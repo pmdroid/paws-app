@@ -91,7 +91,8 @@ describePglite((connect) => {
     const response = await call(db, "GET");
     expect(response?.status).toBe(200);
     const body = { monthlyLimitUsd: 50, prices: { boat: null, instabox: null } };
-    expect(await response!.json()).toEqual({ ...body, month: "2026-11", spentUsd: 0 });
+    const unavailable = { boat: "driver not available yet", instabox: "driver not available yet" };
+    expect(await response!.json()).toEqual({ ...body, month: "2026-11", spentUsd: 0, unavailable });
     const message = "No hourly price is set for boat issue VMs";
     const refused = { ok: false, reason: "no_price", provider: "boat", message } as const;
     expect(await start(db, "boat", NOV)).toEqual(refused);

@@ -29,6 +29,8 @@ const AWAKE_ITEM_STATES = ["running", "verifying", "recovering"];
 const KEEP_ITEM_STATES = [...AWAKE_ITEM_STATES, "queued"];
 const LIVE = ["creating", "awake", "asleep", "unknown"];
 
+export const ISSUE_VM_DRIVER_MISSING = "driver not available yet";
+
 export type IssueVmPlacement = { runnerId: string } | { wait: string };
 
 export type IssueVmDispatchInput = {
@@ -54,8 +56,8 @@ export function* issueVmProviderSteps(
   input: { workspaceId: string; providers: readonly IssueVmProvider[] },
 ): Steps<IssueVmProvider | null> {
   for (const provider of PROVIDER_ORDER) {
-    if (!input.providers.includes(provider)) continue;
     if (provider === "host") {
+      if (!input.providers.includes(provider)) continue;
       if ((yield* workspaceVmHostsSteps(q, input.workspaceId)).length > 0) return provider;
       continue;
     }
@@ -82,6 +84,8 @@ export function* issueVmPlacementSteps(
       ? latest.provider
       : yield* issueVmProviderSteps(q, input);
   if (provider === null) return null;
+  if (!input.providers.includes(provider))
+    return { wait: `Waiting for an issue VM: ${provider} ${ISSUE_VM_DRIVER_MISSING}` };
   let hostRunnerId: string | null = null;
   if (provider === "host" && !(latest !== null && LIVE.includes(latest.state))) {
     const free = yield* freeVmHostSteps(q, input.workspaceId);

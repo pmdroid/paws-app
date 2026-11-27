@@ -117,6 +117,17 @@ const tick = (db: Db, providers: IssueVmProvider[]) =>
 const vms = (db: Db) =>
   db.run((q) => q.all(q.orm.select().from(q.t.issueVm))) as Promise<IssueVm[]>;
 
+const spend = (db: Db, changes: { boatHourlyUsd: number; monthlyLimitUsd?: number }) =>
+  db.run((q) =>
+    saveIssueVmSpendSettingsSteps(q, {
+      workspaceId: "ws",
+      changes,
+      defaultLimitUsd: 50,
+      updatedBy: "owner",
+      now: Date.now(),
+    }),
+  );
+
 const setState = (db: Db, state: string) =>
   seed(db, (q) => q.orm.update(q.t.workItem).set({ state }).where(eq(q.t.workItem.id, "PAS-1")));
 
@@ -164,47 +175,29 @@ test("with no usable provider the item runs on a normal runner", async () => {
 
 test("an item over the issue VM spend limit waits with the reason", async () => {
   const db = await world();
-  const now = Date.now();
-  await seed(
-    db,
-    (q) =>
-      q.orm.insert(q.t.issueVm).values({
-        id: "old",
-        workspaceId: "ws",
-        itemId: "PAS-0",
-        memberUserId: "owner",
-        provider: "boat",
-        state: "deleted",
-        createdAt: now - 20_000,
-        stateAt: now - 1_000,
-      }),
-    (q) =>
-      q.orm.insert(q.t.issueVmAwake).values({
-        id: "awake",
-        issueVmId: "old",
-        startedAt: now - 11_000,
-        endedAt: now - 1_000,
-        hourlyUsd: 36_000,
-      }),
-  );
-  await db.run((q) =>
-    saveIssueVmSpendSettingsSteps(q, {
-      workspaceId: "ws",
-      changes: { boatHourlyUsd: 1, monthlyLimitUsd: 50 },
-      defaultLimitUsd: 50,
-      updatedBy: "owner",
-      now,
-    }),
-  );
+  await spend(db, { boatHourlyUsd: 1, monthlyLimitUsd: 0 });
   expect(await tick(db, ["boat"])).toEqual([]);
   expect(await listItemHolds(db)).toEqual([
     {
       itemId: "PAS-1",
       reason: "slot",
-      blockers: [
-        "Waiting for an issue VM: Monthly issue VM spend limit reached ($100.00 of $50.00)",
-      ],
+      blockers: ["Waiting for an issue VM: Monthly issue VM spend limit reached ($0.00 of $0.00)"],
     },
   ]);
-  expect((await vms(db)).map((vm) => vm.id)).toEqual(["old"]);
+  expect(await vms(db)).toEqual([]);
+});
+
+test("with only boat priced and no boat driver, the item waits instead of running on a runner", async () => {
+  const db = await world();
+  await seed(db, (q) => q.orm.delete(q.t.runnerWork));
+  await spend(db, { boatHourlyUsd: 1 });
+  expect(await tick(db, ["host"])).toEqual([]);
+  expect(await listItemHolds(db)).toEqual([
+    {
+      itemId: "PAS-1",
+      reason: "slot",
+      blockers: ["Waiting for an issue VM: boat driver not available yet"],
+    },
+  ]);
+  expect(await vms(db)).toEqual([]);
 });

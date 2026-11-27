@@ -34,6 +34,7 @@ type Spend = {
   spentUsd: number;
   monthlyLimitUsd: number;
   prices: Record<Provider, number | null>;
+  unavailable?: Partial<Record<Provider, string>>;
 };
 
 const LIMITS: [keyof Limits, string, number, number][] = [
@@ -141,9 +142,11 @@ export function createIssueVmSettings() {
     const text = `${usd(spentUsd)} of ${usd(limit)} spent in ${spend.month}`;
     const bar = `<div class="col"><div class="between"><span>This month</span><span class="mono">${text}</span></div><progress class="${share >= 1 ? "full" : share >= 0.8 ? "high" : ""}" max="${limit > 0 ? limit : 1}" value="${limit > 0 ? Math.min(spentUsd, limit) : 1}" aria-label="${text}"></progress></div>`;
     const price = (value: number | null) => (value === null ? NO_PRICE : `${usd(value)} an hour`);
+    const missing = (key: Provider) =>
+      spend!.unavailable?.[key] ? ` (${spend!.unavailable[key]})` : "";
     const body = admin()
-      ? `<form data-spend class="col" novalidate>${money("issue-vm-spend-limit", "monthlyLimitUsd", "Monthly limit (US dollars)", limit, "Cloud issue VMs stop starting once this month's spend reaches it.")}${PROVIDERS.map(([key, label]) => money(`issue-vm-price-${key}`, key, `${label} price per VM hour (US dollars)`, prices[key], prices[key] === null ? NO_PRICE : "0 to 1000000")).join("")}<div class="row"><button class="btn" type="submit"${off()}>Save spend</button></div></form>`
-      : `<ul class="col" aria-label="Hourly prices">${PROVIDERS.map(([key, label]) => `<li data-price="${key}">${label}: ${price(prices[key])}</li>`).join("")}</ul>`;
+      ? `<form data-spend class="col" novalidate>${money("issue-vm-spend-limit", "monthlyLimitUsd", "Monthly limit (US dollars)", limit, "Cloud issue VMs stop starting once this month's spend reaches it.")}${PROVIDERS.map(([key, label]) => money(`issue-vm-price-${key}`, key, `${label} price per VM hour (US dollars)${missing(key)}`, prices[key], prices[key] === null ? NO_PRICE : "0 to 1000000")).join("")}<div class="row"><button class="btn" type="submit"${off()}>Save spend</button></div></form>`
+      : `<ul class="col" aria-label="Hourly prices">${PROVIDERS.map(([key, label]) => `<li data-price="${key}">${label}: ${price(prices[key])}${missing(key)}</li>`).join("")}</ul>`;
     return section("Spend", `${bar}${body}${note("spend")}`);
   };
   const grantCell = (member: Member) =>

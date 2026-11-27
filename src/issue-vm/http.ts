@@ -18,7 +18,13 @@ import {
 import { journalCaught } from "../journal";
 import { json, localRequest, readJson, sameToken } from "../settings";
 import { isWorkspaceAdmin, type WorkspacePrincipal } from "../workspace";
+import { ISSUE_VM_DRIVER_MISSING } from "./dispatch";
 import { DEFAULT_MONTHLY_LIMIT_USD, issueVmSpendSteps } from "./spend";
+
+function* spendViewSteps(q: Q, workspaceId: string, at: number) {
+  const unavailable = { boat: ISSUE_VM_DRIVER_MISSING, instabox: ISSUE_VM_DRIVER_MISSING };
+  return { ...(yield* issueVmSpendSteps(q, { workspaceId, at })), unavailable };
+}
 
 export const ISSUE_VM_MEMBERS_PATH = "/api/settings/issue-vm/members";
 export const ISSUE_VM_GRANTS_PATH = "/api/settings/issue-vm/grants";
@@ -142,7 +148,7 @@ async function handleSpend(request: Request, options: IssueVmHttpOptions, now: n
   const { db, principal } = options;
   const workspaceId = principal.workspaceId;
   if (request.method === "GET")
-    return json(await db.run((q) => issueVmSpendSteps(q, { workspaceId, at: now })));
+    return json(await db.run((q) => spendViewSteps(q, workspaceId, now)));
   if (request.method !== "PUT") return json({ error: "Method not allowed" }, 405);
   if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))
     return json({ error: "CSRF token missing" }, 403);
@@ -170,7 +176,7 @@ async function handleSpend(request: Request, options: IssueVmHttpOptions, now: n
       subject: `Set issue VM spend: ${JSON.stringify(update)}`,
       now,
     });
-    return yield* issueVmSpendSteps(q, { workspaceId, at: now });
+    return yield* spendViewSteps(q, workspaceId, now);
   });
   return json(saved);
 }
