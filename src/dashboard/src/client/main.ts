@@ -466,6 +466,7 @@ function paint(): void {
     issues: page.issues,
     issue: page.issue,
     overview: page.overview,
+    alerts: page.alerts,
     mergeQueue: page.mergeQueue,
     mergeLanes: { ...mergeSearch(), userId: signedInUserId() },
     questions: page.questions,
