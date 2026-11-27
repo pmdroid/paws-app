@@ -168,7 +168,7 @@ function roundsHandoff(ask: LinkAsk, decision: LinkAskDecision | "guidance", not
       ? `The independent review failed ${count} rounds in a row. A person asked you to split this issue instead of fixing more findings: call propose_split with at most ${ask.rounds?.split ?? 2} sub-issues that together finish the issue, each small enough for one pull request, then end your turn.`
       : decision === "continue"
         ? `The independent review failed ${count} rounds in a row. A person allowed ${moreRounds(ask)}: fix the open findings.`
-        : `The independent review failed ${count} rounds in a row and the fixes kept missing. A person asked you to rethink the approach: step back from patching each finding, find what the findings have in common${ask.rounds?.bugClass ? ` (most are ${ask.rounds.bugClass})` : ""}, and change the design so that class of bug cannot occur.`;
+        : `The independent review failed ${count} rounds in a row and the fixes kept missing. A person asked you to rethink the approach: step back from patching each finding, find what the findings have in common${rethinkFocus(ask.rounds)}, and change the design so that class of bug cannot occur.`;
   return [
     "Handoff from the previous session.",
     lead,
@@ -177,19 +177,42 @@ function roundsHandoff(ask: LinkAsk, decision: LinkAskDecision | "guidance", not
   ].join("\n");
 }
 
-/** The detail of a rounds ask: how many rounds failed and the class of bug that keeps coming back. */
+/** The detail of a rounds ask: how many rounds failed, and the recurring class of bug or the open findings. */
 export function reviewRoundsDetail(rounds: LinkAskRounds): string {
   const count = rounds.rounds.length;
   const open = rounds.open.length;
+  const named = recurringClass(rounds);
   const recurring =
-    rounds.bugClass === null
-      ? ""
-      : ` The class of bug that keeps coming back is "${rounds.bugClass}"${
-          open > 0
-            ? ` (${rounds.open.filter((finding) => finding.bugClass === rounds.bugClass).length} of ${open} open findings)`
-            : ""
-        }.`;
+    named !== null
+      ? ` The class of bug that keeps coming back is "${named}" (${rounds.open.filter((finding) => finding.bugClass === named).length} of ${open} open findings).`
+      : open > 0
+        ? ` ${open === 1 ? "The open finding" : "Open findings"}: ${openFindings(rounds)}.`
+        : "";
   return `The independent review failed ${count} ${count === 1 ? "round" : "rounds"} and ${open} ${open === 1 ? "finding is" : "findings are"} still open.${roundSizes(rounds)}${recurring} Rethink the approach, keep going, ${rounds.split ? "split the issue, " : ""}or stop.`;
+}
+
+function recurringClass(rounds: LinkAskRounds): string | null {
+  const named = rounds.bugClass;
+  return named !== null && rounds.open.some((finding) => finding.bugClass === named) ? named : null;
+}
+
+function openFindings(rounds: LinkAskRounds): string {
+  const listed = rounds.open
+    .slice(0, 3)
+    .map((finding) =>
+      [`${finding.severity} at ${finding.location}`, finding.sentence?.replace(/[.!?]$/, "")]
+        .filter(Boolean)
+        .join(": "),
+    );
+  const more = rounds.open.length - listed.length;
+  return `${listed.join("; ")}${more > 0 ? `; and ${more} more` : ""}`;
+}
+
+function rethinkFocus(rounds: LinkAskRounds | null): string {
+  if (rounds === null) return "";
+  const named = recurringClass(rounds);
+  if (named !== null) return ` (most are ${named})`;
+  return rounds.open.length > 0 ? ` (start from the open findings: ${openFindings(rounds)})` : "";
 }
 
 function roundSizes(rounds: LinkAskRounds): string {
