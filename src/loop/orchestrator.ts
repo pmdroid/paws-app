@@ -216,6 +216,7 @@ import {
   mainFixBudget,
   mainNarrowAfterLines,
   mainRerun,
+  mainTestCheckIds,
   DEFAULT_NARROW_AFTER_LINES,
   approvalsAtHead,
   awaitsVisualReview,
@@ -394,6 +395,8 @@ import {
   getPullRequestDraft,
   drainInstanceCommands,
   runRunnerAvailability,
+  releaseTestPermit,
+  takeTestPermit,
   saveVisualReviewMarksSteps,
   type VisualReviewMark,
   listRunsSteps,
@@ -794,6 +797,7 @@ import {
   waitForRunner,
   type RunnerWaitQuestion,
 } from "./runner-wait";
+import { waitForTestLane } from "./test-lane";
 import { createRepositoryGit } from "./repository-git";
 import { readFixDiff, settleReviewEscapes } from "./review-escapes";
 import { recordAcceptedFindings } from "./review-findings";
@@ -919,6 +923,7 @@ export type OrchestratorOptions = {
   remoteCloseoutRetry?: { attempts: number; delayMs: number };
   /** How often Closeout rechecks an unavailable runner, and when it asks the team. */
   runnerWait?: { pollMs: number; askAfterMs: number; sleep?: (ms: number) => Promise<void> };
+  testLaneWait?: { pollMs: number; askAfterMs: number; sleep?: (ms: number) => Promise<void> };
   publicationReady?: (
     itemId: string,
     phase: "publish" | "merge",
@@ -5335,6 +5340,7 @@ export class Orchestrator {
         input.report(
           `Running the Closeout checks for ${item.linearIdentifier} on its runner at ${short}.`,
         );
+      const lane = await this.takeTestLane(item, input, skipped, deps.signal);
       const draft = await this.savedDraft(item.id);
       const checksRunId = `checks-${itemPathId(item)}-${short}-${attempt}`;
       try {
@@ -5378,6 +5384,7 @@ export class Orchestrator {
           result = await runner!({ ...options, ...trusted });
         } finally {
           this.checksActivity.delete(item.id);
+          if (lane) await releaseTestPermit(this.store, lane);
         }
         await assertCurrent();
         const { ref } = await this.itemHead(item);
@@ -5421,6 +5428,7 @@ export class Orchestrator {
           return;
         }
       } catch (error) {
+        if (lane) await releaseTestPermit(this.store, lane);
         await assertCurrent();
         if (deps.signal?.aborted || error instanceof RunnerCapacityWait) throw error;
         journalCaught(
@@ -5451,6 +5459,59 @@ export class Orchestrator {
     throw new Error(
       `The Closeout checks could not run on the runner for commit ${short}: ${reason}. No check failed; they have no result for this commit. Reply once the runner is back to try again.`,
     );
+  }
+
+  private async takeTestLane(
+    item: WorkItemRecord,
+    input: {
+      head: string;
+      stepId: string | undefined;
+      assertCurrent: () => Promise<void>;
+      report: (body: string) => void;
+    },
+    skipped: readonly string[],
+    signal: AbortSignal | undefined,
+  ): Promise<string | null> {
+    const runId = item.currentRunId;
+    const runner = runId === null ? null : await runRunnerAvailability(this.store, runId);
+    if (runId === null || runner === null) return null;
+    const taken = await waitForTestLane({
+      runner: runner.name,
+      needed: async () => {
+        await input.assertCurrent();
+        const ids = mainTestCheckIds(
+          (await this.itemHead(item)).repo,
+          (await this.closeoutHome(item)).policyRoot,
+        );
+        return (ids ?? []).some((id) => !skipped.includes(id));
+      },
+      take: () => takeTestPermit(this.store, { runId, runnerId: runner.id, now: this.now() }),
+      release: () => releaseTestPermit(this.store, runId),
+      holder: async (holder) => {
+        const run = await this.store.run((q) => getRunSteps(q, holder));
+        const owner = run && (await this.store.run((q) => getWorkItemSteps(q, run.itemId)));
+        return owner?.linearIdentifier ?? holder;
+      },
+      waiting: async (reason) => {
+        if (reason) input.report(reason);
+        if (input.stepId)
+          await this.store.transaction((q) =>
+            setRunningCloseoutStepDetailSteps(
+              q,
+              item.id,
+              input.head,
+              input.stepId!,
+              reason,
+              this.now(),
+            ),
+          );
+      },
+      now: () => this.now(),
+      sleep: (ms) =>
+        this.waitWithoutAwake(item.id, "runner", ms, signal, this.options.testLaneWait?.sleep),
+      ...this.options.testLaneWait,
+    });
+    return taken ? runId : null;
   }
 
   /**

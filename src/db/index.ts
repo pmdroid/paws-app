@@ -120,6 +120,7 @@ export * from "./item-activity";
 export * from "./item-wait";
 export * from "./runner-setup-hold";
 export * from "./runner-reservations";
+export * from "./runner-test-permits";
 export * from "./merge-carried-accept";
 export * from "./merge-settings";
 export * from "./linear-reads";

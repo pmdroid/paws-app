@@ -337,6 +337,13 @@
       "when": 1795770046659,
       "tag": "0047_retro_transcript_read_budget",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1795809418670,
+      "tag": "0048_runner_test_permit",
+      "breakpoints": true
     }
   ]
 }

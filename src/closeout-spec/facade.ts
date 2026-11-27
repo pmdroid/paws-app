@@ -612,6 +612,14 @@ export function mainRerun(
   };
 }
 
+export function mainTestCheckIds(repo: string, policyRoot?: string): string[] | null {
+  const policy = mainPolicy(repo, policyRoot);
+  if (policy === null) return null;
+  return (policy?.items ?? []).flatMap((item) =>
+    item.kind === "command" && !("supported" in item) && item.select !== undefined ? [item.id] : [],
+  );
+}
+
 function mainPolicy(
   repo: string,
   policyRoot?: string,

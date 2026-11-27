@@ -21,6 +21,7 @@ export {
   mainFixBudget,
   mainNarrowAfterLines,
   mainRerun,
+  mainTestCheckIds,
   type RerunCommand,
   DEFAULT_NARROW_AFTER_LINES,
   policyCheckPaths,

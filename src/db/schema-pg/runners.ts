@@ -9,6 +9,7 @@ import {
   primaryKey,
   text,
   unique,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { jsonb } from "./types";
 import { sql } from "drizzle-orm";
@@ -322,6 +323,22 @@ export const runnerReservation = pgTable(
     expiresAt: bigint("expires_at", { mode: "number" }).notNull(),
   },
   (table) => [index("runner_reservation_runner").on(table.runnerId, table.expiresAt)],
+);
+
+export const runnerTestPermit = pgTable(
+  "runner_test_permit",
+  {
+    runId: text("run_id").primaryKey(),
+    runnerId: text("runner_id").notNull(),
+    requestedAt: bigint("requested_at", { mode: "number" }).notNull(),
+    grantedAt: bigint("granted_at", { mode: "number" }),
+  },
+  (table) => [
+    index("runner_test_permit_queue").on(table.runnerId, table.requestedAt),
+    uniqueIndex("runner_test_permit_holder")
+      .on(table.runnerId)
+      .where(sql`granted_at IS NOT NULL`),
+  ],
 );
 
 export const runnerHostStatus = pgTable(
