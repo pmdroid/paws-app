@@ -1,4 +1,4 @@
-import { readSecretFile, saveSecret, secretFileExists } from "../credentials";
+import { readSecretFile, secretFileExists } from "../credentials";
 import { join } from "node:path";
 import type { EnvSource } from "./env";
 import { pawsPaths } from "./paths";
@@ -56,14 +56,4 @@ export function loadGitHubAppCredentials(
     privateKeyPath,
     installationId: env.GITHUB_APP_INSTALLATION_ID ?? saved.installationId ?? null,
   };
-}
-
-export async function saveGitHubAppCredentials(
-  home: string,
-  app: GitHubAppCredentials,
-): Promise<void> {
-  const dir = pawsPaths(home).secretsDir;
-  const privateKeyPath = join(dir, "github-app.pem");
-  await saveSecret(privateKeyPath, readSecretFile(app.privateKeyPath, false)!);
-  await saveSecret(join(dir, "github-app.json"), `${JSON.stringify({ ...app, privateKeyPath })}\n`);
 }

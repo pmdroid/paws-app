@@ -82,7 +82,7 @@ export {
   startupSettings,
 } from "./runtime";
 export type { PawsRole, RuntimeConfig } from "./runtime";
-export { loadGitHubAppCredentials, saveGitHubAppCredentials } from "./github-app";
+export { loadGitHubAppCredentials } from "./github-app";
 export type { GitHubAppCredentials } from "./github-app";
 
 export {

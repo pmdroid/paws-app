@@ -5,7 +5,6 @@ import { githubMirrorsOn, loadSettings } from "./file";
 /** Directories under `~/.paws`. The developer's own checkout is never one of these. */
 export type PawsPaths = {
   home: string;
-  db: string;
   pgliteDir: string;
   secretsDir: string;
   reposDir: string;
@@ -23,7 +22,6 @@ export type PawsPaths = {
 export function pawsPaths(home: string): PawsPaths {
   return {
     home,
-    db: join(home, "paws.db"),
     pgliteDir: join(home, "pglite"),
     secretsDir: join(home, "secrets"),
     reposDir: join(home, "repos"),
