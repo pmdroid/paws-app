@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   isIdentityRejected,
   reconcileIssueVms,
+  runningIssueVmIds,
   systemdIssueVmUnits,
   type IssueVmHostView,
   type IssueVmUnits,
@@ -31,7 +32,7 @@ const ISSUE_VM_EVERY_MS = 30_000;
 const ISSUE_VM_ENROLL_DIR = "/var/lib/paws-runner/issue-vm-enroll";
 
 export function issueVmReconciler(
-  daemon: { issueVmHost(): Promise<IssueVmHostView> },
+  daemon: { issueVmHost(running?: string[]): Promise<IssueVmHostView> },
   units: IssueVmUnits | null,
   now: () => number = Date.now,
   enrollDir = ISSUE_VM_ENROLL_DIR,
@@ -47,7 +48,11 @@ export function issueVmReconciler(
     if (units === null || now() < at) return;
     at = now() + ISSUE_VM_EVERY_MS;
     try {
-      await reconcileIssueVms(units, await daemon.issueVmHost(), stage);
+      const running = async () => runningIssueVmIds(await units.active());
+      const view = await daemon.issueVmHost(await running());
+      const result = await reconcileIssueVms(units, view, stage);
+      if (view.vmHost && (result.started.length > 0 || result.stopped.length > 0))
+        await daemon.issueVmHost(await running());
     } catch (error) {
       journalCaught(error, "runner-cli/daemon.issueVmReconciler", null);
     }

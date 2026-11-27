@@ -1,5 +1,6 @@
 import {
   bigint,
+  boolean,
   check,
   doublePrecision,
   index,
@@ -38,6 +39,8 @@ export const issueVm = pgTable(
     deadlineAt: bigint("deadline_at", { mode: "number" }),
     generation: integer().notNull().default(0),
     failure: text(),
+    unitRunning: boolean("unit_running"),
+    unitSeenAt: bigint("unit_seen_at", { mode: "number" }),
   },
   (table) => [
     uniqueIndex("issue_vm_item_live")

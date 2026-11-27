@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gt, isNull, lt, max, notInArray, or } from "drizzle-orm";
+import { and, count, desc, eq, gt, inArray, isNull, lt, max, notInArray, or } from "drizzle-orm";
 import { type Q } from "./db";
 import { ulid } from "./ulid";
 
@@ -169,12 +169,57 @@ export function* liveHostIssueVmsSteps(q: Q, hostRunnerId: string) {
   const { issueVm: v } = q.t;
   const rows = yield* q.all(
     q.orm
-      .select({ id: v.id, state: v.state })
+      .select({ id: v.id, state: v.state, want: v.want })
       .from(v)
       .where(and(eq(v.hostRunnerId, hostRunnerId), notInArray(v.state, ENDED_STATES)))
       .orderBy(v.id),
   );
-  return rows.map((row) => ({ id: row.id, state: row.state as IssueVmState }));
+  return rows.map((row) => ({
+    id: row.id,
+    state: row.state as IssueVmState,
+    want: row.want as IssueVm["want"],
+  }));
+}
+
+export function* reportHostIssueVmUnitsSteps(
+  q: Q,
+  input: { hostRunnerId: string; running: string[]; now: number },
+) {
+  const { issueVm: v } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(v)
+      .set({
+        unitRunning: input.running.length === 0 ? false : inArray(v.id, input.running),
+        unitSeenAt: input.now,
+      })
+      .where(and(eq(v.hostRunnerId, input.hostRunnerId), isNull(v.deletedAt))),
+  );
+}
+
+export type HostIssueVmUnit = {
+  state: IssueVmState;
+  hostRunnerId: string | null;
+  deletedAt: number | null;
+  unitRunning: boolean | null;
+  unitSeenAt: number | null;
+};
+
+export function* hostIssueVmUnitSteps(q: Q, id: string) {
+  const { issueVm: v } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        state: v.state,
+        hostRunnerId: v.hostRunnerId,
+        deletedAt: v.deletedAt,
+        unitRunning: v.unitRunning,
+        unitSeenAt: v.unitSeenAt,
+      })
+      .from(v)
+      .where(eq(v.id, id)),
+  );
+  return (row ?? null) as HostIssueVmUnit | null;
 }
 
 export function* issueVmsInUseSteps(q: Q, input: { workspaceId: string; memberUserId?: string }) {

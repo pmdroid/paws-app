@@ -23,6 +23,7 @@ export {
   createFakeIssueVmUnits,
   issueVmUnit,
   reconcileIssueVms,
+  runningIssueVmIds,
   systemdIssueVmUnits,
   type IssueVmHostView,
   type IssueVmMachine,

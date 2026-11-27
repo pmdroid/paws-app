@@ -427,7 +427,104 @@ test("Paws gives a VM host its slots, VM size and live issue VMs", async () => {
     ],
   });
   expect(await handleVmHostRunnerRequest(request("/v1/other"), HOST, db)).toBeNull();
-  expect(
-    (await handleVmHostRunnerRequest(request("/v1/issue-vms", "POST"), HOST, db))!.status,
-  ).toBe(405);
+  expect((await handleVmHostRunnerRequest(request("/v1/issue-vms", "PUT"), HOST, db))!.status).toBe(
+    405,
+  );
+
+  const report = async (body: unknown) =>
+    handleVmHostRunnerRequest(
+      new Request("https://runner.paws.test/v1/issue-vms", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+      HOST,
+      db,
+      () => 50,
+    );
+  expect((await report({ running: ["not-a-vm"] }))!.status).toBe(400);
+  expect((await report({ running: [A], extra: true }))!.status).toBe(400);
+  expect(await (await report({ running: [A, E] }))!.json()).toEqual({
+    vmHost: true,
+    slots: 3,
+    size: { vcpus: 2, memoryGb: 4 },
+    vms: [
+      { id: A, state: "awake", want: "awake" },
+      { id: D, state: "creating", want: "awake" },
+    ],
+  });
+  const units = await db.run((q) =>
+    q.all(
+      q.orm
+        .select({
+          id: q.t.issueVm.id,
+          running: q.t.issueVm.unitRunning,
+          at: q.t.issueVm.unitSeenAt,
+        })
+        .from(q.t.issueVm)
+        .orderBy(q.t.issueVm.id),
+    ),
+  );
+  expect(units).toEqual([
+    { id: A, running: true, at: 50 },
+    { id: B, running: null, at: null },
+    { id: C, running: null, at: null },
+    { id: D, running: false, at: 50 },
+  ]);
+});
+
+test("with each row's want, the host stops units that want asleep and starts creating and woken rows", async () => {
+  const fake = createFakeIssueVmUnits();
+  fake.active.add(issueVmUnit(A, 1, SIZE));
+  fake.active.add(issueVmUnit(E, 2, SIZE));
+  const rows = (vms: [string, IssueVmState, "awake" | "asleep"][]): IssueVmHostView => ({
+    vmHost: true,
+    slots: 4,
+    size: SIZE,
+    vms: vms.map(([id, state, want]) => ({ id, state, want })),
+  });
+  const result = await reconcileIssueVms(
+    fake.units,
+    rows([
+      [A, "awake", "asleep"],
+      [B, "creating", "awake"],
+      [C, "asleep", "awake"],
+      [D, "asleep", "asleep"],
+      [E, "unknown", "awake"],
+    ]),
+  );
+  expect(result.stopped.map(({ machine, reason }) => [machine.id, reason])).toEqual([
+    [A, "asleep"],
+  ]);
+  expect(result.kept.map((found) => found.id)).toEqual([E]);
+  expect(result.started.map((found) => [found.id, found.slot])).toEqual([
+    [B, 1],
+    [C, 3],
+  ]);
+});
+
+test("the daemon reports its running units before and after a pass that changed them", async () => {
+  const fake = createFakeIssueVmUnits();
+  fake.active.add(issueVmUnit(A, 1, SIZE));
+  const reports: (string[] | undefined)[] = [];
+  const daemon = {
+    async issueVmHost(running?: string[]): Promise<IssueVmHostView> {
+      await Promise.resolve();
+      reports.push(running);
+      return {
+        vmHost: true,
+        slots: 2,
+        size: SIZE,
+        vms: [
+          { id: A, state: "awake", want: "asleep" },
+          { id: B, state: "asleep", want: "awake" },
+        ],
+      };
+    },
+  };
+  let now = 0;
+  const tick = issueVmReconciler(daemon, fake.units, () => (now += 30_000));
+  await tick();
+  expect(reports).toEqual([[A], [B]]);
+  await tick();
+  expect(reports).toEqual([[A], [B], [B]]);
 });
