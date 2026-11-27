@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
-import { and, count, eq, gt, isNotNull, isNull } from "drizzle-orm";
+import { and, count, eq, gt, isNull } from "drizzle-orm";
 import { runAgent, type RunAgentOptions } from "../src/acp";
 import { JOB_KIND, systemClock } from "../src/core";
 import {
@@ -611,15 +611,7 @@ async function runRemoteFault(fault: Fault) {
   async function recoverOnce() {
     if (!runner.faulty) return;
     if (fault === "below-minimum-expired") {
-      const lost = await db.run((q) =>
-        q.one(
-          q.orm
-            .select({ runId: q.t.runnerWork.runId })
-            .from(q.t.runnerWork)
-            .where(isNotNull(q.t.runnerWork.lostAt)),
-        ),
-      );
-      if (!lost) return;
+      if (!tracker.progress.some((update) => update.body.startsWith(BELOW_MINIMUM))) return;
       runner.faulty = false;
       live.clear();
       await recordRunnerHostStatus(
