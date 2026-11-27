@@ -99,7 +99,7 @@ export async function openPullRequest(
 ): Promise<OpenedPull> {
   const branch = branchForIssue(input.branchKey ?? input.issue);
   const token = await acquireOperationToken(input, "pr");
-  const approval = input.member ? await memberApproval(input, input.member, token) : null;
+  const approval = input.member ? await memberApproval(input, input.member, token) : false;
   const member = approval ? undefined : input.member;
   const login = input.member?.login;
   const opened = (line: string | null) => {
@@ -108,7 +108,7 @@ export async function openPullRequest(
   };
   let text = opened(
     approval
-      ? `Opened by the Paws GitHub App: @${login} ${approval} and must approve it.`
+      ? `Opened by the Paws GitHub App: @${login} owns a changed path in CODEOWNERS and must approve it.`
       : member
         ? `Opened by @${login}, who delegated it.`
         : null,
@@ -175,17 +175,14 @@ async function memberApproval(
     issue: string;
     owner: string;
     repo: string;
-    reviewer?: string;
     head?: string;
     client: GitHubClient;
   },
   member: PullRequestMember,
   token: string,
-): Promise<string | null> {
-  if (input.reviewer?.toLowerCase() === member.login.toLowerCase())
-    return "is the requested reviewer";
-  if (!input.head) return null;
-  const owns = await memberOwnsChangedPath({
+): Promise<boolean> {
+  if (!input.head) return false;
+  return memberOwnsChangedPath({
     ...input,
     head: input.head,
     token,
@@ -194,7 +191,6 @@ async function memberApproval(
     journalCaught(error, "github.openPullRequest.codeowners", input.issue, "opening as the member");
     return false;
   });
-  return owns ? "owns a changed path in CODEOWNERS" : null;
 }
 
 function withOpenedBy(evidence: string, line: string | null): string {

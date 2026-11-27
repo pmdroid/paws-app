@@ -39,7 +39,7 @@ function open(codeowners: string | null, reviewer?: string) {
 }
 
 test.each([
-  ["a requested reviewer", null, "owner", "ghs_app", "is the requested reviewer"],
+  ["a requested reviewer who owns no path", null, "owner", "ghu_member", ""],
   ["a code owner of a changed path", "* @team\nsrc/ @owner", undefined, "ghs_app", "owns a"],
   [
     "an owner of unchanged paths only",
