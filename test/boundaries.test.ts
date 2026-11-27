@@ -184,6 +184,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "alerts",
   ],
   settings: [
+    "runner-placement",
     "acp",
     "metrics",
     "closeout-spec",

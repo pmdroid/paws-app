@@ -1634,6 +1634,31 @@ export function* runnerAgentReadinessSteps(q: Q, agent: string) {
   );
 }
 
+export function* activeAgentRunnersSteps(q: Q) {
+  const { runner: r, runnerAgentPolicy: p } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({ runnerId: r.id, name: r.name, agent: p.agent })
+      .from(r)
+      .innerJoin(p, eq(p.runnerId, r.id))
+      .where(
+        and(eq(r.status, "active"), isNull(r.revokedAt), boundAgentAccountWhere(q, r.id, p.agent)),
+      )
+      .orderBy(r.name, p.agent),
+  );
+}
+
+export function* verifyingItemsSteps(q: Q) {
+  const { workItem: w } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({ id: w.id, identifier: w.linearIdentifier })
+      .from(w)
+      .where(eq(w.state, "verifying"))
+      .orderBy(w.linearIdentifier),
+  );
+}
+
 export async function runnerAgentReadiness(
   store: Db,
   agent: string,
