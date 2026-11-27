@@ -34,7 +34,7 @@ base64 < ~/.paws/secrets/.envelope-key
 
 Keep that value secret and available to every Paws instance using the database. Paws copies existing encrypted secret files into the external database when it first opens them; the files remain in place. Check secret storage and decryption under Prerequisites on Workspace › Integrations before moving the service.
 
-A `~/.paws/paws.db` from an earlier release is set aside at the first start: see [Moving to Postgres](database-reset.md).
+Paws ignores a `~/.paws/paws.db` from an earlier release and leaves it in place: see [Moving to Postgres](database-reset.md).
 
 ## A database from an older Paws
 

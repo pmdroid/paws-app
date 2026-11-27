@@ -103,7 +103,6 @@ describe("config", () => {
   test("layout paths and secret directory mode", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
-    expect(paths.db).toBe(join(home, "paws.db"));
     expect(paths.secretsDir).toBe(join(home, "secrets"));
     expect(paths.worktreesDir).toBe(join(home, "worktrees"));
     ensureLayout(paths);
