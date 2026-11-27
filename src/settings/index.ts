@@ -8,6 +8,8 @@ export {
 export type { RepositoryDescriptionSettingsOptions } from "./repository-descriptions";
 export type { AgentSettingsOptions } from "./handler";
 export { activeRunnerReadiness } from "./reviewer-runners";
+export { activeAgentFleet } from "./agent-fleet";
+export type { AgentFleet } from "./agent-fleet";
 export { SKILL_SETTINGS_PATH, handleSkillSettingsRequest } from "./skills";
 export type { SkillSettingsOptions } from "./skills";
 export { handleMergeSettingsRequest, MERGE_SETTINGS_PATH } from "./merging";

@@ -340,7 +340,7 @@ import {
 } from "./runner-placement";
 import { releaseVersionFromPath } from "./runner-protocol";
 import { startServer } from "./server";
-import { activeRunnerReadiness } from "./settings";
+import { activeAgentFleet, activeRunnerReadiness } from "./settings";
 import {
   createRetroDispatcher,
   createRetroPreviewHttp,
@@ -1744,6 +1744,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       agentSettings: {
         applyToWaiting: async () => (await orchestrator?.applyAgentSettingsToWaiting()) ?? 0,
         runnerReadiness: (agent) => activeRunnerReadiness(store, agent),
+        fleet: () => activeAgentFleet(store),
         ...(linear?.tracker?.readBriefIssue
           ? {
               readIssue: (identifier: string, signal: AbortSignal) =>

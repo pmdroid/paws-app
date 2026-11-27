@@ -6,7 +6,7 @@ import {
   getRunnerSteps,
   runnerHostVersionSteps,
   getWorkItemRepositorySteps,
-  latestModelCatalogSteps,
+  latestModelCatalogRowSteps,
   listAgentBindingsSteps,
   modelUnofferedReason,
   runnerRepositoryRefusalSteps,
@@ -81,16 +81,26 @@ export function credentialRefreshable(blob: string | null | undefined): boolean 
   }
 }
 
+export function* runnerModelCatalogSteps(
+  q: Q,
+  runnerId: string,
+  agent: string,
+): Steps<{ models: string[]; updatedAt: number } | null> {
+  const row = yield* latestModelCatalogRowSteps(q, runnerId, agent);
+  if (!row) return null;
+  const parsed = RunnerHealthResultSchema.safeParse(JSON.parse(row.resultJson));
+  const models = (parsed.success ? (parsed.data.models ?? []) : []).map((entry) => entry.id);
+  return { models, updatedAt: row.updatedAt };
+}
+
 export function* runnerOffersModelSteps(
   q: Q,
   runnerId: string,
   agent: string,
   model: string,
 ): Steps<boolean> {
-  const resultJson = yield* latestModelCatalogSteps(q, runnerId, agent);
-  const parsed = resultJson ? RunnerHealthResultSchema.safeParse(JSON.parse(resultJson)) : null;
-  const ids = new Set((parsed?.success ? (parsed.data.models ?? []) : []).map((entry) => entry.id));
-  return ids.has(model);
+  const catalog = yield* runnerModelCatalogSteps(q, runnerId, agent);
+  return catalog?.models.includes(model) ?? false;
 }
 
 export function* signInFitSteps(

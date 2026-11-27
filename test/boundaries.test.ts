@@ -182,6 +182,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "metrics",
   ],
   settings: [
+    "runner-placement",
     "acp",
     "metrics",
     "closeout-spec",

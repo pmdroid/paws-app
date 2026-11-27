@@ -164,7 +164,12 @@ export {
 } from "./placement";
 
 export { createRunnerPlacementBrowser } from "./browser";
-export { credentialRefreshable, itemRunnerVerdictsSteps, signInFitSteps } from "./fit";
+export {
+  credentialRefreshable,
+  itemRunnerVerdictsSteps,
+  runnerModelCatalogSteps,
+  signInFitSteps,
+} from "./fit";
 export { createRunnerHostRefusals } from "./host-refusals";
 
 export { sessionHolderSteps, runRunnerSteps } from "./session";

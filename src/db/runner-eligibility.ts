@@ -71,17 +71,21 @@ export function* lastItemRunnerSteps(q: Q, itemId: string) {
   );
 }
 
-export function* latestModelCatalogSteps(q: Q, runnerId: string, agent: string) {
+export function* latestModelCatalogRowSteps(q: Q, runnerId: string, agent: string) {
   const { agentModelCatalog: c } = q.t;
   const row = yield* q.one(
     q.orm
-      .select({ resultJson: jsonText(q, c.resultJson) })
+      .select({ resultJson: jsonText(q, c.resultJson), updatedAt: c.updatedAt })
       .from(c)
       .where(and(eq(c.runnerId, runnerId), eq(c.agent, agent), eq(c.model, "")))
       .orderBy(desc(c.updatedAt))
       .limit(1),
   );
-  return row?.resultJson ?? null;
+  return row ?? null;
+}
+
+export function* latestModelCatalogSteps(q: Q, runnerId: string, agent: string) {
+  return (yield* latestModelCatalogRowSteps(q, runnerId, agent))?.resultJson ?? null;
 }
 
 export function* runnerUsageListSteps(
