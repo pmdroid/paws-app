@@ -76,6 +76,13 @@ async function call(request: Request, extra: Partial<StorageSettingsOptions> = {
   return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 }
 
+const fromSettings = Object.fromEntries(
+  ["bucket", "endpoint", "region", "accessKeyId", "secretAccessKey", "sessionToken"].map((key) => [
+    key,
+    { source: "settings" },
+  ]),
+);
+
 async function roundTrip() {
   loadRunnerTranscriptStores(home);
   expect((await call(send("GET"))).body).toMatchObject({ kind: "local", source: "default" });
@@ -89,6 +96,7 @@ async function roundTrip() {
       hasSecretAccessKey: true,
       hasSessionToken: true,
       source: "settings",
+      sources: fromSettings,
       restartRequired: true,
     },
   });
@@ -97,6 +105,7 @@ async function roundTrip() {
     hasSecretAccessKey: true,
     hasSessionToken: true,
     source: "settings",
+    sources: fromSettings,
   });
   const kept = await call(send("PUT", { ...s3, region: "us-east-1" }));
   expect(kept.body).toMatchObject({ region: "us-east-1", hasSecretAccessKey: true });
@@ -130,11 +139,19 @@ test("with PAWS_S3_* set GET reports the environment and PUT gets 409", async ()
     bucket: "env-bucket",
     hasSecretAccessKey: true,
     source: "environment",
+    sources: {
+      bucket: { source: "environment", variable: "PAWS_S3_BUCKET" },
+      secretAccessKey: { source: "environment", variable: "PAWS_S3_SECRET_ACCESS_KEY" },
+      region: { source: "unset" },
+    },
   });
   expect(JSON.stringify(get.body)).not.toContain("env-secret");
   expect(await call(send("PUT", { kind: "local" }))).toEqual({
     status: 409,
-    body: { error: "Storage is set by PAWS_S3_* environment variables on this host." },
+    body: {
+      error:
+        "Set by environment variable PAWS_S3_BUCKET; remove it from the service environment to edit here",
+    },
   });
 });
 
@@ -205,7 +222,7 @@ describePglite((connect) => {
 });
 
 describePglite((connect) => {
-  test("rejected combined storage updates preserve retention", async () => {
+  test("invalid storage keeps retention; env-set storage is refused while retention saves", async () => {
     const { db: store, close } = await connect();
     cleanup.push(close);
     expect(
@@ -221,8 +238,8 @@ describePglite((connect) => {
     expect(
       (await call(send("PUT", { kind: "local", closeoutLogRetentionDays: 0 }), { store })).status,
     ).toBe(409);
-    expect((await call(send("GET"), { store })).body.closeoutLogRetentionDays).toBe(14);
-    expect(audits).toEqual([]);
+    expect((await call(send("GET"), { store })).body.closeoutLogRetentionDays).toBe(0);
+    expect(audits).toEqual(["settings.storage: Set Closeout log retention: keep forever"]);
     expect((await call(send("PUT", { closeoutLogRetentionDays: 0 }), { store })).status).toBe(200);
   });
 });

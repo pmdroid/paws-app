@@ -1249,6 +1249,11 @@ test("browser App setup encrypts all five fields and continues without restartin
     expect(JSON.parse(readSecretFile(join(dir, "github-browser-app.json"))!)).toMatchObject(
       payload,
     );
+    const read = (await (await handler(f.request("admin", url)))!.json()) as {
+      sources: Record<string, unknown>;
+    };
+    expect(Object.values(read.sources)).toEqual(Array(5).fill({ source: "settings" }));
+    expect(JSON.stringify(read)).not.toMatch(/oauth-secret|webhook-secret|PRIVATE KEY/);
     expect(createWorkspaceGitHubActivation(f.db, f.home, f.env).template().privateKeyPem).toBe(key);
     expect(loadGitHubAppCredentials(f.home, { ...f.env, GITHUB_APP_ID: "123" })!.appId).toBe("123");
     f.setInstallationStatus(404);
@@ -1266,13 +1271,39 @@ test("browser App setup encrypts all five fields and continues without restartin
   }
 });
 
-test("environment App ID skips browser App setup", async () => {
+test("environment App ID skips browser App setup and reports where each field comes from", async () => {
   const f = await fixture();
   try {
     const response = await f.handler()(
       f.request("admin", "https://paws.example/api/workspaces/github-app"),
     );
-    expect(await response!.json()).toMatchObject({ configured: true });
+    const body = await response!.json();
+    expect(body).toMatchObject({
+      configured: true,
+      sources: {
+        appId: { source: "environment", variable: "GITHUB_APP_ID" },
+        clientSecret: { source: "environment", variable: "PAWS_GITHUB_CLIENT_SECRET" },
+        webhookSecret: { source: "unset" },
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain("scripted-client-secret");
+    const post = await f.handler()(
+      f.request("admin", "https://paws.example/api/workspaces/github-app", {
+        method: "POST",
+        headers: {
+          origin: "https://paws.example",
+          "content-type": "application/json",
+          "x-paws-csrf": f.sessions.admin!.session.csrfToken,
+        },
+        body: "{}",
+      }),
+    );
+    expect(post!.status).toBe(409);
+    expect(await post!.json()).toEqual({
+      error:
+        "Set by environment variable GITHUB_APP_ID; remove it from the service environment to edit here",
+    });
+    expect(loadGitHubAppCredentials(f.home, f.env)!.clientSecret).toBe("scripted-client-secret");
   } finally {
     await f.close();
   }

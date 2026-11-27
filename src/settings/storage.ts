@@ -1,4 +1,5 @@
 import { closeoutLogRetentionDays, saveCloseoutLogRetentionDays, type Db } from "../db";
+import { envSettingRefusal } from "../config";
 import { journalCaught } from "../journal";
 import {
   checkRunnerStorageSettings,
@@ -77,15 +78,21 @@ export async function handleStorageSettingsRequest(
     body = storage;
   }
   const retentionOnly = days !== undefined && Object.keys(storage).length === 0;
-  if (method === "PUT" && !retentionOnly && before.source === "environment")
-    return json({ error: "Storage is set by PAWS_S3_* environment variables on this host." }, 409);
+  const refusal =
+    method === "PUT" && !retentionOnly && before.source === "environment"
+      ? envSettingRefusal(process.env, "storage")
+      : null;
   let restartRequired: boolean;
   try {
+    if (refusal !== null && days === undefined) return json({ error: refusal }, 409);
     if (method === "POST") {
       await checkRunnerStorageSettings(options.home, body, options.objects);
       return json({ ok: true });
     }
-    restartRequired = retentionOnly ? false : await saveRunnerStorageSettings(options.home, body);
+    restartRequired =
+      retentionOnly || refusal !== null
+        ? false
+        : await saveRunnerStorageSettings(options.home, body);
     if (days !== undefined) {
       await saveCloseoutLogRetentionDays(
         options.store!,
@@ -97,6 +104,7 @@ export async function handleStorageSettingsRequest(
         `Set Closeout log retention: ${days === 0 ? "keep forever" : `${days} days`}`,
       );
     }
+    if (refusal !== null) return json({ error: refusal }, 409);
     if (retentionOnly) return json({ ...before, ...(await retention()) });
   } catch (error) {
     if (error instanceof RunnerStorageSettingsError) return json({ error: error.message }, 400);

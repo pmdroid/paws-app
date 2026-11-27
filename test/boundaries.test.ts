@@ -283,6 +283,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   "runner-repository-commands": ["journal", "db", "runner-protocol", "workspace"],
   "runner-transcript-config": [
+    "config",
     "journal",
     "credentials",
     "runner-transcripts",

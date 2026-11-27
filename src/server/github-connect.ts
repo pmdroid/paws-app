@@ -38,7 +38,7 @@ import {
   type ActiveGitHubApp,
 } from "../auth";
 import { join } from "node:path";
-import { loadGitHubAppCredentials } from "../config";
+import { envSettingRefusal, gitHubAppSources, loadGitHubAppCredentials } from "../config";
 import { saveSecret, storedSecrets } from "../credentials";
 import {
   GitHubHttpError,
@@ -149,6 +149,7 @@ export function createHostedGitHubConnect(options: {
           webhookUrl: origin + "/webhooks/github",
           permissions: INSTALLATION_PERMISSIONS,
           events: GITHUB_APP_EVENTS,
+          sources: gitHubAppSources(options.home, options.env),
         });
       if (
         request.method !== "POST" ||
@@ -157,6 +158,8 @@ export function createHostedGitHubConnect(options: {
         !(await permitted())
       )
         return denied();
+      const refusal = envSettingRefusal(options.env, "github");
+      if (refusal !== null) return reply({ error: refusal }, 409);
       if (configured()) return reply({ error: "The GitHub App is already configured." }, 409);
       if (storedSecrets() === null)
         return reply({ error: "The database secret store is unavailable." }, 503);
