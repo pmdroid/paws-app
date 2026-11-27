@@ -52,6 +52,7 @@ import {
   RunnerRepositoryCommandResultSchema,
   RunnerRetroCommandSchema,
   RunnerRetroInputRequestSchema,
+  RunnerRetroTranscriptRequestSchema,
   RunnerRetroResultSchema,
   SignedRunnerCommandSchema,
   verifyRunnerCommand,
@@ -71,6 +72,7 @@ import {
   type RunnerRetroCommand,
   type RunnerRetroCommandRejection,
   type RunnerRetroInputRequest,
+  type RunnerRetroTranscriptRequest,
   type RunnerRetroResult,
   type RunnerInstalledAgent,
   type RunnerInstalledRuntime,
@@ -1478,8 +1480,13 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         throw new Error("Runner retro acknowledgement differs from the admitted command.");
       return receipt;
     },
-    async retroInput(request: RunnerRetroInputRequest): Promise<unknown> {
-      const body = RunnerRetroInputRequestSchema.parse(request);
+    async retroInput(
+      request: RunnerRetroInputRequest | RunnerRetroTranscriptRequest,
+    ): Promise<unknown> {
+      const body =
+        request.kind === "transcript"
+          ? RunnerRetroTranscriptRequestSchema.parse(request)
+          : RunnerRetroInputRequestSchema.parse(request);
       retroCommand(body.commandId);
       return authenticated(retroPath(body.commandId, "input"), "POST", body);
     },

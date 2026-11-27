@@ -189,6 +189,7 @@ export {
 
 export {
   MINIMUM_RUNNER_VERSION,
+  RETRO_TRANSCRIPT_TOOLS_RUNNER_VERSION,
   REVIEW_COMMAND_OAUTH_RUNNER_VERSION,
   type RunnerVersion,
 } from "./versions";
@@ -254,6 +255,7 @@ export {
   RunnerRetroInputRequestSchema,
   RunnerRetroInputSchema,
   RunnerRetroResultSchema,
+  RunnerRetroTranscriptRequestSchema,
   acceptRetroResult,
   authorizeRetroInput,
   authorizeRetroTranscript,
@@ -272,6 +274,7 @@ export {
   type RunnerRetroInputRequest,
   type RunnerRetroResult,
   type RunnerRetroResultRejection,
+  type RunnerRetroTranscriptRequest,
   type RunnerRetroSlot,
   type RunnerRetroSlotRelease,
 } from "./retro";

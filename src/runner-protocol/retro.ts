@@ -64,6 +64,7 @@ export const RunnerRetroCommandSchema = z
     }),
     digest: RunnerRetroInputSchema,
     prompt: RunnerRetroInputSchema,
+    transcripts: z.literal(true).optional(),
   })
   .refine((command) => command.expiresAt > command.issuedAt)
   .refine(
@@ -94,7 +95,7 @@ export const RunnerRetroInputRequestSchema = z
 
 export type RunnerRetroInputRequest = z.infer<typeof RunnerRetroInputRequestSchema>;
 
-const RunnerRetroTranscriptRequestSchema = z.strictObject({
+export const RunnerRetroTranscriptRequestSchema = z.strictObject({
   commandId: id,
   workspaceId: id,
   retroId: id,
@@ -106,7 +107,7 @@ const RunnerRetroTranscriptRequestSchema = z.strictObject({
   limit: z.number().int().min(1).max(RUNNER_RETRO_LIMITS.transcriptReadBytes),
 });
 
-type RunnerRetroTranscriptRequest = z.infer<typeof RunnerRetroTranscriptRequestSchema>;
+export type RunnerRetroTranscriptRequest = z.infer<typeof RunnerRetroTranscriptRequestSchema>;
 
 export type RunnerRetroInputGrant = {
   commandId: string;

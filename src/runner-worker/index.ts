@@ -47,7 +47,7 @@ import {
 } from "node:fs";
 import { dirname, join, isAbsolute } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { executeRetroCommand, type RetroWorkerResult } from "./retro";
+import { executeRetroCommand, type RetroTranscriptRead, type RetroWorkerResult } from "./retro";
 import { missingToolchainQuestion } from "./toolchain";
 import {
   collectOpenCodeCredential,
@@ -3028,6 +3028,17 @@ export async function runRunnerWorker(options: {
         attempt: command.attempt,
         settingsRevision: command.settingsRevision,
       },
+      readTranscript: (request, signal) =>
+        relayRetroTranscript(
+          {
+            spool,
+            executionId: options.executionId,
+            outputDirectory,
+            resultsGid: options.results.resultsGid,
+          },
+          request,
+          signal,
+        ),
       fetchInput: async (request) => {
         const bytes = Buffer.from(inputs[request.kind]).subarray(
           request.offset,
@@ -3138,6 +3149,36 @@ export async function runRunnerWorker(options: {
   });
 }
 
+const retroJournals = new Map<string, number>();
+
+export async function relayRetroTranscript(
+  target: { spool: RunnerSpool; executionId: string; outputDirectory: string; resultsGid: number },
+  request: Parameters<RetroTranscriptRead>[0],
+  signal: AbortSignal,
+): Promise<unknown> {
+  let journal = retroJournals.get(target.outputDirectory);
+  if (journal === undefined) {
+    journal = createJournal(target);
+    retroJournals.set(target.outputDirectory, journal);
+  }
+  const requestId = randomUUID();
+  writeFileSync(
+    journal,
+    `${JSON.stringify({ type: "retro_transcript", requestId, ...request, t: new Date().toISOString() })}\n`,
+  );
+  fsyncSync(journal);
+  for (;;) {
+    signal.throwIfAborted();
+    const published = readRunnerAnswer(target.spool, target.executionId, requestId);
+    if (published) {
+      const decoded = JSON.parse(published.answer) as { range?: unknown; error?: unknown };
+      if (typeof decoded.error === "string") throw new Error(decoded.error);
+      return decoded.range;
+    }
+    await delay(250, undefined, { signal });
+  }
+}
+
 export {
   downloadRetroInput,
   executeRetroCommand,
@@ -3149,6 +3190,7 @@ export {
   RetroInputIntegrityError,
   RetroResultConflictError,
   type RetroInputFetch,
+  type RetroTranscriptRead,
   type RetroWorkerOptions,
   type RetroWorkerResult,
 } from "./retro";
