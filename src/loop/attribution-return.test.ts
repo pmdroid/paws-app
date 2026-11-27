@@ -14,3 +14,20 @@ test("a trailer refusal returns the turn once with the precise rejection", () =>
   expect(attributionReturnHandoff("Run failed during push: Error.", undefined)).toBeNull();
   expect(attributionReturnHandoff(undefined, undefined)).toBeNull();
 });
+
+test("an older runner's bare attribution rejection also returns the turn once", () => {
+  const handoff = attributionReturnHandoff(
+    "Run failed during push: Commit attribution rejected.",
+    undefined,
+  );
+  expect(handoff).toContain("did not say which commit or trailer");
+  expect(
+    attributionReturnHandoff("Run failed during push: Commit attribution rejected.", handoff!),
+  ).toBeNull();
+  expect(
+    attributionReturnHandoff(
+      "Run failed during push: Commit attribution rejected. Candidate attribution rejected: every new commit must use the authorized App bot as author and committer.",
+      undefined,
+    ),
+  ).toBeNull();
+});
