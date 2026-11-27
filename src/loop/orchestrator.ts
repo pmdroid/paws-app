@@ -1018,19 +1018,7 @@ export class Orchestrator {
   private readonly pullRequestReads = new Set<string>();
   private readonly runStartHeads = new Map<string, string>();
   private releasingBlocks: Promise<void> | null = null;
-  private readonly live = new Map<
-    string,
-    {
-      itemId: string;
-      version: number;
-      sessionId: string | null;
-      generation: number;
-      controller: AbortController;
-      progress: string | null;
-      done: Promise<void>;
-      finish(): void;
-    }
-  >();
+  private readonly live = new Map<string, LiveOperation>();
   private readonly stopEvents = new Map<string, Promise<void>>();
   private readonly sessionEvents = new Map<string, Promise<void | boolean>>();
   private readonly linearEvents = new Set<Promise<unknown>>();
@@ -3733,8 +3721,7 @@ export class Orchestrator {
         );
       return true;
     } finally {
-      this.live.delete(run.id);
-      live.finish();
+      this.endLive(run.id, live);
     }
   }
 
@@ -3963,8 +3950,7 @@ export class Orchestrator {
     } finally {
       clearInterval(keepAlive);
       await this.releaseAskedRun(run.id);
-      this.live.delete(run.id);
-      live.finish();
+      this.endLive(run.id, live);
       await this.flush();
     }
   }
@@ -4557,8 +4543,7 @@ export class Orchestrator {
       try {
         await this.flush();
       } finally {
-        this.live.delete(run.id);
-        live.finish();
+        this.endLive(run.id, live);
       }
     }
   }
@@ -8407,6 +8392,7 @@ export class Orchestrator {
   }
 
   async reconcileExecution(): Promise<void> {
+    await this.releaseStaleOperations();
     await this.dispatch();
   }
 
@@ -9690,8 +9676,7 @@ export class Orchestrator {
       );
     } finally {
       this.conversations.delete(itemId);
-      this.live.delete(key);
-      live.finish();
+      this.endLive(key, live);
     }
   }
 
@@ -9702,6 +9687,7 @@ export class Orchestrator {
       sessionId === null
         ? 0
         : await this.store.run((q) => getLinearSessionGenerationSteps(q, sessionId));
+    if (this.live.has(key)) await this.releaseStaleOperations([key]);
     if (this.live.has(key)) throw new Error("Run already has an owned live operation");
     const authority = this.jobContexts.get(itemId);
     const controller = new AbortController();
@@ -9709,8 +9695,9 @@ export class Orchestrator {
     authority?.signal.addEventListener("abort", abort, { once: true });
     if (authority && !(await authority.isCurrent())) abort();
     let finish!: () => void;
-    const live = {
+    const live: LiveOperation = {
       itemId,
+      authority,
       version: item?.version ?? 0,
       sessionId,
       generation,
@@ -9726,6 +9713,42 @@ export class Orchestrator {
     };
     this.live.set(key, live);
     return live;
+  }
+
+  private endLive(key: string, live: LiveOperation): void {
+    if (this.live.get(key) === live) this.live.delete(key);
+    live.finish();
+  }
+
+  async releaseStaleOperations(keys: readonly string[] = [...this.live.keys()]): Promise<void> {
+    if (this.shuttingDown) return;
+    for (const key of keys) {
+      const live = this.live.get(key);
+      if (!live) continue;
+      const reason = await this.staleOperationReason(key, live);
+      if (reason === null || this.live.get(key) !== live) continue;
+      this.live.delete(key);
+      live.controller.abort();
+      (this.options.journal ?? journal)(
+        `item ${live.itemId} live operation ${key} released: ${reason}`,
+      );
+    }
+  }
+
+  private async staleOperationReason(key: string, live: LiveOperation): Promise<string | null> {
+    const { run, item } = await this.store.run(function* (q) {
+      return { run: yield* getRunSteps(q, key), item: yield* getWorkItemSteps(q, live.itemId) };
+    });
+    if (run?.status === "lost") return "its run is lost";
+    if (!item || item.state === "cancelled") return "its item is cancelled";
+    const { authority } = live;
+    if (
+      authority &&
+      this.jobContexts.get(live.itemId) !== authority &&
+      !(await authority.isCurrent())
+    )
+      return "its job no longer runs";
+    return null;
   }
 
   private taskAccess(): LinearTaskAccess | undefined {
@@ -12601,8 +12624,7 @@ export class Orchestrator {
         });
       throw error;
     } finally {
-      this.live.delete(liveKey);
-      live.finish();
+      this.endLive(liveKey, live);
     }
   }
 
@@ -12717,6 +12739,18 @@ function* closeActiveRunSteps(
   const run = yield* getRunSteps(q, runId);
   if (run && run.status === "active") yield* markRunSteps(q, runId, status, now);
 }
+
+type LiveOperation = {
+  itemId: string;
+  authority: JobContext | undefined;
+  version: number;
+  sessionId: string | null;
+  generation: number;
+  controller: AbortController;
+  progress: string | null;
+  done: Promise<void>;
+  finish(): void;
+};
 
 type Deferred<T> = T | ((q: Q) => Steps<T>);
 
