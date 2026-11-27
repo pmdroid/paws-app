@@ -2,6 +2,7 @@ import { configFromSections, issueVmSettings } from "../config";
 import {
   activeIssueVmGrantsSteps,
   auditWorkspaceAccessSteps,
+  failingIssueVmDeletesSteps,
   insertIssueVmGrantSteps,
   issueVmStateCountsSteps,
   listWorkspaceMembersSteps,
@@ -66,8 +67,10 @@ function* membersSteps(q: Q, workspaceId: string, at: number) {
   const members = (yield* listWorkspaceMembersSteps(q, workspaceId)).filter(workspaceMemberUsable);
   const grants = yield* activeIssueVmGrantsSteps(q, { workspaceId, at });
   const counts = yield* issueVmStateCountsSteps(q, workspaceId);
+  const failingDeletes = yield* failingIssueVmDeletesSteps(q, workspaceId);
   return {
     defaultLimit,
+    failingDeletes,
     members: members.map((member): IssueVmMemberView => {
       const inUse = { creating: 0, awake: 0, asleep: 0, total: 0 };
       for (const row of counts.filter((count) => count.memberUserId === member.id)) {
@@ -196,6 +199,7 @@ export async function handleIssueVmGrantRequest(
     if (admin) return json(listing);
     return json({
       defaultLimit: listing.defaultLimit,
+      failingDeletes: listing.failingDeletes.filter((vm) => vm.memberUserId === principal.userId),
       members: listing.members.filter((member) => member.userId === principal.userId),
     });
   }

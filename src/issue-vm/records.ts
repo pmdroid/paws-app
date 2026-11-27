@@ -3,7 +3,10 @@ import {
   insertIssueVmSteps,
   issueVmByIdSteps,
   openIssueVmAwakeSteps,
+  runnerStandingSteps,
   updateLiveIssueVmStateSteps,
+  updateRunnerStatusSteps,
+  type IssueVm,
   type IssueVmState,
   type NewIssueVm,
   type Q,
@@ -55,4 +58,17 @@ export function* markIssueVmAwakeSteps(q: Q, input: { id: string; now: number })
 
 export function* markIssueVmAsleepSteps(q: Q, input: { id: string; now: number }) {
   return yield* setIssueVmStateSteps(q, { ...input, state: "asleep" });
+}
+
+export function* revokeIssueVmRunnerSteps(q: Q, vm: IssueVm, now: number) {
+  if (vm.runnerId === null) return;
+  const standing = yield* runnerStandingSteps(q, vm.runnerId);
+  if (standing === null || standing.revokedAt !== null) return;
+  yield* updateRunnerStatusSteps(q, {
+    runnerId: vm.runnerId,
+    workspaceId: vm.workspaceId,
+    userId: vm.memberUserId,
+    status: "revoked",
+    now,
+  });
 }

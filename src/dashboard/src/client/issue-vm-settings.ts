@@ -14,6 +14,7 @@ type Member = {
   limit: number;
   grant: Grant | null;
 };
+type FailingDelete = { id: string; itemId: string; memberUserId: string; failure: string | null };
 type HostSize = Record<string, number | null>;
 type Host = {
   runnerId: string;
@@ -107,6 +108,7 @@ export function createIssueVmSettings() {
   let limits: Limits | null = null;
   let spend: Spend | null = null;
   let members: Member[] = [];
+  let failingDeletes: FailingDelete[] = [];
   let runners: { id: string; name: string }[] = [];
   let hosts = new Map<string, Host>();
   let notes: Record<string, Note> = {};
@@ -171,6 +173,20 @@ export function createIssueVmSettings() {
     return section(
       "Extra usage",
       `<p class="sub">A grant replaces a member's limit until it ends.</p>${table}${form}${note("grants")}`,
+    );
+  };
+  const deletesSection = () => {
+    if (!failingDeletes.length) return "";
+    const owner = (id: string) => members.find((member) => member.userId === id)?.name ?? id;
+    const rows = failingDeletes
+      .map(
+        (row) =>
+          `<li data-vm-delete-failing="${esc(row.id)}"><span class="mono">${esc(row.id)}</span> for ${esc(row.itemId)} (${esc(owner(row.memberUserId))}): ${esc(row.failure ?? "The delete failed.")}</li>`,
+      )
+      .join("");
+    return section(
+      "Failing deletes",
+      `<div role="alert"><p>Paws could not delete these issue VMs and keeps retrying.</p><ul class="col" aria-label="Issue VMs Paws could not delete">${rows}</ul></div>`,
     );
   };
   const hostForm = (host: Host) => {
@@ -238,8 +254,8 @@ export function createIssueVmSettings() {
     renderMarkup(
       root,
       admin()
-        ? `${limitsSection()}${spendSection()}${grantsSection()}${vmSection()}${hostsSection()}`
-        : `${spendSection()}${grantsSection()}${vmSection()}`,
+        ? `${deletesSection()}${limitsSection()}${spendSection()}${grantsSection()}${vmSection()}${hostsSection()}`
+        : `${deletesSection()}${spendSection()}${grantsSection()}${vmSection()}`,
     );
   };
   const vmRequest = async (body?: unknown) => {
@@ -255,8 +271,12 @@ export function createIssueVmSettings() {
     }
   };
   const fetchMembers = async () => {
-    members = (await request<{ members: Member[] }>(engine!, "/api/settings/issue-vm/members"))
-      .members;
+    const read = await request<{ members: Member[]; failingDeletes?: FailingDelete[] }>(
+      engine!,
+      "/api/settings/issue-vm/members",
+    );
+    members = read.members;
+    failingDeletes = read.failingDeletes ?? [];
   };
   const loadMembers = () => attempt("grants", fetchMembers);
   const refreshMembers = async (done: string) => {
@@ -444,6 +464,7 @@ export function createIssueVmSettings() {
       spend = null;
       vm = null;
       members = [];
+      failingDeletes = [];
       hosts = new Map();
       notes = {};
       root.addEventListener("submit", submit);

@@ -22,6 +22,7 @@ let spend: Record<string, unknown>;
 let host: Record<string, unknown>;
 let failing: Set<string>;
 let others: Record<string, unknown>[];
+let failingDeletes: Record<string, unknown>[];
 let sizes: Record<string, Record<string, unknown>>;
 let offProviders: string[];
 let instaBoxKey: boolean;
@@ -54,6 +55,7 @@ beforeEach(() => {
   };
   failing = new Set();
   others = [];
+  failingDeletes = [];
   sizes = { "exe-dev": {}, boat: {}, instabox: {} };
   offProviders = [];
   instaBoxKey = true;
@@ -98,7 +100,11 @@ beforeEach(() => {
       return Response.json(spend);
     }
     if (path === "/api/settings/issue-vm/members")
-      return Response.json({ defaultLimit: limits.perMember, members: [member(), ...others] });
+      return Response.json({
+        defaultLimit: limits.perMember,
+        failingDeletes,
+        members: [member(), ...others],
+      });
     if (path === "/api/settings/issue-vm/grants") {
       if (body.limit > 50)
         return Response.json(
@@ -199,6 +205,17 @@ test("an admin saves each limit and sees an out-of-range value refused", async (
   type(root, "#issue-vm-workspaceMax", "900");
   await submit(root, "[data-limits]");
   expect(root.querySelector('[role="alert"]')?.textContent).toContain("from 1 to 500");
+});
+
+test("an issue VM Paws could not delete shows its failure, and none shows no section", async () => {
+  expect((await mount()).querySelector("[data-vm-delete-failing]")).toBeNull();
+  failingDeletes = [
+    { id: "01KVM", itemId: "PAS-9", memberUserId: "user-2", failure: "The VM host refused" },
+  ];
+  const root = await mount(false);
+  const row = root.querySelector('[data-vm-delete-failing="01KVM"]');
+  expect(row?.textContent).toBe("01KVM for PAS-9 (Robin): The VM host refused");
+  expect(row?.closest('[role="alert"]')?.textContent).toContain("keeps retrying");
 });
 
 test("an admin adds and revokes a grant", async () => {

@@ -8,10 +8,12 @@ import {
   isNotNull,
   isNull,
   lt,
+  lte,
   max,
   notInArray,
   or,
 } from "drizzle-orm";
+import { TERMINAL_WORK_ITEM_STATES } from "../core";
 import { type Q } from "./db";
 import { ulid } from "./ulid";
 
@@ -135,6 +137,7 @@ export function* moveIssueVmSteps(
       .set({
         ...rest,
         ...(state === undefined ? {} : { state, stateAt: input.now }),
+        ...(state === "deleted" ? { deletedAt: input.now } : {}),
         generation: input.generation + 1,
       })
       .where(
@@ -526,4 +529,51 @@ export function* issueVmRunnersSteps(q: Q) {
       .where(and(notInArray(v.state, ENDED_STATES), isNotNull(v.runnerId))),
   );
   return rows as { itemId: string; runnerId: string }[];
+}
+
+export function* issueVmsToDeleteSteps(q: Q, input: { asleepBefore: number }) {
+  const { issueVm: v, workItem: i } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ vm: v })
+      .from(v)
+      .innerJoin(i, eq(i.id, v.itemId))
+      .where(
+        and(
+          inArray(v.state, ["creating", "awake", "asleep"]),
+          isNull(v.operation),
+          or(
+            inArray(i.state, [...TERMINAL_WORK_ITEM_STATES]),
+            and(eq(v.state, "asleep"), eq(v.want, "asleep"), lte(v.stateAt, input.asleepBefore)),
+          ),
+        ),
+      )
+      .orderBy(v.id),
+  );
+  return rows.map((row) => row.vm as IssueVm);
+}
+
+export function* deletingIssueVmsSteps(q: Q) {
+  const { issueVm: v } = q.t;
+  const rows = yield* q.all(q.orm.select().from(v).where(eq(v.state, "deleting")).orderBy(v.id));
+  return rows as IssueVm[];
+}
+
+export function* failingIssueVmDeletesSteps(q: Q, workspaceId: string) {
+  const { issueVm: v } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({
+        id: v.id,
+        itemId: v.itemId,
+        memberUserId: v.memberUserId,
+        provider: v.provider,
+        failure: v.failure,
+        since: v.stateAt,
+        retryAt: v.deadlineAt,
+      })
+      .from(v)
+      .where(and(eq(v.workspaceId, workspaceId), eq(v.state, "deleting"), isNotNull(v.failure)))
+      .orderBy(v.id),
+  );
 }
