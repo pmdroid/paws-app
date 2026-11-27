@@ -430,6 +430,7 @@ import {
   failedCloseoutReviewsSteps,
   getLinkAskSteps,
   getPublishedHeadSteps,
+  carriedAcceptForSteps,
   latestRunningAnswerSteps,
   listCloseoutRecoveriesSteps,
   listCloseoutRoundsSteps,
@@ -676,6 +677,7 @@ import {
   wakeMergesBehind,
   postMergeConflictSteps,
   type MergePublication,
+  type MergePull,
   type MergeStep,
   type MergeWait,
   type OrderCapabilities,
@@ -6506,6 +6508,7 @@ export class Orchestrator {
       {
         ...this.orderCapabilities(itemId),
         publish: (item) => this.publishForMerge(item, run),
+        openPull: (item) => this.openPullForMerge(item),
         ...(this.options.runnerRebase ? { runnerRebase: this.options.runnerRebase } : {}),
         settings: (item, signal) => this.mergeSettingsFor(item, signal, mergePolicy),
         policyDigests,
@@ -6650,6 +6653,23 @@ export class Orchestrator {
     )
       throw new LinearReconciliationPendingError("Another Linear task owns this session");
     yield* activateLinearItemSteps(q, sessionId, item.id);
+  }
+
+  private async openPullForMerge(item: WorkItemRecord): Promise<MergePull | null> {
+    const accepted = item.acceptedHead;
+    const repository = await this.repositoryForItem(item);
+    const github = repository ? this.githubForRepository(repository) : null;
+    if (accepted === null || !repository || !github) return null;
+    const open = await this.store.run(function* (q) {
+      const pull = yield* getItemPullRequestSteps(q, item.id);
+      const head = yield* getPublishedHeadSteps(q, item.id);
+      if (pull === null || head === null) return null;
+      const at = head === accepted || (yield* carriedAcceptForSteps(q, item.id, head)) === accepted;
+      return at ? { pull: { number: pull.pullNumber, url: pull.pullUrl }, head } : null;
+    });
+    if (open === null) return null;
+    const signal = (await this.signalForItem(item.id)) ?? new AbortController().signal;
+    return { github, repository, ...open, signal };
   }
 
   private async publishForMerge(

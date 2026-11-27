@@ -1057,6 +1057,57 @@ describe("advanceMerge while the pull request waits for a review", () => {
     expect(h.bodies("afterPullRequest")).toEqual([]);
   });
 
+  test("a missing review waits before any git work, even while fetch fails, and merges once approved", async () => {
+    const h = await waiting();
+    await joinMergeQueue(h.db, { itemId: "ENG-1", repository: "acme/app", now: h.clock.now() });
+    const gitCalls: string[][] = [];
+    h.state.beforeGit = (args) => {
+      gitCalls.push(args);
+      if (args.includes("fetch"))
+        throw new Error("fetch failed: Git process cleanup could not be verified");
+    };
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "review" });
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "review" });
+    expect(h.bodies("afterPullRequest")).toEqual([NOTICE]);
+    expect(await queued(h)).toEqual([]);
+    expect(gitCalls).toEqual([]);
+    expect(h.published).toEqual([]);
+    expect((await getWorkItem(h.db, "ENG-1"))?.state).toBe("merge_queue");
+
+    h.state.beforeGit = () => {};
+    h.state.reviews.set(1, "APPROVED");
+    expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
+    expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([
+      await h.remoteHead("ENG-1"),
+    ]);
+  });
+
+  test("an unreadable review still waits without merging", async () => {
+    const h = await waiting();
+    h.state.reviews.set(1, "UNREADABLE");
+    expect(await h.pass("ENG-1")).toMatchObject({
+      kind: "wait",
+      reason: "review",
+      message: "Could not read the pull request's reviews.",
+    });
+    expect(h.github.merged).toEqual([]);
+    expect(h.bodies("afterPullRequest")).toEqual([]);
+  });
+
+  test("the GitHub merge queue path waits for the review before any git work", async () => {
+    const queue = createFakeMergeQueue();
+    const h = await start({ settings: { order: "github-queue" }, queue });
+    await h.addItem("ENG-1");
+    h.state.reviews.set(1, "REVIEW_REQUIRED");
+    h.state.beforeGit = () => {
+      throw new Error("fetch failed");
+    };
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "review" });
+    expect(h.bodies("afterPullRequest")).toEqual([NOTICE]);
+    expect(h.published).toEqual([]);
+    expect(queue.enqueued).toEqual([]);
+  });
+
   test("a pull request that starts conflicting while it waits goes back on the next turn", async () => {
     const h = await waiting();
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "review" });
