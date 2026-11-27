@@ -418,9 +418,7 @@ a.evidence-thumb:focus-visible {
   gap: 0.75rem;
   align-items: flex-start;
   padding: 0.625rem 0.75rem;
-  border: 1px solid color-mix(in srgb, var(--alert) 40%, var(--border));
-  border-left-width: 4px;
-  border-left-color: var(--alert);
+  border: 1px solid color-mix(in srgb, var(--alert) 55%, var(--border));
   border-radius: 0.375rem;
   background: color-mix(in srgb, var(--alert) 8%, var(--secondary-background));
   overflow-wrap: anywhere;
