@@ -116,7 +116,7 @@ test("a failed preparation releases its reservation and the next recovering item
             if (request.itemId !== failing)
               await waitFor(
                 async () => failedRun !== undefined && !(await reservationHeld(db, failedRun)),
-                { timeout: 60_000, what: "the failed preparation to release its reservation" },
+                { timeoutMs: 60_000, what: "the failed preparation to release its reservation" },
               );
             return placement.candidates(request);
           },
