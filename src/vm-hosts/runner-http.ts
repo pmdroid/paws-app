@@ -21,16 +21,30 @@ export type VmHostRunnerView =
       vms: HostVm[];
     };
 
+const VmId = z.string().regex(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
+
 const UnitReportSchema = z.strictObject({
-  running: z.array(z.string().regex(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/)).max(254),
+  running: z.array(VmId).max(254),
+  refused: z
+    .array(z.strictObject({ id: VmId, reason: z.string().min(1).max(300) }))
+    .max(254)
+    .optional(),
 });
 
-function* viewSteps(q: Q, runnerId: string, running: string[] | null, now: number) {
+type UnitReport = z.infer<typeof UnitReportSchema>;
+
+function* viewSteps(q: Q, runnerId: string, report: UnitReport | null, now: number) {
+  const running = report?.running ?? null;
   const runner = yield* getRunnerSteps(q, runnerId);
   const machine = runner ? yield* vmHostMachineSteps(q, runner.workspaceId, runnerId) : null;
   if (!machine?.host) return { vmHost: false } as VmHostRunnerView;
   if (running !== null)
-    yield* reportHostIssueVmUnitsSteps(q, { hostRunnerId: runnerId, running, now });
+    yield* reportHostIssueVmUnitsSteps(q, {
+      hostRunnerId: runnerId,
+      running,
+      refused: report?.refused,
+      now,
+    });
   const vms = yield* liveHostIssueVmsSteps(q, runnerId);
   return {
     vmHost: true,
@@ -62,7 +76,5 @@ export async function handleVmHostRunnerRequest(
   const report = UnitReportSchema.safeParse(parsed);
   if (!report.success)
     return Response.json({ error: "The unit report is not valid." }, { status: 400 });
-  return Response.json(
-    await db.transaction((q) => viewSteps(q, runnerId, report.data.running, now())),
-  );
+  return Response.json(await db.transaction((q) => viewSteps(q, runnerId, report.data, now())));
 }

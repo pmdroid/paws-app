@@ -8,6 +8,7 @@ import {
   runningIssueVmIds,
   systemdIssueVmUnits,
   type IssueVmHostView,
+  type IssueVmSleepRefusal,
   type IssueVmUnits,
   type RunnerDaemon,
 } from "../runner-daemon";
@@ -32,7 +33,9 @@ const ISSUE_VM_EVERY_MS = 30_000;
 const ISSUE_VM_ENROLL_DIR = "/var/lib/paws-runner/issue-vm-enroll";
 
 export function issueVmReconciler(
-  daemon: { issueVmHost(running?: string[]): Promise<IssueVmHostView> },
+  daemon: {
+    issueVmHost(running?: string[], refused?: IssueVmSleepRefusal[]): Promise<IssueVmHostView>;
+  },
   units: IssueVmUnits | null,
   now: () => number = Date.now,
   enrollDir = ISSUE_VM_ENROLL_DIR,
@@ -51,8 +54,10 @@ export function issueVmReconciler(
       const running = async () => runningIssueVmIds(await units.active());
       const view = await daemon.issueVmHost(await running());
       const result = await reconcileIssueVms(units, view, stage);
-      if (view.vmHost && (result.started.length > 0 || result.stopped.length > 0))
-        await daemon.issueVmHost(await running());
+      const refused = result.refused.map(({ machine, reason }) => ({ id: machine.id, reason }));
+      const changed = result.started.length > 0 || result.stopped.length > 0;
+      if (view.vmHost && (changed || refused.length > 0))
+        await daemon.issueVmHost(await running(), refused);
     } catch (error) {
       journalCaught(error, "runner-cli/daemon.issueVmReconciler", null);
     }

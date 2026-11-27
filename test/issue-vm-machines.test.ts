@@ -16,10 +16,11 @@ import { join } from "node:path";
 import {
   recordRunnerHostStatusSteps,
   saveVmHostSteps,
+  setIssueVmWantSteps,
   type Db,
   type IssueVmState,
 } from "../src/db";
-import { recordIssueVmSteps, setIssueVmStateSteps } from "../src/issue-vm";
+import { createHostIssueVmDriver, recordIssueVmSteps, setIssueVmStateSteps } from "../src/issue-vm";
 import { setJournalSink } from "../src/journal";
 import { issueVmReconciler } from "../src/runner-cli/daemon";
 import {
@@ -254,29 +255,39 @@ function vmScript(active: string[] = []) {
     bin,
     "systemctl",
     `[[ $1 == list-units ]] || exit 0
-for unit in ${active.join(" ")}; do [[ $unit == \${@: -1}.service ]] && echo "$unit loaded active running x"; done
+for unit in ${active.join(" ")}; do [[ $unit == \${@: -1}.service || $unit == "\${@: -1}" ]] && echo "$unit loaded active running x"; done
 true`,
   );
   writeFileSync(join(bin, "awk"), '#!/bin/sh\nexec mawk "$@"\n');
   chmodSync(join(bin, "awk"), 0o755);
   stub(lib, "cloud-hypervisor");
   const proc = join(root, "proc");
+  const checks = join(root, "checks");
+  const env = (extra: Record<string, string>) => ({
+    ...extra,
+    PAWS_ISSUE_VM_CHECKS: checks,
+    PAWS_ISSUE_VM_PROC: proc,
+    PATH: `${bin}:/usr/bin:/bin`,
+    PAWS_ISSUE_VM_LIB: lib,
+    PAWS_ISSUE_VM_STATE: state,
+    PAWS_ISSUE_VM_DEV: dev,
+    PAWS_ISSUE_VM_ENROLL: enroll,
+    PAWS_ISSUE_VM_CONFIG: config,
+    PAWS_ISSUE_VM_NETWORK: join(import.meta.dir, "../deploy/linux/issue-vm-network.py"),
+  });
+  const script = join(import.meta.dir, "../deploy/issue-vm/vm.sh");
   const run = (operation: string, instance: string, extra: Record<string, string> = {}) =>
-    Bun.spawnSync([join(import.meta.dir, "../deploy/issue-vm/vm.sh"), operation, instance], {
-      env: {
-        ...extra,
-        PAWS_ISSUE_VM_PROC: proc,
-        PATH: `${bin}:/usr/bin:/bin`,
-        PAWS_ISSUE_VM_LIB: lib,
-        PAWS_ISSUE_VM_STATE: state,
-        PAWS_ISSUE_VM_DEV: dev,
-        PAWS_ISSUE_VM_ENROLL: enroll,
-        PAWS_ISSUE_VM_CONFIG: config,
-        PAWS_ISSUE_VM_NETWORK: join(import.meta.dir, "../deploy/linux/issue-vm-network.py"),
-      },
-    });
+    Bun.spawnSync([script, operation, instance], { env: env(extra) });
+  const runAsync = async (operation: string, instance: string) => {
+    const child = Bun.spawn([script, operation, instance], { env: env({}), stderr: "pipe" });
+    const [code, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stderr as ReadableStream).text(),
+    ]);
+    return { code, stderr };
+  };
   const calls = () => readFileSync(log, "utf8");
-  return { run, calls, lib, dev, state, copied, enroll, config, proc };
+  return { run, runAsync, calls, lib, dev, state, copied, enroll, config, proc, checks };
 }
 
 test("vm.sh seeds the VM, starts its network rules and runs Cloud Hypervisor with its disk, TAP and size", () => {
@@ -297,6 +308,7 @@ test("vm.sh seeds the VM, starts its network rules and runs Cloud Hypervisor wit
       `--disk path=${dev}/${A},image_type=raw path=${state}/seed-${A}.img,readonly=on,image_type=raw`,
       "--cpus boot=2 --memory size=4G",
       "--net tap=pawsvm7,ip=10.199.7.1,mask=255.255.255.0,mac=52:54:00:c7:00:07",
+      `--vsock cid=3,socket=${state}/${A}/vsock.sock`,
       `--serial file=${state}/${A}/serial.log --console off --api-socket path=${state}/${A}/api.sock`,
     ].join(" "),
   );
@@ -527,4 +539,217 @@ test("the daemon reports its running units before and after a pass that changed 
   expect(reports).toEqual([[A], [B]]);
   await tick();
   expect(reports).toEqual([[A], [B], [B]]);
+});
+
+test("vm.sh asks the running VM over its vsock for the sign-in check and keeps the answer for the runner", async () => {
+  const { runAsync, state, checks } = vmScript([
+    `paws-issue-vm@${A}-7-2-4.service`,
+    `paws-issue-vm@${B}-8-2-4.service`,
+  ]);
+  mkdirSync(join(state, A), { recursive: true });
+  let answer = "";
+  const asked: string[] = [];
+  const server = Bun.listen({
+    unix: join(state, A, "vsock.sock"),
+    socket: {
+      data(socket, data) {
+        asked.push(data.toString());
+        socket.end(answer);
+      },
+    },
+  });
+  cleanups.push(() => server.stop(true));
+  const check = async (instance: string) => {
+    const { code } = await runAsync("sleep-check", instance);
+    return [code, readFileSync(join(checks, `${instance}.out`), "utf8")];
+  };
+
+  answer = "OK 1073741824\nNo agent sign-ins remain.\npaws-sleep-check-exit=0\n";
+  expect(await check(`${A}-7-2-4`)).toEqual([0, "No agent sign-ins remain.\n"]);
+  expect(asked).toEqual(["CONNECT 7101\n"]);
+  answer = "OK 1073741824\nAgent sign-ins remain: 1 sign-in file\npaws-sleep-check-exit=1\n";
+  expect(await check(`${A}-7-2-4`)).toEqual([1, "Agent sign-ins remain: 1 sign-in file\n"]);
+  answer = "OK 1073741824\nAgent sign-ins remain: 1 sign-in file\n";
+  expect(await check(`${A}-7-2-4`)).toEqual([1, "Agent sign-ins remain: 1 sign-in file\n"]);
+  answer = "";
+  expect(await check(`${A}-7-2-4`)).toEqual([1, "The VM did not answer the sign-in check\n"]);
+
+  const [code, missing] = await check(`${B}-8-2-4`);
+  expect(code).toBe(1);
+  expect(missing).toStartWith("The VM did not answer the sign-in check: ");
+  expect(await check(`${C}-9-2-4`)).toEqual([1, `Issue VM ${C}-9-2-4 is not running\n`]);
+  expect(statSync(join(checks, `${C}-9-2-4.out`)).mode & 0o777).toBe(0o644);
+});
+
+test("the polkit rule lets paws-runner start and stop issue VM units and only start their sign-in check", () => {
+  const rules: ((
+    action: { id: string; lookup(name: string): string | undefined },
+    subject: { user: string },
+  ) => unknown)[] = [];
+  new Function(
+    "polkit",
+    readFileSync(join(import.meta.dir, "../deploy/issue-vm/paws-issue-vm.polkit"), "utf8"),
+  )({ Result: { YES: "yes" }, addRule: (rule: (typeof rules)[number]) => rules.push(rule) });
+  const decide = (verb: string, unit: string, user = "paws-runner") =>
+    rules[0]!(
+      { id: "org.freedesktop.systemd1.manage-units", lookup: (name) => ({ verb, unit })[name] },
+      { user },
+    );
+  for (const verb of ["start", "stop"])
+    expect(decide(verb, `paws-issue-vm@${A}-254-32-128.service`)).toBe("yes");
+  expect(decide("start", `paws-issue-vm-sleep-check@${A}-1-2-4.service`)).toBe("yes");
+  expect(decide("stop", `paws-issue-vm-sleep-check@${A}-1-2-4.service`)).toBeUndefined();
+  expect(decide("restart", `paws-issue-vm@${A}-1-2-4.service`)).toBeUndefined();
+  for (const unit of [
+    `paws-issue-vm@${A}-255-2-4.service`,
+    `paws-issue-vm-sleep-check@${A}-0-2-4.service`,
+    `paws-issue-vm-sleep-check@${A}-1-2-4.service x`,
+    `paws-issue-vm-other@${A}-1-2-4.service`,
+  ])
+    expect(decide("start", unit)).toBeUndefined();
+  expect(decide("start", `paws-issue-vm@${A}-1-2-4.service`, "paws-agent")).toBeUndefined();
+});
+
+test("the systemd sign-in check starts the VM's check unit and reads why it failed", async () => {
+  const checks = mkdtempSync(join(tmpdir(), "issue-vm-checks-"));
+  cleanups.push(() => rmSync(checks, { recursive: true, force: true }));
+  writeFileSync(join(checks, `${B}-2-2-4.out`), "Agent sign-ins remain: 1 sign-in file\n");
+  const started: string[][] = [];
+  const spawn = ((argv: string[]) => {
+    started.push(argv);
+    const failed = argv.some((arg) => arg.includes(B) || arg.includes(C));
+    return {
+      exited: Promise.resolve(failed ? 3 : 0),
+      stdout: new Response("").body,
+      stderr: new Response("").body,
+    };
+  }) as unknown as typeof Bun.spawn;
+  const units = systemdIssueVmUnits(spawn, checks);
+  expect(await units.sleepCheck(issueVmUnit(A, 1, SIZE))).toBeNull();
+  expect(await units.sleepCheck(issueVmUnit(B, 2, SIZE))).toBe(
+    "Agent sign-ins remain: 1 sign-in file\n",
+  );
+  expect(await units.sleepCheck(issueVmUnit(C, 3, SIZE))).toBe(
+    "The sign-in check in the VM failed",
+  );
+  await expect(units.sleepCheck("paws-issue-vm@x.service")).rejects.toThrow("not an issue VM");
+  expect(started[0]).toEqual([
+    "/usr/bin/systemctl",
+    "start",
+    "--no-ask-password",
+    `paws-issue-vm-sleep-check@${A}-1-2-4.service`,
+  ]);
+});
+
+test("the host stops a VM that wants asleep only after its sign-in check passes", async () => {
+  const fake = createFakeIssueVmUnits();
+  const a = issueVmUnit(A, 1, SIZE);
+  fake.active.add(a);
+  fake.active.add(issueVmUnit(C, 2, SIZE));
+  fake.refusals.set(a, "  Agent sign-ins remain: 1 sign-in file\n");
+  const wanted: IssueVmHostView = {
+    vmHost: true,
+    slots: 2,
+    size: SIZE,
+    vms: [
+      { id: A, state: "awake", want: "asleep" },
+      { id: B, state: "creating", want: "awake" },
+      { id: C, state: "deleting", want: "asleep" },
+    ],
+  };
+  const refused = await reconcileIssueVms(fake.units, wanted);
+  expect(refused.refused).toEqual([
+    {
+      machine: { id: A, slot: 1, ...SIZE, unit: a },
+      reason: "Agent sign-ins remain: 1 sign-in file",
+    },
+  ]);
+  expect(refused.stopped.map(({ machine, reason }) => [machine.id, reason])).toEqual([
+    [C, "deleting"],
+  ]);
+  expect(refused.started.map((found) => [found.id, found.slot])).toEqual([[B, 2]]);
+  expect(fake.calls.slice(0, 2)).toEqual([`check ${a}`, `stop ${issueVmUnit(C, 2, SIZE)}`]);
+  expect(fake.active.has(a)).toBe(true);
+
+  fake.refusals.delete(a);
+  const slept = await reconcileIssueVms(fake.units, wanted);
+  expect(slept.refused).toEqual([]);
+  expect(slept.stopped.map(({ machine, reason }) => [machine.id, reason])).toEqual([[A, "asleep"]]);
+  expect(fake.calls.slice(-2)).toEqual([`check ${a}`, `stop ${a}`]);
+
+  fake.active.add(a);
+  const broken = { ...fake.units, sleepCheck: () => Promise.reject(new Error("no polkit")) };
+  const failed = await reconcileIssueVms(broken, wanted);
+  expect(failed.refused.map(({ reason }) => reason)).toEqual(["The sign-in check could not run"]);
+  expect(fake.active.has(a)).toBe(true);
+});
+
+test("a refused sleep reaches Paws, which fails the host VM's sleep with the reason", async () => {
+  const db = await store();
+  await host(db);
+  await db.run((q) =>
+    recordRunnerHostStatusSteps(q, HOST, { cpuCount: 20, memoryTotalBytes: 121 * 1024 ** 3 }, 1),
+  );
+  await db.run((q) =>
+    saveVmHostSteps(q, {
+      runnerId: HOST,
+      vmVcpus: 2,
+      vmMemoryGb: 4,
+      vmDiskGb: 30,
+      reserveVcpus: 4,
+      reserveMemoryGb: 8,
+      slotCap: 3,
+      updatedAt: 1,
+      updatedBy: "ada",
+    }),
+  );
+  await vm(db, A, "awake");
+  await db.run((q) => setIssueVmWantSteps(q, { id: A, want: "asleep" }));
+  let clock = 100;
+  const bodies: unknown[] = [];
+  const daemon = {
+    async issueVmHost(running?: string[], refused?: { id: string; reason: string }[]) {
+      const body =
+        refused === undefined || refused.length === 0 ? { running } : { running, refused };
+      bodies.push(body);
+      const posted = new Request("https://runner.paws.test/v1/issue-vms", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      const response = await handleVmHostRunnerRequest(posted, HOST, db, () => clock);
+      return (await response!.json()) as IssueVmHostView;
+    },
+  };
+  const fake = createFakeIssueVmUnits();
+  const a = issueVmUnit(A, 1, SIZE);
+  fake.active.add(a);
+  fake.refusals.set(a, "Agent sign-ins remain: 1 sign-in file");
+  const tick = issueVmReconciler(daemon, fake.units, () => (clock += 30_000));
+  const driver = createHostIssueVmDriver({ store: db, now: () => clock, wait: () => tick() });
+  await expect(
+    driver.sleep(A, { generation: 0, signal: new AbortController().signal }),
+  ).rejects.toThrow(`Issue VM ${A} can't sleep yet: Agent sign-ins remain: 1 sign-in file`);
+  expect(bodies).toEqual([
+    { running: [A] },
+    { running: [A], refused: [{ id: A, reason: "Agent sign-ins remain: 1 sign-in file" }] },
+  ]);
+  expect(fake.active.has(a)).toBe(true);
+
+  const bad = (refused: unknown) =>
+    handleVmHostRunnerRequest(
+      new Request("https://runner.paws.test/v1/issue-vms", {
+        method: "POST",
+        body: JSON.stringify({ running: [A], refused }),
+      }),
+      HOST,
+      db,
+    );
+  expect((await bad([{ id: A, reason: "" }]))!.status).toBe(400);
+  expect((await bad([{ id: A, reason: "x", extra: 1 }]))!.status).toBe(400);
+  expect((await bad([{ id: "nope", reason: "x" }]))!.status).toBe(400);
+
+  fake.refusals.delete(a);
+  clock += 1;
+  await driver.sleep(A, { generation: 0, signal: new AbortController().signal });
+  expect(fake.active.has(a)).toBe(false);
 });

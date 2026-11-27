@@ -29,6 +29,7 @@ export {
   type IssueVmMachine,
   type IssueVmMachineSize,
   type IssueVmReconcile,
+  type IssueVmSleepRefusal,
   type IssueVmStopReason,
   type IssueVmUnits,
 } from "./issue-vm-machines";

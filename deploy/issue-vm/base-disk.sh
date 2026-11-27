@@ -177,6 +177,7 @@ inspect() {
   esac
   [ "$(readlink "$root/opt/paws-runner/bin/paws-runner" 2>/dev/null)" = ../current/bin/paws-runner ] || fail "the paws-runner command does not point at the current release"
   grep -qx 'vm.overcommit_memory = 1' "$root/etc/sysctl.d/90-paws-overcommit.conf" 2>/dev/null || fail "vm.overcommit_memory is not set to 1"
+  [ -L "$root/etc/systemd/system/sockets.target.wants/paws-sleep-check.socket" ] || fail "the sign-in check socket is not enabled"
   [ -x "$root/usr/local/bin/kind" ] || fail "kind is missing"
   [ -x "$root/usr/bin/dockerd" ] || fail "Docker Engine is missing"
   [ "$failed" -eq 0 ]

@@ -1,0 +1,19 @@
+[Unit]
+Description=Paws sign-in check in issue VM %i
+CollectMode=inactive-or-failed
+
+[Service]
+Type=oneshot
+User=paws-issue-vm
+Group=paws-issue-vm
+ExecStart=/usr/local/sbin/paws-issue-vm sleep-check %i
+RuntimeDirectory=paws-issue-vm-sleep-check
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+TimeoutStartSec=60s
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+UMask=0022
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
