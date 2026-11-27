@@ -843,6 +843,7 @@ test("a creating VM gets its disk before its first start, waits while the pool i
     [B, "unknown"],
   ]);
   expect(freed.disksRemoved).toEqual([A, B]);
+  expect(freed.disks).toEqual([C]);
   expect(freed.started.map((found) => found.id)).toEqual([C]);
   expect([...disk.volumes.keys()]).toEqual([C]);
 
@@ -856,6 +857,7 @@ test("a creating VM gets its disk before its first start, waits while the pool i
   );
   expect(old.started.map((found) => found.id)).toEqual([D]);
   expect(old.disksRemoved).toEqual([]);
+  expect(old.disks).toBeUndefined();
   expect(disk.calls.length).toBe(calls);
   expect([...disk.volumes.keys()]).toEqual([C]);
 });
@@ -872,6 +874,20 @@ test("a runner that is no VM host in Paws stops its VMs and then removes their d
   expect(fake.calls).toEqual([`stop ${issueVmUnit(A, 1, SIZE)}`]);
   expect(result.disksRemoved).toEqual([A, B]);
   expect(disk.volumes.size).toBe(0);
+});
+
+test("a disk the host failed to remove is not reported gone", async () => {
+  const fake = createFakeIssueVmUnits();
+  const disk = createFakeIssueVmDiskHelper({ poolBytes: 100 * GIB, baseBytes: 8 * GIB });
+  const disks = issueVmDisks(async (operation) => {
+    if (operation.startsWith("delete-")) throw new Error("lvremove failed");
+    return disk.helper(operation);
+  });
+  await disks.clone(A, { diskGb: 30, memoryGb: 4 });
+  const result = await reconcileIssueVms(fake.units, { vmHost: false }, undefined, disks);
+  expect(result.disksRemoved).toEqual([]);
+  expect(result.disks).toBeUndefined();
+  expect([...disk.volumes.keys()]).toEqual([A]);
 });
 
 test("Paws mints one live bootstrap token for a creating host VM whose unit isn't running, and records the runner it enrolls", async () => {

@@ -203,6 +203,7 @@ export function* reportHostIssueVmUnitsSteps(
     hostRunnerId: string;
     running: string[];
     refused?: { id: string; reason: string }[];
+    disks?: string[];
     now: number;
   },
 ) {
@@ -214,6 +215,12 @@ export function* reportHostIssueVmUnitsSteps(
       .set({
         unitRunning: input.running.length === 0 ? false : inArray(v.id, input.running),
         unitSeenAt: input.now,
+        ...(input.disks === undefined
+          ? {}
+          : {
+              diskPresent: input.disks.length === 0 ? false : inArray(v.id, input.disks),
+              diskSeenAt: input.now,
+            }),
       })
       .where(live),
   );
@@ -272,6 +279,8 @@ export type HostIssueVmUnit = {
   sleepRefusal: string | null;
   sleepRefusedAt: number | null;
   tokenMintedAt: number | null;
+  diskPresent: boolean | null;
+  diskSeenAt: number | null;
 };
 
 export function* hostIssueVmUnitSteps(q: Q, id: string) {
@@ -288,6 +297,8 @@ export function* hostIssueVmUnitSteps(q: Q, id: string) {
         sleepRefusal: v.sleepRefusal,
         sleepRefusedAt: v.sleepRefusedAt,
         tokenMintedAt: v.tokenMintedAt,
+        diskPresent: v.diskPresent,
+        diskSeenAt: v.diskSeenAt,
       })
       .from(v)
       .where(eq(v.id, id)),

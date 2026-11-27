@@ -183,10 +183,10 @@ async function hostSubject(store: Db): Promise<Subject> {
     }
   };
   const daemon = {
-    async issueVmHost(running?: string[]) {
+    async issueVmHost(running?: string[], _refused?: unknown, disks?: string[]) {
       const request = new Request("https://runner.paws.test/v1/issue-vms?disks=1", {
         method: "POST",
-        body: JSON.stringify({ running, sleepCheck: true }),
+        body: JSON.stringify({ running, sleepCheck: true, disks }),
       });
       const response = await handleVmHostRunnerRequest(request, HOST, store);
       return (await response!.json()) as IssueVmHostView;

@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import {
   failingIssueVmDeletesSteps,
+  reportHostIssueVmUnitsSteps,
   setIssueVmRunnerSteps,
   type Db,
   type IssueVm,
@@ -9,6 +10,7 @@ import {
 } from "../src/db";
 import {
   createBoatIssueVmDriver,
+  createHostIssueVmDriver,
   createFakeIssueVmDriver,
   createIssueVmSweep,
   issueVmPlacementSteps,
@@ -240,4 +242,55 @@ test("a provider 404 for the VM id Paws holds counts as deleted", async () => {
   await createIssueVmSweep(db, { drivers: { boat: driver }, now: () => now })();
   expect(removed).toEqual(["paws-01kboat0000000000000000000"]);
   expect((await vms(db))[0]).toMatchObject({ state: "deleted", failure: null });
+});
+
+test("a host delete succeeds only once the host reports the unit stopped and the disk gone", async () => {
+  const { db, close } = await tempStore();
+  closers.push(close);
+  await withoutForeignKeys(db);
+  await insertWorkItem(db, "PAS-1");
+  const id = "01KHOST0000000000000000000";
+  let clock = Date.now();
+  await seed(
+    db,
+    runner("host", () => clock),
+    (q) =>
+      q.orm.insert(q.t.issueVm).values({
+        id,
+        workspaceId: "ws",
+        itemId: "PAS-1",
+        memberUserId: "owner",
+        provider: "host",
+        hostRunnerId: "host",
+        state: "deleting",
+        createdAt: clock,
+        stateAt: clock,
+      }),
+  );
+  let disks = [id];
+  const report = () =>
+    db.run((q) =>
+      reportHostIssueVmUnitsSteps(q, { hostRunnerId: "host", running: [], disks, now: clock }),
+    );
+  let polls = 0;
+  const stuck = new AbortController();
+  const driver = createHostIssueVmDriver({
+    store: db,
+    now: () => clock,
+    wait: async () => {
+      clock += 1;
+      polls += 1;
+      if (polls === 5) stuck.abort(new Error("The disk is still there"));
+      await report();
+    },
+  });
+
+  await expect(driver.delete(id, { generation: 0, signal: stuck.signal })).rejects.toThrow(
+    "The disk is still there",
+  );
+  expect(polls).toBe(5);
+  disks = [];
+  await driver.delete(id, { generation: 0, signal: new AbortController().signal });
+  const [row] = await vms(db);
+  expect(row).toMatchObject({ diskPresent: false, unitRunning: false });
 });

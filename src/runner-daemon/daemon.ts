@@ -1097,12 +1097,18 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     async issueVmHost(
       running: string[],
       refused: IssueVmSleepRefusal[] = [],
+      disks?: string[],
     ): Promise<IssueVmHostView> {
       const post = async (body: object) =>
         IssueVmHostViewSchema.parse(
           await authenticated(`/v1/issue-vms?${ISSUE_VM_DISKS_QUERY}`, "POST", body),
         );
-      const checked = { running, sleepCheck: true, ...(refused.length > 0 ? { refused } : {}) };
+      const checked = {
+        running,
+        sleepCheck: true,
+        ...(refused.length > 0 ? { refused } : {}),
+        ...(disks === undefined ? {} : { disks }),
+      };
       try {
         return await post(checked);
       } catch (error) {

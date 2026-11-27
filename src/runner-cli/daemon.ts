@@ -38,7 +38,11 @@ const ISSUE_VM_ENROLL_DIR = "/var/lib/paws-runner/issue-vm-enroll";
 
 export function issueVmReconciler(
   daemon: {
-    issueVmHost(running: string[], refused?: IssueVmSleepRefusal[]): Promise<IssueVmHostView>;
+    issueVmHost(
+      running: string[],
+      refused?: IssueVmSleepRefusal[],
+      disks?: string[],
+    ): Promise<IssueVmHostView>;
   },
   units: IssueVmUnits | null,
   now: () => number = Date.now,
@@ -46,6 +50,7 @@ export function issueVmReconciler(
   disks: IssueVmDisks | null = null,
 ) {
   let at = 0;
+  let listed: string[] | undefined;
   const stage = (id: string, token: string) => {
     mkdirSync(enrollDir, { recursive: true, mode: 0o700 });
     const staged = join(enrollDir, `.${id}`);
@@ -57,12 +62,14 @@ export function issueVmReconciler(
     at = now() + ISSUE_VM_EVERY_MS;
     try {
       const running = async () => runningIssueVmIds(await units.active());
-      const view = await daemon.issueVmHost(await running());
+      const view = await daemon.issueVmHost(await running(), [], listed);
       const result = await reconcileIssueVms(units, view, stage, disks);
+      listed = result.disks;
       const refused = result.refused.map(({ machine, reason }) => ({ id: machine.id, reason }));
-      const changed = result.started.length > 0 || result.stopped.length > 0;
+      const changed =
+        result.started.length > 0 || result.stopped.length > 0 || result.disksRemoved.length > 0;
       if (view.vmHost && (changed || refused.length > 0))
-        await daemon.issueVmHost(await running(), refused);
+        await daemon.issueVmHost(await running(), refused, listed);
     } catch (error) {
       journalCaught(error, "runner-cli/daemon.issueVmReconciler", null);
     }

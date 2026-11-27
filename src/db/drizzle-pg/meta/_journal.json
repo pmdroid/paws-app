@@ -337,6 +337,13 @@
       "when": 1795770046659,
       "tag": "0047_retro_transcript_read_budget",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1795814911167,
+      "tag": "0048_issue_vm_disk_seen",
+      "breakpoints": true
     }
   ]
 }
