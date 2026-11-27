@@ -230,36 +230,36 @@ const RetroTranscriptRangeSchema = z.object({
   text: z.string(),
 });
 
+const READ_LIMIT = RUNNER_RETRO_LIMITS.transcriptReadBytes / 2;
+
 const ReadTranscriptArgumentsSchema = z.strictObject({
   runId: z.string().min(1),
   generation: z.number().int().min(1),
   offset: z.number().int().min(0).optional(),
-  limit: z.number().int().min(1).max(RUNNER_RETRO_LIMITS.transcriptReadBytes).optional(),
+  limit: z.number().int().min(1).max(READ_LIMIT).optional(),
 });
 
-export const RETRO_TRANSCRIPT_TOOLS = [
+const RETRO_TRANSCRIPT_TOOLS = [
   {
     name: "list_transcripts",
     description:
       "List the transcript index lines of the retro window, optionally for one work item. Start from the transcript summaries in the digest; use this to find the run id and generation of a run you name in a finding.",
     inputSchema: {
       type: "object",
-      properties: {
-        item: { type: "string", description: "Work item identifier or id to filter by." },
-      },
+      properties: { item: { type: "string" } },
       additionalProperties: false,
     },
   },
   {
     name: "read_transcript",
-    description: `Read a redacted range of one run's transcript, at most ${RUNNER_RETRO_LIMITS.transcriptReadBytes} bytes per call. Read details only for runs you name in a finding; the summaries come first and the attempt's read budget is limited. Continue from nextOffset until it equals total.`,
+    description: `Read a redacted range of one run's transcript, at most ${READ_LIMIT} bytes per call. Read details only for runs you name in a finding; the summaries come first and the attempt's read budget is limited. Continue from nextOffset until it equals total.`,
     inputSchema: {
       type: "object",
       properties: {
         runId: { type: "string" },
         generation: { type: "integer", minimum: 1 },
         offset: { type: "integer", minimum: 0 },
-        limit: { type: "integer", minimum: 1, maximum: RUNNER_RETRO_LIMITS.transcriptReadBytes },
+        limit: { type: "integer", minimum: 1, maximum: READ_LIMIT },
       },
       required: ["runId", "generation"],
       additionalProperties: false,
@@ -299,26 +299,19 @@ export function retroTranscriptTools(
       const parsed = ReadTranscriptArgumentsSchema.safeParse(args);
       if (!parsed.success)
         return {
-          text: `Pass runId, generation and optionally offset and limit (at most ${RUNNER_RETRO_LIMITS.transcriptReadBytes}).`,
+          text: `Pass runId, generation and optionally offset and limit (at most ${READ_LIMIT}).`,
           isError: true,
         };
-      const {
-        runId,
-        generation,
-        offset = 0,
-        limit = RUNNER_RETRO_LIMITS.transcriptReadBytes,
-      } = parsed.data;
-      let range: z.infer<typeof RetroTranscriptRangeSchema>;
+      const { runId, generation, offset = 0, limit = READ_LIMIT } = parsed.data;
+      let served: unknown;
       try {
-        range = RetroTranscriptRangeSchema.parse(
-          await read({ runId, generation, offset, limit }, signal),
-        );
+        served = await read({ runId, generation, offset, limit }, signal);
       } catch (error) {
-        return {
-          text: error instanceof Error ? error.message : "Paws could not serve the transcript.",
-          isError: true,
-        };
+        return { text: (error as Error).message, isError: true };
       }
+      const parsedRange = RetroTranscriptRangeSchema.safeParse(served);
+      if (!parsedRange.success) return { text: "Paws sent an invalid transcript.", isError: true };
+      const range = parsedRange.data;
       used.reads += 1;
       used.bytes += range.nextOffset - range.offset;
       return {
@@ -496,6 +489,7 @@ export async function executeRetroCommand(options: RetroWorkerOptions): Promise<
       options.executionLimitMs ?? Number.MAX_SAFE_INTEGER,
     );
     const overflow = new AbortController();
+    const turnEnded = new AbortController();
     let text = "";
     let tokens = 0;
     const started = now();
@@ -513,7 +507,13 @@ export async function executeRetroCommand(options: RetroWorkerOptions): Promise<
         runId: executionId,
         prompt,
         ...(command.transcripts && options.readTranscript
-          ? { hostTools: retroTranscriptTools(digest, options.readTranscript, signal) }
+          ? {
+              hostTools: retroTranscriptTools(
+                digest,
+                options.readTranscript,
+                AbortSignal.any([signal, turnEnded.signal]),
+              ),
+            }
           : {}),
         worktreePath: workspace,
         pawsRoot: join(root, "paws"),
@@ -544,6 +544,8 @@ export async function executeRetroCommand(options: RetroWorkerOptions): Promise<
         authRequired: false,
         agentExited: true,
       };
+    } finally {
+      turnEnded.abort();
     }
     try {
       options.returnCredentials?.(home);
