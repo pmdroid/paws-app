@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { accountAgentEnv } from "../src/acp";
@@ -28,6 +28,8 @@ import {
   runnerCommandAccount,
   signRunnerCommand,
   signRunnerRetroCommand,
+  verifyRunnerCommand,
+  verifyRunnerRetroCommand,
   type RunnerAccount,
   type RunnerAgentSignIn,
   type RunnerCodingAgent,
@@ -110,7 +112,18 @@ const work = (agent: RunnerCodingAgent) => ({
   profile: { agent, model: null },
   prompt: "Do the work.",
 });
-const COMMANDS: Record<
+const helper =
+  (purpose: string, extra: Record<string, unknown> = {}) =>
+  (agent: RunnerCodingAgent) => ({
+    type: "helper",
+    sessionId: "session",
+    sessionGeneration: 1,
+    purpose,
+    profile: { agent, model: null },
+    prompt: "Help with this.",
+    ...extra,
+  });
+const LAUNCH_PATHS: Record<
   string,
   (agent: RunnerCodingAgent) => Record<string, unknown> & { type: string }
 > = {
@@ -124,13 +137,28 @@ const COMMANDS: Record<
     taskModeGeneration: 1,
     purpose: "answer",
   }),
-  helper: (agent) => ({
-    type: "helper",
-    sessionId: "session",
-    sessionGeneration: 1,
-    purpose: "classify",
-    profile: { agent, model: null },
-    prompt: "Classify this.",
+  "helper classify": helper("classify"),
+  "helper select_repository": helper("select_repository"),
+  "helper finding_groups": helper("finding_groups"),
+  "helper conversation": helper("conversation", {
+    conversation: { itemId: "item", runId: "run", resumeSessionId: "session" },
+  }),
+  "helper slack_reply": helper("slack_reply", {
+    slack: {
+      requestId: "request",
+      teamId: "T0001",
+      channelId: "C0001",
+      threadTs: "1800000000.000100",
+      memberUserId: "member",
+      installGeneration: 1,
+    },
+  }),
+  "helper repository_summary": helper("repository_summary", {
+    summary: { repository: "acme/app" },
+  }),
+  "probe collection probe_distill": helper("probe_distill"),
+  "probe collection probe_write": helper("probe_write", {
+    probe: { repository: "acme/app", path: ".agents/probes/no-raw-sql.ts" },
   }),
   probe: (agent) => ({ type: "probe", profile: { agent, model: null } }),
   login_check: (agent) => ({ type: "login_check", agent }),
@@ -151,10 +179,16 @@ function input(kind: "digest" | "prompt") {
   return { kind, workspaceId: "acme", retroId: "retro", sha256: "b".repeat(64), sizeBytes: 10 };
 }
 
-const accountTypes = [
+const launchPaths = [
   ...RunnerCommandSchema.options
     .filter((option) => "account" in option.shape)
-    .map((option) => option.shape.type.value),
+    .flatMap((option) =>
+      "purpose" in option.shape && option.shape.type.value === "helper"
+        ? option.shape.purpose.options.map((purpose: string) =>
+            purpose.startsWith("probe_") ? `probe collection ${purpose}` : `helper ${purpose}`,
+          )
+        : [option.shape.type.value],
+    ),
   RunnerRetroCommandSchema.shape.type.value,
 ];
 
@@ -167,7 +201,7 @@ test("the matrix names every agent, sign-in and command type that carries an acc
       for (const file of SIGN_INS[agent][mode]!)
         expect(RUNNER_AGENT_CREDENTIAL_FILES[agent]).toContain(file.path);
   }
-  expect(Object.keys(COMMANDS).sort()).toEqual(accountTypes.toSorted());
+  expect(Object.keys(LAUNCH_PATHS).sort()).toEqual(launchPaths.toSorted());
   expect(runnerAgentSignInRefusal("claude", "central")).toBe(
     "Claude accounts can't sign in with a browser sign-in. Use a runner sign-in, a setup token, or an API key.",
   );
@@ -245,33 +279,54 @@ describePglite((connect) => {
         cells.push({ agent, mode, accountId: id });
       }
 
-    for (const type of accountTypes)
+    const trustedKeys = new Map([["coordinator", signing.publicKey]]);
+    const verify = (path: string, envelope: SignedRunnerCommand) => {
+      const context = {
+        trustedKeys,
+        runnerId: "runner",
+        workspaceId: "acme",
+        now: NOW,
+        accountBindings: new Set<string>(),
+        claimCommand: () => true,
+      };
+      return path === "retro"
+        ? verifyRunnerRetroCommand(envelope, { ...context, latestAttempt: () => undefined })
+        : verifyRunnerCommand(envelope, context);
+    };
+    const sign = (path: string, command: Record<string, unknown>): SignedRunnerCommand =>
+      path === "retro"
+        ? signRunnerRetroCommand({
+            keyId: "coordinator",
+            privateKey: signing.privateKey,
+            command: command as unknown as RunnerRetroCommand,
+          })
+        : signRunnerCommand({
+            keyId: "coordinator",
+            privateKey: signing.privateKey,
+            command: command as unknown as RunnerCommand,
+          });
+
+    for (const [row, path] of launchPaths.entries())
       for (const { agent, mode, accountId } of cells) {
-        const cell = `${type} ${agent} ${mode}`;
-        const account: RunnerAccount = { accountId, bindingId: `${type}-${accountId}` };
-        const command = {
-          id: `cmd-${type}-${accountId}`,
+        const cell = `${path} ${agent} ${mode}`;
+        const account: RunnerAccount = { accountId, bindingId: `b${row}-${accountId}` };
+        const unsigned = {
+          id: `cmd${row}-${accountId}`,
           runnerId: "runner",
           workspaceId: "acme",
           issuedAt: NOW,
           expiresAt: NOW + 60_000,
-          ...COMMANDS[type]!(agent),
-          account,
+          ...LAUNCH_PATHS[path]!(agent),
         };
-        const envelope: SignedRunnerCommand =
-          type === "retro"
-            ? signRunnerRetroCommand({
-                keyId: "coordinator",
-                privateKey: signing.privateKey,
-                command: command as unknown as RunnerRetroCommand,
-              })
-            : signRunnerCommand({
-                keyId: "coordinator",
-                privateKey: signing.privateKey,
-                command: command as unknown as RunnerCommand,
-              });
+        const command = { ...unsigned, account };
+        const envelope = sign(path, command);
         const named = runnerCommandAccount(command as unknown as RunnerCommand);
         expect(named, cell).toEqual({ account, agent });
+        expect(verify(path, envelope), cell).toEqual({ ok: false, reason: "account_unavailable" });
+        if (!path.startsWith("probe collection")) {
+          const [bare] = await host.attachCredentials("runner", [sign(path, unsigned)]);
+          expect(bare?.credential, cell).toBeUndefined();
+        }
 
         const [sent] = await host.attachCredentials("runner", [envelope]);
         expect(sent?.credential?.sealed, cell).toBeDefined();
@@ -287,9 +342,28 @@ describePglite((connect) => {
         const text = delivered.map((file) => Buffer.from(file.data, "base64").toString()).join();
         expect(text, cell).toContain(ACCESS);
         if (mode === "central") expect(text, cell).not.toContain(REFRESH);
+        for (const other of cells.filter((entry) => entry.accountId !== accountId).slice(0, 1))
+          expect(() =>
+            openForRunner(
+              privateKey,
+              sent!.credential!.sealed!,
+              agentCredentialContext(command.id, other.accountId, sent!.credential!.version),
+            ),
+          ).toThrow();
 
-        const agentHome = join(root, "agents", `${type}-${agent}-${mode}`);
-        mkdirSync(agentHome, { recursive: true, mode: 0o770 });
+        const agentHome = join(root, "agents", `${row}-${agent}-${mode}`);
+        expect(() => runnerAgentCredentials(agentHome).write(account, agent, delivered)).toThrow();
+        expect(existsSync(agentHome), cell).toBe(false);
+        mkdirSync(join(agentHome, ".paws-accounts", account.bindingId), {
+          recursive: true,
+          mode: 0o770,
+        });
+        chmodSync(agentHome, 0o770);
+        chmodSync(join(agentHome, ".paws-accounts", account.bindingId), 0o777);
+        expect(() => runnerAgentCredentials(agentHome).write(account, agent, delivered)).toThrow(
+          "open to other users",
+        );
+        rmSync(join(agentHome, ".paws-accounts"), { recursive: true });
         const store = runnerAgentCredentials(agentHome);
         store.write(account, agent, delivered);
         const home = openRunnerAccountHome(agentHome, account, agent);
