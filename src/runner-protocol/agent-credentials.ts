@@ -107,13 +107,15 @@ export function agentCredentialReturnContext(executionId: string) {
 }
 
 const OPENCODE_AUTH = ".paws/opencode-credential.json";
+const GROK_AUTH = ".grok/auth.json";
 
 export function accessCredentialFiles(blob: string): RunnerAgentCredentialFiles {
   return RunnerAgentCredentialFilesSchema.parse(JSON.parse(blob)).map((file) => {
-    if (file.path !== ".codex/auth.json" && file.path !== OPENCODE_AUTH)
+    if (![".codex/auth.json", OPENCODE_AUTH, GROK_AUTH].includes(file.path))
       throw new Error("Unsupported central credential");
     const auth = JSON.parse(Buffer.from(file.data, "base64").toString());
     if (file.path === OPENCODE_AUTH) auth.refresh = "";
+    else if (file.path === GROK_AUTH) auth.refresh_token = null;
     else auth.tokens.refresh_token = "";
     return { ...file, data: Buffer.from(JSON.stringify(auth)).toString("base64") };
   });
