@@ -98,18 +98,18 @@ export const WORKSPACE_PAGES = [
     ],
   },
   {
-    id: "telemetry",
-    name: "Telemetry",
-    description: "Export metrics, alerts, item events and traces to an OpenTelemetry collector.",
-
-    sections: ["Export to OpenTelemetry", "Destination", "What to export", "Send test"],
-  },
-  {
     id: "limits",
     name: "Queue and limits",
     description: "How long work may wait and run, and how much runs at once.",
 
     sections: ["Queue", "Time limits", "Most items one person or project runs at once"],
+  },
+  {
+    id: "telemetry",
+    name: "Telemetry",
+    description: "Export metrics, alerts, item events and traces to an OpenTelemetry collector.",
+
+    sections: ["Export to OpenTelemetry", "Destination", "What to export", "Send test"],
   },
   {
     id: "splits",
