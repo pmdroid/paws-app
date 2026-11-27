@@ -11,6 +11,7 @@ import {
   BranchMovedError,
   GitCommandError,
   NothingToPublishError,
+  ClosedPullAtHeadError,
   type GitExec,
   type GitHubClient,
   type OpenedPull,
@@ -125,6 +126,13 @@ export async function openPullRequest(
         body,
       },
     });
+  const dropped = input.head
+    ? await closedPullAt(input, token, branch, input.head).catch((error: unknown) => {
+        journalCaught(error, "github.openPullRequest.closedPull", input.issue, "opening it");
+        return null;
+      })
+    : null;
+  if (dropped !== null) throw new ClosedPullAtHeadError(branch, dropped);
   let created = await create(member?.token ?? token, text.body);
   let refused: OpenedPull["memberRefused"];
   if (member && [401, 403, 404].includes(created.status)) {
@@ -263,6 +271,29 @@ export async function readPullRequestText(
     body: typeof read.body.body === "string" ? read.body.body.replaceAll("\r\n", "\n") : "",
     open: read.body.state === "open",
   };
+}
+
+async function closedPullAt(
+  input: { owner: string; repo: string; client: GitHubClient },
+  token: string,
+  branch: string,
+  head: string,
+): Promise<number | null> {
+  const listed = await input.client.request({
+    method: "GET",
+    path: `${repoApiPath(input.owner, input.repo, "/pulls")}?head=${encodeURIComponent(`${input.owner}:${branch}`)}&state=closed&base=main&per_page=100`,
+    token,
+  });
+  if (listed.status !== 200 || !Array.isArray(listed.body)) return null;
+  const dropped = listed.body.find(
+    (pull) =>
+      isRecord(pull) &&
+      typeof pull.number === "number" &&
+      pull.merged_at == null &&
+      isRecord(pull.head) &&
+      pull.head.sha === head,
+  );
+  return isRecord(dropped) ? (dropped.number as number) : null;
 }
 
 async function findOpenPull(

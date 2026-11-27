@@ -67,6 +67,7 @@ import {
   NOTHING_TO_PUBLISH_REASON,
   completeWithoutPullSteps,
   completesWithoutPull,
+  keepsPull,
 } from "./nothing-to-publish";
 
 function* consumeTurnSteps(q: Q, question: StoredQuestion): Steps<void> {
@@ -236,6 +237,10 @@ export function questionEffects(
     if (question.reason === NOTHING_TO_PUBLISH_REASON && completesWithoutPull(question)) {
       yield* consumeTurn(q, question);
       yield* completeWithoutPullSteps(q, question.itemId, input.now);
+      return;
+    }
+    if (question.reason === NOTHING_TO_PUBLISH_REASON && keepsPull(question)) {
+      yield* verifyAgainSteps(q, question, { now: input.now, key: "keep-pull" });
       return;
     }
     if (!retriesMerge(question)) {

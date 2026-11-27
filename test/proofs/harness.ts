@@ -358,6 +358,20 @@ function fixtureGitHub(input: {
       const pull = await pulls.open({ repository, ...body });
       return { status: 201, body: { number: pull.number, html_url: pull.url, body: body.body } };
     }
+    if (method === "GET" && /\/pulls\?/.test(path) && path.includes("state=closed")) {
+      const head = new URL(path, "http://x").searchParams.get("head")?.split(":")[1];
+      const listed = pulls.opened.map(async (pull, index) => ({
+        ...pullJson(index + 1),
+        merged_at: merged.has(index + 1) ? "2026-11-27T00:00:00Z" : null,
+        head: { ...pullJson(index + 1).head, sha: await branchTip(pull.head) },
+      }));
+      return {
+        status: 200,
+        body: (await Promise.all(listed)).filter(
+          (pull) => pull.state === "closed" && pull.head.ref === head,
+        ),
+      };
+    }
     if (method === "GET" && /\/pulls\?/.test(path)) {
       const head = new URL(path, "http://x").searchParams.get("head")?.split(":")[1];
       const open = pulls.opened
@@ -408,6 +422,17 @@ function fixtureGitHub(input: {
         status: 200,
         body: { sha, merged: true, message: "Pull Request successfully merged" },
       };
+    }
+    const deletedBranch = /\/git\/refs\/heads\/(.+)$/.exec(path)?.[1];
+    if (method === "DELETE" && deletedBranch) {
+      await git(
+        "-C",
+        input.origin,
+        "update-ref",
+        "-d",
+        `refs/heads/${decodeURIComponent(deletedBranch)}`,
+      );
+      return { status: 204, body: null };
     }
     if (method === "POST" && path.endsWith("/labels"))
       return { status: 201, body: { name: "paws" } };
