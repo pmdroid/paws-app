@@ -16,7 +16,11 @@ import {
   centralAgentAccountsSteps,
   agentAccountOverviewSteps,
 } from "../db";
-import { readAgentCredentialSteps, writeAgentCredentialSteps } from "../credentials";
+import {
+  readAgentCredentialSteps,
+  readSecretFile,
+  writeAgentCredentialSteps,
+} from "../credentials";
 import {
   createAccountUsage,
   createUsageReader,
@@ -750,4 +754,53 @@ test("a 401 from Grok billing refreshes like expiry and shows the sign-in reason
   expect(result.keys).toEqual(["Bearer xai-access-1"]);
   expect(s.xai.calls).toHaveLength(calls);
   expect(result.stored).toMatchObject({ stale: true, unavailable: "Sign in again to see usage" });
+});
+const pendingGrant = async (s: Awaited<ReturnType<typeof setup>>) => ({
+  setting: await s.db.run((q) => readAgentAuthSteps(q, "device:" + s.id)),
+  secret: readSecretFile(join(s.dir, "agent-auth-device-" + s.id), false),
+});
+test("a pending device grant keeps its device code in the secret store until sign-in completes", async () => {
+  const s = await setup(false, "grok");
+  for (const _ of [1, 2]) {
+    const started = await s.auth.device("workspace", s.id, true);
+    expect(JSON.stringify(started)).not.toContain("device-secret");
+    s.advance(5000);
+    expect(await s.auth.device("workspace", s.id, false)).toEqual({ state: "pending" });
+    const grant = await pendingGrant(s);
+    expect(grant.setting).not.toContain("device-secret");
+    expect(grant.setting).not.toContain("deviceId");
+    expect(grant.secret).toBe("device-secret");
+  }
+  s.xai.approve();
+  s.advance(5000);
+  expect(await s.auth.device("workspace", s.id, false)).toEqual({ state: "signed-in" });
+  expect((await pendingGrant(s)).secret).toBeNull();
+});
+test("an expired device grant is swept from the secret store", async () => {
+  const s = await setup(false, "grok");
+  await s.auth.device("workspace", s.id, true);
+  s.advance(600_000);
+  await s.auth.tick();
+  const grant = await pendingGrant(s);
+  expect(grant.secret).toBeNull();
+  expect(grant.setting).not.toContain("deviceId");
+  expect(await s.auth.device("workspace", s.id, false)).toEqual({ state: "expired" });
+});
+test("a stored grant with its device code in settings is moved to the secret store", async () => {
+  const s = await setup(false, "grok");
+  const device = {
+    userCode: "GROK-CODE",
+    verificationUri: "https://accounts.x.ai/device",
+    interval: 5,
+    expiresAt: s.now() + 600_000,
+    deviceId: "legacy-device-marker",
+  };
+  const state = { state: "pending", device, nextPoll: s.now(), failures: 0, retryAt: 0 };
+  await s.db.transaction((q) => writeAgentAuthSteps(q, "device:" + s.id, JSON.stringify(state)));
+  await s.auth.tick();
+  const grant = await pendingGrant(s);
+  expect(grant.secret).toBe("legacy-device-marker");
+  expect(grant.setting).not.toContain("legacy-device-marker");
+  expect(await s.auth.device("workspace", s.id, false)).toEqual({ state: "pending" });
+  expect(s.xai.calls.at(-1)!.form.device_code).toBe("legacy-device-marker");
 });
