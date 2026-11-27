@@ -110,7 +110,10 @@ import { arrivalsPrompt, arrivalsThought, branchMovedHandoff } from "./branch-ar
 import {
   NOTHING_TO_PUBLISH_OPTIONS,
   NOTHING_TO_PUBLISH_REASON,
+  UNCHANGED_PULL_OPTIONS,
   nothingToPublishQuestion,
+  saysNoChangeNeeded,
+  unchangedPullQuestion,
 } from "./nothing-to-publish";
 import {
   saveHumanRetryWindowSteps,
@@ -2312,10 +2315,11 @@ export class Orchestrator {
     jobs.register(JOB_KIND.closeStoppedPull, async (job, context) => {
       const itemId = readString(job.payload, "itemId");
       const comment = readString(job.payload, "comment");
+      const completed = (job.payload as { completed?: unknown }).completed === true;
       const item = itemId ? await this.store.run((q) => getWorkItemSteps(q, itemId)) : null;
       if (
         !item ||
-        item.state !== "cancelled" ||
+        item.state !== (completed ? "completed" : "cancelled") ||
         (await this.store.run((q) => getConfirmedRemoteMergeSteps(q, item.id)))
       )
         return;
@@ -2334,6 +2338,7 @@ export class Orchestrator {
         ...this.gitHubCredentials(github),
         signal: context.signal,
         ...(comment ? { comment } : {}),
+        deleteBranch: completed,
       });
     });
     jobs.register(JOB_KIND.pullReview, async (job, context) => {
@@ -4470,6 +4475,7 @@ export class Orchestrator {
         await this.flush();
         return;
       }
+      if (await this.askUnchangedPull(finished, head, activity.resultBody())) return;
       await this.verify(
         finished,
         at.repo,
@@ -12255,6 +12261,42 @@ export class Orchestrator {
     if (known.includes(moved.tip) || (await this.descends(item, moved.read, head, moved.tip)))
       return { expected: moved.tip };
     return this.branchMoved(item, new BranchMovedError(moved.read.branch, moved.tip));
+  }
+
+  private async askUnchangedPull(
+    item: WorkItemRecord,
+    head: string,
+    finalMessage: string,
+  ): Promise<boolean> {
+    if (this.runStartHeads.get(item.id) !== head || !saysNoChangeNeeded(finalMessage)) return false;
+    const now = this.now();
+    const asked = await this.store.transaction(function* (q) {
+      const current = yield* getWorkItemSteps(q, item.id);
+      const pull = yield* getItemPullRequestSteps(q, item.id);
+      if (
+        !current?.sessionKey ||
+        current.state !== "running" ||
+        current.cancelRequested ||
+        !pull ||
+        (yield* getPublishedHeadSteps(q, item.id)) !== head
+      )
+        return false;
+      yield* askSteps(
+        q,
+        {
+          itemId: current.id,
+          runId: current.currentRunId,
+          sessionId: current.sessionKey,
+          version: current.version,
+        },
+        "ci-help",
+        unchangedPullQuestion(current.branchName || worktreeBranch(current), pull.pullNumber),
+        { now, reason: NOTHING_TO_PUBLISH_REASON, options: UNCHANGED_PULL_OPTIONS },
+      );
+      return true;
+    });
+    if (asked) await this.flush();
+    return asked;
   }
 
   private async askNothingToPublish(

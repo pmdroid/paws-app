@@ -23,6 +23,7 @@ export async function closeStoppedPull(input: {
   privateKeyPem?: string;
   signal?: AbortSignal;
   comment?: string;
+  deleteBranch?: boolean;
 }): Promise<boolean> {
   input.signal?.throwIfAborted();
   const token = await acquireOperationToken(input, "pr");
@@ -84,5 +85,22 @@ export async function closeStoppedPull(input: {
     closed.body.state !== "closed"
   )
     throw new Error("Closing the stopped Paws pull request failed");
+  if (input.deleteBranch) await deleteClosedBranch(input);
   return true;
+}
+
+async function deleteClosedBranch(input: Parameters<typeof closeStoppedPull>[0]): Promise<void> {
+  input.signal?.throwIfAborted();
+  const deleted = await input.client.request({
+    method: "DELETE",
+    path: repoApiPath(
+      input.owner,
+      input.repo,
+      `/git/refs/heads/${input.branch.split("/").map(encodeURIComponent).join("/")}`,
+    ),
+    token: await acquireOperationToken(input, "push"),
+    signal: input.signal,
+  });
+  if (deleted.status !== 204 && deleted.status !== 404 && deleted.status !== 422)
+    throw new Error(`Deleting branch ${input.branch} failed with HTTP ${deleted.status}`);
 }

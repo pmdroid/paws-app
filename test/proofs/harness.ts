@@ -409,6 +409,17 @@ function fixtureGitHub(input: {
         body: { sha, merged: true, message: "Pull Request successfully merged" },
       };
     }
+    const deletedBranch = /\/git\/refs\/heads\/(.+)$/.exec(path)?.[1];
+    if (method === "DELETE" && deletedBranch) {
+      await git(
+        "-C",
+        input.origin,
+        "update-ref",
+        "-d",
+        `refs/heads/${decodeURIComponent(deletedBranch)}`,
+      );
+      return { status: 204, body: null };
+    }
     if (method === "POST" && path.endsWith("/labels"))
       return { status: 201, body: { name: "paws" } };
     throw new Error(`Unexpected fake GitHub request: ${method} ${path}`);
