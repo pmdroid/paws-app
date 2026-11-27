@@ -9,6 +9,8 @@ import { createBrowserOnboarding, setupToken as savedSetupToken } from "./onboar
 import { startServer } from "./server";
 import { isDashboardPage } from "./dashboard-links";
 
+const SETUP_OPEN = 'Setup is open: run "paws setup-link" to get the link';
+
 export async function startBrowserOnboarding(
   runtime: RuntimeConfig,
   tls: PublicTls | undefined,
@@ -42,9 +44,8 @@ export async function startBrowserOnboarding(
   if (setupToken) {
     if (runtime.databaseUrl === null)
       setupSecrets = await useDatabaseSecrets(db, paths.secretsDir, { copy: false });
-    const setupUrl = runtime.publicUrl + "/setup?token=" + setupToken;
-    journal(setupUrl);
-    console.log(setupUrl);
+    journal(SETUP_OPEN);
+    console.log(SETUP_OPEN);
   }
   const handle = createBrowserOnboarding({
     setupToken,
