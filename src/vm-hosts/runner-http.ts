@@ -48,37 +48,28 @@ const UnitReportSchema = z.strictObject({
 type UnitReport = z.infer<typeof UnitReportSchema>;
 
 /**
- * The host's view. GET (older runners) gets ids and states; a unit report adds each row's want.
- * Only a report that asks with `disks=1` also gets the disk size, bootstrap tokens and holds:
+ * The host's view on its unit report: ids, states and each row's want. Only a report that asks with `disks=1` also gets the disk size, bootstrap tokens and holds:
  * runners from before it parse the answer strictly and would refuse those fields.
  *
  * A host stops a VM it is told wants asleep. Only a host that runs the guest's sign-in check
  * before that stop says `sleepCheck: true`; any other host never hears that a VM wants asleep,
  * so it keeps the VM running and the sleep fails at its deadline instead of losing sign-ins.
  */
-function* viewSteps(q: Q, runnerId: string, report: UnitReport | null, now: number, disks = false) {
-  const running = report?.running ?? null;
+function* viewSteps(q: Q, runnerId: string, report: UnitReport, now: number, disks: boolean) {
+  const { running } = report;
   const runner = yield* getRunnerSteps(q, runnerId);
   const machine = runner ? yield* vmHostMachineSteps(q, runner.workspaceId, runnerId) : null;
   if (!machine?.host) return { vmHost: false } as VmHostRunnerView;
-  if (running !== null)
-    yield* reportHostIssueVmUnitsSteps(q, {
-      hostRunnerId: runnerId,
-      running,
-      refused: report?.refused,
-      now,
-    });
+  yield* reportHostIssueVmUnitsSteps(q, {
+    hostRunnerId: runnerId,
+    running,
+    refused: report.refused,
+    now,
+  });
   const vms = (yield* liveHostIssueVmsSteps(q, runnerId)).map(({ id, state, want }) =>
-    want === "asleep" && report?.sleepCheck !== true ? { id, state } : { id, state, want },
+    want === "asleep" && report.sleepCheck !== true ? { id, state } : { id, state, want },
   );
   const size = { vcpus: machine.host.vmVcpus, memoryGb: machine.host.vmMemoryGb };
-  if (running === null)
-    return {
-      vmHost: true,
-      slots: vmHostSlots(machine, machine.host).slots,
-      size,
-      vms: vms.map(({ id, state }) => ({ id, state })),
-    } as VmHostRunnerView;
   if (!disks)
     return {
       vmHost: true,
@@ -146,10 +137,7 @@ export async function handleVmHostRunnerRequest(
   const url = new URL(request.url);
   if (url.pathname !== "/v1/issue-vms") return null;
   const disks = url.searchParams.get("disks") === "1";
-  if (request.method === "GET")
-    return Response.json(await db.run((q) => viewSteps(q, runnerId, null, now())));
-  if (request.method !== "POST")
-    return Response.json({ error: "Use GET or POST." }, { status: 405 });
+  if (request.method !== "POST") return Response.json({ error: "Use POST." }, { status: 405 });
   const body = await readWebhookBody(request, 65_536);
   if (body instanceof Response) return body;
   let parsed: unknown;

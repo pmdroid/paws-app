@@ -49,7 +49,6 @@ export function issueVmUnit(id: string, slot: number, size: IssueVmMachineSize):
 }
 
 function startable(row: IssueVmHostRow): boolean {
-  if (row.want === undefined) return row.state === "awake";
   return (
     row.state === "creating" || (row.want === "awake" && ["awake", "asleep"].includes(row.state))
   );
