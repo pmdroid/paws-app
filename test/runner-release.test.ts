@@ -488,7 +488,7 @@ test("apt verification rejects an extra nested package before attestation", asyn
 
 test("runner packages use apt trust without a manifest signing job", () => {
   expect(workflow.jobs["sign-manifest"]).toBeUndefined();
-  expect(workflow.jobs.build.needs).toBe("prepare");
+  expect(workflow.jobs.build.needs).toEqual(["prepare", "compatibility"]);
   expect(JSON.stringify(workflow.jobs.build)).not.toContain("--signature");
   expect(JSON.stringify(workflow.jobs.prepare)).not.toContain("secrets.");
 });

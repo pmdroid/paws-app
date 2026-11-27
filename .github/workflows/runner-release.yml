@@ -98,9 +98,9 @@ jobs:
           set -euo pipefail
           ref="$PAWS_REF"
           if [ -z "$ref" ]; then
-            notes=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body || true)
+            notes=$(gh release view "$RELEASE_TAG" --repo pmdroid/paws-app --json body --jq .body || true)
             for number in $(grep -oE '#[0-9]+' <<<"$notes" | tr -d '#' | sort -rnu || true); do
-              ref=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$number" --jq 'select(.merged_at != null and .base.ref == "main") | .merge_commit_sha' || true)
+              ref=$(gh api "repos/pmdroid/paws-app/pulls/$number" --jq 'select(.merged_at != null and .base.ref == "main") | .merge_commit_sha' || true)
               if [ -n "$ref" ]; then break; fi
             done
           fi
