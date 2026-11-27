@@ -12,6 +12,7 @@ import type {
 import { evaluateCandidate, runCloseoutGate } from "../src/closeout";
 import type { FixRunner } from "../src/closeout/fixer";
 import { credentialSecrets } from "../src/closeout-spec";
+import { scrubCommandEnv } from "../src/closeout-spec/run";
 import { isTransient } from "../src/core";
 import { createStreamScrubber } from "../src/closeout-spec/run/scrub";
 import {
@@ -36,6 +37,8 @@ const API_KEY = "synthetic-api-key-value-99";
 const PASSWORD = "synthetic-password-value-88";
 const SECRET = "synthetic-secret-value-66";
 const TOKEN = "synthetic-token-value-77";
+const DSN_PASSWORD = "synthetic-dsn-password-55";
+const DSN = `postgres://paws:${DSN_PASSWORD}@db.example.test:5432/paws`;
 const GHP = `ghp_${"abcdefghijklmnopqrstuvwxyz"}`;
 const SK = `sk-${"abcdefghijklmnopqrstuvwxyz"}`;
 
@@ -86,6 +89,10 @@ describe("closeout progress backend", () => {
       "ghp_legacytokenvalue",
     ]);
     expect(credentialSecrets({ HOME: "/home/dev", PATH: "/usr/bin" })).toEqual([]);
+    expect(credentialSecrets({ OTHER_URL: DSN })).toEqual([DSN, DSN_PASSWORD]);
+    expect(
+      scrubCommandEnv({ PAWS_DATABASE_URL: "postgres://db/paws", OTHER_URL: DSN, HOME: "/h" }),
+    ).toEqual({ HOME: "/h" });
   });
 
   test("a new running attempt clears earlier output and timestamps and keeps other identities", async () => {
@@ -714,7 +721,8 @@ describe("closeout progress backend", () => {
       "const mid = Math.ceil(value.length / 2);",
       "process.stdout.write('L' + value.slice(0, mid));",
       "await new Promise((resolve) => setTimeout(resolve, 30));",
-      "process.stdout.write(value.slice(mid) + 'R ' + (process.argv[3] ?? '') + ' ' + (process.argv[4] ?? '') + ' ' + (process.argv[5] ?? '') + '\\n');",
+      "process.stdout.write(value.slice(mid) + 'R ' + (process.argv[3] ?? '') + ' ' + (process.argv[4] ?? '') + ' ' + (process.argv[5] ?? '') + ' ' + (process.argv[6] ?? '') + '\\n');",
+      "process.stdout.write('dsn-env:' + (process.env.PAWS_DATABASE_URL ?? 'none') + '\\n');",
       "process.stderr.write('ghp_' + 'abcdefghij');",
       "await new Promise((resolve) => setTimeout(resolve, 30));",
       "process.stderr.write('klmnopqrstuvwxyz sk-' + 'abcdefghij');",
@@ -727,7 +735,7 @@ describe("closeout progress backend", () => {
           id: "probe",
           kind: "command",
           gate: "beforePR",
-          exec: ["bun", "-e", script, API_KEY, PASSWORD, SECRET, TOKEN],
+          exec: ["bun", "-e", script, API_KEY, PASSWORD, SECRET, TOKEN, DSN_PASSWORD],
           timeoutSeconds: 30,
         },
       ]),
@@ -738,11 +746,13 @@ describe("closeout progress backend", () => {
       DEMO_PASSWORD: process.env.DEMO_PASSWORD,
       DEMO_SECRET: process.env.DEMO_SECRET,
       DEMO_TOKEN: process.env.DEMO_TOKEN,
+      PAWS_DATABASE_URL: process.env.PAWS_DATABASE_URL,
     };
     process.env.DEMO_API_KEY = API_KEY;
     process.env.DEMO_PASSWORD = PASSWORD;
     process.env.DEMO_SECRET = SECRET;
     process.env.DEMO_TOKEN = TOKEN;
+    process.env.PAWS_DATABASE_URL = DSN;
     let runningClean = false;
     try {
       const result = await evaluateCandidate(
@@ -763,14 +773,15 @@ describe("closeout progress backend", () => {
       expect(runningClean).toBe(true);
       const row = (await listCloseoutProgress(db))[0];
       const dump = JSON.stringify(row);
-      for (const secret of [API_KEY, PASSWORD, SECRET, TOKEN, GHP, SK]) {
+      for (const secret of [API_KEY, PASSWORD, SECRET, TOKEN, GHP, SK, DSN, DSN_PASSWORD]) {
         expect(dump).not.toContain(secret);
       }
       expect(row?.steps[0]?.stdout).toContain("[redacted]");
       expect(row?.steps[0]?.stderr).toContain("[redacted]");
+      expect(row?.steps[0]?.stdout).toContain("dsn-env:none");
       expect(row?.steps[0]?.command).not.toContain(API_KEY);
       const log = await readFile(evidenceFile(repo.pawsHome, row?.steps[0]?.logPath ?? ""), "utf8");
-      for (const secret of [API_KEY, PASSWORD, SECRET, TOKEN, GHP, SK]) {
+      for (const secret of [API_KEY, PASSWORD, SECRET, TOKEN, GHP, SK, DSN, DSN_PASSWORD]) {
         expect(log).not.toContain(secret);
       }
       expect(log).toContain("[redacted]");
