@@ -14,14 +14,16 @@ import {
   readRunnerJobInputs,
 } from "../src/runner-execution";
 import {
+  RETRO_TRANSCRIPT_TOOLS_RUNNER_VERSION,
   verifyRunnerRetroCommand,
   type RunnerAccount,
   type RunnerRetroCommand,
   type RunnerRetroInputRequest,
   type RunnerRetroResult,
+  type RunnerRetroTranscriptRequest,
 } from "../src/runner-protocol";
 import { openRunnerRetroRuntime, type RunnerRetroDaemon } from "../src/runner-retro-runtime";
-import { executeRetroCommand } from "../src/runner-worker";
+import { executeRetroCommand, relayRetroTranscript } from "../src/runner-worker";
 import type { createRetroDispatcher } from "../src/retros";
 import {
   addRunnerPg as addRunner,
@@ -29,8 +31,8 @@ import {
   trustedKeys,
   worldPg,
 } from "../src/retros/dispatch.fixtures";
-import { fixturePattern } from "../src/retros/result.fixtures";
-import { seed } from "./pglite-fixtures";
+import { FIXTURE_START, fixturePattern } from "../src/retros/result.fixtures";
+import { seed, withoutForeignKeys } from "./pglite-fixtures";
 import { copyMigratedPglite, tempStore } from "./pglite";
 
 const nonRootLinux = process.platform === "linux" && process.getuid!() > 0 && process.getgid!() > 0;
@@ -47,7 +49,9 @@ async function reopen(root: string) {
   return { db: opened.store, close: opened.close };
 }
 
-async function world(options: { retries?: number; restartable?: boolean } = {}) {
+async function world(
+  options: { retries?: number; restartable?: boolean; before?: (db: Db) => Promise<void> } = {},
+) {
   const created = await worldPg(
     options.restartable
       ? {
@@ -82,7 +86,8 @@ async function call(dispatcher: Dispatcher, path: string, body?: unknown) {
   const response = await dispatcher.fetch(request, "R1");
   if (response === null) throw new Error(`unrouted ${path}`);
   const json = (await response.json()) as Record<string, unknown>;
-  if (response.status !== 200) throw new RunnerRequestError(response.status, "POST", path, 0);
+  if (response.status !== 200)
+    throw new RunnerRequestError(response.status, "POST", path, 0, json.error as string);
   return json;
 }
 
@@ -133,7 +138,7 @@ function runnerDaemon(control: { dispatcher: Dispatcher }, clock: { now: number 
         expiresAt: number;
       };
     },
-    async retroInput(request: RunnerRetroInputRequest) {
+    async retroInput(request: RunnerRetroInputRequest | RunnerRetroTranscriptRequest) {
       calls.push(`input:${request.kind}`);
       return call(control.dispatcher, `/v1/retro-commands/${request.commandId}/input`, request);
     },
@@ -158,7 +163,13 @@ function runnerDaemon(control: { dispatcher: Dispatcher }, clock: { now: number 
 function runnerHost(
   root: string,
   account: RunnerAccount,
-  options: { crash?: boolean; failStart?: boolean; stopFailures?: number } = {},
+  options: {
+    crash?: boolean;
+    failStart?: boolean;
+    stopFailures?: number;
+    steps?: unknown[];
+    background?: boolean;
+  } = {},
 ) {
   const spool = {
     root: join(root, "spool"),
@@ -191,6 +202,7 @@ function runnerHost(
       model: "gpt-x",
       models: ["gpt-x"],
       steps: [
+        ...(options.steps ?? []),
         {
           type: "update",
           update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: OUTPUT } },
@@ -217,8 +229,14 @@ function runnerHost(
       const { command } = readRunnerJob(spool, id);
       const inputs = readRunnerJobInputs(spool, id).retro!;
       if (command.type !== "retro") throw new Error("expected a retro job");
-      await executeRetroCommand({
+      const turn = executeRetroCommand({
         executionId: id,
+        readTranscript: (request, signal) =>
+          relayRetroTranscript(
+            { spool, executionId: id, outputDirectory, resultsGid: results.resultsGid },
+            request,
+            signal,
+          ),
         command,
         expected: {
           runnerId: command.runnerId,
@@ -253,8 +271,8 @@ function runnerHost(
           ],
           env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin` },
         },
-      });
-      finished.add(id);
+      }).finally(() => finished.add(id));
+      if (!options.background) await turn;
       return { alreadyAdmitted: false };
     },
     async stop(id: string) {
@@ -409,6 +427,106 @@ test.skipIf(!nonRootLinux)(
     });
     await runtime.tick();
     expect(host.starts).toHaveLength(1);
+    await runtime.stop();
+  },
+);
+
+test.skipIf(!nonRootLinux)(
+  "a retro turn lists transcripts, pages through a run and gets a spent budget as a tool error",
+  async () => {
+    const say = {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "y".repeat(200) },
+    };
+    const transcript = JSON.stringify({
+      t: new Date(FIXTURE_START).toISOString(),
+      event: { type: "session_update", update: say },
+    });
+    const w = await world({
+      before: async (db) => {
+        await withoutForeignKeys(db);
+        await seed(
+          db,
+          (q) =>
+            q.orm.insert(q.t.run).values({
+              id: "run-a",
+              itemId: "item-PAS-817",
+              kind: "implement",
+              agent: "codex",
+              status: "ended",
+              createdAt: FIXTURE_START + 1_000,
+              updatedAt: FIXTURE_START + 1_500,
+            }),
+          (q) =>
+            q.orm.insert(q.t.runnerTranscript).values({
+              runId: "run-a",
+              generation: 1,
+              commandId: "command-run-a",
+              workspaceId: "ws",
+              executionId: "e",
+              sizeBytes: transcript.length,
+              sealedSize: transcript.length,
+            }),
+        );
+      },
+    });
+    const root = mkdtempSync(join(tmpdir(), "paws-retro-runner-"));
+    roots.push(root);
+    const account = (await addRunner(w.db, {
+      id: "R1",
+      version: RETRO_TRANSCRIPT_TOOLS_RUNNER_VERSION.join("."),
+    }))!;
+    await seen(w.db, w.clock.now);
+    const reader = { download: async () => new TextEncoder().encode(transcript) };
+    const control = { dispatcher: w.open(w.db, undefined, { transcripts: reader }) };
+    await control.dispatcher.tick();
+    await seed(w.db, (q) => q.orm.update(q.t.retroAttempt).set({ transcriptReads: 398 }));
+    const tool = (name: string, args: object) => ({ type: "host_tool", name, arguments: args });
+    const read = (offset: number) =>
+      tool("read_transcript", { runId: "run-a", generation: 1, offset, limit: 64 });
+    const host = runnerHost(root, account, {
+      background: true,
+      steps: [
+        tool("list_transcripts", { item: "PAS-817" }),
+        tool("list_transcripts", { item: "PAS-1" }),
+        read(0),
+        read(64),
+        read(128),
+      ],
+    });
+    const { daemon } = runnerDaemon(control, w.clock);
+    const runtime = await openRunnerRetroRuntime({
+      root: join(root, "retro"),
+      daemon,
+      spool: host.spool,
+      results: host.results,
+      broker: host.broker,
+      now: () => w.clock.now,
+    });
+    expect(
+      readRunnerJob(host.spool, (await runtime.tick(), host.starts[0]!)).command,
+    ).toMatchObject({ transcripts: true });
+    for (let i = 0; i < 200 && runtime.status().active.length > 0; i++) {
+      await Bun.sleep(100);
+      await runtime.tick();
+    }
+    expect(runtime.status().active).toEqual([]);
+    const tools = JSON.parse(readFileSync(join(root, "agent.json"), "utf8")).hostTools;
+    expect(tools[0]).toMatchObject({ name: "list_transcripts", ok: true });
+    expect(tools[0].text).toContain("run:run-a#1 PAS-817 implement");
+    expect(tools[1].text).toBe("No transcripts match.");
+    const pages = [JSON.parse(tools[2].text), JSON.parse(tools[3].text)];
+    expect(pages.map((page) => [page.offset, page.nextOffset])).toEqual([
+      [0, 64],
+      [64, 128],
+    ]);
+    expect(pages[0].total).toBeGreaterThan(128);
+    expect(pages[0].text + pages[1].text).toStartWith(
+      `${new Date(FIXTURE_START).toISOString()} agent: yyy`,
+    );
+    expect(tools[4]).toMatchObject({ name: "read_transcript", ok: false });
+    expect(tools[4].error).toContain("Transcript budget used");
+    expect((await getRetro(w.db, "r1"))?.state).toBe("published");
     await runtime.stop();
   },
 );

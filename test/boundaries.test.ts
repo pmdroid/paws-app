@@ -405,6 +405,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-protocol",
   ],
   "runner-retro-runtime": [
+    "runner-answers",
     "runner-journal",
     "journal",
     "db",

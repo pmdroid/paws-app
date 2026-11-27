@@ -6,6 +6,7 @@ import {
   acknowledgeRetroDispatchSteps,
   AgentAccountError,
   chargeRetroTranscriptReadSteps,
+  runnerHostVersionSteps,
   retroTranscriptRowsSteps,
   closeRetroSteps,
   deliverableRetroDispatchesSteps,
@@ -62,6 +63,8 @@ import {
   acceptRetroResult,
   authorizeRetroInput,
   authorizeRetroTranscript,
+  RETRO_TRANSCRIPT_TOOLS_RUNNER_VERSION,
+  runnerReleaseAtLeast,
   RUNNER_RESULT_BODY_LIMIT,
   RUNNER_RETRO_CAPABILITY,
   RUNNER_RETRO_LIMITS,
@@ -586,6 +589,7 @@ export function createRetroDispatcher(options: {
     const digest = await readDigest(store, root, retro);
     if (digest === null)
       return abandon(retro, "coverage_failed", "The frozen digest is unreadable.", at);
+    const indexed = (digest.transcripts?.entries.length ?? 0) > 0;
     if (!retroNeedsGeneration(digest)) {
       const started = await store.transaction(function* (q) {
         return (yield* openRetroDispatchSteps(q, retro.id)) === null
@@ -800,6 +804,13 @@ export function createRetroDispatcher(options: {
           sha256: sha256(promptBytes),
           sizeBytes: promptBytes.byteLength,
         },
+        ...(indexed &&
+        runnerReleaseAtLeast(
+          yield* runnerHostVersionSteps(q, runnerId),
+          RETRO_TRANSCRIPT_TOOLS_RUNNER_VERSION,
+        )
+          ? { transcripts: true as const }
+          : {}),
       };
       yield* recordCommandAccountSteps(q, command, at);
       yield* recordRetroDispatchSteps(q, {
