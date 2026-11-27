@@ -1,3 +1,4 @@
+import { minimalAgentEnv } from "../acp";
 import { journalCaught } from "../journal";
 export type DeveloperCli = "claude" | "codex";
 
@@ -39,6 +40,11 @@ const CLAUDE_AUTH_METHODS = new Set([
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 
+const OWN_CREDENTIAL_ENV: Readonly<Record<DeveloperCli, readonly string[]>> = {
+  claude: ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
+  codex: ["OPENAI_API_KEY"],
+};
+
 /**
  * Ask the developer's own `claude` or `codex` CLI whether it is logged in.
  * The command is fixed (`claude auth status` / `codex login status`).
@@ -56,7 +62,9 @@ export async function checkDeveloperLogin(options: {
   const env = options.env ?? process.env;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const run =
-    options.run ?? ((command, args, runEnv) => spawnLogin(command, args, runEnv, timeoutMs));
+    options.run ??
+    ((command, args, runEnv) =>
+      spawnLogin(command, args, loginEnv(options.cli, runEnv), timeoutMs));
   let outcome: LoginCommandResult;
   try {
     outcome = await run(spec.command, spec.args, env);
@@ -153,14 +161,23 @@ function authMethodFrom(stdout: string): string | undefined {
   }
 }
 
+function loginEnv(cli: DeveloperCli, env: NodeJS.ProcessEnv): Record<string, string> {
+  const out = minimalAgentEnv(env);
+  for (const key of OWN_CREDENTIAL_ENV[cli]) {
+    const value = env[key];
+    if (value) out[key] = value;
+  }
+  return out;
+}
+
 async function spawnLogin(
   command: string,
   args: readonly string[],
-  env: NodeJS.ProcessEnv,
+  env: Record<string, string>,
   timeoutMs: number,
 ): Promise<LoginCommandResult> {
   const child = Bun.spawn([command, ...args], {
-    env: definedEnv(env),
+    env,
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
@@ -191,14 +208,6 @@ async function spawnLogin(
   } finally {
     clearTimeout(timer);
   }
-}
-
-function definedEnv(env: NodeJS.ProcessEnv): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env)) {
-    if (value !== undefined) out[key] = value;
-  }
-  return out;
 }
 
 function isMissingExecutable(error: unknown): boolean {

@@ -65,6 +65,38 @@ test("a missing developer CLI is not logged in", async () => {
   expect(result.credentialsRead).toBe(false);
 });
 
+test("the status command gets an allowlisted environment without service secrets", async () => {
+  const dir = await tempDir();
+  await writeExecutable(
+    join(dir, "claude"),
+    `#!/bin/sh
+export -p > "$HOME/env"
+`,
+  );
+  const result = await checkDeveloperLogin({
+    cli: "claude",
+    env: {
+      PATH: dir,
+      HOME: dir,
+      LANG: "C.UTF-8",
+      CLAUDE_CONFIG_DIR: join(dir, ".claude"),
+      CLAUDE_CODE_OAUTH_TOKEN: "marker-own-login",
+      PAWS_DATABASE_URL: "postgres://marker-db",
+      PAWS_GITHUB_CLIENT_SECRET: "marker-github",
+      LINEAR_WEBHOOK_SECRET: "marker-linear",
+      PAWS_S3_SECRET_ACCESS_KEY: "marker-s3",
+      OPENAI_API_KEY: "marker-other-agent",
+    },
+  });
+  const env = await readFile(join(dir, "env"), "utf8");
+  expect(result.loggedIn).toBe(true);
+  expect(env).toContain("CLAUDE_CONFIG_DIR");
+  expect(env).toContain("C.UTF-8");
+  expect(env).toContain("marker-own-login");
+  for (const name of ["PAWS_", "LINEAR_", "OPENAI_API_KEY", "marker-db", "marker-s3"])
+    expect(env).not.toContain(name);
+});
+
 test("unknown authMethod values are not copied", async () => {
   const dir = await tempDir();
   await writeExecutable(
