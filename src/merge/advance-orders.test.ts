@@ -404,6 +404,48 @@ describe("advanceMerge in the repository merge queue", () => {
   });
 });
 
+describe("advanceMerge on failed CI while a task ahead merges first", () => {
+  const feedbackJobs = async (h: MergeHarnessPg) =>
+    (await listJobs(h.db)).filter((job) => job.queue === JOB_KIND.pullComments);
+
+  async function behind(h: MergeHarnessPg, id: string) {
+    await h.addItem("ENG-150");
+    const item = await h.addItem(id);
+    h.state.ci = pendingCi;
+    await h.pass("ENG-150");
+    h.clock.advance(1_000);
+    return item;
+  }
+
+  test("a red check on the current head goes to the agent through the CI feedback batch", async () => {
+    const h = await start({ settings: { order: "queue" } });
+    const item = await behind(h, "ENG-151");
+    h.state.ci = (head) => (head === item.accepted ? failingTest() : pendingCi());
+    const observed = h.clock.now();
+    expect(await h.pass("ENG-151")).toMatchObject({ kind: "wait", reason: "ahead" });
+    const [failure] = await pendingPullCiFailures(h.db, "ENG-151");
+    expect(failure).toMatchObject({ head: item.accepted, pullNumber: item.pull });
+    expect(failure?.failedChecks).toEqual([
+      { name: "test", url: "https://ci.example/1", failsOnBase: false, logTail: LOG_TAIL },
+    ]);
+    expect((await feedbackJobs(h)).map((job) => job.runAt)).toEqual([observed + 60_000]);
+    expect(await h.pass("ENG-151")).toMatchObject({ kind: "wait", reason: "review" });
+    expect(h.github.merged).toEqual([]);
+  });
+
+  test("a pending check, or a red one on an older head, keeps the item waiting", async () => {
+    const h = await start({ settings: { order: "queue" } });
+    await behind(h, "ENG-152");
+    expect(await h.pass("ENG-152")).toMatchObject({ kind: "wait", reason: "ahead" });
+    h.state.ci = failingTest;
+    h.state.pullHead = () => "0".repeat(40);
+    expect(await h.pass("ENG-152")).toMatchObject({ kind: "wait", reason: "ahead" });
+    expect(await pendingPullCiFailures(h.db, "ENG-152")).toEqual([]);
+    expect(await feedbackJobs(h)).toEqual([]);
+    expect(await resumes(h)).toEqual([]);
+  });
+});
+
 describe("advanceMerge on failed CI while a review is required", () => {
   const feedbackJobs = async (h: MergeHarnessPg) =>
     (await listJobs(h.db)).filter((job) => job.queue === JOB_KIND.pullComments);

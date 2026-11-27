@@ -476,6 +476,8 @@ export async function mergeQueueTurn(
   }
   if (place.nextItemId === null) return undefined;
   if (await mergesAlongside({ store, item, caps }, place, pull, held)) return undefined;
+  await observeHeldCi({ store, item, caps }, pull);
+  if (await caps.stopped()) return undefined;
   return { message: `${mergeQueueLine(place)}. ${first}`, queued: true, reason: "ahead" };
 }
 
