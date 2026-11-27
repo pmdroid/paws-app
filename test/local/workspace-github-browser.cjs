@@ -43,10 +43,11 @@ const errors = [];
         await page.getByRole("button", { name: "Connect workspace" }).click();
       } else await page.getByRole("link", { name: "Sign in with Linear" }).click();
       await page.getByRole("button", { name: "Sign out" }).waitFor();
-      await page.locator('#side a[href="#/settings"]').click();
-      await page.waitForResponse(
+      const settings = page.waitForResponse(
         (response) => new URL(response.url()).pathname === "/api/settings/agents",
       );
+      await page.goto(`${fixture.origin}/dashboard/workspace/agents`);
+      await settings;
       return page;
     }
     const owner = await account("owner");
