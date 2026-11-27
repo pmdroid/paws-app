@@ -6845,9 +6845,9 @@ export class Orchestrator {
           body: publishedPullRequestBody({
             issue: item.linearIdentifier,
             ...(draft ? { description: withLeftForLater(draft.body, draft.remaining ?? []) } : {}),
-            evidence,
+            evidence: published.pull.evidence ?? evidence,
           }),
-          evidence,
+          evidence: published.pull.evidence ?? evidence,
         },
         this.now(),
       ),

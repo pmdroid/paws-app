@@ -1,7 +1,9 @@
 import { acquireOperationToken } from "./auth/provider";
 import type { GitHubCredentialInput } from "./auth/types";
+import { journalCaught } from "../journal";
 import { branchForIssue, githubHttpsUrl, pullRequestBody } from "./branch";
 import { repoApiPath } from "./client";
+import { memberOwnsChangedPath } from "./codeowners";
 import { defaultGitExec, git, gitFailureReason, redact } from "./git";
 import { moveBranchToCandidate } from "./publication";
 import { pushDenial, pushWithLease } from "./push";
@@ -91,13 +93,27 @@ export async function openPullRequest(
     evidence: string;
     reviewer?: string;
     member?: PullRequestMember;
+    head?: string;
     client: GitHubClient;
   } & GitHubCredentialInput,
 ): Promise<OpenedPull> {
   const branch = branchForIssue(input.branchKey ?? input.issue);
-  const body = publishedPullRequestBody(input);
   const token = await acquireOperationToken(input, "pr");
-  const create = (as: string) =>
+  const approval = input.member ? await memberApproval(input, input.member, token) : false;
+  const member = approval ? undefined : input.member;
+  const login = input.member?.login;
+  const opened = (line: string | null) => {
+    const evidence = withOpenedBy(input.evidence, line);
+    return { evidence, body: publishedPullRequestBody({ ...input, evidence }) };
+  };
+  let text = opened(
+    approval
+      ? `Opened by the Paws GitHub App: @${login} owns a changed path in CODEOWNERS and must approve it.`
+      : member
+        ? `Opened by @${login}, who delegated it.`
+        : null,
+  );
+  const create = (as: string, body: string) =>
     input.client.request({
       method: "POST",
       path: repoApiPath(input.owner, input.repo, "/pulls"),
@@ -109,18 +125,22 @@ export async function openPullRequest(
         body,
       },
     });
-  let created = await create(input.member?.token ?? token);
+  let created = await create(member?.token ?? token, text.body);
   let refused: OpenedPull["memberRefused"];
-  if (input.member && [401, 403, 404].includes(created.status)) {
-    refused = { login: input.member.login, status: created.status };
-    created = await create(token);
+  if (member && [401, 403, 404].includes(created.status)) {
+    refused = { login: member.login, status: created.status };
+    text = opened(`Opened by the Paws GitHub App: GitHub refused @${member.login}'s token.`);
+    created = await create(token, text.body);
   }
+  const body = text.body;
+  const shown = text.evidence === input.evidence ? {} : { evidence: text.evidence };
   if (created.status === 201) {
     const pull = {
       ...pullFrom(created.body, body),
+      ...shown,
       ...(refused ? { memberRefused: refused } : {}),
     };
-    const author = input.member && !refused ? input.member.login : null;
+    const author = member && !refused ? member.login : null;
     if (input.reviewer && input.reviewer.toLowerCase() !== author?.toLowerCase())
       await input.client.request({
         method: "POST",
@@ -145,9 +165,41 @@ export async function openPullRequest(
     });
     if (patched.status !== 200)
       throw new Error(`pull request update failed with status ${patched.status}`);
-    return pullFrom(patched.body, body);
+    return { ...pullFrom(patched.body, body), ...shown };
   }
   throw new Error(`opening the pull request failed with status ${created.status}`);
+}
+
+async function memberApproval(
+  input: {
+    issue: string;
+    owner: string;
+    repo: string;
+    head?: string;
+    client: GitHubClient;
+  },
+  member: PullRequestMember,
+  token: string,
+): Promise<boolean> {
+  if (!input.head) return false;
+  return memberOwnsChangedPath({
+    ...input,
+    head: input.head,
+    token,
+    login: member.login,
+  }).catch((error: unknown) => {
+    journalCaught(error, "github.openPullRequest.codeowners", input.issue, "opening as the member");
+    return false;
+  });
+}
+
+function withOpenedBy(evidence: string, line: string | null): string {
+  if (!line) return evidence;
+  const paragraphs = evidence.split("\n\n");
+  const credit = paragraphs.findIndex((paragraph) => paragraph.startsWith("Credit:"));
+  if (credit < 0) return [evidence, line].filter(Boolean).join("\n\n");
+  paragraphs[credit] = `${paragraphs[credit]}\n${line}`;
+  return paragraphs.join("\n\n");
 }
 
 export function publishedPullRequestBody(input: {
@@ -271,7 +323,7 @@ export async function publishAccepted(
     return { published: false, reason: "closeout did not accept" };
   }
   const pushed = await pushBranch(input);
-  const pull = await openPullRequest(input);
+  const pull = await openPullRequest({ ...input, head: pushed.head });
   return { published: true, branch: pushed.branch, head: pushed.head, pull };
 }
 
