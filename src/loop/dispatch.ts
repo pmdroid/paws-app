@@ -20,6 +20,8 @@ import {
   latestOpenIssueSessionSteps,
   getEvidenceSteps,
   getPlanProposalSteps,
+  getIssueSplitSteps,
+  recordSplitFiledSteps,
   prepareLinearActivitySteps,
   recordPlanFiledSteps,
   setEvidenceAssetUrlSteps,
@@ -126,6 +128,10 @@ export async function deliverLinearOutbox(
   if (message.op === "linear.sub_issues") {
     if (!store) throw new Error("Sub-issue filing needs the database");
     return fileSubIssues(message, payload, tracker, store, options);
+  }
+  if (message.op === "linear.split") {
+    if (!store) throw new Error("Split filing needs the database");
+    return fileSplit(payload, tracker, store, options);
   }
   if (message.op === "linear.remaining_issues") {
     if (!tracker.createSubIssues) throw new Error("Linear sub-issue creation is unavailable");
@@ -281,6 +287,49 @@ async function fileSubIssues(
           readString(payload, "identifier") ?? "the issue",
           recorded.filed ?? filed,
         ),
+      },
+    }),
+  );
+}
+
+async function fileSplit(
+  payload: Record<string, unknown>,
+  tracker: TrackerAdapter,
+  store: Db,
+  options?: TrackerRequestOptions,
+): Promise<void> {
+  if (!tracker.createSubIssues) throw new Error("Linear sub-issue creation is unavailable");
+  const splitId = readString(payload, "splitId");
+  const sessionId = readString(payload, "sessionId");
+  const split = splitId ? await store.run((q) => getIssueSplitSteps(q, splitId)) : null;
+  if (!split || !sessionId) throw new Error("Split filing is missing its proposal");
+  const filed = await tracker.createSubIssues(
+    {
+      key: `split:${split.id}`,
+      parentIssueId: split.parentIssueId,
+      drafts: split.drafts,
+      repository: split.repository,
+      delegate: true,
+      blocksParent: true,
+    },
+    options,
+  );
+  await store.transaction((q) => recordSplitFiledSteps(q, split.id, filed, Date.now()));
+  await startSubIssues(filed, split.itemId, tracker, store, options);
+  const links = filed.map((issue) =>
+    issue.url ? `[${issue.identifier}](<${issue.url}>)` : issue.identifier,
+  );
+  await store.transaction((q) =>
+    enqueueOutboxOnceSteps(q, {
+      target: "linear",
+      op: "activity",
+      orderingKey: sessionId,
+      idempotencyKey: `split-filed:${split.id}`,
+      payload: {
+        sessionId,
+        itemId: split.itemId,
+        kind: "response",
+        body: `Split ${split.parentIdentifier} into ${links.join(", ")}. They block ${split.parentIdentifier} and are delegated to Paws; ${split.parentIdentifier} is Done when every one of them merges.`,
       },
     }),
   );

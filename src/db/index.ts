@@ -18,6 +18,7 @@ export * from "./decision-memory";
 export * from "./dispatcher";
 export * from "./tasks";
 export * from "./plan-proposals";
+export * from "./issue-splits";
 export * from "./link-asks";
 export * from "./items";
 export * from "./jobs";

@@ -152,7 +152,7 @@ function assignTable(config: PawsConfigFile, section: string, table: Record<stri
   const values = Object.values(table);
   if (!knownConfigSection(section) && !(values.length > 0 && values.every(isTable)))
     throw new Error(`Saved settings have an unknown section: ${section}`);
-  if (/^(brief|time_limits|member_vm)(\.|$)/.test(section)) return;
+  if (/^(brief|time_limits|member_vm|splits)(\.|$)/.test(section)) return;
   for (const [key, value] of Object.entries(table)) {
     const nested = `${section}.${/^[A-Za-z0-9_-]+$/.test(key) ? key : JSON.stringify(key)}`;
     if (isTable(value)) assignTable(config, nested.toLowerCase(), value);

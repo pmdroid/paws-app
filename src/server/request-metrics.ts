@@ -12,7 +12,8 @@ const ROUTES = `
 /api/link-asks /api/questions/answer /api/execution-controls /api/blocker-checks /api/fix-records
 /api/findings /api/finding-groups /api/review-findings/issues /api/visual-review-changes
 /api/settings/agents /api/settings/brief /api/settings/brief/preview /api/settings/closeout
-/api/settings/findings /api/settings/hooks /api/settings/issue-vm /api/settings/linear-comments
+/api/settings/findings /api/settings/hooks /api/settings/issue-vm /api/settings/splits
+/api/settings/linear-comments
 /api/settings/vm-sizes /api/settings/merging /api/settings/skills /api/settings/time-limits
 /api/settings/github-access /api/settings/storage /api/settings/closeout-summary
 /api/settings/repository-descriptions /api/settings/issue-vm/members

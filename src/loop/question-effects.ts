@@ -10,6 +10,7 @@ import {
   type StageLimits,
 } from "../core";
 import { startFreshBudgetSteps } from "./time-budget";
+import { answerSplitSteps } from "./issue-split";
 import {
   agentTurnStageSteps,
   announceLinearTurnSteps,
@@ -413,6 +414,10 @@ export function questionEffects(
   }
   return {
     "plan-approval": planApproval,
+    split: function* (q, question) {
+      yield* consumeTurn(q, question);
+      yield* answerSplitSteps(q, question, input.now);
+    },
     "visual-review": visualReview,
     "runner-wait": function* (q, question) {
       if (question.reason === OUT_OF_MEMORY_REASON) {

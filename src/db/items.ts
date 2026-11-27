@@ -68,6 +68,8 @@ import {
   mergeStopRequestedSteps,
 } from "./remote-merges";
 import { getPullRequestDraftSteps } from "./pull-request-drafts";
+import { closeMergedSplitSteps } from "./issue-splits";
+import { enqueueIssueStatusSteps } from "./linear-delegation";
 import type { workItem as pgWorkItem } from "./schema-pg";
 import { runnerLeaseCutoff } from "./runner-lease";
 
@@ -1246,6 +1248,7 @@ export function* completeMergedItemSteps(
       },
       now: input.now,
     });
+  yield* closeSplitParentSteps(q, current.linearIssueId, input.now);
   if (input.announce) yield* input.announce(q, current);
   const merged = yield* applyWorkItemEventSteps(q, current.id, "merge_accepted", {
     now: input.now,
@@ -1254,6 +1257,32 @@ export function* completeMergedItemSteps(
   yield* endActiveRunSteps(q, current.currentRunId, input.now);
   yield* cancelAdvancingJobsSteps(q, current.id, "merged", input.now);
   return merged;
+}
+
+function* closeSplitParentSteps(q: Q, issueId: string, now: number): Steps<void> {
+  const closed = yield* closeMergedSplitSteps(q, issueId, now);
+  const parent = closed && (yield* getWorkItemSteps(q, closed.split.itemId));
+  if (!closed || !parent) return;
+  yield* enqueueIssueStatusSteps(q, parent, "completed", now);
+  const sessionId = parent.sessionKey ?? parent.id;
+  const generation = yield* getLinearSessionGenerationSteps(q, sessionId);
+  const links = closed.parts.map((part) =>
+    part.url ? `[${part.identifier}](<${part.url}>)` : part.identifier,
+  );
+  yield* enqueueOutboxOnceSteps(q, {
+    target: "linear",
+    op: "activity",
+    orderingKey: sessionId,
+    generation,
+    idempotencyKey: `merged:split:${closed.split.id}`,
+    payload: {
+      sessionId,
+      itemId: parent.id,
+      kind: "response",
+      body: `Every sub-issue of ${parent.linearIdentifier} merged: ${links.join(", ")}. ${parent.linearIdentifier} is Done; its branch \`${parent.branchName}\` stays.`,
+    },
+    now,
+  });
 }
 
 export async function completeMergedItem(

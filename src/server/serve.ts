@@ -77,12 +77,14 @@ import {
   handleMemberVmSettingsRequest,
   handleIssueVmSettingsRequest,
   ISSUE_VM_SETTINGS_PATH,
+  SPLIT_SETTINGS_PATH,
   handleRunnerVmKeysSettingsRequest,
   RUNNER_VM_KEYS_SETTINGS_PATH,
   handleVmProvidersSettingsRequest,
   VM_PROVIDERS_CHECK_PATH,
   VM_PROVIDERS_SETTINGS_PATH,
   handleTimeLimitSettingsRequest,
+  handleSplitSettingsRequest,
   handleLinearCommentSettingsRequest,
   LINEAR_COMMENT_SETTINGS_PATH,
   handleGitHubAccessSettingsRequest,
@@ -994,6 +996,23 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (path === ISSUE_VM_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
     const store = secrets.store;
     return (await handleIssueVmSettingsRequest(request, {
+      configPath: secrets.agentSettings.configPath,
+      csrfToken,
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(store, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
+  if (path === SPLIT_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
+    const store = secrets.store;
+    return (await handleSplitSettingsRequest(request, {
       configPath: secrets.agentSettings.configPath,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),

@@ -239,6 +239,7 @@ export async function decideLinkAsk(
       return "forbidden";
     if (!LINK_ASK_DECISIONS[linkAsk.kind].includes(input.decision)) return "rejected";
     if (LINK_ASK_NOTE_REQUIRED.has(input.decision) && !input.note) return "rejected";
+    if (input.decision === "split" && !linkAsk.rounds?.split) return "rejected";
     if (input.decision === "stop" && linkAsk.kind === "risk")
       return yield* stopRiskAskSteps(q, store, linkAsk, item, input, notifications);
     const bypassing = linkAsk.kind === "bypass" && input.decision === "approve";
@@ -520,8 +521,9 @@ export async function guideLinkAsk(
     if (item === null || item.cancelRequested || ENDED.has(item.state)) return false;
     // On a rounds ask the reply is Rethink the approach, with the reply as the note.
     const rethink = linkAsk.kind === "rounds";
+    const split = rethink && !!linkAsk.rounds?.split && /^\s*split[.!]?\s*$/i.test(input.body);
     const answered = yield* answerQuestionSteps(q, question.id, {
-      answer: `${rethink ? "rethink" : "guidance"}: ${input.body}`,
+      answer: `${split ? "split" : rethink ? "rethink" : "guidance"}: ${input.body}`,
       answeredBy: input.answeredBy,
       eventKey: input.eventKey,
       now,
@@ -529,7 +531,7 @@ export async function guideLinkAsk(
     if (answered === null) return false;
     if (rethink)
       yield* recordLinkAskDecisionSteps(q, linkAsk.questionId, {
-        decision: "rethink",
+        decision: split ? "split" : "rethink",
         note: input.body,
         decidedBy: input.answeredBy,
         now,
@@ -599,8 +601,8 @@ export async function guideLinkAsk(
       (yield* getWorkItemSteps(q, item.id))!,
       question,
       linkAskHandoff(linkAsk, {
-        decision: "guidance",
-        note: input.body,
+        decision: split ? "split" : "guidance",
+        note: split ? null : input.body,
         ...(yield* ruleFindingsSteps(q, linkAsk)),
       }),
       now,
