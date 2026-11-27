@@ -83,6 +83,7 @@ import {
   insertRunSteps,
   setCurrentRunSteps,
   claimRunSteps,
+  runOwnerSteps,
 } from "../db";
 import { dashboardUrl } from "../dashboard-links";
 import { RiskDisplayReader, type RiskDisplay } from "./risk-display";
@@ -4909,6 +4910,7 @@ export class Orchestrator {
       const holder = (q: Q, current: WorkItemRecord) =>
         this.verificationHolderSteps(q, current, false);
       const ownerInstance = this.options.instanceId ?? null;
+      const journalLine = this.options.journal ?? journal;
       item = await this.store.transaction(function* (q) {
         const current = yield* getWorkItemSteps(q, item.id);
         if (
@@ -4942,6 +4944,7 @@ export class Orchestrator {
           // An abandoned run did not finish cleanly. Preserve that in its history.
           yield* closeActiveRunSteps(q, prior.id, now(), "lost");
           yield* releaseRunCapacitySteps(q, prior.id, now());
+          journalLine(`run ${prior.id} released item=${current.id}: no live process holds it`);
         } else if (prior.status !== "ended" && prior.status !== "lost")
           throw new Error("Prior verification run is still provisioning");
         if (current.state === "merge_queue")
@@ -6415,10 +6418,22 @@ export class Orchestrator {
         item.cancelRequested,
         this.now() - 2 * 60_000,
       )) &&
-      !(yield* runnerWorkHasResultSteps(q, item.currentRunId))
+      !(yield* runnerWorkHasResultSteps(q, item.currentRunId)) &&
+      !(yield* this.idleSinceTakeoverSteps(q, item.currentRunId))
     )
       return "runner";
     return null;
+  }
+
+  private *idleSinceTakeoverSteps(q: Q, runId: string): Steps<boolean> {
+    const instanceId = this.options.instanceId;
+    if (instanceId === undefined || (yield* runOwnerSteps(q, runId)) !== instanceId) return false;
+    const run = yield* getRunSteps(q, runId);
+    return (
+      run !== null &&
+      VERIFICATION_RUN_KINDS.has(run.kind) &&
+      this.now() - run.updatedAt >= VERIFICATION_TAKEOVER_IDLE_MS
+    );
   }
 
   private verificationHolder(item: WorkItemRecord): Promise<"process" | "runner" | null> {
@@ -13043,6 +13058,8 @@ class VerificationHeld extends Error {
 
 const VERIFICATION_OWNER_WAIT_MS = 20 * 60_000;
 const VERIFICATION_OWNER_POLL_MS = 5_000;
+const VERIFICATION_TAKEOVER_IDLE_MS = 2 * 60_000;
+const VERIFICATION_RUN_KINDS: ReadonlySet<string> = new Set(["recheck", "review"]);
 
 const SLOTS_BUSY_RETRY_MS = 60_000;
 
