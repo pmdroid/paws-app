@@ -22,9 +22,11 @@ import {
   buildRetroDigest,
   collectRetroDigest,
   redactRetroText,
+  boundRetroTranscripts,
   type RetroDigest,
+  type RetroTranscriptReader,
 } from "./index";
-import { json, seed } from "../../test/pglite-fixtures";
+import { json, seed, withoutForeignKeys } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 
 const REPO = "pmdroid/paws-app";
@@ -249,7 +251,14 @@ async function settings(db: Db, repositories: string[], workspaceId = "ws") {
 async function collect(
   db: Db,
   root: string,
-  input: { id: string; start: number; end: number; repositories?: string[]; secrets?: string[] },
+  input: {
+    id: string;
+    start: number;
+    end: number;
+    repositories?: string[];
+    secrets?: string[];
+    transcripts?: RetroTranscriptReader;
+  },
 ) {
   await createRetro(db, {
     id: input.id,
@@ -265,6 +274,7 @@ async function collect(
     artifactRoot: root,
     now: input.end,
     ...(input.secrets === undefined ? {} : { secrets: input.secrets }),
+    transcripts: input.transcripts,
   });
   if (!result.ok) throw new Error(`collection failed: ${result.reason}`);
   return result.digest;
@@ -819,6 +829,210 @@ describe("October retro fixture", () => {
         cut: digest.cut,
         collectedAt: digest.collectedAt,
       }),
-    ).toEqual(digest);
+    ).toEqual({ ...digest, transcripts: undefined });
+  });
+});
+
+describe("transcript summaries", () => {
+  const TOKEN = `ghp_${"a1".repeat(18)}`;
+  const line = (ms: number, event: object) =>
+    JSON.stringify({ t: new Date(at(1, ms)).toISOString(), event });
+  const tool = (id: string, update: object) => ({
+    type: "session_update",
+    sessionId: "s",
+    update: { sessionUpdate: "tool_call_update", toolCallId: id, ...update },
+  });
+  const say = (text: string) => ({
+    type: "session_update",
+    sessionId: "s",
+    update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
+  });
+  const FIXTURE = [
+    line(1, {
+      type: "session_started",
+      role: "implementer",
+      sessionId: "s",
+      cwd: "/w",
+      identity: { session: "s", model: "gpt-5", provider: "openai" },
+    }),
+    line(2, say("Waiting for the checks")),
+    line(
+      3,
+      tool("t1", { sessionUpdate: "tool_call", title: "Bash", rawInput: { command: "sleep 30" } }),
+    ),
+    line(4, tool("t1", { status: "failed", rawOutput: `blocked: sleep is not allowed ${TOKEN}` })),
+    line(
+      5,
+      tool("t2", {
+        title: "Bash",
+        rawInput: { command: "pgrep -f closeout" },
+        status: "failed",
+        rawOutput: "exit 1",
+      }),
+    ),
+    line(6, tool("t3", { title: "Read", status: "failed", rawOutput: "no such file" })),
+    line(7, tool("t4", { title: "mcp__paws__run_closeout", status: "completed" })),
+    line(8, tool("t5", { title: "mcp__paws__run_closeout", status: "completed" })),
+    line(9, tool("t6", { title: "mcp__paws__get_closeout", status: "completed" })),
+    line(10, { type: "prompt_complete", stopReason: "end_turn" }),
+    line(11, say("I need a decision; the key is ")),
+    line(12, say("planted-secret-value")),
+    line(13, { type: "ask_team", question: "Which?", phase: "asked" }),
+    line(14, { type: "prompt_complete", stopReason: "cancelled" }),
+  ].join("\n");
+
+  test("collection summarizes, marks missing and unreadable runs, and redacts", async () => {
+    const { db, root } = await world();
+    const id = await item(db, "PAS-1", { createdAt: at(1) });
+    await withoutForeignKeys(db);
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.run).values(
+          (["implement", "fix", "review"] as const).map((kind, index) => ({
+            id: `run-${kind}`,
+            itemId: id,
+            kind,
+            agent: "codex",
+            status: "ended",
+            createdAt: at(1, index * 100),
+            updatedAt: at(1, index * 100 + 50),
+          })),
+        ),
+      (q) =>
+        q.orm.insert(q.t.runnerTranscript).values(
+          ["run-implement", "run-review", "run-foreign"].map((runId) => ({
+            runId,
+            generation: 1,
+            commandId: `command-${runId}`,
+            workspaceId: runId === "run-foreign" ? "other" : "ws",
+            executionId: "e",
+            sizeBytes: FIXTURE.length,
+            sealedSize: FIXTURE.length,
+          })),
+        ),
+      (q) =>
+        q.orm.insert(q.t.runnerHelper).values({
+          id: "helper-1",
+          runnerId: "box",
+          workspaceId: "ws",
+          sessionId: "session-PAS-1",
+          sessionGeneration: 1,
+          runnerFence: 1,
+          envelope: {},
+          expiresAt: at(1, 600),
+          purpose: "classify",
+        }),
+      (q) =>
+        q.orm.insert(q.t.retroRepository).values(
+          [
+            ["old", REPO],
+            ["elsewhere", OTHER],
+          ].map(([retroId, repository]) => ({
+            retroId: retroId!,
+            repository: repository!,
+            startCursor: 0,
+          })),
+        ),
+      (q) =>
+        q.orm.insert(q.t.retroDispatch).values(
+          ["old", "elsewhere"].map((retroId) => ({
+            commandId: `retro-${retroId}`,
+            retroId,
+            attempt: 1,
+            workspaceId: "ws",
+            runnerId: "box",
+            runnerFence: 1,
+            command: {},
+            envelope: {},
+            createdAt: at(1, 700),
+            issuedAt: at(1, 700),
+            expiresAt: at(2),
+          })),
+        ),
+    );
+    const reads: string[] = [];
+    const digest = await collect(db, root, {
+      id: "r1",
+      start: at(0),
+      end: at(3),
+      secrets: ["planted-secret-value"],
+      transcripts: {
+        async download(runId) {
+          reads.push(runId);
+          if (runId === "run-review") throw new Error("bad seal");
+          return new TextEncoder().encode(FIXTURE);
+        },
+      },
+    });
+    expect(reads).toEqual(["run-implement", "run-review"]);
+    const [implement, fix, review, helper, retro, ...rest] = digest.transcripts!.entries;
+    expect(rest).toEqual([]);
+    const notStored = "not stored by design: helper and retro turns keep no runner transcript";
+    expect(helper).toMatchObject({
+      runId: "helper-1",
+      identifier: "PAS-1",
+      kind: "helper/classify",
+      at: at(1, 600),
+      status: notStored,
+    });
+    expect(retro).toMatchObject({
+      runId: "retro-old",
+      identifier: "retro:old",
+      kind: "retro",
+      at: at(1, 700),
+      status: notStored,
+    });
+    expect(fix).toMatchObject({ runId: "run-fix", kind: "fix", status: "missing", summary: null });
+    expect(review).toMatchObject({ status: "unreadable: bad seal", summary: null });
+    expect(implement).toMatchObject({
+      identifier: "PAS-1",
+      kind: "implement",
+      status: "available",
+    });
+    expect(implement!.summary).toEqual({
+      agent: "codex",
+      model: "gpt-5",
+      firstEventAt: at(1, 1),
+      lastEventAt: at(1, 14),
+      turns: 2,
+      stopReasons: { end_turn: 1, cancelled: 1 },
+      toolCalls: 6,
+      failedTools: 3,
+      topFailedTools: [
+        { title: "Bash", count: 2, excerpt: "blocked: sleep is not allowed [redacted]" },
+        { title: "Read", count: 1, excerpt: "no such file" },
+      ],
+      blockedWaits: 2,
+      runCloseoutCalls: 2,
+      getCloseoutCalls: 1,
+      lastMessages: [
+        { at: at(1, 13), before: "question", text: "I need a decision; the key is [redacted]" },
+      ],
+    });
+    const text = boundRetroDigest(digest).text;
+    expect(text).toContain(
+      `- run:run-fix PAS-1 fix ${new Date(at(1, 100)).toISOString()} 0 bytes missing`,
+    );
+    expect(text).toContain("run_closeout 2; get_closeout 1");
+    const many = Array.from({ length: 2_000 }, (_, index) => ({
+      ...implement!,
+      runId: `01JF${String(index).padStart(22, "0")}`,
+    }));
+    const section = boundRetroTranscripts([...many, fix!, helper!], 0);
+    expect(section.entries).toHaveLength(2_002);
+    expect(section.trimmed).toBeGreaterThan(0);
+    expect(section.entries.filter((entry) => entry.summary).length).toBe(2_000 - section.trimmed);
+    expect(section.note).toBe(
+      `Summaries for ${section.trimmed} runs were trimmed to their index line; the runs with the most failed tools kept theirs.`,
+    );
+    const compact = boundRetroDigest({ ...digest, transcripts: section }).text;
+    expect(compact).toContain("Index lines for 2002 runs do not fit this view");
+    expect(compact).toContain(
+      "- PAS-1: 2002 runs, 2000 available, 1 missing, 0 unreadable, 1 not stored by design",
+    );
+    expect(compact).toContain("run_closeout 2; get_closeout 1");
+    expect(JSON.stringify(digest)).not.toContain(TOKEN);
+    expect(JSON.stringify(digest)).not.toContain("planted-secret-value");
   });
 });

@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, lt, ne, sql } from "drizzle-orm";
 import { type Q, type Steps, type Db } from "./db";
 
 export type RunnerTranscriptRow = {
@@ -146,4 +146,97 @@ export async function plaintextTranscriptChunks(
   limit: number,
 ): Promise<PlaintextTranscriptChunk[]> {
   return store.run((q) => plaintextTranscriptChunksSteps(q, after, limit));
+}
+
+export type RetroTranscriptRow = {
+  runId: string;
+  generation: number;
+  commandKind: string | null;
+  sizeBytes: number;
+  sealedSize: number | null;
+};
+
+export function* retroTranscriptRowsSteps(
+  q: Q,
+  workspaceId: string,
+  runIds: readonly string[],
+): Steps<RetroTranscriptRow[]> {
+  if (runIds.length === 0) return [];
+  const { runnerTranscript: t, runnerCommand: c } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({
+        runId: t.runId,
+        generation: t.generation,
+        commandKind: c.kind,
+        sizeBytes: t.sizeBytes,
+        sealedSize: t.sealedSize,
+      })
+      .from(t)
+      .leftJoin(c, eq(c.id, t.commandId))
+      .where(and(eq(t.workspaceId, workspaceId), inArray(t.runId, [...runIds])))
+      .orderBy(asc(t.runId), asc(t.generation)),
+  );
+}
+
+export type RetroUntranscribedTurns = {
+  helpers: { id: string; itemId: string; purpose: string | null; at: number }[];
+  retros: { commandId: string; retroId: string; at: number }[];
+};
+
+export function* retroUntranscribedTurnsSteps(
+  q: Q,
+  input: {
+    workspaceId: string;
+    retroId: string;
+    repositories: readonly string[];
+    itemIds: readonly string[];
+    from: number;
+    to: number;
+  },
+): Steps<RetroUntranscribedTurns> {
+  const { runnerHelper: h, workItem: w, retroDispatch: d, retroRepository: r } = q.t;
+  const at = sql<number>`coalesce(${h.endedAt}, ${h.expiresAt})`.mapWith(Number);
+  const helpers =
+    input.itemIds.length === 0
+      ? []
+      : yield* q.all(
+          q.orm
+            .select({ id: h.id, itemId: w.id, purpose: h.purpose, at })
+            .from(h)
+            .innerJoin(w, eq(w.sessionKey, h.sessionId))
+            .where(
+              and(
+                eq(h.workspaceId, input.workspaceId),
+                inArray(w.id, [...input.itemIds]),
+                sql`${at} >= ${input.from} AND ${at} < ${input.to}`,
+              ),
+            )
+            .orderBy(asc(at), asc(h.id)),
+        );
+  const dispatched = yield* q.all(
+    q.orm
+      .select({ commandId: d.commandId, retroId: d.retroId, at: d.createdAt })
+      .from(d)
+      .where(
+        and(
+          eq(d.workspaceId, input.workspaceId),
+          ne(d.retroId, input.retroId),
+          gte(d.createdAt, input.from),
+          lt(d.createdAt, input.to),
+        ),
+      )
+      .orderBy(asc(d.createdAt), asc(d.commandId)),
+  );
+  const allowed = new Set(input.repositories.map((repository) => repository.toLowerCase()));
+  const outside = new Set<string>();
+  if (dispatched.length > 0)
+    for (const row of yield* q.all(
+      q.orm
+        .select({ retroId: r.retroId, repository: sql<string>`${r.repository}` })
+        .from(r)
+        .where(inArray(r.retroId, [...new Set(dispatched.map((entry) => entry.retroId))])),
+    ))
+      if (!allowed.has(row.repository.toLowerCase())) outside.add(row.retroId);
+  return { helpers, retros: dispatched.filter((row) => !outside.has(row.retroId)) };
 }
