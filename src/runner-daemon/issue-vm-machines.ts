@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { journal, journalCaught } from "../journal";
+import type { IssueVmDisks } from "./issue-vm-disks";
 
 const UNIT = /^paws-issue-vm@([0-7][0-9A-HJKMNP-TV-Z]{25})-([0-9]+)-([0-9]+)-([0-9]+)\.service$/;
 const ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
@@ -10,6 +11,13 @@ const LIVE = new Set(["active", "activating", "deactivating", "reloading", "refr
 const KEPT_STATES = new Set(["creating", "awake", "asleep", "unknown"]);
 const SLEEP_CHECK_OUTPUT = "/run/paws-issue-vm-sleep-check";
 const MAX_REFUSAL = 300;
+
+/**
+ * Sent with the unit report so Paws answers with the VM disk size, bootstrap tokens and holds.
+ * Runners released before it parse the answer strictly, so Paws adds those only when asked, and
+ * a Paws release that doesn't know the query ignores it and answers without them.
+ */
+export const ISSUE_VM_DISKS_QUERY = "disks=1";
 
 export type IssueVmUnits = {
   active(): Promise<string[]>;
@@ -31,6 +39,7 @@ export type IssueVmReconcile = {
   started: IssueVmMachine[];
   waiting: string[];
   refused: { machine: IssueVmMachine; reason: string }[];
+  disksRemoved: string[];
 };
 
 export type IssueVmSleepRefusal = { id: string; reason: string };
@@ -62,10 +71,18 @@ function machine(unit: string): IssueVmMachine | null {
   };
 }
 
+/**
+ * Brings the host's units, and its disks when `disks` is given, in line with Paws's view. A
+ * creating VM's disk is cloned before its first start, and a disk whose VM Paws lists as deleting
+ * or no longer lists is removed once its unit stopped. Both need the VM disk size, which Paws sends
+ * only with a unit report that asks for it, except on a runner Paws says is no VM host: there every
+ * VM is gone, so once their units stopped all the disks go too.
+ */
 export async function reconcileIssueVms(
   units: IssueVmUnits,
   host: IssueVmHostView,
   stage?: (id: string, token: string) => void,
+  disks?: Pick<IssueVmDisks, "clone" | "list" | "remove"> | null,
 ): Promise<IssueVmReconcile> {
   const known = host.vmHost ? host.vms : [];
   const rows = new Map(known.map((row) => [row.id, row]));
@@ -75,6 +92,7 @@ export async function reconcileIssueVms(
     started: [],
     waiting: [],
     refused: [],
+    disksRemoved: [],
   };
   const ids = new Set<string>();
   const used = new Set<number>();
@@ -112,9 +130,26 @@ export async function reconcileIssueVms(
     journal(`issue_vm_stopped vm=${found.id} slot=${found.slot} reason=${reason}`);
     result.stopped.push({ machine: found, reason });
   }
+  const diskGb = disks && host.vmHost ? host.size.diskGb : undefined;
+  if (disks && (!host.vmHost || diskGb !== undefined)) {
+    try {
+      const gone = (await disks.list())
+        .map((disk) => disk.id)
+        .filter((id) => !ids.has(id) && !KEPT_STATES.has(rows.get(id)?.state ?? "gone"));
+      if (gone.length > 0) result.disksRemoved = await disks.remove(gone);
+      for (const id of result.disksRemoved) journal(`issue_vm_disk_deleted vm=${id}`);
+    } catch (error) {
+      journalCaught(error, "runner-daemon.reconcileIssueVms.remove", null);
+    }
+  }
   if (!host.vmHost) return result;
   for (const row of known) {
     if (!startable(row) || ids.has(row.id)) continue;
+    if (row.hold === true) {
+      journal(`issue_vm_waiting vm=${row.id} reason=enrollment`);
+      result.waiting.push(row.id);
+      continue;
+    }
     if (ids.size >= limit) {
       journal(`issue_vm_waiting vm=${row.id} slots=${limit}`);
       result.waiting.push(row.id);
@@ -122,8 +157,19 @@ export async function reconcileIssueVms(
     }
     let slot = 1;
     while (used.has(slot)) slot += 1;
-    const started = { id: row.id, slot, ...host.size, unit: issueVmUnit(row.id, slot, host.size) };
+    const size = { vcpus: host.size.vcpus, memoryGb: host.size.memoryGb };
+    const started = { id: row.id, slot, ...size, unit: issueVmUnit(row.id, slot, size) };
     try {
+      if (disks && diskGb !== undefined && row.state === "creating") {
+        const disk = await disks.clone(row.id, { diskGb, memoryGb: size.memoryGb });
+        if (!disk.ok) {
+          journal(
+            `issue_vm_waiting vm=${row.id} reason=${disk.reason} need=${disk.needBytes} free=${disk.freeBytes}`,
+          );
+          result.waiting.push(row.id);
+          continue;
+        }
+      }
       if (row.token !== undefined) stage?.(row.id, row.token);
       await units.start(started.unit);
     } catch (error) {
@@ -247,7 +293,11 @@ export const IssueVmHostViewSchema = z.discriminatedUnion("vmHost", [
   z.strictObject({
     vmHost: z.literal(true),
     slots: z.number().int().min(0),
-    size: z.strictObject({ vcpus: z.number().int().min(1), memoryGb: z.number().int().min(1) }),
+    size: z.strictObject({
+      vcpus: z.number().int().min(1),
+      memoryGb: z.number().int().min(1),
+      diskGb: z.number().int().min(10).max(500).optional(),
+    }),
     vms: z.array(
       z.strictObject({
         id: VmId,
@@ -257,6 +307,7 @@ export const IssueVmHostViewSchema = z.discriminatedUnion("vmHost", [
           .string()
           .regex(/^[A-Za-z0-9_-]{16,256}$/)
           .optional(),
+        hold: z.literal(true).optional(),
       }),
     ),
   }),

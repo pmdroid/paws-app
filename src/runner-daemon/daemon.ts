@@ -10,6 +10,7 @@ import { drizzle } from "drizzle-orm/bun-sqlite";
 import { createCommandStore } from "./commands-ddl";
 import { attachCredentialStore } from "./credential-store";
 import {
+  ISSUE_VM_DISKS_QUERY,
   IssueVmHostViewSchema,
   type IssueVmHostView,
   type IssueVmSleepRefusal,
@@ -1091,7 +1092,9 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         const bodies = [checked, { running }];
         for (const [index, body] of bodies.entries())
           try {
-            return IssueVmHostViewSchema.parse(await authenticated("/v1/issue-vms", "POST", body));
+            return IssueVmHostViewSchema.parse(
+              await authenticated(`/v1/issue-vms?${ISSUE_VM_DISKS_QUERY}`, "POST", body),
+            );
           } catch (error) {
             if (!(error instanceof RunnerRequestError)) throw error;
             if (error.status === 405) break;

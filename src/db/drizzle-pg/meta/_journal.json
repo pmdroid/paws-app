@@ -316,6 +316,13 @@
       "when": 1795741250363,
       "tag": "0044_issue_vm_sleep_refusal",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1795743519106,
+      "tag": "0045_issue_vm_enrollment",
+      "breakpoints": true
     }
   ]
 }
