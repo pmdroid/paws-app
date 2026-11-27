@@ -21,7 +21,7 @@ import { journal, journalCaught } from "../journal";
 import type { RunnerHelpers } from "../runner-helpers";
 import {
   RUNNER_ONLINE_MS,
-  signInFitSteps,
+  resolveRunnerAccountSteps,
   type PlacementAccount,
   type RunnerPlacement,
 } from "../runner-placement";
@@ -80,7 +80,7 @@ function* placeSteps(q: Q, input: Start, profile: Profile, at: number): Steps<Pl
     const seen = (yield* runnerStandingSteps(q, runner.id))?.lastSeenAt;
     const release = yield* runnerHostVersionSteps(q, runner.id);
     if (!allowed || !seen || seen <= at - RUNNER_ONLINE_MS) continue;
-    const fit = yield* signInFitSteps(q, runner, input.workspaceId, {
+    const fit = yield* resolveRunnerAccountSteps(q, runner, input.workspaceId, {
       agent: profile.agent,
       model: profile.model,
       purpose: "helper",

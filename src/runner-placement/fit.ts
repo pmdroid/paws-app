@@ -9,6 +9,7 @@ import {
   latestModelCatalogRowSteps,
   listAgentBindingsSteps,
   modelUnofferedReason,
+  runnerAccountUnsupportedSteps,
   runnerRepositoryRefusalSteps,
   type ItemRunnerVerdict,
   type ItemRunnerVerdicts,
@@ -22,7 +23,11 @@ import {
   runnerReleaseAtLeast,
   type RunnerCodingAgent,
 } from "../runner-protocol";
-import { bindingReadinessSteps, BINDING_REASON_TEXT } from "./account-health";
+import {
+  bindingReadinessSteps,
+  BINDING_REASON_TEXT,
+  type BindingUnavailableReason,
+} from "./account-health";
 import {
   eligibleReasonText,
   eligibleRunnersSteps,
@@ -31,8 +36,9 @@ import {
 } from "./eligible";
 import type { EligibleRunner, PlacementAccount, PlacementPurpose } from "./index";
 
-type AccountRefusal = {
+export type AccountRefusal = {
   reason: string;
+  code?: BindingUnavailableReason | "account-home" | "model" | "runner-version";
   until?: number;
   account?: string;
   resetsAt?: number | null;
@@ -50,6 +56,7 @@ type SignInInput = {
   bindingId?: string;
   role?: "implementer" | "reviewer";
   catalog?: boolean;
+  homeReported?: boolean;
 };
 
 export function* repositoryRejectionSteps(
@@ -103,7 +110,7 @@ export function* runnerOffersModelSteps(
   return catalog?.models.includes(model) ?? false;
 }
 
-export function* signInFitSteps(
+export function* resolveRunnerAccountSteps(
   q: Q,
   runner: SignInRunner,
   workspaceId: string,
@@ -124,7 +131,11 @@ export function* signInFitSteps(
     input.model &&
     !(yield* runnerOffersModelSteps(q, runner.id, input.agent, input.model))
   )
-    return { reason: modelUnofferedReason(input.agent, input.model), refusals: [] };
+    return {
+      reason: modelUnofferedReason(input.agent, input.model),
+      code: "model",
+      refusals: [],
+    };
   const refusals: AccountRefusal[] = [];
   for (const binding of bindings) {
     if (
@@ -144,7 +155,15 @@ export function* signInFitSteps(
     ) {
       refusals.push({
         reason: `Claude OAuth credentials need runner ${REVIEW_COMMAND_OAUTH_RUNNER_VERSION.join(".")} or later`,
+        code: "runner-version",
       });
+      continue;
+    }
+    const homeless = yield* runnerAccountUnsupportedSteps(q, runner.id, binding.id, input.agent, {
+      reported: input.homeReported,
+    });
+    if (homeless) {
+      refusals.push({ reason: homeless, code: "account-home" });
       continue;
     }
     const readiness = yield* bindingReadinessSteps(q, {
@@ -166,6 +185,7 @@ export function* signInFitSteps(
         readiness.reason === "busy"
           ? "account at its concurrency limit"
           : BINDING_REASON_TEXT[readiness.reason],
+      code: readiness.reason,
       ...(readiness.until !== null ? { until: readiness.until } : {}),
       ...(readiness.reason === "exhausted"
         ? {
@@ -183,7 +203,7 @@ export function* signInFitSteps(
   return { ...(first ?? { reason: "agent not signed in" }), refusals };
 }
 
-type SignInChecks = Parameters<typeof signInFitSteps>[4];
+type SignInChecks = Parameters<typeof resolveRunnerAccountSteps>[4];
 
 function* runnerVerdictsSteps(
   q: Q,
@@ -232,7 +252,7 @@ function* runnerVerdictsSteps(
       );
       continue;
     }
-    const fit = yield* signInFitSteps(
+    const fit = yield* resolveRunnerAccountSteps(
       q,
       runner,
       scope.workspaceId,

@@ -61,7 +61,7 @@ import {
   RUNNER_ONLINE_MS,
 } from "./eligible";
 import { BINDING_REASON_TEXT, classifyAgentFailure } from "./account-health";
-import { repositoryRejectionSteps, runnerOffersModelSteps, signInFitSteps } from "./fit";
+import { repositoryRejectionSteps, runnerOffersModelSteps, resolveRunnerAccountSteps } from "./fit";
 
 /** Receipt outcomes whose first `finished()` call returned `retryable: true`. */
 const UNUSABLE_PIN = new Set([
@@ -322,7 +322,7 @@ export function createRunnerPlacement(options: {
     )
       throw new PlacementRaceError("The command does not carry the sign-in placement chose");
     yield* lockAgentAccountSteps(q, account.accountId);
-    const fit = yield* signInFitSteps(
+    const fit = yield* resolveRunnerAccountSteps(
       q,
       { id: input.runnerId },
       workspaceId,
@@ -402,7 +402,7 @@ export function createRunnerPlacement(options: {
     const agent = input.profile.agent as RunnerCodingAgent;
     const pinnedFit =
       pinnedReachable && input.role === "reviewer"
-        ? yield* signInFitSteps(
+        ? yield* resolveRunnerAccountSteps(
             q,
             { id: pinnedRunnerId! },
             current.workspace.id,
@@ -489,7 +489,7 @@ export function createRunnerPlacement(options: {
         reject("excluded after failed attempt");
         continue;
       }
-      const fit = yield* signInFitSteps(
+      const fit = yield* resolveRunnerAccountSteps(
         q,
         runner,
         current.workspace.id,
