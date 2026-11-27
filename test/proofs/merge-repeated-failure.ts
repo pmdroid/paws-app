@@ -38,6 +38,8 @@ export default {
         ]
       : [],
   async run(proof) {
+    failing = true;
+    failures = 0;
     await proof.delegate();
     await proof.waitFor(
       "the item asks after repeated merge failures",
