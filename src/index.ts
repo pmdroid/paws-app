@@ -371,7 +371,10 @@ import {
 } from "./retros";
 import { createStorageUsage } from "./storage-usage";
 import {
+  TRACES_EXPORT_EVERY_MS,
+  TRACES_EXPORT_JOB,
   createTelemetry,
+  exportItemTraces,
   itemTransitionLogs,
   readTelemetrySettings,
   telemetryHeader,
@@ -2605,6 +2608,15 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         queue: METRICS_FLUSH_JOB,
         jobKey: METRICS_FLUSH_JOB,
         recurringEveryMs: METRICS_FLUSH_EVERY_MS,
+        now: Date.now(),
+      });
+      created.jobs.register(TRACES_EXPORT_JOB, async () => {
+        await exportItemTraces(store, telemetry);
+      });
+      await enqueueJobOnce(store, {
+        queue: TRACES_EXPORT_JOB,
+        jobKey: TRACES_EXPORT_JOB,
+        recurringEveryMs: TRACES_EXPORT_EVERY_MS,
         now: Date.now(),
       });
       created.jobs.register(QUEUE_DEPTH_JOB, () => recordQueueDepths(store));

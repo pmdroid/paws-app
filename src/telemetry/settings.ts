@@ -169,8 +169,18 @@ export async function readTelemetrySettings(store: Db): Promise<TelemetrySetting
   }
 }
 
-export async function saveTelemetrySettings(store: Db, settings: TelemetrySettings): Promise<void> {
+export const TRACES_SINCE_KEY = "telemetry.traces.since";
+const tracesOn = (settings: TelemetrySettings) => settings.enabled && settings.traces.enabled;
+
+export async function saveTelemetrySettings(
+  store: Db,
+  settings: TelemetrySettings,
+  now = Date.now(),
+): Promise<void> {
+  const before = await readTelemetrySettings(store);
   await updateSetting(store, SETTINGS_KEY, () => JSON.stringify(settings));
+  if (tracesOn(before) !== tracesOn(settings))
+    await updateSetting(store, TRACES_SINCE_KEY, () => (tracesOn(settings) ? String(now) : ""));
 }
 
 export const telemetryHeader = {

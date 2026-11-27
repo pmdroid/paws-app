@@ -45,3 +45,11 @@ export const mergeWaitMark = pgTable(
     check("merge_wait_mark_kind", sql`kind IN ('review_started','review_ended','enqueued')`),
   ],
 );
+
+export const traceExport = pgTable("trace_export", {
+  itemId: text("item_id")
+    .primaryKey()
+    .references(() => workItem.id),
+  endedAt: bigint("ended_at", { mode: "number" }).notNull(),
+  exportedAt: bigint("exported_at", { mode: "number" }).notNull(),
+});

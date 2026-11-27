@@ -12,3 +12,4 @@ export {
   telemetryHeader,
 } from "./settings";
 export type { TelemetryProtocol, TelemetrySettings } from "./settings";
+export { TRACES_EXPORT_EVERY_MS, TRACES_EXPORT_JOB, exportItemTraces } from "./traces";
