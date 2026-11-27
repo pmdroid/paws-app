@@ -1302,23 +1302,26 @@ export function createRemoteAgentRunner(options: {
               });
             return lostCommits;
           };
+          const lane = async (rejoined: boolean) =>
+            input.testLane?.({
+              runId: selected.runId,
+              runnerId: selected.id,
+              runner: await runnerName(selected.id),
+              ...(rejoined ? { attached: true } : {}),
+              hold: async () => {
+                await reserveRunnerSlot(store, {
+                  runId: selected.runId,
+                  runnerId: selected.id,
+                  instanceId,
+                  now: now(),
+                });
+              },
+            });
+          if (attached) await lane(true);
           const placed =
             attached ??
             (await (async () => {
-              if (input.testLane)
-                await input.testLane({
-                  runId: selected.runId,
-                  runnerId: selected.id,
-                  runner: await runnerName(selected.id),
-                  hold: async () => {
-                    await reserveRunnerSlot(store, {
-                      runId: selected.runId,
-                      runnerId: selected.id,
-                      instanceId,
-                      now: now(),
-                    });
-                  },
-                });
+              await lane(false);
               const scoped = taskScope ?? (await work.scope(selected.runId, selected.workspaceId));
               // A runner's saved WIP comes first; then the head it gives must be on GitHub.
               let restoreCheckpoint =

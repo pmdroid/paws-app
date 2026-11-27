@@ -119,6 +119,7 @@ export interface RunAgentOptions {
     runId: string;
     runnerId: string;
     runner: string;
+    attached?: boolean;
     hold(): Promise<void>;
   }) => Promise<void>;
   closeoutFocus?: CloseoutFocus;

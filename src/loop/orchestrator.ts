@@ -5483,17 +5483,23 @@ export class Orchestrator {
     const lane = {
       failed: undefined as unknown,
       release: async () => {
-        for (const runId of runs) await releaseTestPermit(this.store, runId);
+        if (!(signal?.reason instanceof PawsShutdown))
+          for (const runId of runs) await releaseTestPermit(this.store, runId);
         runs.clear();
       },
       wait: async ({
         runId,
         runnerId,
         runner,
+        attached,
         hold,
       }: Parameters<NonNullable<RunAgentOptions["testLane"]>>[0]) => {
         if (lane.failed !== undefined) throw lane.failed;
         runs.add(runId);
+        if (attached) {
+          await takeTestPermit(this.store, { runId, runnerId, now: this.now() });
+          return;
+        }
         try {
           await waitForTestLane({
             runner,

@@ -79,3 +79,11 @@ test("a waiter keeps its first request time across takes", async () => {
   expect(await take(db, "b", "r1", NOW + 5)).toMatchObject({ requestedAt: NOW + 5 });
   expect(await take(db, "b", "r1", NOW + 60_000)).toMatchObject({ requestedAt: NOW + 5 });
 });
+
+test("a holder kept across a restart stays the holder while its lease lives", async () => {
+  const db = await store({ a: { runnerId: "r1", leaseUntil: NOW * 10 }, b: { runnerId: "r1" } });
+  expect(await take(db, "a")).toEqual({ granted: true });
+  const later = NOW + 2 * TEST_PERMIT_TTL_MS;
+  expect(await take(db, "b", "r1", later)).toMatchObject({ granted: false, holder: "a" });
+  expect(await take(db, "a", "r1", later)).toEqual({ granted: true });
+});
