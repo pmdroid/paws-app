@@ -5,6 +5,7 @@ import { journalCaught } from "../journal";
 import type { DoctorCheck } from "../doctor";
 import { recordDuration } from "../metrics";
 import { observeRequest, type RequestMetrics } from "./request-metrics";
+import { ALERTS_PATH, readAlerts } from "../alerts";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
 import { createGitHubStatusCache, type GitHubStatusCache } from "./github-status-cache";
@@ -902,6 +903,13 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
       })) ?? Response.json({ error: "Not found" }, { status: 404 })
     );
+  }
+  if (path === ALERTS_PATH && secrets.store) {
+    if (request.method !== "GET")
+      return Response.json({ error: "Method not allowed" }, { status: 405 });
+    if (principal !== undefined && !isWorkspaceAdmin(principal.role))
+      return Response.json({ error: "Workspace admin required." }, { status: 403 });
+    return Response.json(await readAlerts(secrets.store));
   }
   if (path === "/api/settings/doctor" && secrets.doctor) {
     if (request.method !== "GET")

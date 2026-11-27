@@ -325,6 +325,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   api("GET", "/api/metrics", "preserved", "src/settings", {
     sample: "/api/metrics?names=http.request&step=hour",
   }),
+  api("GET", "/api/alerts", "canonical", "src/alerts", { sample: "/api/alerts", member: 403 }),
   api("GET", "/api/metrics/stages", "preserved", "src/settings", {
     sample: "/api/metrics/stages?repository=acme/app",
   }),
