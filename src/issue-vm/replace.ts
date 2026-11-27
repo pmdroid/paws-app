@@ -4,8 +4,10 @@ import {
   latestItemIssueVmSteps,
   latestSealedSnapshotSteps,
   markFailedIssueVmGoneSteps,
+  runnerStandingSteps,
   setIssueVmWantSteps,
   undeletedFailedIssueVmsSteps,
+  updateRunnerStatusSteps,
   type Db,
   type IssueVm,
   type IssueVmProvider,
@@ -65,10 +67,21 @@ export function createIssueVmReplacer(
 
   async function removeOld(failed: IssueVm, driver: IssueVmDriver, keepRow: boolean) {
     const call = { generation: failed.generation, signal: new AbortController().signal };
-    if ((await driver.reconcile(failed.id, call)) !== "missing")
-      await driver.delete(failed.id, call);
-    if (!keepRow)
-      await store.run((q) => markFailedIssueVmGoneSteps(q, { id: failed.id, now: now() }));
+    await driver.delete(failed.id, call);
+    const at = now();
+    await store.transaction(function* (q) {
+      const runnerId = failed.runnerId;
+      const standing = runnerId === null ? null : yield* runnerStandingSteps(q, runnerId);
+      if (runnerId !== null && standing !== null && standing.revokedAt === null)
+        yield* updateRunnerStatusSteps(q, {
+          runnerId,
+          workspaceId: failed.workspaceId,
+          userId: failed.memberUserId,
+          status: "revoked",
+          now: at,
+        });
+      if (!keepRow) yield* markFailedIssueVmGoneSteps(q, { id: failed.id, now: at });
+    });
   }
 
   async function handle(failed: IssueVm): Promise<IssueVmReplacementResult | null> {

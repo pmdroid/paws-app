@@ -4,6 +4,8 @@ import {
   discardStaleAgentSessionsSteps,
   insertRunSteps,
   moveIssueVmSteps,
+  runnerOnlineSteps,
+  runnerStandingSteps,
   saveIssueVmSpendSettingsSteps,
   type Db,
   type IssueVm,
@@ -16,6 +18,7 @@ import {
   recordIssueVmSteps,
   type FakeIssueVmDriver,
 } from "../src/issue-vm";
+import { planSessionRestoreSteps } from "../src/runner-backend/session-restore";
 import {
   describePglite,
   insertWorkItem,
@@ -102,6 +105,36 @@ async function savedSession(db: Db) {
   });
 }
 
+function runners(db: Db, oldVm: string) {
+  return db.run(function* (q) {
+    for (const id of ["runner-old", "runner-new"])
+      yield* q.exec(
+        q.orm.insert(q.t.runner).values({
+          id,
+          workspaceId: "acme",
+          ownerUserId: "ada",
+          name: id,
+          status: "active",
+          createdAt: NOW,
+          lastSeenAt: NOW,
+          isolation: "issue_vm",
+        }),
+      );
+    yield* q.exec(
+      q.orm.insert(q.t.runnerAgent).values({
+        runnerId: "runner-new",
+        agent: "claude",
+        version: "2.1.0",
+        status: "current",
+        reportedAt: NOW,
+      }),
+    );
+    yield* q.exec(
+      q.orm.update(q.t.issueVm).set({ runnerId: "runner-old" }).where(eq(q.t.issueVm.id, oldVm)),
+    );
+  });
+}
+
 function spendLimit(db: Db, monthlyLimitUsd: number) {
   return db.run((q) =>
     saveIssueVmSpendSettingsSteps(q, {
@@ -119,6 +152,7 @@ describePglite((connect) => {
     const w = await world(connect, "host");
     const runId = await savedSession(w.db);
     const old = await failedVm(w);
+    await runners(w.db, old);
 
     const [result] = await createIssueVmReplacer(w.db, options(w)).sweep();
     const [before, replacement] = await rows(w.db);
@@ -140,16 +174,29 @@ describePglite((connect) => {
       runnerId: null,
     });
     expect(w.driver.vms.has(old)).toBe(false);
-    expect(w.driver.calls.slice(-2).map((call) => [call.op, call.name])).toEqual([
-      ["reconcile", old],
-      ["delete", old],
-    ]);
+    expect(w.driver.calls.at(-1)).toMatchObject({ op: "delete", name: old });
+    expect((await w.db.run((q) => runnerStandingSteps(q, "runner-old")))?.revokedAt).not.toBeNull();
+    expect(await w.db.run((q) => runnerOnlineSteps(q, "runner-old", 0))).toBe(false);
 
     await createIssueVmLifecycle(w.db, options(w)).sweep();
     expect((await rows(w.db))[1]).toMatchObject({ state: "awake" });
+    await w.db.run((q) =>
+      q.exec(
+        q.orm
+          .update(q.t.issueVm)
+          .set({ runnerId: "runner-new" })
+          .where(eq(q.t.issueVm.id, replacement!.id)),
+      ),
+    );
     await w.db.transaction(discardStaleAgentSessionsSteps);
-    const [snapshot] = await w.db.run((q) => q.all(q.orm.select().from(q.t.agentSessionSnapshot)));
-    expect(snapshot).toMatchObject({ runId, generation: 3, status: "sealed" });
+    const restore = await w.db.run((q) =>
+      planSessionRestoreSteps(q, { runId, agent: "claude", targetRunnerId: "runner-new" }),
+    );
+    expect(restore).toMatchObject({
+      eligible: true,
+      restoreSession: { generation: 3, sessionId: "session-1" },
+      sourceRunnerId: "runner-old",
+    });
 
     expect(await createIssueVmReplacer(w.db, options(w)).sweep()).toEqual([]);
   });
@@ -182,7 +229,7 @@ describePglite((connect) => {
     await spendLimit(w.db, 50);
     expect(await replacer.sweep()).toMatchObject([{ failed: old, outcome: "replaced" }]);
     expect(await rows(w.db)).toHaveLength(2);
-    expect(w.driver.calls.filter((call) => call.op === "delete")).toHaveLength(1);
+    expect(w.driver.vms.size).toBe(0);
   });
 
   test("an item that ended gets no replacement, and its failed VM is still deleted", async () => {
