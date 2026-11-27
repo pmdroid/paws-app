@@ -200,7 +200,7 @@ describePglite((connect) => {
     for (const [id, memberUserId] of [
       ["01KVMADA00000000000000000A", "ada"],
       ["01KVMGRACE000000000000000A", "admin"],
-    ])
+    ] as const)
       await seed(db, (q) =>
         q.orm.insert(q.t.issueVm).values({
           id,
