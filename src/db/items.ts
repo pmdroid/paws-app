@@ -282,32 +282,21 @@ export function* applyWorkItemEventSteps(
   );
   const listener = transitionListener;
   if (listener !== null) {
-    const { workItemRepository, runnerWork } = q.t;
+    const { workItemRepository: repo, runnerWork } = q.t;
     const where = yield* q.one(
       q.orm
-        .select({
-          owner: workItemRepository.owner,
-          repo: workItemRepository.repo,
-          runnerId: runnerWork.runnerId,
-        })
+        .select({ owner: repo.owner, repo: repo.repo, runnerId: runnerWork.runnerId })
         .from(workItem)
-        .leftJoin(workItemRepository, eq(workItemRepository.itemId, workItem.id))
+        .leftJoin(repo, eq(repo.itemId, workItem.id))
         .leftJoin(runnerWork, eq(runnerWork.runId, workItem.currentRunId))
         .where(eq(workItem.id, id)),
     );
-    const committed: CommittedTransition = {
-      issue: next.linearIdentifier,
-      itemId: id,
-      from: current.state,
-      event,
-      to: next.state,
-      version: next.version,
-      repository: where?.owner && where.repo ? `${where.owner}/${where.repo}` : null,
-      runnerId: where?.runnerId ?? null,
-    };
+    const repository = where?.owner && where.repo ? `${where.owner}/${where.repo}` : null;
+    const { linearIdentifier: issue, version } = next;
+    const done = { issue, itemId: id, from: current.state, event, to: next.state, version };
     afterCommit(q, () => {
       try {
-        listener(committed);
+        listener({ ...done, repository, runnerId: where?.runnerId ?? null });
       } catch (error) {
         journalCaught(error, "items.transitionListener", id);
       }
