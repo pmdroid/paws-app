@@ -20,7 +20,7 @@ const ROUTES = `
 /api/settings/runner-vm-keys
 /api/settings/vm-providers /api/settings/vm-providers/check /api/settings/doctor
 /api/settings/storage/check
-/api/metrics /api/metrics/stages /api/settings/storage-usage /api/settings/storage-usage/refresh
+/api/metrics /api/metrics/stages /api/alerts /api/settings/storage-usage /api/settings/storage-usage/refresh
 /api/settings/storage-cleanup /api/settings/storage-cleanup/preview
 /api/settings/storage-cleanup/run /api/settings/storage-cleanup/history
 /api/settings/probes/collect /api/retros/settings

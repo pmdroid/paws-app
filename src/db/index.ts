@@ -165,6 +165,7 @@ export * from "./issue-vms";
 export * from "./vm-hosts";
 export * from "./vm-provider-checks";
 export * from "./metrics";
+export * from "./alerts";
 export * from "./stage-times";
 export * from "./runner-file-objects";
 export * from "./run-file-chunks";

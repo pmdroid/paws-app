@@ -12,6 +12,7 @@ import {
   openRunnerAuthority,
   startRunnerListener,
   type RunnerListener,
+  type RunnerRequestLabels,
 } from "../runner-identity";
 import { createRunnerResults } from "../runner-results";
 import { createRunnerHelpers, type SlackReplyAuthority } from "../runner-helpers";
@@ -124,6 +125,7 @@ export async function openRunnerCoordinator(options: {
   retros?: () => ((request: Request, runnerId: string) => Promise<Response | null>) | undefined;
   storageReports?: (request: Request, runnerId: string) => Promise<Response | null>;
   issueVms?: (request: Request, runnerId: string) => Promise<Response | null>;
+  observeRequest?: (labels: RunnerRequestLabels, elapsedMs: number) => void;
   hostWarnings?: (runnerId: string) => readonly string[];
   slackReplyAuthority?: SlackReplyAuthority;
   repositorySummaryAuthority?: Parameters<typeof createRunnerHelpers>[0]["summary"];
@@ -241,6 +243,7 @@ export async function openRunnerCoordinator(options: {
     port: options.port,
     now: options.now,
     takeLogDetail: takeRejectedFields,
+    ...(options.observeRequest ? { observe: options.observeRequest } : {}),
     async authorize(peer) {
       try {
         await control.authenticate(peer);

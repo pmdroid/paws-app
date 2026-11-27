@@ -33,6 +33,7 @@ async function paws() {
     offset: 0,
     probeStatus: 405,
     revoked: false,
+    observed: [] as string[],
   };
   const enrollment = createServer(server, async (request, response) => {
     const body = JSON.parse(await new Response(request as never).text());
@@ -56,6 +57,7 @@ async function paws() {
     authorize: (peer) => p.active.has(peer.fingerprint),
     revoked: () => p.revoked,
     log: (line) => (p.refused += line.includes("answered 403") ? 1 : 0),
+    observe: (labels) => p.observed.push(`${labels.method} ${labels.route} ${labels.status_class}`),
     async fetch(request) {
       const path = new URL(request.url).pathname;
       if (path === "/v1/certificate") {
@@ -159,4 +161,11 @@ test("a refused daemon notices the identity enroll wrote", async () => {
   await enrolling.enroll("host", TOKEN);
   enrolling.close();
   expect(daemon.identityReplaced()).toBe(true);
+}, 30_000);
+
+test("a refused heartbeat is observed under its runner route as a 4xx", async () => {
+  const { p, refusal } = await paws();
+  p.active.clear();
+  expect((await refusal()).status).toBe(403);
+  expect(p.observed.at(-1)).toBe("POST /v1/heartbeat 4xx");
 }, 30_000);

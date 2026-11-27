@@ -92,6 +92,7 @@ const MODULES = [
   "storage-usage",
   "storage-cleanup",
   "metrics",
+  "alerts",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -180,6 +181,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "notebook",
     "vm-hosts",
     "metrics",
+    "alerts",
   ],
   settings: [
     "acp",
@@ -439,6 +441,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "vm-hosts": ["db", "journal", "webhook-body", "workspace"],
   "vm-provider-checks": ["config", "db", "journal", "provisioning"],
   "review-score": ["db"],
+  alerts: ["db"],
 };
 
 describe("module boundaries", () => {
