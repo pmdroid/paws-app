@@ -3,6 +3,7 @@ import {
   createFakeTracker,
   createLinearTracker,
   type CandidateRepository,
+  LinearGraphQLError,
   type LinearClient,
 } from "../src/linear";
 import type { OutboxRow } from "../src/db";
@@ -204,6 +205,8 @@ function labelClient(
   issue: { labels: { id: string; name: string; group: string | null }[] },
   groups: { id: string }[],
   labels: { id: string }[],
+  named: { id: string }[][] = [[]],
+  createError?: Error,
 ) {
   const calls: { name: string; variables: Record<string, unknown> }[] = [];
   const client: LinearClient = {
@@ -224,6 +227,9 @@ function labelClient(
         };
       if (name === "RepositoryLabelGroups") return { issueLabels: { nodes: groups } };
       if (name === "RepositoryLabels") return { issueLabels: { nodes: labels } };
+      if (name === "RepositoryLabelsNamed")
+        return { issueLabels: { nodes: named.length > 1 ? named.shift()! : named[0]! } };
+      if (name === "RepositoryLabelCreate" && createError) throw createError;
       if (name === "RepositoryLabelCreate")
         return {
           issueLabelCreate: {
@@ -253,12 +259,67 @@ test("adding a repository label creates the repo group and label when they are m
     "RepositoryLabelIssue",
     "RepositoryLabelGroups",
     "RepositoryLabelCreate",
+    "RepositoryLabelsNamed",
     "RepositoryLabelCreate",
     "RepositoryLabelAdd",
   ]);
   expect(calls[2]!.variables).toEqual({ input: { name: "repo", isGroup: true } });
-  expect(calls[3]!.variables).toEqual({ input: { name: "acme/docs", parentId: "new-group" } });
-  expect(calls[4]!.variables).toEqual({ id: "issue", labelId: "new-label" });
+  expect(calls[3]!.variables).toEqual({ name: "acme/docs" });
+  expect(calls[4]!.variables).toEqual({ input: { name: "acme/docs", parentId: "new-group" } });
+  expect(calls[5]!.variables).toEqual({ id: "issue", labelId: "new-label" });
+});
+
+test("adding a repository label reuses a same-name label outside the repo group", async () => {
+  const { tracker, calls } = labelClient(
+    { labels: [] },
+    [{ id: "group" }],
+    [],
+    [[{ id: "loose" }]],
+  );
+  await tracker.addRepositoryLabel!({ issueId: "issue", repository: "acme/docs" });
+  expect(calls.map((call) => call.name)).toEqual([
+    "RepositoryLabelIssue",
+    "RepositoryLabelGroups",
+    "RepositoryLabels",
+    "RepositoryLabelsNamed",
+    "RepositoryLabelAdd",
+  ]);
+  expect(calls[3]!.variables).toEqual({ name: "acme/docs" });
+  expect(calls[4]!.variables).toEqual({ id: "issue", labelId: "loose" });
+});
+
+test("a repository label create that races to a duplicate name uses the label it raced with", async () => {
+  const { tracker, calls } = labelClient(
+    { labels: [] },
+    [{ id: "group" }],
+    [],
+    [[], [{ id: "raced" }]],
+    new LinearGraphQLError("duplicate label name", []),
+  );
+  await tracker.addRepositoryLabel!({ issueId: "issue", repository: "acme/docs" });
+  expect(calls.map((call) => call.name)).toEqual([
+    "RepositoryLabelIssue",
+    "RepositoryLabelGroups",
+    "RepositoryLabels",
+    "RepositoryLabelsNamed",
+    "RepositoryLabelCreate",
+    "RepositoryLabelsNamed",
+    "RepositoryLabelAdd",
+  ]);
+  expect(calls[6]!.variables).toEqual({ id: "issue", labelId: "raced" });
+});
+
+test("a duplicate label name with no label to find still fails", async () => {
+  const { tracker } = labelClient(
+    { labels: [] },
+    [{ id: "group" }],
+    [],
+    [[]],
+    new LinearGraphQLError("duplicate label name", []),
+  );
+  await expect(
+    tracker.addRepositoryLabel!({ issueId: "issue", repository: "acme/docs" }),
+  ).rejects.toThrow("duplicate label name");
 });
 
 test("adding a repository label reuses the existing group and label", async () => {
