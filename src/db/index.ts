@@ -51,7 +51,6 @@ export {
 } from "./postgres";
 export { refuseOlderDatabase, UnknownDatabaseError } from "./db-check";
 export * from "./linear-budget";
-export { closingParen, createTableParts, splitTopLevel, unquoteName } from "./ddl";
 export {
   observeDb,
   postgresDb,
