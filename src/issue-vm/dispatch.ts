@@ -8,6 +8,8 @@ import {
   type IssueVmProvider,
   type Q,
   type Steps,
+  type VmHostMachine,
+  type VmHostRow,
 } from "../db";
 import { journal } from "../journal";
 import { vmHostSlots } from "../vm-hosts";
@@ -38,8 +40,7 @@ type IssueVmDispatchInput = {
   now: number;
 };
 
-function* freeVmHostSteps(q: Q, input: { workspaceId: string; now: number }) {
-  const machines = yield* workspaceVmHostsSteps(q, input.workspaceId, input.now);
+function* freeVmHostSteps(q: Q, machines: (VmHostMachine & { host: VmHostRow })[]) {
   for (const machine of machines) {
     const inUse = (yield* liveHostIssueVmsSteps(q, machine.runnerId)).length;
     if (inUse < vmHostSlots(machine, machine.host).slots) return machine.runnerId;
@@ -63,9 +64,10 @@ export function* issueVmPlacementSteps(
   const replacing = latest !== null && latest.provider === "host" && latest.state === "failed";
   let hostRunnerId: string | null = null;
   if (!kept && !replacing) {
+    if ((yield* workspaceVmHostsSteps(q, input.workspaceId)).length === 0) return null;
     const hosts = yield* workspaceVmHostsSteps(q, input.workspaceId, input.now);
-    if (hosts.length === 0) return null;
-    hostRunnerId = yield* freeVmHostSteps(q, input);
+    if (hosts.length === 0) return { wait: "Waiting for a VM host to come online" };
+    hostRunnerId = yield* freeVmHostSteps(q, hosts);
     if (hostRunnerId === null) return { wait: "Waiting for a free slot on a VM host" };
   }
   const { workspaceId, itemId, memberUserId, now } = input;

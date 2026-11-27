@@ -30,7 +30,12 @@ import type { RunnerCommand } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { offerFixtureModels, seed, signInFixtureRunner } from "./pglite-fixtures";
+import {
+  offerFixtureModels,
+  seed,
+  signInFixtureRunner,
+  withoutForeignKeys,
+} from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const roots: string[] = [];
@@ -277,4 +282,34 @@ test("a run holding its slot between commands resumes there even while others ar
   const held = f.item(true);
   void held.catch(() => undefined);
   expect((await f.probe(f.goldbox)).type).toBe("probe");
+});
+
+test("an item with an issue VM waits for that VM's runner instead of placing on another runner", async () => {
+  const f = await fixture();
+  await withoutForeignKeys(f.db);
+  await seed(f.db, (q) =>
+    q.orm.insert(q.t.issueVm).values({
+      id: "vm-1",
+      workspaceId: "ws",
+      itemId: "acme-1",
+      memberUserId: "owner",
+      provider: "host",
+      hostRunnerId: "host",
+      runnerId: f.goldbox,
+      state: "awake",
+      want: "awake",
+      generation: 1,
+      createdAt: 0,
+      stateAt: 0,
+    }),
+  );
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  try {
+    await expect(f.item()).rejects.toBeInstanceOf(RunnerCapacityWait);
+    expect(warn.mock.calls[0]![1]).toMatchObject({
+      rejected: expect.arrayContaining(["agentbox: the item runs only in its own issue VM"]),
+    });
+  } finally {
+    warn.mockRestore();
+  }
 });

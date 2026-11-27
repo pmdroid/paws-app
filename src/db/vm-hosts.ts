@@ -55,7 +55,7 @@ export function* deleteVmHostSteps(q: Q, runnerId: string) {
   return removed.length > 0;
 }
 
-export function* workspaceVmHostsSteps(q: Q, workspaceId: string, now: number) {
+export function* workspaceVmHostsSteps(q: Q, workspaceId: string, now?: number) {
   const { runner, runnerHostStatus: status, vmHost } = q.t;
   const rows = yield* q.all(
     q.orm
@@ -72,8 +72,8 @@ export function* workspaceVmHostsSteps(q: Q, workspaceId: string, now: number) {
         and(
           eq(runner.workspaceId, workspaceId),
           isNull(runner.revokedAt),
-          eq(runner.status, "active"),
-          gt(runner.lastSeenAt, now - 60_000),
+          now === undefined ? undefined : eq(runner.status, "active"),
+          now === undefined ? undefined : gt(runner.lastSeenAt, now - 60_000),
         ),
       )
       .orderBy(runner.id),

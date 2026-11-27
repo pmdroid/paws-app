@@ -18,7 +18,7 @@ import {
   type IssueVmDrivers,
 } from "../src/issue-vm";
 import { workspaceDispatchPg } from "./fake-workspace";
-import { seed, withoutForeignKeys } from "./pglite-fixtures";
+import { insertWorkItem, seed, withoutForeignKeys } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const GIB = 1024 ** 3;
@@ -27,67 +27,39 @@ afterEach(async () => {
   for (const close of closers.splice(0)) await close();
 });
 
+const runner = (id: string) => (q: Q) =>
+  q.orm.insert(q.t.runner).values({
+    id,
+    workspaceId: "ws",
+    ownerUserId: "owner",
+    name: id,
+    status: "active",
+    createdAt: 0,
+    lastSeenAt: Date.now(),
+  });
+
 async function world() {
   const { db, close } = await tempStore();
   closers.push(close);
   await withoutForeignKeys(db);
-  await seed(
-    db,
-    (q) =>
-      q.orm.insert(q.t.workItem).values({
-        id: "PAS-1",
-        delegationId: "delegation",
-        linearIssueId: "issue-PAS-1",
-        linearIdentifier: "PAS-1",
-        title: "PAS-1",
-        state: "queued",
-        branchName: "paws/PAS-1",
-        position: 0,
-        createdAt: 0,
-      }),
-    (q) =>
-      q.orm.insert(q.t.runner).values({
-        id: "runner",
-        workspaceId: "ws",
-        ownerUserId: "owner",
-        name: "Runner",
-        status: "active",
-        createdAt: 0,
-        lastSeenAt: Date.now(),
-      }),
-  );
+  await insertWorkItem(db, "PAS-1");
+  await seed(db, runner("runner"));
   return db;
 }
 
 function vmHost(db: Db) {
+  const size = { vmVcpus: 2, vmMemoryGb: 4, vmDiskGb: 30, reserveVcpus: 4, reserveMemoryGb: 8 };
   return seed(
     db,
-    (q) =>
-      q.orm.insert(q.t.runner).values({
-        id: "host",
-        workspaceId: "ws",
-        ownerUserId: "owner",
-        name: "Host",
-        status: "active",
-        createdAt: 0,
-        lastSeenAt: Date.now(),
-      }),
+    runner("host"),
     (q) =>
       q.orm
         .insert(q.t.runnerHostStatus)
         .values({ runnerId: "host", cpuCount: 16, memoryTotalBytes: 64 * GIB, reportedAt: 0 }),
     (q) =>
-      q.orm.insert(q.t.vmHost).values({
-        runnerId: "host",
-        vmVcpus: 2,
-        vmMemoryGb: 4,
-        vmDiskGb: 30,
-        reserveVcpus: 4,
-        reserveMemoryGb: 8,
-        slotCap: null,
-        updatedAt: 0,
-        updatedBy: "owner",
-      }),
+      q.orm
+        .insert(q.t.vmHost)
+        .values({ runnerId: "host", ...size, slotCap: null, updatedAt: 0, updatedBy: "owner" }),
   );
 }
 
@@ -109,6 +81,10 @@ const vms = (db: Db) =>
     IssueVm[]
   >;
 
+const hold = (blocker: string) => [
+  { itemId: "PAS-1", reason: "slot" as const, blockers: [blocker] },
+];
+
 const setState = (db: Db, state: string) =>
   seed(db, (q) => q.orm.update(q.t.workItem).set({ state }).where(eq(q.t.workItem.id, "PAS-1")));
 
@@ -125,13 +101,7 @@ test("with a VM host on, an item waits for its VM, runs in it and sleeps on awai
   const driver = createFakeIssueVmDriver();
   const drivers = { host: driver };
   const sweep = createIssueVmSweep(db, { drivers });
-  const created = [
-    {
-      itemId: "PAS-1",
-      reason: "slot" as const,
-      blockers: ["Waiting for its issue VM to be created"],
-    },
-  ];
+  const created = hold("Waiting for its issue VM to be created");
 
   expect(await tick(db, drivers)).toEqual([]);
   expect(await listItemHolds(db)).toEqual(created);
@@ -160,12 +130,6 @@ test("with a VM host on, an item waits for its VM, runs in it and sleeps on awai
   await setState(db, "running");
   await sweep();
   expect((await vms(db))[0]).toMatchObject({ state: "awake", want: "awake" });
-});
-
-test("without a VM host the item runs on a normal runner", async () => {
-  const db = await world();
-  expect(await tick(db, { host: createFakeIssueVmDriver() })).toEqual(["PAS-1"]);
-  expect(await vms(db)).toEqual([]);
 });
 
 test("PAS-2545 boundary: with only boat and InstaBox on, the item runs on a normal runner", async () => {
@@ -204,12 +168,20 @@ test("an item whose owner is over their issue VM budget waits with the reason", 
       });
   });
   expect(await tick(db, { host: createFakeIssueVmDriver() })).toEqual([]);
-  expect(await listItemHolds(db)).toEqual([
-    {
-      itemId: "PAS-1",
-      reason: "slot",
-      blockers: ["Waiting for an issue VM: its owner already has 2 of 2"],
-    },
-  ]);
+  expect(await listItemHolds(db)).toEqual(
+    hold("Waiting for an issue VM: its owner already has 2 of 2"),
+  );
   expect((await vms(db)).map((vm) => vm.itemId)).toEqual(["PAS-8", "PAS-9"]);
+});
+
+test("with every configured VM host paused or offline, the item waits instead of running elsewhere", async () => {
+  const db = await world();
+  await vmHost(db);
+  const drivers = { host: createFakeIssueVmDriver() };
+  for (const set of [{ status: "paused" }, { status: "active", lastSeenAt: 0 }]) {
+    await seed(db, (q) => q.orm.update(q.t.runner).set(set).where(eq(q.t.runner.id, "host")));
+    expect(await tick(db, drivers)).toEqual([]);
+    expect(await listItemHolds(db)).toEqual(hold("Waiting for a VM host to come online"));
+  }
+  expect(await vms(db)).toEqual([]);
 });

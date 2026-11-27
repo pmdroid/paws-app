@@ -1,4 +1,17 @@
-import { and, count, desc, eq, gt, inArray, isNull, lt, max, notInArray, or } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  max,
+  notInArray,
+  or,
+} from "drizzle-orm";
 import { type Q } from "./db";
 import { ulid } from "./ulid";
 
@@ -502,4 +515,15 @@ export function* liveIssueVmItemsSteps(q: Q) {
       .orderBy(v.id),
   );
   return rows.map((row) => ({ vm: row.vm as IssueVm, itemState: row.itemState }));
+}
+
+export function* issueVmRunnersSteps(q: Q) {
+  const { issueVm: v } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ itemId: v.itemId, runnerId: v.runnerId })
+      .from(v)
+      .where(and(notInArray(v.state, ENDED_STATES), isNotNull(v.runnerId))),
+  );
+  return rows as { itemId: string; runnerId: string }[];
 }
