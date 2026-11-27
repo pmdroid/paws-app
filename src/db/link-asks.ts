@@ -49,13 +49,18 @@ export const LINK_ASK_NOTE_REQUIRED: ReadonlySet<LinkAskDecision> = new Set(["ch
 export type ReviewRound = { head: string; findings: number; lines?: number; files?: number };
 
 /** A finding the last round still reported, with the class of bug its explanation starts with. */
-export type OpenReviewFinding = { severity: string; location: string; bugClass: string };
+export type OpenReviewFinding = {
+  severity: string;
+  location: string;
+  bugClass: string;
+  sentence?: string;
+};
 
 /** What a `rounds` ask shows: each round, the open findings, and the class that recurs most. */
 export type LinkAskRounds = {
   rounds: ReviewRound[];
   open: OpenReviewFinding[];
-  /** The bug class reported most often across the rounds. Null when no finding named one. */
+  /** The bug class seen on two or more heads that an open finding has. Null otherwise. */
   bugClass: string | null;
   /** Rounds a Keep going grants: the policy's `maxFailedReviewAttempts`. Null when unknown. */
   limit: number | null;

@@ -3,13 +3,18 @@ import type { Finding } from "./types";
 /** One review round: the commit reviewed and how many findings the reviews reported there. */
 export type ReviewRoundSummary = { head: string; findings: number };
 
-/** A finding of the last round, with the class of bug its explanation starts with. */
-export type OpenFinding = { severity: string; location: string; bugClass: string };
+/** A finding of the last round, with the class of bug its explanation starts with and its first sentence. */
+export type OpenFinding = {
+  severity: string;
+  location: string;
+  bugClass: string;
+  sentence: string;
+};
 
 export type ReviewRounds = {
   rounds: ReviewRoundSummary[];
   open: OpenFinding[];
-  /** The class reported most often across the rounds; the later one wins a tie. */
+  /** The class reported most often on two or more heads that an open finding has; the later wins a tie. */
   bugClass: string | null;
 };
 
@@ -58,28 +63,42 @@ export function summarizeReviewRounds(
   if (order) heads.sort((left, right) => order(left) - order(right));
   const findingsAt = (head: string) =>
     [...latest.get(head)!.values()].flatMap((entry) => entry.findings);
-  const counts = new Map<string, { count: number; last: number }>();
+  const counts = new Map<string, { heads: Set<string>; count: number; last: number }>();
   heads.forEach((head, index) => {
     for (const finding of findingsAt(head)) {
       const name = bugClass(finding.explanation);
       if (name === UNCLASSIFIED) continue;
-      counts.set(name, { count: (counts.get(name)?.count ?? 0) + 1, last: index });
+      const entry = counts.get(name) ?? { heads: new Set<string>(), count: 0, last: index };
+      entry.heads.add(head);
+      entry.count += 1;
+      entry.last = index;
+      counts.set(name, entry);
     }
   });
-  const top = [...counts.entries()].sort(
-    ([, left], [, right]) => right.count - left.count || right.last - left.last,
-  )[0];
   const last = heads.at(-1);
+  const open: OpenFinding[] =
+    last === undefined
+      ? []
+      : findingsAt(last).map((finding) => ({
+          severity: finding.severity,
+          location: finding.location,
+          bugClass: bugClass(finding.explanation),
+          sentence: firstSentence(finding.explanation),
+        }));
+  const top = [...counts.entries()]
+    .filter(
+      ([name, entry]) => entry.heads.size >= 2 && open.some((finding) => finding.bugClass === name),
+    )
+    .sort(([, left], [, right]) => right.count - left.count || right.last - left.last)[0];
   return {
     rounds: heads.map((head) => ({ head, findings: findingsAt(head).length })),
-    open:
-      last === undefined
-        ? []
-        : findingsAt(last).map((finding) => ({
-            severity: finding.severity,
-            location: finding.location,
-            bugClass: bugClass(finding.explanation),
-          })),
+    open,
     bugClass: top?.[0] ?? null,
   };
+}
+
+function firstSentence(explanation: string): string {
+  const text = explanation.trim().replace(/\s+/g, " ");
+  const sentence = /^.+?[.!?](?=\s|$)/.exec(text)?.[0] ?? text;
+  return sentence.length > 200 ? `${sentence.slice(0, 199)}…` : sentence;
 }
