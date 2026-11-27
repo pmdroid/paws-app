@@ -111,6 +111,7 @@ import {
   NOTHING_TO_PUBLISH_OPTIONS,
   NOTHING_TO_PUBLISH_REASON,
   UNCHANGED_PULL_OPTIONS,
+  closedPullQuestion,
   nothingToPublishQuestion,
   saysNoChangeNeeded,
   unchangedPullQuestion,
@@ -491,6 +492,7 @@ import {
   type BranchArrival,
   BranchMovedError,
   NothingToPublishError,
+  ClosedPullAtHeadError,
   UPSTREAM_MAIN_REF,
   pushOutageCause,
   GitHubHttpError,
@@ -12307,7 +12309,10 @@ export class Orchestrator {
     this.options.journal?.(`item ${item.linearIdentifier}: ${error.message} (${error.reason})`);
     const asked = await askMergeHelp(this.store, {
       itemId: item.id,
-      body: nothingToPublishQuestion(error.branch),
+      body:
+        error instanceof ClosedPullAtHeadError
+          ? closedPullQuestion(error.branch, error.pullNumber)
+          : nothingToPublishQuestion(error.branch),
       reason: NOTHING_TO_PUBLISH_REASON,
       options: NOTHING_TO_PUBLISH_OPTIONS,
       now: this.now(),

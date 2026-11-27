@@ -41,7 +41,10 @@ export async function closeStoppedPull(input: {
   });
   if (listed.status !== 200 || !Array.isArray(listed.body) || listed.body.length > 1)
     throw new Error("Could not identify the stopped Paws pull request");
-  if (listed.body.length === 0) return false;
+  if (listed.body.length === 0) {
+    if (input.deleteBranch) await deleteClosedBranch(input);
+    return false;
+  }
   const pull = listed.body[0];
   if (typeof pull !== "object" || pull === null)
     throw new Error("The stopped pull request is invalid");

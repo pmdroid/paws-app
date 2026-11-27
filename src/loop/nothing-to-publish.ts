@@ -24,6 +24,10 @@ export function nothingToPublishQuestion(branch: string): string {
   return `Branch \`${branch}\` has no commits ahead of main, so there is no pull request to open. Complete without a pull request, or send back to the agent?`;
 }
 
+export function closedPullQuestion(branch: string, pullNumber: number): string {
+  return `PR #${pullNumber} was closed without merging at the head of branch \`${branch}\`, so Paws won't open a new pull request for it. Complete without a pull request, or send back to the agent?`;
+}
+
 export function unchangedPullQuestion(branch: string, pullNumber: number): string {
   return `The agent ended without changing branch \`${branch}\` and says no change is needed, but PR #${pullNumber} is still open. Close the pull request and complete, or keep the pull request and merge?`;
 }
