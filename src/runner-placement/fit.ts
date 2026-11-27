@@ -110,6 +110,12 @@ export function* runnerOffersModelSteps(
   return catalog?.models.includes(model) ?? false;
 }
 
+export const RETRO_ACCOUNT_CHECKS = {
+  purpose: "work",
+  catalog: false,
+  homeReported: true,
+} as const satisfies Partial<SignInInput>;
+
 export function* resolveRunnerAccountSteps(
   q: Q,
   runner: SignInRunner,

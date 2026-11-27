@@ -167,6 +167,7 @@ export { createRunnerPlacementBrowser } from "./browser";
 export {
   credentialRefreshable,
   itemRunnerVerdictsSteps,
+  RETRO_ACCOUNT_CHECKS,
   runnerModelCatalogSteps,
   resolveRunnerAccountSteps,
   type AccountRefusal,

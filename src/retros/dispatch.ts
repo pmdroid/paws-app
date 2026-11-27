@@ -51,6 +51,7 @@ import {
   BINDING_REASON_TEXT,
   eligibleRunnersSteps,
   resolveRunnerAccountSteps,
+  RETRO_ACCOUNT_CHECKS,
   type AccountRefusal,
   type BindingUnavailableReason,
   type EligibleRunner,
@@ -303,10 +304,8 @@ function* retroBindingSteps(
   const fit = yield* resolveRunnerAccountSteps(q, { id: input.runnerId }, input.workspaceId, {
     agent: input.agent,
     model: input.model,
-    purpose: "work",
+    ...RETRO_ACCOUNT_CHECKS,
     at: input.now,
-    catalog: false,
-    homeReported: true,
     ...(input.bindingId ? { bindingId: input.bindingId } : {}),
   });
   if (!("reason" in fit)) {
