@@ -361,3 +361,30 @@ export function* saveIssueVmSpendSettingsSteps(
       .onConflictDoUpdate({ target: q.t.issueVmSpend.workspaceId, set }),
   );
 }
+
+export function* setIssueVmRunnerSteps(q: Q, input: { id: string; runnerId: string }) {
+  const { issueVm: v } = q.t;
+  yield* q.exec(q.orm.update(v).set({ runnerId: input.runnerId }).where(eq(v.id, input.id)));
+}
+
+export function* undeletedFailedIssueVmsSteps(q: Q) {
+  const { issueVm: v } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(v)
+      .where(and(eq(v.state, "failed"), isNull(v.deletedAt)))
+      .orderBy(v.id),
+  );
+  return rows as IssueVm[];
+}
+
+export function* markFailedIssueVmGoneSteps(q: Q, input: { id: string; now: number }) {
+  const { issueVm: v } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(v)
+      .set({ deletedAt: input.now })
+      .where(and(eq(v.id, input.id), eq(v.state, "failed"), isNull(v.deletedAt))),
+  );
+}

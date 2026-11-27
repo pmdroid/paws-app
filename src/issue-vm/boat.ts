@@ -10,6 +10,7 @@ import {
   type VmState,
 } from "../provisioning";
 import { ISSUE_VM_SLEEP_CHECK } from "./sleep-check";
+import { createProviderIssueVmDriver, type IssueVmDriverOptions } from "./driver";
 import type { StartQueue } from "./start-queue";
 
 export const BOAT_PREPARE_COMMAND = [
@@ -194,4 +195,8 @@ export function createBoatIssueVms(options: BoatIssueVmOptions): BoatIssueVms {
       return boat.deleteVm(name);
     },
   };
+}
+
+export function createBoatIssueVmDriver(vms: BoatIssueVms, options: IssueVmDriverOptions) {
+  return createProviderIssueVmDriver("boat", vms, options);
 }

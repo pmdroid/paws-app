@@ -10,6 +10,7 @@ import {
   type ProviderVm,
 } from "../provisioning";
 import { ISSUE_VM_SLEEP_CHECK } from "./sleep-check";
+import { createProviderIssueVmDriver, type IssueVmDriverOptions } from "./driver";
 import type { StartQueue } from "./start-queue";
 
 export const INSTABOX_BOOT_HOOK = "/usr/local/lib/instabox/data-init.d/50-paws-runner";
@@ -239,4 +240,8 @@ export function createInstaBoxIssueVms(options: InstaBoxIssueVmOptions): InstaBo
       return instaBox.deleteVm(name);
     },
   };
+}
+
+export function createInstaBoxIssueVmDriver(vms: InstaBoxIssueVms, options: IssueVmDriverOptions) {
+  return createProviderIssueVmDriver("instabox", vms, options);
 }
