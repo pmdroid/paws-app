@@ -160,3 +160,21 @@ test("a heartbeat a Paws without health reporting refuses is sent again without 
     () => ({ runnerVersion: "1.4.0", healthFailure: failure }),
   );
 }, 30_000);
+
+test("a runner below the control plane's level says so after a heartbeat, in either deploy order", async () => {
+  await withControlPlane(
+    "0.1.108",
+    async (plane) => {
+      expect(plane.daemon.belowMinimum()).toBe(false);
+      await plane.daemon.heartbeat();
+      expect(plane.daemon.belowMinimum()).toBe(true);
+      plane.level = "0.1.107";
+      await plane.daemon.heartbeat();
+      expect(plane.daemon.belowMinimum()).toBe(false);
+      plane.level = undefined;
+      await plane.daemon.heartbeat();
+      expect(plane.daemon.belowMinimum()).toBe(false);
+    },
+    () => ({ runnerVersion: "0.1.107" }),
+  );
+}, 30_000);
