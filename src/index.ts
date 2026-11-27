@@ -227,6 +227,7 @@ import {
   checkRepositoryWriteAccess,
   checkRepositoryReadAccess,
   createFetchGitHubClient,
+  createRunnerReleaseLookup,
   repositoriesWithMergeQueue,
   repositoriesRequiringUpToDate,
   listAppRepositories,
@@ -1739,10 +1740,15 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       linearWebhookSecret: env.linearWebhookSecret,
       githubWebhookSecret: env.githubWebhookSecret,
       githubWebhook: {
-        accept: (delivery) =>
-          acceptGitHubDelivery(store, delivery, Date.now(), commentFilter, (itemId, body) =>
+        accept: (delivery) => {
+          if (delivery.event === "release")
+            void reconciler
+              ?.onRelease(abort.signal)
+              .catch((error) => journalCaught(error, "index.githubWebhook.release", null));
+          return acceptGitHubDelivery(store, delivery, Date.now(), commentFilter, (itemId, body) =>
             orchestrator ? orchestrator.followUpRunningAgent(itemId, body) : false,
-          ),
+          );
+        },
       },
       slackSigningSecret: () => slackSigningSecret(paths.home, envSource),
       linearWebhook: linear?.webhook ?? (webhooks ? { store: inbox } : undefined),
@@ -2466,6 +2472,12 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           store,
           tracker: linear.tracker,
           lifecycle: linear.issueLifecycle,
+          releases: createRunnerReleaseLookup((name) => {
+            const binding = repositoryBinding(name);
+            const github =
+              binding && githubBinding(authProvider(runtime, binding, "read", resolveApp));
+            return binding && github ? { ...binding, ...github } : null;
+          }),
           ...(parents ? { scopeSnapshot: parents.scopeSnapshot } : {}),
           onChanges: function* (q, changes) {
             for (const { itemId, issue } of changes.issues)

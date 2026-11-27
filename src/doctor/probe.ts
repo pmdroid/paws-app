@@ -49,6 +49,7 @@ export const GITHUB_APP_EVENTS = [
   "issue_comment",
   "merge_group",
   "push",
+  "release",
 ] as const;
 
 /** GitHub App checks against the first chosen repository. */

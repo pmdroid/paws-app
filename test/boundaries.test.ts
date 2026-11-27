@@ -136,7 +136,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   assets: [],
   db: ["assets", "journal", "core", "runner-protocol", "dashboard-links", "host-operation"],
   linear: ["journal", "core", "credentials", "db", "webhook-body", "metrics"],
-  intake: ["journal", "core", "db", "linear", "dashboard-links"],
+  intake: ["journal", "core", "db", "linear", "dashboard-links", "runner-placement"],
   "execution-controls": ["journal", "core", "db", "workspace"],
   scheduler: ["journal", "core", "db", "intake"],
   "finding-groups": ["db", "linear"],

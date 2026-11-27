@@ -80,7 +80,7 @@ const FIX = {
   githubWebhook:
     "Enable the GitHub App webhook at PAWS_PUBLIC_URL/webhooks/github with GITHUB_WEBHOOK_SECRET and the Check runs, Check suites, Statuses, Pull requests, Pull request reviews, Pull request review comments, Issue comments and Merge groups events (docs/github-app.md).",
   githubEvents:
-    "In the GitHub App settings, under Permissions & events, subscribe to Check run, Check suite, Status, Pull request, Pull request review, Pull request review comment, Issue comment and Merge group, then accept the change on the installation (docs/github-app.md).",
+    "In the GitHub App settings, under Permissions & events, subscribe to Check run, Check suite, Status, Pull request, Pull request review, Pull request review comment, Issue comment, Merge group, Push and Release, then accept the change on the installation (docs/github-app.md).",
   slack:
     "Reconnect Slack in Workspace > Integrations so Slack grants the missing scopes (docs/slack.md).",
 } as const;

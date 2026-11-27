@@ -22,11 +22,19 @@ export function* managedBlockerSatisfiedSteps(
   target: Target,
   issue: string,
 ): Steps<boolean | null> {
-  const items = yield* listManagedBlockerItemsSteps(q, { ...target, issueId: issue });
+  const item = yield* managedBlockerItemSteps(q, target, issue);
+  return item && !item.cancelRequested && isBlockerSatisfied(item);
+}
+
+export function* managedBlockerItemSteps(q: Q, target: Target, issue: string) {
+  const items = yield* listManagedBlockerItemsSteps(q, {
+    ...target,
+    issueId: issue,
+    withRepository: true,
+  });
   if (items.every((item) => item.state === "cancelled")) return null;
   const active = items.filter((item) => item.state !== "cancelled" && !item.cancelRequested);
-  const item = (active.length > 0 ? active : items).at(-1)!;
-  return !item.cancelRequested && isBlockerSatisfied(item);
+  return (active.length > 0 ? active : items).at(-1)!;
 }
 
 export type BlockerEvidence = {
@@ -34,6 +42,7 @@ export type BlockerEvidence = {
   reason: string;
   checkedAt: number;
   merge?: MergeEvidence;
+  release?: string | null;
 };
 
 export async function readExternalBlockerEvidence(

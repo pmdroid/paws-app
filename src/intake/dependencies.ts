@@ -6,6 +6,7 @@ import {
   delegationHasReconciliationWorkSteps,
   enqueueOutboxOnceSteps,
   getConfirmedRemoteMergeSteps,
+  getWorkItemRepositorySteps,
   itemSpecificationPresentSteps,
   latestIssueIdentifierSteps,
   listBlocksOfSteps,
@@ -22,8 +23,21 @@ import {
   type Db,
 } from "../db";
 import type { DependencyEdge, LinearIssueLifecycle, TrackerAdapter } from "../linear";
+import { itemRunnerOnReleaseSteps } from "../runner-placement";
 import { orderByBlocks } from "./order";
-import { managedBlockerSatisfiedSteps } from "./blocker-policy";
+import {
+  managedBlockerItemSteps,
+  managedBlockerSatisfiedSteps,
+  type BlockerEvidence,
+} from "./blocker-policy";
+
+const RELEASE_LABEL = "needs runner release";
+
+export type RunnerReleases = (
+  repository: string,
+  mergeSha: string,
+  signal?: AbortSignal,
+) => Promise<string | null>;
 
 type Target = { itemId: string; workspaceId: string };
 type Item = DependencyItem;
@@ -40,6 +54,7 @@ export type DependencyReads = {
   edges: DependencyEdge[];
   states: Map<string, string>;
   identifiers: Map<string, string>;
+  evidence?: Record<string, BlockerEvidence>;
 };
 
 export type DependencyReadiness = {
@@ -194,7 +209,7 @@ function* readReadyItemsSteps(
   let ready = candidate && !cycleHeld.has(item.linearIssueId);
   for (const edge of blocking) {
     if (!ready) break;
-    ready = yield* satisfied(q, edge.blockerLinearIssueId);
+    ready = (yield* satisfied(q, edge.blockerLinearIssueId)) === "met";
   }
   return {
     generation: saved.generation,
@@ -215,21 +230,55 @@ function* readItemBlockersSteps(q: Q, target: Target): Steps<string[]> {
   const satisfied = blockerSatisfied(target, current, saved);
   const identifiers = new Map<string, string>(JSON.parse(saved.linearIdentifiers));
   const siblings = new Map(current.siblings.map((entry) => [entry.linearIssueId, entry]));
-  const unmet: string[] = [];
-  for (const edge of yield* listBlocksOfSteps(q, [current.item.linearIssueId]))
-    if (!(yield* satisfied(q, edge.blockerLinearIssueId))) unmet.push(edge.blockerLinearIssueId);
+  const unmet = new Map<string, Verdict>();
+  for (const edge of yield* listBlocksOfSteps(q, [current.item.linearIssueId])) {
+    const verdict = yield* satisfied(q, edge.blockerLinearIssueId);
+    if (verdict !== "met") unmet.set(edge.blockerLinearIssueId, verdict);
+  }
   const named: string[] = [];
-  for (const id of unmet)
+  for (const [id, verdict] of unmet)
     named.push(
-      siblings.get(id)?.identifier ??
-        identifiers.get(id) ??
-        (yield* latestIssueIdentifierSteps(q, id)) ??
-        id,
+      (verdict === "release" ? "waiting for a runner release with " : "") +
+        (siblings.get(id)?.identifier ??
+          identifiers.get(id) ??
+          (yield* latestIssueIdentifierSteps(q, id)) ??
+          id),
     );
   return named;
 }
 
+type Verdict = "met" | "unmet" | "release";
+
 function blockerSatisfied(
+  target: Target,
+  current: Scope,
+  saved: Snapshot,
+): (q: Q, id: string) => Steps<Verdict> {
+  const evidence = JSON.parse(saved.externalEvidence) as Record<string, BlockerEvidence>;
+  const merged = blockerMerged(target, current, saved);
+  return function* (q, id) {
+    if (!(yield* merged(q, id))) return "unmet";
+    const release = evidence[id]?.release;
+    if (release === undefined) return "met";
+    return release !== null && (yield* itemRunnerOnReleaseSteps(q, target.itemId, release))
+      ? "met"
+      : "release";
+  };
+}
+
+function* blockerMergeSteps(q: Q, target: Target, current: Scope, id: string) {
+  const sibling = current.siblings.find((entry) => entry.linearIssueId === id);
+  if (!sibling) {
+    const managed = yield* managedBlockerItemSteps(q, target, id);
+    const { mergeSha, repository } = managed ?? {};
+    return mergeSha && repository ? { repository, mergeSha } : null;
+  }
+  const mergeSha = (yield* getConfirmedRemoteMergeSteps(q, sibling.id))?.mergeSha;
+  const binding = yield* getWorkItemRepositorySteps(q, sibling.id);
+  return mergeSha && binding ? { repository: `${binding.owner}/${binding.repo}`, mergeSha } : null;
+}
+
+function blockerMerged(
   target: Target,
   current: Scope,
   saved: Snapshot,
@@ -256,10 +305,11 @@ export async function syncItemDependencies(
     expectedGeneration: number;
     tracker: Pick<TrackerAdapter, "listDeps">;
     lifecycle: Pick<LinearIssueLifecycle, "inspect">;
+    releases?: RunnerReleases;
     signal?: AbortSignal;
   },
 ): Promise<DependencyReadiness> {
-  const { itemId, workspaceId, expectedGeneration, tracker, lifecycle, signal } = input;
+  const { itemId, workspaceId, expectedGeneration, tracker, lifecycle, releases, signal } = input;
   const target = { itemId, workspaceId };
   if (
     !Number.isSafeInteger(expectedGeneration) ||
@@ -292,6 +342,7 @@ export async function syncItemDependencies(
   }
   const states = new Map<string, string>();
   const identifiers = new Map<string, string>();
+  const evidence: Record<string, BlockerEvidence> = {};
   for (const id of new Set([...edges.values()].map((edge) => edge.blockerLinearIssueId))) {
     signal?.throwIfAborted();
     const issue = await lifecycle.inspect(id, { signal });
@@ -299,13 +350,23 @@ export async function syncItemDependencies(
       throw new Error("Linear returned another dependency issue");
     states.set(id, issue.stateType);
     identifiers.set(id, issue.identifier ?? id);
+    if (
+      issue.stateType !== "canceled" &&
+      issue.labels?.some((label) => label.toLowerCase() === RELEASE_LABEL)
+    ) {
+      const merge = await store.run((q) => blockerMergeSteps(q, target, initial, id));
+      const release =
+        merge && releases ? await releases(merge.repository, merge.mergeSha, signal) : null;
+      const reason = `waiting for a runner release with ${identifiers.get(id)}`;
+      evidence[id] = { satisfied: release !== null, reason, checkedAt: Date.now(), release };
+    }
   }
   signal?.throwIfAborted();
   return store.transaction((q) =>
     writeItemDependenciesSteps(
       q,
       { ...target, expectedGeneration },
-      { edges: [...edges.values()], states, identifiers },
+      { edges: [...edges.values()], states, identifiers, evidence },
       initial.token,
     ),
   );
@@ -338,7 +399,7 @@ function* writeItemDependenciesSteps(
 ): Steps<DependencyReadiness> {
   const { itemId, workspaceId, expectedGeneration } = input;
   const target = { itemId, workspaceId };
-  const { edges, states, identifiers } = reads;
+  const { edges, states, identifiers, evidence } = reads;
   const current = yield* scopeSteps(q, target);
   if (
     !current ||
@@ -354,6 +415,7 @@ function* writeItemDependenciesSteps(
     scope: current.token,
     linearStates: JSON.stringify([...states]),
     linearIdentifiers: JSON.stringify([...identifiers]),
+    externalEvidence: JSON.stringify(evidence ?? {}),
   });
   const waiting = [...states]
     .filter(([, state]) => state !== "completed" && state !== "canceled")

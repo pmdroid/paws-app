@@ -17,6 +17,7 @@ export type LinearIssueOwnership = {
   delegateId: string | null;
   projectId?: string | null;
   stateType: string;
+  labels?: string[];
 };
 
 export type StartLinearCodeIssue = {
@@ -44,7 +45,7 @@ export interface LinearIssueLifecycle {
 }
 
 const ISSUE = `query IssueOwnership($id: String!) {
-  issue(id: $id) { id identifier url team { id name } state { type } assignee { id } delegate { id } project { id } }
+  issue(id: $id) { id identifier url team { id name } state { type } assignee { id } delegate { id } project { id } labels(first: 100) { nodes { name } } }
 }`;
 
 const PAGE = "pageInfo { hasNextPage endCursor }";
@@ -124,6 +125,7 @@ function createUnlabelledLifecycle(
         ? { teamName: readString(child(issue, "team")!, "name")! }
         : {}),
       stateType,
+      ...labelNames(issue),
       assigneeId: nullableOwner(issue, "assignee"),
       delegateId: nullableOwner(issue, "delegate"),
     };
@@ -258,4 +260,10 @@ function nullableOwner(issue: Record<string, unknown>, key: string): string | nu
   const id = readString(child(issue, key) ?? {}, "id");
   if (id === null) throw new Error("Linear returned incomplete issue ownership.");
   return id;
+}
+
+function labelNames(issue: Record<string, unknown>): { labels?: string[] } {
+  const nodes = child(issue, "labels")?.nodes;
+  if (!Array.isArray(nodes)) return {};
+  return { labels: nodes.map((node) => (isRecord(node) && readString(node, "name")) || "") };
 }

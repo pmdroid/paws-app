@@ -796,8 +796,9 @@ export function createRunnerWork(options: {
         const concurrency = capacityRecorded.concurrency;
         woke = capacityRecorded.woke;
         yield* noteRunnerSeenSteps(q, runnerId, at);
-        if (Object.values(host).some((value) => value !== undefined))
-          yield* recordRunnerHostStatusSteps(q, runnerId, host, at);
+        const versionChanged =
+          Object.values(host).some((value) => value !== undefined) &&
+          (yield* recordRunnerHostStatusSteps(q, runnerId, host, at));
         const skills: RunnerSkill[] | undefined = installed && (yield* skillManifestSteps(q));
         if (installed) yield* recordRunnerSkillsSteps(q, runnerId, installed, at);
         if (runtimes) yield* recordRunnerRuntimesSteps(q, runnerId, runtimes, at);
@@ -810,7 +811,9 @@ export function createRunnerWork(options: {
         )
           woke = true;
         yield* recordRunnerAccountCapabilitySteps(q, runnerId, accounts, at);
-        if (reconnected && (yield* wakeRunnerSlotWaitsSteps(q, runnerId, at))) woke = true;
+        if ((reconnected || versionChanged) && (yield* wakeRunnerSlotWaitsSteps(q, runnerId, at)))
+          woke = true;
+        if (versionChanged) woke = true;
         let targets: RunnerAgentTarget[] | undefined;
         if (agents) {
           targets = [];

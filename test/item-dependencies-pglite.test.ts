@@ -126,7 +126,10 @@ describePglite((connect) => {
         generation: 9,
       }),
     );
-    expect(await db.run((q) => readDependencySnapshotSteps(q, "a"))).toEqual(snapshot);
+    expect(await db.run((q) => readDependencySnapshotSteps(q, "a"))).toEqual({
+      ...snapshot,
+      externalEvidence: "{}",
+    });
     await db.run((q) =>
       saveDependencySnapshotSteps(q, { itemId: "a", ...snapshot, generation: 2 }),
     );

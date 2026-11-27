@@ -272,13 +272,14 @@ export function* recordRunnerHostStatusSteps(
   );
   values.healthFailure =
     sample.healthFailure === undefined ? (before?.healthFailure ?? null) : sample.healthFailure;
-  if (before && Bun.deepEquals(before, values)) return;
+  if (before && Bun.deepEquals(before, values)) return false;
   yield* q.exec(
     q.orm
       .insert(runnerHostStatus)
       .values({ runnerId, ...values, reportedAt })
       .onConflictDoUpdate({ target: runnerHostStatus.runnerId, set: { ...values, reportedAt } }),
   );
+  return before?.runnerVersion !== values.runnerVersion;
 }
 
 export type RunnerAgentLimit = { window: string; usedPercent: number; resetsAt: number | null };
