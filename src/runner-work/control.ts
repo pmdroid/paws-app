@@ -75,7 +75,7 @@ import {
   runnerSignInsOnDiskSteps,
 } from "../db";
 import { readAgentCredentialSteps, writeAgentCredentialSteps } from "../credentials";
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import type { KeyObject } from "node:crypto";
 import {
   executionAuthorityUntil,
@@ -139,6 +139,8 @@ export class RunnerWorkFencedError extends Error {
   override readonly name = "RunnerWorkFencedError";
 }
 
+const UNSEALABLE_JOURNAL_EVERY_MS = 60 * 60_000;
+
 export function createRunnerWork(options: {
   store: Db;
   keyId: string;
@@ -150,6 +152,7 @@ export function createRunnerWork(options: {
   const { store } = options;
   const { eventKey } = options;
   const now = options.now ?? Date.now;
+  const unsealableJournaledAt = new Map<string, number>();
   /** Registered skills a runner should have installed. Removed ones are left out, so runners delete them. */
   function* skillManifestSteps(q: Q): Steps<RunnerSkill[]> {
     return (yield* listSkillsSteps(q))
@@ -664,17 +667,26 @@ export function createRunnerWork(options: {
           }
           const at = stored?.version ?? 0;
           const context = agentCredentialContext(command.id, named.account.accountId, at);
-          sent.push({
-            ...envelope,
-            credential: {
-              version: at,
-              sealed: sealForRunner(
-                pem,
-                central ? JSON.stringify(accessCredentialFiles(stored.blob)) : stored.blob,
-                context,
-              ),
-            },
-          });
+          let sealed: string;
+          try {
+            sealed = sealForRunner(
+              pem,
+              central ? JSON.stringify(accessCredentialFiles(stored.blob)) : stored.blob,
+              context,
+            );
+          } catch (error) {
+            const accountId = named.account.accountId;
+            const last = unsealableJournaledAt.get(accountId);
+            if (last === undefined || now() - last >= UNSEALABLE_JOURNAL_EVERY_MS) {
+              unsealableJournaledAt.set(accountId, now());
+              journal(
+                `runner ${runnerId} gets command ${command.id} without the sign-in of account ${accountId}: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
+            sent.push(envelope);
+            continue;
+          }
+          sent.push({ ...envelope, credential: { version: at, sealed } });
         }
         return sent;
       });
