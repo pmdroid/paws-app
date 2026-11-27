@@ -596,7 +596,9 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       const privileged =
         (path.startsWith("/api/settings/") &&
           !(
-            (path === ISSUE_VM_MEMBERS_PATH || path === ISSUE_VM_SPEND_PATH) &&
+            (path === ISSUE_VM_MEMBERS_PATH ||
+              path === ISSUE_VM_SPEND_PATH ||
+              path === SPLIT_SETTINGS_PATH) &&
             request.method === "GET"
           )) ||
         (path === "/api/linear/sessions" && request.method !== "GET");
@@ -1015,6 +1017,8 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     return (await handleSplitSettingsRequest(request, {
       configPath: secrets.agentSettings.configPath,
       csrfToken,
+      store,
+      workspaceId: principal?.workspaceId ?? null,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
         auditWorkspaceAccess(store, {

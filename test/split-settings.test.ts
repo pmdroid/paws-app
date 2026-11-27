@@ -29,6 +29,8 @@ async function instance() {
     configPath,
     csrfToken: "csrf",
     role,
+    store: db,
+    workspaceId: "workspace-1",
     audit: async (action, subject) => {
       audits.push(`${action}: ${subject}`);
     },
@@ -46,10 +48,15 @@ const put = (body: unknown) =>
 test("an admin reads the defaults and saves the splits section", async () => {
   const { db, options, audits } = await instance();
   const read = await handleSplitSettingsRequest(new Request(url), options("admin"));
-  expect(await read!.json()).toEqual({ enabled: true, maxSubIssues: 2, approvalsBeforeAuto: 2 });
+  expect(await read!.json()).toEqual({
+    enabled: true,
+    maxSubIssues: 2,
+    approvalsBeforeAuto: 2,
+    approvedSplits: 0,
+  });
   const body = { enabled: false, maxSubIssues: 5, approvalsBeforeAuto: 0 };
   const saved = await handleSplitSettingsRequest(put(body), options("admin"));
-  expect(await saved!.json()).toEqual(body);
+  expect(await saved!.json()).toEqual({ ...body, approvedSplits: 0 });
   expect(await db.run((q) => readSettingSectionsSteps(q, ["splits"]))).toEqual({
     splits: { enabled: false, max_sub_issues: 5, approvals_before_auto: 0 },
   });
@@ -58,7 +65,7 @@ test("an admin reads the defaults and saves the splits section", async () => {
   ]);
 });
 
-test("out-of-range values are refused and members can't read or change splits", async () => {
+test("out-of-range values are refused and members can read but not change splits", async () => {
   const { options } = await instance();
   const tooMany = await handleSplitSettingsRequest(
     put({ enabled: true, maxSubIssues: 6, approvalsBeforeAuto: 2 }),
@@ -68,5 +75,10 @@ test("out-of-range values are refused and members can't read or change splits", 
   expect(await tooMany!.json()).toEqual({
     error: "splits.maxSubIssues must be a whole number from 1 to 5",
   });
-  expect((await handleSplitSettingsRequest(new Request(url), options("member")))!.status).toBe(403);
+  expect((await handleSplitSettingsRequest(new Request(url), options("member")))!.status).toBe(200);
+  const memberPut = await handleSplitSettingsRequest(
+    put({ enabled: false, maxSubIssues: 2, approvalsBeforeAuto: 2 }),
+    options("member"),
+  );
+  expect(memberPut!.status).toBe(403);
 });
