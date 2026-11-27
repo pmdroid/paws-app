@@ -13,10 +13,19 @@ function lane(permits: TestPermit[], options: { needed?: boolean[] } = {}) {
     },
     take: async () => {
       calls.push("take");
-      return permits.shift() ?? permits[0] ?? { granted: false, holder: "run-a" };
+      return (
+        (permits.length > 1 ? permits.shift() : permits[0]) ?? {
+          granted: false,
+          holder: "run-a",
+          requestedAt: 0,
+        }
+      );
     },
     release: async () => {
       calls.push("release");
+    },
+    hold: async () => {
+      calls.push("hold");
     },
     holder: async (runId: string) => (runId === "run-a" ? "PAS-1" : runId),
     waiting: (reason: string | null) => {
@@ -34,12 +43,13 @@ function lane(permits: TestPermit[], options: { needed?: boolean[] } = {}) {
 
 test("a waiter takes the permit once the holder ends, and says why it waited", async () => {
   const { input, calls } = lane([
-    { granted: false, holder: "run-a" },
-    { granted: false, holder: "run-a" },
+    { granted: false, holder: "run-a", requestedAt: 0 },
+    { granted: false, holder: "run-a", requestedAt: 0 },
     { granted: true },
   ]);
   expect(await waitForTestLane(input)).toBe(true);
   expect(calls.filter((call) => call === "take")).toHaveLength(3);
+  expect(calls.filter((call) => call === "hold")).toHaveLength(2);
   expect(calls.filter((call) => call.startsWith("waiting:"))).toEqual([
     `waiting:${testLaneWaitReason("astra")}`,
     "waiting:null",
@@ -49,7 +59,7 @@ test("a waiter takes the permit once the holder ends, and says why it waited", a
 });
 
 test("a waiter rechecks the policy on wake and leaves the queue when no test check runs", async () => {
-  const { input, calls } = lane([{ granted: false, holder: "run-a" }], {
+  const { input, calls } = lane([{ granted: false, holder: "run-a", requestedAt: 0 }], {
     needed: [true, false],
   });
   expect(await waitForTestLane(input)).toBe(false);
@@ -64,16 +74,24 @@ test("a waiter past 2 hours asks once, naming the holder, and leaves the queue",
     "Closeout waited 2 hours for the test lane on astra, which PAS-1 holds.",
   );
   expect(calls.filter((call) => call === "sleep")).toHaveLength(TEST_LANE_ASK_MS / 60_000);
-  expect(calls.filter((call) => call === "release")).toHaveLength(1);
+  expect(calls.at(-1)).toBe("waiting:null");
 });
 
-test("a stale head stops the wait and frees the place in the queue", async () => {
-  const { input, calls } = lane([{ granted: false, holder: "run-a" }]);
+test("a waiter counts the 2 hours from its stored request, so a restart does not reset them", async () => {
+  const { input, calls } = lane([
+    { granted: false, holder: "run-a", requestedAt: 60_000 - TEST_LANE_ASK_MS },
+  ]);
+  await expect(waitForTestLane(input)).rejects.toThrow("which PAS-1 holds");
+  expect(calls.filter((call) => call === "sleep")).toHaveLength(1);
+});
+
+test("a stale head stops the wait and clears the waiting line", async () => {
+  const { input, calls } = lane([{ granted: false, holder: "run-a", requestedAt: 0 }]);
   let checks = 0;
   input.needed = async () => {
     if (++checks > 1) throw new Error("stale head");
     return true;
   };
   await expect(waitForTestLane(input)).rejects.toThrow("stale head");
-  expect(calls).toContain("release");
+  expect(calls.at(-1)).toBe("waiting:null");
 });

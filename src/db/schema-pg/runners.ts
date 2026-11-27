@@ -332,6 +332,7 @@ export const runnerTestPermit = pgTable(
     runnerId: text("runner_id").notNull(),
     requestedAt: bigint("requested_at", { mode: "number" }).notNull(),
     grantedAt: bigint("granted_at", { mode: "number" }),
+    expiresAt: bigint("expires_at", { mode: "number" }).notNull(),
   },
   (table) => [
     index("runner_test_permit_queue").on(table.runnerId, table.requestedAt),

@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { RUNNER_LEASE_GRACE_MS } from "../runner-protocol";
-import { releaseTestPermit, takeTestPermit, type Db } from "./index";
+import { releaseTestPermit, takeTestPermit, TEST_PERMIT_TTL_MS, type Db } from "./index";
 import { withoutForeignKeys } from "../../test/pglite-fixtures";
 import { tempStore } from "../../test/pglite";
 import { seedWork } from "../../test/runner-rows";
@@ -31,13 +31,13 @@ test("two test checks on one runner take the permit one after the other, in orde
     c: { runnerId: "r1" },
   });
   expect(await take(db, "a")).toEqual({ granted: true });
-  expect(await take(db, "b", "r1", NOW + 1)).toEqual({ granted: false, holder: "a" });
-  expect(await take(db, "c", "r1", NOW + 2)).toEqual({ granted: false, holder: "a" });
+  expect(await take(db, "b", "r1", NOW + 1)).toMatchObject({ granted: false, holder: "a" });
+  expect(await take(db, "c", "r1", NOW + 2)).toMatchObject({ granted: false, holder: "a" });
   expect(await take(db, "a")).toEqual({ granted: true });
   await releaseTestPermit(db, "a");
-  expect(await take(db, "c", "r1", NOW + 3)).toEqual({ granted: false, holder: null });
+  expect(await take(db, "c", "r1", NOW + 3)).toMatchObject({ granted: false, holder: null });
   expect(await take(db, "b", "r1", NOW + 4)).toEqual({ granted: true });
-  expect(await take(db, "c", "r1", NOW + 5)).toEqual({ granted: false, holder: "b" });
+  expect(await take(db, "c", "r1", NOW + 5)).toMatchObject({ granted: false, holder: "b" });
   await releaseTestPermit(db, "b");
   expect(await take(db, "c", "r1", NOW + 6)).toEqual({ granted: true });
 });
@@ -57,8 +57,25 @@ test("concurrent takes grant the permit once", async () => {
 test("an expired holder lease frees the permit", async () => {
   const db = await store({ a: { runnerId: "r1", leaseUntil: NOW + 1_000 }, b: { runnerId: "r1" } });
   expect(await take(db, "a")).toEqual({ granted: true });
-  expect(await take(db, "b")).toEqual({ granted: false, holder: "a" });
-  expect(await take(db, "b", "r1", NOW + 1_000 + RUNNER_LEASE_GRACE_MS + 1)).toEqual({
-    granted: true,
+  expect(await take(db, "b")).toMatchObject({ granted: false, holder: "a" });
+  const later = NOW + Math.max(1_000 + RUNNER_LEASE_GRACE_MS, TEST_PERMIT_TTL_MS) + 1;
+  expect(await take(db, "b", "r1", later)).toEqual({ granted: true });
+});
+
+test("a run placed but not yet assigned holds its place until its permit row expires", async () => {
+  const db = await store({});
+  expect(await take(db, "a")).toEqual({ granted: true });
+  expect(await take(db, "b", "r1", NOW + 1)).toMatchObject({ granted: false, holder: "a" });
+  expect(await take(db, "a", "r1", NOW + TEST_PERMIT_TTL_MS - 1)).toEqual({ granted: true });
+  expect(await take(db, "b", "r1", NOW + TEST_PERMIT_TTL_MS + 1)).toMatchObject({
+    holder: "a",
   });
+  expect(await take(db, "b", "r1", NOW + 2 * TEST_PERMIT_TTL_MS)).toEqual({ granted: true });
+});
+
+test("a waiter keeps its first request time across takes", async () => {
+  const db = await store({ a: { runnerId: "r1" }, b: { runnerId: "r1" } });
+  await take(db, "a");
+  expect(await take(db, "b", "r1", NOW + 5)).toMatchObject({ requestedAt: NOW + 5 });
+  expect(await take(db, "b", "r1", NOW + 60_000)).toMatchObject({ requestedAt: NOW + 5 });
 });

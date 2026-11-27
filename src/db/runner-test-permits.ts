@@ -2,7 +2,11 @@ import { asc, eq, inArray } from "drizzle-orm";
 import type { Db, Q, Steps } from "./db";
 import { runnerLeaseLive } from "./runner-lease";
 
-export type TestPermit = { granted: true } | { granted: false; holder: string | null };
+export const TEST_PERMIT_TTL_MS = 10 * 60_000;
+
+export type TestPermit =
+  | { granted: true }
+  | { granted: false; holder: string | null; requestedAt: number };
 
 type PermitRequest = { runId: string; runnerId: string; now: number };
 
@@ -17,6 +21,7 @@ export function* takeTestPermitSteps(q: Q, input: PermitRequest): Steps<TestPerm
         runId: permit.runId,
         requestedAt: permit.requestedAt,
         grantedAt: permit.grantedAt,
+        expiresAt: permit.expiresAt,
         leaseUntil: runnerWork.leaseUntil,
         endedAt: runnerWork.endedAt,
       })
@@ -28,6 +33,7 @@ export function* takeTestPermitSteps(q: Q, input: PermitRequest): Steps<TestPerm
   const dead = rows.filter(
     (row) =>
       row.runId !== input.runId &&
+      row.expiresAt <= input.now &&
       (row.leaseUntil === null ||
         row.endedAt !== null ||
         !runnerLeaseLive(row.leaseUntil, input.now)),
@@ -43,21 +49,27 @@ export function* takeTestPermitSteps(q: Q, input: PermitRequest): Steps<TestPerm
     );
   const live = rows.filter((row) => !dead.includes(row));
   const own = live.find((row) => row.runId === input.runId);
-  if (!own) {
-    yield* q.exec(
-      q.orm
-        .insert(permit)
-        .values({ runId: input.runId, runnerId: input.runnerId, requestedAt: input.now })
-        .onConflictDoUpdate({
-          target: permit.runId,
-          set: { runnerId: input.runnerId, requestedAt: input.now, grantedAt: null },
-        }),
-    );
-  }
+  const requestedAt = own?.requestedAt ?? input.now;
+  const expiresAt = input.now + TEST_PERMIT_TTL_MS;
+  yield* q.exec(
+    q.orm
+      .insert(permit)
+      .values({ runId: input.runId, runnerId: input.runnerId, requestedAt, expiresAt })
+      .onConflictDoUpdate({
+        target: permit.runId,
+        set: {
+          runnerId: input.runnerId,
+          requestedAt,
+          expiresAt,
+          ...(own ? {} : { grantedAt: null }),
+        },
+      }),
+  );
   const holder = live.find((row) => row.grantedAt !== null);
   if (holder?.runId === input.runId) return { granted: true };
-  if (holder) return { granted: false, holder: holder.runId };
-  if ((live[0]?.runId ?? input.runId) !== input.runId) return { granted: false, holder: null };
+  if (holder) return { granted: false, holder: holder.runId, requestedAt };
+  if ((live[0]?.runId ?? input.runId) !== input.runId)
+    return { granted: false, holder: null, requestedAt };
   yield* q.exec(
     q.orm.update(permit).set({ grantedAt: input.now }).where(eq(permit.runId, input.runId)),
   );

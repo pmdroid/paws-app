@@ -5340,7 +5340,7 @@ export class Orchestrator {
         input.report(
           `Running the Closeout checks for ${item.linearIdentifier} on its runner at ${short}.`,
         );
-      const lane = await this.takeTestLane(item, input, skipped, deps.signal);
+      const lane = this.testLane(item, input, skipped, deps.signal);
       const draft = await this.savedDraft(item.id);
       const checksRunId = `checks-${itemPathId(item)}-${short}-${attempt}`;
       try {
@@ -5355,6 +5355,7 @@ export class Orchestrator {
           pawsRoot: this.options.pawsRoot,
           checkpoint: false,
           closeoutProgress: this.runnerCloseoutHook(item, head),
+          testLane: lane.wait,
           onEvent: () => {
             const activity = this.checksActivity.get(item.id);
             if (activity) activity.since = this.now();
@@ -5384,8 +5385,9 @@ export class Orchestrator {
           result = await runner!({ ...options, ...trusted });
         } finally {
           this.checksActivity.delete(item.id);
-          if (lane) await releaseTestPermit(this.store, lane);
+          await lane.release();
         }
+        if (lane.failed !== undefined) throw lane.failed;
         await assertCurrent();
         const { ref } = await this.itemHead(item);
         const stored = this.storedCandidates();
@@ -5428,7 +5430,8 @@ export class Orchestrator {
           return;
         }
       } catch (error) {
-        if (lane) await releaseTestPermit(this.store, lane);
+        await lane.release();
+        if (lane.failed !== undefined) throw lane.failed;
         await assertCurrent();
         if (deps.signal?.aborted || error instanceof RunnerCapacityWait) throw error;
         journalCaught(
@@ -5461,7 +5464,7 @@ export class Orchestrator {
     );
   }
 
-  private async takeTestLane(
+  private testLane(
     item: WorkItemRecord,
     input: {
       head: string;
@@ -5471,47 +5474,77 @@ export class Orchestrator {
     },
     skipped: readonly string[],
     signal: AbortSignal | undefined,
-  ): Promise<string | null> {
-    const runId = item.currentRunId;
-    const runner = runId === null ? null : await runRunnerAvailability(this.store, runId);
-    if (runId === null || runner === null) return null;
-    const taken = await waitForTestLane({
-      runner: runner.name,
-      needed: async () => {
-        await input.assertCurrent();
-        const ids = mainTestCheckIds(
-          (await this.itemHead(item)).repo,
-          (await this.closeoutHome(item)).policyRoot,
-        );
-        return (ids ?? []).some((id) => !skipped.includes(id));
+  ): {
+    wait: NonNullable<RunAgentOptions["testLane"]>;
+    release(): Promise<void>;
+    failed: unknown;
+  } {
+    const runs = new Set<string>();
+    const lane = {
+      failed: undefined as unknown,
+      release: async () => {
+        for (const runId of runs) await releaseTestPermit(this.store, runId);
+        runs.clear();
       },
-      take: () => takeTestPermit(this.store, { runId, runnerId: runner.id, now: this.now() }),
-      release: () => releaseTestPermit(this.store, runId),
-      holder: async (holder) => {
-        const run = await this.store.run((q) => getRunSteps(q, holder));
-        const owner = run && (await this.store.run((q) => getWorkItemSteps(q, run.itemId)));
-        return owner?.linearIdentifier ?? holder;
+      wait: async ({
+        runId,
+        runnerId,
+        runner,
+        hold,
+      }: Parameters<NonNullable<RunAgentOptions["testLane"]>>[0]) => {
+        if (lane.failed !== undefined) throw lane.failed;
+        runs.add(runId);
+        try {
+          await waitForTestLane({
+            runner,
+            needed: async () => {
+              await input.assertCurrent();
+              const ids = mainTestCheckIds(
+                (await this.itemHead(item)).repo,
+                (await this.closeoutHome(item)).policyRoot,
+              );
+              return (ids ?? []).some((id) => !skipped.includes(id));
+            },
+            take: () => takeTestPermit(this.store, { runId, runnerId, now: this.now() }),
+            release: () => releaseTestPermit(this.store, runId),
+            hold,
+            holder: async (holder) => {
+              const run = await this.store.run((q) => getRunSteps(q, holder));
+              const owner = run && (await this.store.run((q) => getWorkItemSteps(q, run.itemId)));
+              return owner?.linearIdentifier ?? holder;
+            },
+            waiting: async (reason) => {
+              if (reason) input.report(reason);
+              if (input.stepId)
+                await this.store.transaction((q) =>
+                  setRunningCloseoutStepDetailSteps(
+                    q,
+                    item.id,
+                    input.head,
+                    input.stepId!,
+                    reason,
+                    this.now(),
+                  ),
+                );
+            },
+            now: () => this.now(),
+            sleep: (ms) =>
+              this.waitWithoutAwake(
+                item.id,
+                "runner",
+                ms,
+                signal,
+                this.options.testLaneWait?.sleep,
+              ),
+            ...this.options.testLaneWait,
+          });
+        } catch (error) {
+          lane.failed = error;
+          throw error;
+        }
       },
-      waiting: async (reason) => {
-        if (reason) input.report(reason);
-        if (input.stepId)
-          await this.store.transaction((q) =>
-            setRunningCloseoutStepDetailSteps(
-              q,
-              item.id,
-              input.head,
-              input.stepId!,
-              reason,
-              this.now(),
-            ),
-          );
-      },
-      now: () => this.now(),
-      sleep: (ms) =>
-        this.waitWithoutAwake(item.id, "runner", ms, signal, this.options.testLaneWait?.sleep),
-      ...this.options.testLaneWait,
-    });
-    return taken ? runId : null;
+    };
+    return lane;
   }
 
   /**

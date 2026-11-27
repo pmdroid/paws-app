@@ -1,5 +1,5 @@
 {
-  "id": "c607eab2-bf31-45e1-9baf-9ac7dc0ea550",
+  "id": "af744cd6-cb3c-4f8d-8a52-2f1b9a6213e2",
   "prevId": "17883762-cae6-482c-9a44-105cf2982a40",
   "version": "7",
   "dialect": "postgresql",
@@ -15185,6 +15185,12 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
         }
       },
       "indexes": {

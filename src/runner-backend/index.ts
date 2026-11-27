@@ -1305,6 +1305,20 @@ export function createRemoteAgentRunner(options: {
           const placed =
             attached ??
             (await (async () => {
+              if (input.testLane)
+                await input.testLane({
+                  runId: selected.runId,
+                  runnerId: selected.id,
+                  runner: await runnerName(selected.id),
+                  hold: async () => {
+                    await reserveRunnerSlot(store, {
+                      runId: selected.runId,
+                      runnerId: selected.id,
+                      instanceId,
+                      now: now(),
+                    });
+                  },
+                });
               const scoped = taskScope ?? (await work.scope(selected.runId, selected.workspaceId));
               // A runner's saved WIP comes first; then the head it gives must be on GitHub.
               let restoreCheckpoint =

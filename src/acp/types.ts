@@ -115,6 +115,12 @@ export interface RunAgentOptions {
   /** Run the agent in a sandboxed unit; `writable` is the one worktree folder it may write. */
   sandbox?: { writable?: string };
   closeoutRulesFirst?: boolean;
+  testLane?: (placed: {
+    runId: string;
+    runnerId: string;
+    runner: string;
+    hold(): Promise<void>;
+  }) => Promise<void>;
   closeoutFocus?: CloseoutFocus;
   pullRequestDraft?: PullRequestDraft;
   suggestedFindings?: readonly SuggestedFindingLine[];
