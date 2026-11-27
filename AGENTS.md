@@ -67,6 +67,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/project-context`                                    | Scoped project context records: provenance, access and invalidation   |
 | `src/provisioning`                                       | Remote VM bootstrap, releases, mise and Tailscale setup               |
 | `src/questions`                                          | Elicitations, answer authorization, lifecycle and visual review       |
+| `src/rulecheck-shadow`                                   | Rulecheck CI and Closeout receipt comparison, shadow only             |
 | `src/run-files`                                          | Encrypted, chunked run files: transcripts and session snapshots       |
 | `src/retros`                                             | Retro settings revisions, frozen run profiles and their API           |
 | `src/review-score`                                       | Reviewer escape scoring after the PR and after merge                  |
