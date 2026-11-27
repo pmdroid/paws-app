@@ -192,6 +192,7 @@ describePglite((connect) => {
       artifactRoot: join(root, "retros"),
       sign: signRetro,
       credentials,
+      secrets: () => [],
       now: () => NOW,
     });
     const workHttp = createRunnerWorkHttp(work);

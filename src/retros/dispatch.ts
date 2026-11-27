@@ -394,7 +394,7 @@ export function createRetroDispatcher(options: {
   sign: RetroCommandSigner;
   credentials?: RetroCommandCredentials;
   transcripts?: () => RetroTranscriptReader | undefined;
-  secrets?: () => readonly string[];
+  secrets: () => readonly string[];
   now?: () => number;
 }) {
   const { store, artifactRoot: root } = options;
@@ -874,7 +874,7 @@ export function createRetroDispatcher(options: {
   }
 
   async function transcriptBytes(runId: string, generation: number) {
-    const secrets = options.secrets?.() ?? [];
+    const secrets = options.secrets();
     const key = JSON.stringify([runId, generation, secrets]);
     if (rendered?.key === key) return rendered.bytes;
     const reader = options.transcripts?.();
