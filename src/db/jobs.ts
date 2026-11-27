@@ -708,6 +708,7 @@ export function* retryLeasedJobSteps(
   runAt: number,
   error: string,
   attempts = job.attempts,
+  payload?: unknown,
 ) {
   return (
     (yield* updateLeasedSteps(q, job, {
@@ -717,6 +718,7 @@ export function* retryLeasedJobSteps(
       lockedBy: null,
       lockedUntil: null,
       lastError: error,
+      ...(payload === undefined ? {} : { payload: payloadValue(q, payload) }),
       itemVersion: itemVersionOf(q, drizzleSql`${q.t.job.payload}`),
     })) > 0
   );

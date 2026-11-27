@@ -50,6 +50,7 @@ export async function parkMerge(
   wait: Partial<MergeWait> = {},
 ): Promise<"parked" | "expired" | "ask" | "lost"> {
   const payload = payloadRecord(job.payload);
+  delete payload.mergeFailure;
   if (wait.reason)
     payload.mergeWait = {
       reason: wait.reason,

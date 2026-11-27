@@ -602,6 +602,8 @@ import {
 import {
   acceptCloseout,
   askAboutSlowCi,
+  MERGE_FAILURE_ASK_AFTER,
+  mergeFailureStreak,
   retryMergeLater,
   waitForMergeTurn,
   waitForRunnerSlot,
@@ -672,6 +674,7 @@ import {
   parkMerge,
   queueConflictSweep,
   askMergeHelp,
+  RETRY_MERGE,
   rebaseBudgetForSteps,
   returnQueuedConflicts,
   wakeMergesBehind,
@@ -2252,6 +2255,17 @@ export class Orchestrator {
           (await this.holdForPushOutage(job, error))
         )
           return;
+        const transient = isTransient(error) || error instanceof SquashServerError;
+        const streak = mergeFailureStreak(
+          job,
+          transient ? null : error instanceof Error ? error.message : String(error),
+        );
+        if (
+          !this.shuttingDown &&
+          (await context.isCurrent()) &&
+          (await this.askAboutRepeatedMergeFailure(job, error, streak.count))
+        )
+          return;
         if (
           this.shuttingDown ||
           (job.attempts >= job.maxAttempts && !(error instanceof SquashServerError)) ||
@@ -2261,7 +2275,8 @@ export class Orchestrator {
 
         const delayMs = transientRetryDelayMs(job.attempts, error, this.options.retryBaseMs);
 
-        if (!(await retryMergeLater(this.store, job, this.now(), delayMs, error))) throw error;
+        if (!(await retryMergeLater(this.store, job, this.now(), delayMs, error, streak.payload)))
+          throw error;
         await this.noteHostDiskFull(readString(job.payload, "itemId"), error);
         journalCaught(
           error,
@@ -2586,6 +2601,43 @@ export class Orchestrator {
         });
       },
     };
+  }
+
+  private async askAboutRepeatedMergeFailure(
+    job: Job,
+    error: unknown,
+    count: number,
+  ): Promise<boolean> {
+    const itemId = readString(job.payload, "itemId");
+    const item = itemId ? await this.store.run((q) => getWorkItemSteps(q, itemId)) : null;
+    if (!item || count === 0) return false;
+    const message = error instanceof Error ? error.message : String(error);
+    const body =
+      unchangingErrorQuestion(error, item.linearIdentifier) ??
+      (count >= MERGE_FAILURE_ASK_AFTER
+        ? `${item.linearIdentifier} can't merge: the merge attempt failed ${count} times in a row with the same error: ${message} Waiting won't change this. Fix it and choose ${RETRY_MERGE}, or reply with guidance to send the task back to its agent.`
+        : null);
+    if (
+      body === null ||
+      !(await askMergeHelp(this.store, {
+        itemId: item.id,
+        body,
+        now: this.now(),
+        session: (current) => this.activitySession(current),
+        ask: askSteps,
+        options: [RETRY_MERGE],
+      }))
+    )
+      return false;
+    journalCaught(
+      error,
+      "orchestrator.askAboutRepeatedMergeFailure",
+      item.id,
+      "asked about a merge error waiting can't change",
+      this.options.journal,
+    );
+    await this.flush();
+    return true;
   }
 
   private async mergeAttempt(

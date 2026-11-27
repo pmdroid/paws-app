@@ -519,6 +519,8 @@ export type Proof = {
   secondIssue?: boolean;
   linearProject?: { id: string; name: string };
   delegatePayload?: Record<string, unknown>;
+  /** An error message to throw instead of running this Paws git call, or null to run it. */
+  gitFault?: (args: string[], itemState: string | null) => string | null;
   agent(input: LaunchInput): FakeStep[];
   run(context: ProofContext): Promise<void>;
 };
@@ -658,6 +660,8 @@ export async function runProof(name: string, proof: Proof, dir: string) {
         github.git.calls.push(args);
         if (github.git.failRemote && REMOTE_GIT.some((command) => args.includes(command)))
           throw new Error("fetch failed: Git process cleanup could not be verified");
+        const fault = proof.gitFault?.(args, (await items())[0]?.state ?? null) ?? null;
+        if (fault !== null) throw new Error(fault);
         return defaultGitExec()(args, options);
       },
       githubMirrors: proof.forbidRepos ? false : undefined,

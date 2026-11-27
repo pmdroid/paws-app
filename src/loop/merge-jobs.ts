@@ -77,6 +77,7 @@ export async function retryMergeLater(
   now: number,
   delayMs: number,
   error: unknown,
+  payload?: unknown,
 ): Promise<boolean> {
   const attempts =
     error instanceof SquashServerError ? Math.max(0, job.attempts - 1) : job.attempts;
@@ -87,8 +88,24 @@ export async function retryMergeLater(
       now + delayMs,
       error instanceof Error ? error.message : String(error),
       attempts,
+      payload,
     ),
   );
+}
+
+export const MERGE_FAILURE_ASK_AFTER = 3;
+
+export function mergeFailureStreak(
+  job: Job,
+  message: string | null,
+): { payload: Record<string, unknown>; count: number } {
+  const payload = payloadRecord(job.payload);
+  const previous = payload.mergeFailure as { message?: unknown; count?: unknown } | undefined;
+  delete payload.mergeFailure;
+  if (message === null) return { payload, count: 0 };
+  const count =
+    previous?.message === message && typeof previous.count === "number" ? previous.count + 1 : 1;
+  return { payload: { ...payload, mergeFailure: { message, count } }, count };
 }
 
 export async function acceptGitHubDelivery(
