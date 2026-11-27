@@ -1286,6 +1286,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             artifactRoot: join(paths.home, "retros"),
             sign: value.signRetroCommand,
             credentials: value.attachCredentials,
+            transcripts: () => value.transcripts,
           });
           return value;
         });
