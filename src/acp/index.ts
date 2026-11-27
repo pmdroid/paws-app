@@ -84,7 +84,6 @@ export {
   type CheckpointResult,
   type WorktreeSnapshot,
 } from "./checkpoint";
-export { createAcpRunner, type AcpRunnerOptions } from "./client";
 export {
   AcpCleanupError,
   recoverAcpConversation,
@@ -98,8 +97,6 @@ export {
 export { accountAgentEnv, accountHomeEnv, isBlockedEnv, minimalAgentEnv } from "./env";
 export { executeItem } from "./executor";
 export { readOpenCodeCredential, writeOpenCodeCredential } from "./opencode-turn";
-export { createFakeAcpRunner } from "./fake";
-export type { FakeAcpRunner } from "./fake";
 export type { PolicyFilesLoad } from "./ask-team";
 export { GitError, git } from "./git";
 export { prepareRepositorySnapshot } from "./repository-snapshot";
@@ -130,7 +127,6 @@ export {
   type ShellRecoveryHooks,
 } from "./shell-health";
 export type { CheckOwnLoginOptions } from "./run";
-export type { AcpRunner, AcpStopReason, AcpUpdate, AcpUpdateKind, StartAcpRun } from "./runner";
 export {
   DEFAULT_CANCEL_GRACE_MS,
   DEFAULT_RUN_TIMEOUT_MS,

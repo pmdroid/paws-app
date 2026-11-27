@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { createFakeAcpRunner } from "../src/acp";
 import { createFakeCloseoutGate } from "../src/closeout";
 import { createFakeGitHub } from "../src/github";
 import { createFakeTracker } from "../src/linear";
@@ -35,20 +34,7 @@ describe("fakes", () => {
     ).toEqual({ ok: false, reason: "bad_signature" });
   });
 
-  test("acp, closeout, github, and questions record calls", async () => {
-    const acp = createFakeAcpRunner();
-    const updates: string[] = [];
-    const started = await acp.start({
-      itemId: "item-1",
-      worktree: "/tmp/wt",
-      prompt: "do the thing",
-      onUpdate: (update) => updates.push(update.summary),
-    });
-    await acp.cancel(started.sessionId);
-    expect(acp.starts).toHaveLength(1);
-    expect(acp.cancels).toEqual([started.sessionId]);
-    expect(updates).toEqual(["fake end"]);
-
+  test("closeout, github, and questions record calls", async () => {
     const gate = createFakeCloseoutGate("rejected");
     const verdict = await gate.run({
       taskId: "ENG-1",
