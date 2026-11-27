@@ -1273,7 +1273,11 @@ export async function executeRunnerCommand(
       .replace(/[^.!?]$/, "$&.");
     const kept = said.replace(/[.!?]$/, "") === cause.replace(/[.!?]$/, "") ? "" : said;
     return `Run failed during ${name}: ${[
-      ended === undefined ? cause : cause === "Error." ? said : `${cause} ${kept}`.trim(),
+      ended === undefined && !/attribution rejected/.test(message)
+        ? cause
+        : cause === "Error."
+          ? said
+          : `${cause} ${kept}`.trim(),
       ended,
     ]
       .filter(Boolean)

@@ -61,6 +61,7 @@ export async function validateGitHubCandidateAttribution(
           commit.committer?.email,
         ],
         commitCoauthorTrailers(commit.message),
+        typeof entry.sha === "string" ? entry.sha : undefined,
       );
     }
   }
