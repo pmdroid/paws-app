@@ -10,7 +10,6 @@ export type CatalogRepository = {
 };
 
 const PAGE_SIZE = 100;
-const USER_REPOS = "/user/repos?affiliation=owner,collaborator,organization_member";
 
 export async function listAppRepositories(input: {
   client: GitHubClient;
@@ -35,61 +34,40 @@ export async function listAppRepositories(input: {
       `repository list token request failed with status ${response.status}`,
     );
   const token = assertListToken(response.body, now);
-  return pages(
-    input.client,
-    "/installation/repositories?",
-    token,
-    input.signal,
-    (body) => (isRecord(body) && Array.isArray(body.repositories) ? body.repositories : null),
-    false,
-  );
-}
-
-export async function listUserRepositories(input: {
-  client: GitHubClient;
-  token: string;
-  signal?: AbortSignal;
-}): Promise<CatalogRepository[]> {
-  return pages(
-    input.client,
-    `${USER_REPOS}&`,
-    input.token,
-    input.signal,
-    (body) => (Array.isArray(body) ? body : null),
-    true,
-  );
+  return pages(input.client, token, input.signal);
 }
 
 async function pages(
   client: GitHubClient,
-  prefix: string,
   token: string,
   signal: AbortSignal | undefined,
-  items: (body: unknown) => unknown[] | null,
-  pushableOnly: boolean,
 ): Promise<CatalogRepository[]> {
   const listed: CatalogRepository[] = [];
   for (let page = 1; ; page += 1) {
     const response = await client.request({
       method: "GET",
-      path: `${prefix}per_page=${PAGE_SIZE}&page=${page}`,
+      path: `/installation/repositories?per_page=${PAGE_SIZE}&page=${page}`,
       token,
       ...(signal ? { signal } : {}),
     });
-    const entries = response.status === 200 ? items(response.body) : null;
+    const entries =
+      response.status === 200 &&
+      isRecord(response.body) &&
+      Array.isArray(response.body.repositories)
+        ? response.body.repositories
+        : null;
     if (entries === null)
       throw new Error(`GitHub repositories could not be read (status ${response.status})`);
     for (const entry of entries) {
-      const repository = catalogEntry(entry, pushableOnly);
+      const repository = catalogEntry(entry);
       if (repository) listed.push(repository);
     }
     if (entries.length < PAGE_SIZE) return listed;
   }
 }
 
-function catalogEntry(entry: unknown, pushableOnly: boolean): CatalogRepository | null {
+function catalogEntry(entry: unknown): CatalogRepository | null {
   if (!isRecord(entry) || entry.archived === true || entry.disabled === true) return null;
-  if (pushableOnly && isRecord(entry.permissions) && entry.permissions.push === false) return null;
   const owner = isRecord(entry.owner) ? entry.owner.login : null;
   if (
     typeof owner !== "string" ||
