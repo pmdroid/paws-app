@@ -41,10 +41,8 @@ export type IssueVmDispatchInput = {
   now: number;
 };
 
-function* freeVmHostSteps(q: Q, workspaceId: string): Steps<string | null | undefined> {
-  const hosts = yield* workspaceVmHostsSteps(q, workspaceId);
-  if (hosts.length === 0) return undefined;
-  for (const machine of hosts) {
+function* freeVmHostSteps(q: Q, input: { workspaceId: string; now: number }) {
+  for (const machine of yield* workspaceVmHostsSteps(q, input.workspaceId, input.now)) {
     const inUse = (yield* liveHostIssueVmsSteps(q, machine.runnerId)).length;
     if (inUse < vmHostSlots(machine, machine.host).slots) return machine.runnerId;
   }
@@ -53,12 +51,12 @@ function* freeVmHostSteps(q: Q, workspaceId: string): Steps<string | null | unde
 
 export function* issueVmProviderSteps(
   q: Q,
-  input: { workspaceId: string; providers: readonly IssueVmProvider[] },
+  input: { workspaceId: string; providers: readonly IssueVmProvider[]; now: number },
 ): Steps<IssueVmProvider | null> {
   for (const provider of PROVIDER_ORDER) {
     if (provider === "host") {
-      if (!input.providers.includes(provider)) continue;
-      if ((yield* workspaceVmHostsSteps(q, input.workspaceId)).length > 0) return provider;
+      const hosts = yield* workspaceVmHostsSteps(q, input.workspaceId, input.now);
+      if (input.providers.includes(provider) && hosts.length > 0) return provider;
       continue;
     }
     const limit = yield* issueVmSpendLimitSteps(q, input.workspaceId);
@@ -88,7 +86,7 @@ export function* issueVmPlacementSteps(
     return { wait: `Waiting for an issue VM: ${provider} ${ISSUE_VM_DRIVER_MISSING}` };
   let hostRunnerId: string | null = null;
   if (provider === "host" && !(latest !== null && LIVE.includes(latest.state))) {
-    const free = yield* freeVmHostSteps(q, input.workspaceId);
+    const free = yield* freeVmHostSteps(q, input);
     if (!free) return { wait: "Waiting for a free slot on a VM host" };
     hostRunnerId = free;
   }

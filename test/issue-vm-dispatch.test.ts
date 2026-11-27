@@ -54,17 +54,6 @@ async function world() {
         createdAt: 0,
         lastSeenAt: now,
       }),
-    (q) =>
-      q.orm.insert(q.t.runnerWork).values({
-        runId: "run",
-        runnerId: "runner",
-        workspaceId: "ws",
-        generation: 1,
-        runnerFence: 0,
-        commandId: "command",
-        leaseUntil: now + 600_000,
-        lastSequence: 0,
-      }),
   );
   return db;
 }
@@ -168,7 +157,6 @@ test("with a VM host on, an item waits for its VM, runs on it and sleeps on awai
 
 test("with no usable provider the item runs on a normal runner", async () => {
   const db = await world();
-  await seed(db, (q) => q.orm.delete(q.t.runnerWork));
   expect(await tick(db, ["host", "boat"])).toEqual(["PAS-1"]);
   expect(await vms(db)).toEqual([]);
 });
@@ -189,7 +177,6 @@ test("an item over the issue VM spend limit waits with the reason", async () => 
 
 test("with only boat priced and no boat driver, the item waits instead of running on a runner", async () => {
   const db = await world();
-  await seed(db, (q) => q.orm.delete(q.t.runnerWork));
   await spend(db, { boatHourlyUsd: 1 });
   expect(await tick(db, ["host"])).toEqual([]);
   expect(await listItemHolds(db)).toEqual([
@@ -199,5 +186,15 @@ test("with only boat priced and no boat driver, the item waits instead of runnin
       blockers: ["Waiting for an issue VM: boat driver not available yet"],
     },
   ]);
+  expect(await vms(db)).toEqual([]);
+});
+
+test("a paused VM host is not usable, so the item runs on a normal runner", async () => {
+  const db = await world();
+  await vmHost(db);
+  await seed(db, (q) =>
+    q.orm.update(q.t.runner).set({ status: "paused" }).where(eq(q.t.runner.id, "host")),
+  );
+  expect(await tick(db, ["host"])).toEqual(["PAS-1"]);
   expect(await vms(db)).toEqual([]);
 });

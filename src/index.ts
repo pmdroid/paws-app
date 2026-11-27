@@ -2092,21 +2092,17 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                 now: number,
               ) => itemRunnerVerdictsSteps(q, store, { itemId, ...profile, now }, signInChecks),
               onRunnerHostRefusals: runnerHostRefusals.report,
-              ...(issueVmProviders.length > 0
-                ? {
-                    issueVm: function* (q: Q, itemId: string, now: number) {
-                      const scope = yield* itemOwnerScopeSteps(q, itemId);
-                      if (scope === null) return null;
-                      return yield* issueVmPlacementSteps(q, {
-                        workspaceId: scope.workspaceId,
-                        memberUserId: scope.ownerUserId,
-                        itemId,
-                        providers: issueVmProviders,
-                        now,
-                      });
-                    },
-                  }
-                : {}),
+              issueVm: function* (q: Q, itemId: string, now: number) {
+                const scope = yield* itemOwnerScopeSteps(q, itemId);
+                if (scope === null) return null;
+                return yield* issueVmPlacementSteps(q, {
+                  workspaceId: scope.workspaceId,
+                  memberUserId: scope.ownerUserId,
+                  itemId,
+                  providers: issueVmProviders,
+                  now,
+                });
+              },
               runnerSetupNeed: (itemId: string, agent: string, now: number) =>
                 store.run((q) => itemOwnerRunnerSetupNeedSteps(q, { itemId, agent, now })),
               eligibleRunner: (itemId: string, agent: string, now: number) =>
