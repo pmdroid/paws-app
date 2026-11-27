@@ -57,3 +57,9 @@ export type {
   IssueVmReplacer,
   IssueVmSession,
 } from "./replace";
+export {
+  createIssueVmSweep,
+  ISSUE_VM_SWEEP_EVERY_MS,
+  ISSUE_VM_SWEEP_JOB,
+  issueVmPlacementSteps,
+} from "./dispatch";

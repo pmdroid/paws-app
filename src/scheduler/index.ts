@@ -5,6 +5,7 @@ export {
   registerScheduler,
   saveSchedulingContextSteps,
   schedulerPaths,
+  type IssueVmPlacement,
   type SchedulerOptions,
 } from "./scheduler";
 export { createAdmission } from "./admission";

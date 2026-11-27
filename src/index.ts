@@ -153,6 +153,7 @@ import {
   submitCommand,
   type JobLoop,
   type WorkItemRecord,
+  type IssueVmProvider,
   type Q,
   runnerHasCapacitySteps,
   workspaceMemberSteps,
@@ -324,6 +325,13 @@ import {
   RELATIONS_POLL_MS,
 } from "./intake";
 import { createExecutionControls } from "./execution-controls";
+import {
+  createIssueVmSweep,
+  ISSUE_VM_SWEEP_EVERY_MS,
+  ISSUE_VM_SWEEP_JOB,
+  issueVmPlacementSteps,
+  type IssueVmDriver,
+} from "./issue-vm";
 import { createAdmission, registerScheduler, saveSchedulingContextSteps } from "./scheduler";
 import {
   createRunnerPlacement,
@@ -334,6 +342,7 @@ import {
   itemRunnerVerdictsSteps,
   createRunnerHostRefusals,
   itemOwnerRunnerSetupNeedSteps,
+  itemOwnerScopeSteps,
   itemRepositoryAllowedOnSteps,
   itemRepositoryRefusalsSteps,
   itemRepositoryRunnerSteps,
@@ -472,6 +481,7 @@ export type StartOptions = {
   refreshAgentCatalog?: boolean;
   /** Replaces the exe.dev client and VM bootstrap behind Create VM. Tests pass the fakes. */
   memberVm?: { exeDev: ExeDev; bootstrap: ExeDevBootstrap; pollMs?: number };
+  issueVmDrivers?: Partial<Record<IssueVmProvider, IssueVmDriver>>;
   healthStatfs?: (path: string) => { bavail: number; blocks: number; bsize: number };
 };
 
@@ -1311,6 +1321,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       instabox: instaBoxKeyCheck(memberVmInstaBox),
     },
   });
+  const issueVmDrivers: Partial<Record<IssueVmProvider, IssueVmDriver>> = {
+    ...options?.issueVmDrivers,
+  };
+  const issueVmProviders = Object.keys(issueVmDrivers) as IssueVmProvider[];
   const MEMBER_VM_STOP_WAIT_MS = 15_000;
   const provisionMemberVm = createMemberVmProvisioning({
     readToken: exeDevToken,
@@ -1927,6 +1941,14 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         recurringEveryMs: VM_PROVIDER_CHECK_EVERY_MS,
         now: Date.now(),
       });
+      const issueVmSweep = createIssueVmSweep(store, { drivers: issueVmDrivers });
+      created.jobs.register(ISSUE_VM_SWEEP_JOB, () => issueVmSweep());
+      await enqueueJobOnce(store, {
+        queue: ISSUE_VM_SWEEP_JOB,
+        jobKey: ISSUE_VM_SWEEP_JOB,
+        recurringEveryMs: ISSUE_VM_SWEEP_EVERY_MS,
+        now: Date.now(),
+      });
       void assignments
         ?.register(created.jobs)
         .catch((error: unknown) => journalCaught(error, "index.startPaws.assignments", null));
@@ -2062,6 +2084,21 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                 now: number,
               ) => itemRunnerVerdictsSteps(q, store, { itemId, ...profile, now }, signInChecks),
               onRunnerHostRefusals: runnerHostRefusals.report,
+              ...(issueVmProviders.length > 0
+                ? {
+                    issueVm: function* (q: Q, itemId: string, now: number) {
+                      const scope = yield* itemOwnerScopeSteps(q, itemId);
+                      if (scope === null) return null;
+                      return yield* issueVmPlacementSteps(q, {
+                        workspaceId: scope.workspaceId,
+                        memberUserId: scope.ownerUserId,
+                        itemId,
+                        providers: issueVmProviders,
+                        now,
+                      });
+                    },
+                  }
+                : {}),
               runnerSetupNeed: (itemId: string, agent: string, now: number) =>
                 store.run((q) => itemOwnerRunnerSetupNeedSteps(q, { itemId, agent, now })),
               eligibleRunner: (itemId: string, agent: string, now: number) =>

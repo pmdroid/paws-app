@@ -388,3 +388,16 @@ export function* markFailedIssueVmGoneSteps(q: Q, input: { id: string; now: numb
       .where(and(eq(v.id, input.id), eq(v.state, "failed"), isNull(v.deletedAt))),
   );
 }
+
+export function* liveIssueVmItemsSteps(q: Q) {
+  const { issueVm: v, workItem: i } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ vm: v, itemState: i.state })
+      .from(v)
+      .innerJoin(i, eq(i.id, v.itemId))
+      .where(notInArray(v.state, [...ENDED_STATES, "deleting"]))
+      .orderBy(v.id),
+  );
+  return rows.map((row) => ({ vm: row.vm as IssueVm, itemState: row.itemState }));
+}
