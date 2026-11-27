@@ -18,6 +18,8 @@ Individual scripts: `lint` (oxlint), `fmt` / `fmt:check` (oxfmt), `typecheck` (`
 
 Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported from each module.
 
+Asynchronous lifecycle tests wait for a completion signal (a promise the code resolves, a fake's recorded call, or a condition polled with `waitFor` from `test/wait-for.ts`), never a fixed sleep or a wall-clock duration bound; `test/empty-catches.test.ts` rejects new `await sleep(` and `Bun.sleep(` calls in test files.
+
 `bun run verify:proof [--changed <base>] [name…]` runs the end-to-end proof scenarios in `test/proofs/` (all, the named ones, or those whose `covers` globs match files changed since `<base>`). Each runs in a fresh throwaway home with fake Linear, fake GitHub and the scripted ACP agent, and writes `proof-<name>.md` and `proof-<name>.json` to `PAWS_EVIDENCE_DIR` (default `./proof-evidence`). A scenario exports `covers`, `summary`, the agent's steps and `run(proof)`, which scripts the person's actions and asserts on the fakes; `test/proofs/harness.ts` is the shared setup.
 
 ## Layout

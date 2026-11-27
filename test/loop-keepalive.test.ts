@@ -145,7 +145,7 @@ test("the running keepalive names the agent's current plan step, never a bare Wo
     // Before the agent has a plan, the keepalive would repeat its last post_update line, which
     // the session already shows, so it names the phase instead.
     await waitUntil(() => thoughts().includes("Found the cause in the scheduler."), {
-      timeout: 10_000,
+      timeoutMs: 10_000,
       what: "the agent's first update",
     });
     clock.advance(KEEPALIVE_MS);
@@ -157,7 +157,7 @@ test("the running keepalive names the agent's current plan step, never a bare Wo
     ]);
 
     writeFileSync(planned, "go");
-    await waitUntil(hasPlan, { timeout: 10_000, what: "the agent's plan" });
+    await waitUntil(hasPlan, { timeoutMs: 10_000, what: "the agent's plan" });
     clock.advance(KEEPALIVE_MS);
     ticks[0]!();
     await delivered("Step 3 of 5: rank runners by load share.");
