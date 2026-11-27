@@ -257,6 +257,7 @@ export function* itemRunnerOnReleaseSteps(q: Q, itemId: string, tag: string): St
   const release = [Number(match[1]), Number(match[2]), Number(match[3])] as const;
   for (const runner of found.runners)
     if (
+      runner.eligible &&
       runnerReleaseAtLeast(yield* runnerHostVersionSteps(q, runner.id), release) &&
       (yield* runnerRepositoryRefusalSteps(q, runner.id, found.repository)) === null
     )

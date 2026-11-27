@@ -10,6 +10,11 @@ export type RunnerReleaseLookup = (
 
 type Release = { tag_name?: unknown; draft?: unknown };
 
+function order(tag: string): number {
+  const [major = 0, minor = 0, patch = 0] = (tag.match(/\d+/g) ?? []).map(Number);
+  return (major * 1e6 + minor) * 1e6 + patch;
+}
+
 export function createRunnerReleaseLookup(
   locate: (repository: string) => GitHubGitRepository | null,
 ): RunnerReleaseLookup {
@@ -36,8 +41,7 @@ export function createRunnerReleaseLookup(
         inside = status === "ahead" || status === "identical";
         contains.set(key, inside);
       }
-      if (!inside) break;
-      found = tag;
+      if (inside && (found === null || order(tag) < order(found))) found = tag;
     }
     return found;
   };

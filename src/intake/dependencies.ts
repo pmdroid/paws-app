@@ -268,10 +268,13 @@ function blockerSatisfied(
 
 function* blockerMergeSteps(q: Q, target: Target, current: Scope, id: string) {
   const sibling = current.siblings.find((entry) => entry.linearIssueId === id);
-  const mergeSha = sibling
-    ? (yield* getConfirmedRemoteMergeSteps(q, sibling.id))?.mergeSha
-    : (yield* managedBlockerItemSteps(q, target, id))?.mergeSha;
-  const binding = yield* getWorkItemRepositorySteps(q, sibling?.id ?? target.itemId);
+  if (!sibling) {
+    const managed = yield* managedBlockerItemSteps(q, target, id);
+    const { mergeSha, repository } = managed ?? {};
+    return mergeSha && repository ? { repository, mergeSha } : null;
+  }
+  const mergeSha = (yield* getConfirmedRemoteMergeSteps(q, sibling.id))?.mergeSha;
+  const binding = yield* getWorkItemRepositorySteps(q, sibling.id);
   return mergeSha && binding ? { repository: `${binding.owner}/${binding.repo}`, mergeSha } : null;
 }
 

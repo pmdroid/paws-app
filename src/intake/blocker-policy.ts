@@ -27,7 +27,11 @@ export function* managedBlockerSatisfiedSteps(
 }
 
 export function* managedBlockerItemSteps(q: Q, target: Target, issue: string) {
-  const items = yield* listManagedBlockerItemsSteps(q, { ...target, issueId: issue });
+  const items = yield* listManagedBlockerItemsSteps(q, {
+    ...target,
+    issueId: issue,
+    withRepository: true,
+  });
   if (items.every((item) => item.state === "cancelled")) return null;
   const active = items.filter((item) => item.state !== "cancelled" && !item.cancelRequested);
   return (active.length > 0 ? active : items).at(-1)!;

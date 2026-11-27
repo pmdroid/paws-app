@@ -383,6 +383,10 @@ async function releaseBlocker(f: Awaited<ReturnType<typeof fixture>>, label: str
   await seed(
     f.db,
     (q) => q.orm.insert(q.t.workItemRepository).values({ itemId: f.target.itemId, ...repository }),
+    (q) =>
+      q.orm
+        .insert(q.t.workItemRepository)
+        .values({ itemId: blocker, ...repository, repo: "runner" }),
     (q) => q.orm.insert(q.t.runner).values({ id: "runner", ...runner, createdAt: Date.now() }),
   );
   await setItem(f.db, blocker, { state: "merged" });
@@ -411,12 +415,14 @@ test("A 'needs runner release' blocker holds its dependent until a runner runs t
     expect(await f.db.run((q) => blockingIssuesSteps(q, f.target.itemId))).toEqual([
       "waiting for a runner release with DEP-3",
     ]);
-    expect(f.releases.calls).toEqual([{ repository: "owner/repo", mergeSha: "c".repeat(40) }]);
+    expect(f.releases.calls).toEqual([{ repository: "owner/runner", mergeSha: "c".repeat(40) }]);
     f.releases.releases.set("c".repeat(40), "v0.1.110");
     await f.refresh();
     expect(await f.ready()).toBe(false);
     await runnerOn(f.db, "0.1.110");
     expect(await f.ready()).toBe(true);
+    await seed(f.db, (q) => q.orm.update(q.t.runner).set({ lastSeenAt: 0 }));
+    expect(await f.ready()).toBe(false);
     await runnerOn(f.db, "0.1.109");
     expect(await f.ready()).toBe(false);
     await runnerOn(f.db, "0.1.111");
