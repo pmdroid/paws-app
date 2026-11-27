@@ -316,6 +316,7 @@ describe("retro dispatch, composed with a fake runner", () => {
       output: { maxItems: 5, workedWell: 3 },
       digest: { sha256: digestSha256 },
     });
+    expect(command!.transcripts).toBeUndefined();
     const inputs = await runner.start(dispatcher, command!);
     expect(inputs.prompt).toContain(`in ${FIXTURE_REPO}.\n\n<session_digest>`);
 
