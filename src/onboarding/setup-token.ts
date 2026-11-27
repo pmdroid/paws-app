@@ -33,8 +33,8 @@ export function setupNeededPage(): Response {
 <body>
 <main>
 <h1>Paws needs setup</h1>
-<p>Finish setup in this browser with the setup link. Paws printed it when it started.</p>
-<p>To see the link again, run <code>paws setup-link</code> on the server.</p>
+<p>Finish setup in this browser with the setup link.</p>
+<p>To get the link, run <code>paws setup-link</code> on the server.</p>
 </main>
 </body>
 </html>`,

@@ -5,7 +5,7 @@ Configure a Linear OAuth app with these callback URLs for your Paws HTTPS origin
 - `/auth/linear/callback` for personal sign-in.
 - `/auth/linear/install/callback` for the workspace app authorization.
 
-Set `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` on the server. Until a workspace exists, Paws prints a setup link, and the Linear admin who signs in through it claims the instance for their organization. Optionally set `LINEAR_ORGANIZATION_ID` to the ID of the Linear workspace this Paws instance will serve; Paws then refuses installation for any other organization. Set the GitHub App credentials described in [GitHub App](github-app.md) so workspace admins can connect repositories in Integrations.
+Set `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` on the server. Until a workspace exists, `paws setup-link` prints a setup link, and the Linear admin who signs in through it claims the instance for their organization. Optionally set `LINEAR_ORGANIZATION_ID` to the ID of the Linear workspace this Paws instance will serve; Paws then refuses installation for any other organization. Set the GitHub App credentials described in [GitHub App](github-app.md) so workspace admins can connect repositories in Integrations.
 
 Give Paws a valid TLS certificate and its matching private key. The key must be readable by the Paws process and have mode `0400` or `0600`.
 
@@ -19,7 +19,7 @@ PAWS_TLS_CERT_PATH=/etc/paws/tls.crt \
 bun run paws
 ```
 
-Until a workspace exists, Paws starts in setup mode and prints a setup link, `<PAWS_PUBLIC_URL>/setup?token=…`. Without `LINEAR_CLIENT_ID`, open it to enter the Linear app values in the browser; with the client set on the server, it goes straight to **Sign in with Linear**. The link stays the same across restarts until Linear setup finishes; run `paws setup-link` on the server to print it again, or to see `Setup is complete.` Other pages say that setup is needed and point to `paws setup-link`.
+Until a workspace exists, Paws starts in setup mode and prints `Setup is open: run "paws setup-link" to get the link`, never the link itself. Run `paws setup-link` on the server to print the setup link, `<PAWS_PUBLIC_URL>/setup?token=…`. Without `LINEAR_CLIENT_ID`, open it to enter the Linear app values in the browser; with the client set on the server, it goes straight to **Sign in with Linear**. The link stays the same across restarts until Linear setup finishes; once it does, `paws setup-link` prints `Setup is complete.` Other pages say that setup is needed and point to `paws setup-link`.
 
 ### Behind a proxy
 
