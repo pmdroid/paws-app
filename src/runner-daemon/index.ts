@@ -23,11 +23,13 @@ export {
   createFakeIssueVmUnits,
   issueVmUnit,
   reconcileIssueVms,
+  runningIssueVmIds,
   systemdIssueVmUnits,
   type IssueVmHostView,
   type IssueVmMachine,
   type IssueVmMachineSize,
   type IssueVmReconcile,
+  type IssueVmSleepRefusal,
   type IssueVmStopReason,
   type IssueVmUnits,
 } from "./issue-vm-machines";

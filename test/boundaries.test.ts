@@ -92,6 +92,8 @@ const MODULES = [
   "storage-usage",
   "storage-cleanup",
   "metrics",
+  "alerts",
+  "telemetry",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -180,8 +182,10 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "notebook",
     "vm-hosts",
     "metrics",
+    "alerts",
   ],
   settings: [
+    "runner-placement",
     "acp",
     "metrics",
     "closeout-spec",
@@ -194,6 +198,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "workspace",
     "worktree-checkout",
     "runner-transcript-config",
+    "telemetry",
   ],
   skills: ["journal", "core", "db", "runner-protocol"],
   runtimes: ["journal"],
@@ -209,6 +214,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "webhook-body",
   ],
   metrics: ["db"],
+  telemetry: ["config", "credentials", "db", "journal", "metrics"],
   "project-context": ["db", "linear"],
   notebook: ["db", "improvements", "project-context"],
   retros: [
@@ -402,6 +408,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-protocol",
   ],
   "runner-retro-runtime": [
+    "runner-answers",
     "runner-journal",
     "journal",
     "db",
@@ -436,9 +443,10 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   provisioning: ["journal", "config"],
   "member-vm": ["journal", "config", "db", "provisioning", "vm-provider-checks", "workspace"],
   "issue-vm": ["config", "db", "journal", "provisioning", "settings", "workspace"],
-  "vm-hosts": ["db", "journal", "workspace"],
+  "vm-hosts": ["db", "journal", "webhook-body", "workspace"],
   "vm-provider-checks": ["config", "db", "journal", "provisioning"],
   "review-score": ["db"],
+  alerts: ["db"],
 };
 
 describe("module boundaries", () => {

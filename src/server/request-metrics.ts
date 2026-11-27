@@ -12,17 +12,19 @@ const ROUTES = `
 /api/link-asks /api/questions/answer /api/execution-controls /api/blocker-checks /api/fix-records
 /api/findings /api/finding-groups /api/review-findings/issues /api/visual-review-changes
 /api/settings/agents /api/settings/brief /api/settings/brief/preview /api/settings/closeout
-/api/settings/findings /api/settings/hooks /api/settings/issue-vm /api/settings/linear-comments
+/api/settings/findings /api/settings/hooks /api/settings/issue-vm /api/settings/splits
+/api/settings/linear-comments
 /api/settings/vm-sizes /api/settings/merging /api/settings/skills /api/settings/time-limits
 /api/settings/github-access /api/settings/storage /api/settings/closeout-summary
 /api/settings/repository-descriptions /api/settings/issue-vm/members
 /api/settings/issue-vm/grants /api/settings/issue-vm/spend /api/settings/issue-vm/grants/:id
 /api/settings/runner-vm-keys
 /api/settings/vm-providers /api/settings/vm-providers/check /api/settings/doctor
-/api/settings/storage/check
-/api/metrics /api/metrics/stages /api/settings/storage-usage /api/settings/storage-usage/refresh
+/api/settings/storage/check /api/settings/telemetry /api/settings/telemetry/check
+/api/metrics /api/metrics/stages /api/alerts /api/settings/storage-usage /api/settings/storage-usage/refresh
 /api/settings/storage-cleanup /api/settings/storage-cleanup/preview
-/api/settings/storage-cleanup/run /api/settings/storage-cleanup/history /api/retros/settings
+/api/settings/storage-cleanup/run /api/settings/storage-cleanup/history
+/api/settings/probes/collect /api/retros/settings
 /api/retros/schedule /api/retros/runs /api/retros/preview /api/retros/history
 /api/retros/reports/:id /api/retros/reports/:id/digest /api/retros/reports/:id/report
 /api/retros/reports/:id/prompt /api/retros/reports/:id/settings

@@ -1,4 +1,9 @@
-import { RUNNER_FULL, type ItemRunnerVerdicts, type QueueWaitingFor } from "../db";
+import {
+  RUNNER_FULL,
+  noRunnerOffersLine,
+  type ItemRunnerVerdicts,
+  type QueueWaitingFor,
+} from "../db";
 
 export function queueWaitingFor(
   verdicts: ItemRunnerVerdicts | null,
@@ -17,6 +22,8 @@ export function queueWaitingFor(
     verdicts.runners.some((runner) => runner.rejection === null || runner.rejection === RUNNER_FULL)
   )
     return { kind: "slots", text: slots };
+  const unoffered = noRunnerOffersLine(verdicts);
+  if (unoffered) return { kind: "runner", text: unoffered };
   const cooling = verdicts.runners
     .flatMap((runner) => (runner.cooldown ? [runner.cooldown] : []))
     .sort((a, b) => (a.until ?? Infinity) - (b.until ?? Infinity))[0];

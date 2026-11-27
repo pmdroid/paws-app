@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test } from "bun:test";
@@ -9,6 +10,7 @@ import {
   JOB_KIND,
   MAX_TRANSIENT_RETRIES,
   RUNNER_CAPACITY_WAIT_MS,
+  ReviewerModelConflict,
   RunnerCapacityWait,
   RunnerSlotsBusyError,
   UserFacingError,
@@ -37,10 +39,11 @@ import {
   createFakeTracker,
   parseAgentEvent,
 } from "../src/linear";
+import { createFakeGitHub, type GitHubClient, type GitHubResponse } from "../src/github";
 import { HOST_DISK_FULL_THOUGHT, LinearTaskAccess, attachOrchestrator } from "../src/loop";
 import { UsageLimitPause } from "../src/runner-backend";
 import { and, eq, inArray } from "drizzle-orm";
-import { emptyReview, repoLayout, stateOfPg, writeOk } from "./e2e-harness";
+import { emptyReview, githubClient, repoLayout, stateOfPg, writeOk } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempStore } from "./pglite";
 
@@ -143,19 +146,6 @@ test("a mirror fetch that times out once during a run is retried and the run con
   expect(result.implementations, result.detail).toBe(1);
 }, 90_000);
 
-test("a mirror fetch refused for authentication still fails the task", async () => {
-  const result = await runWithFault({
-    error: mirrorFetch(
-      "remote: Invalid username or password.\nfatal: Authentication failed for 'https://github.com/acme/widgets.git/'\n",
-    ),
-    times: 1,
-  });
-  expect(result.state, result.detail).toBe("failed");
-  expect(result.retries, result.detail).toEqual([]);
-  expect(result.errors.join("\n"), result.detail).toContain("Authentication failed");
-  expect(result.implementations, result.detail).toBe(0);
-}, 90_000);
-
 test("a Linear rate limit while a run starts is waited out without a retry", async () => {
   const result = await runWithFault({ error: rateLimit, times: 1 });
   expect(result.state, result.detail).toBe("merge_queue");
@@ -213,19 +203,6 @@ test("15 helper placements against a busy slot do not fail the task or spend its
   expect(result.state, result.detail).toBe("merge_queue");
   expect(result.errors, result.detail).toEqual([]);
   expect(result.states, result.detail).not.toContain("failed");
-}, 90_000);
-
-test("no runner signed in still fails after the attempt budget and names that cause", async () => {
-  const message =
-    "No paired runner can run claude for this issue right now: agent not signed in. Check runner availability and usage limits, then retry.";
-  const result = await runWithFault({
-    error: () => new UserFacingError(message),
-    times: Infinity,
-    clock: new FakeClock(Date.now()),
-    atClassify: true,
-  });
-  expect(result.state, result.detail).toBe("failed");
-  expect(result.errors, result.detail).toEqual([`Stopped after 10 attempts. ${message}`]);
 }, 90_000);
 
 test("a failure that keeps coming back stops the task after its retries instead of leaving it stuck", async () => {
@@ -322,6 +299,20 @@ test("a wait with no runner offered still stops the task after the hour and its 
   ]);
 }, 90_000);
 
+test("a wait for a runner that offers the model puts the item back in the queue", async () => {
+  const clock = new FakeClock(Date.now());
+  const result = await runWithFault({
+    error: () => new RunnerCapacityWait([], undefined, ["box: claude does not offer m"], true),
+    times: Infinity,
+    clock,
+    untilMs: 12 * HOUR_MS,
+  });
+  expect(result.state, result.detail).toBe("queued");
+  expect(result.states, result.detail).not.toContain("failed");
+  expect(result.states, result.detail).not.toContain("awaiting_input");
+  expect(result.errors, result.detail).toEqual([]);
+}, 90_000);
+
 test("a busy runner wait that outlasts the hour, then loses its runners, gets a fresh hour", async () => {
   const clock = new FakeClock(Date.now());
   const start = clock.now();
@@ -393,27 +384,105 @@ test("an auth error while the runner's sign-in check passes is retried and the t
   );
 }, 90_000);
 
-test("an auth error while the runner's sign-in check fails still fails the task", async () => {
-  const result = await runWithFault({
-    error: () => null,
-    times: 0,
-    authErrors: 1,
-    signedIn: false,
-  });
-  expect(result.state, result.detail).toBe("failed");
-  expect(result.retries, result.detail).toEqual([]);
-  expect(result.implementations, result.detail).toBe(1);
-  expect(result.events, result.detail).toContain("run_failed");
-  expect(result.journal.filter((line) => line.includes("retrying auth error"))).toEqual([]);
-}, 90_000);
-
-test("a fourth auth error within 15 minutes fails the task", async () => {
+test("a fourth auth error within 15 minutes asks instead of retrying", async () => {
   const result = await runWithFault({ error: () => null, times: 0, authErrors: 4, signedIn: true });
-  expect(result.state, result.detail).toBe("failed");
+  expect(result.state, result.detail).toBe("awaiting_input");
   expect(result.implementations, result.detail).toBe(4);
   expect(result.retries, result.detail).toEqual([1, 2, 3]);
   expect(result.journal.filter((line) => line.includes("retrying auth error"))).toHaveLength(3);
 }, 90_000);
+
+type Row = {
+  fault: Parameters<typeof runWithFault>[0];
+  state: string;
+  asks: RegExp | null;
+  faults: number | "many";
+};
+const signedOut =
+  "No paired runner can run claude for this issue right now: box: agent not signed in. Check runner availability and usage limits, then retry.";
+const errorRows: [string, Row][] = [
+  [
+    "no commits between main and the branch",
+    {
+      fault: { error: () => null, times: 0, pullRefusal: "No commits between main and paws/x" },
+      ...{ state: "awaiting_input", asks: /has no commits ahead of main/, faults: 1 },
+    },
+  ],
+  [
+    "a pull request that already exists",
+    {
+      fault: { error: () => null, times: 0, pullRefusal: "A pull request already exists for x" },
+      ...{ state: "merged", asks: null, faults: 1 },
+    },
+  ],
+  [
+    "a reviewer model equal to the implementation model",
+    {
+      fault: { error: () => new ReviewerModelConflict("gpt-same", []), times: Infinity },
+      ...{ state: "awaiting_input", asks: /^ENG-7 was implemented with gpt-same/, faults: 1 },
+    },
+  ],
+  [
+    "a model no runner offers",
+    {
+      fault: {
+        error: () => new RunnerCapacityWait([], undefined, ["box: claude does not offer m"], true),
+        ...{ times: Infinity, clock: new FakeClock(Date.now()), untilMs: HOUR_MS },
+      },
+      ...{ state: "queued", asks: null, faults: 1 },
+    },
+  ],
+  [
+    "an expired sign-in on every runner",
+    {
+      fault: { error: () => new UserFacingError(signedOut), times: Infinity, atClassify: true },
+      ...{ state: "awaiting_input", asks: /no runner has a signed-in claude account/, faults: 1 },
+    },
+  ],
+  [
+    "an expired sign-in during the turn",
+    {
+      fault: { error: () => null, times: 0, authErrors: Infinity, signedIn: false },
+      ...{ state: "awaiting_input", asks: /Claude reported its sign-in is missing/, faults: 0 },
+    },
+  ],
+  [
+    "a provider quota window",
+    {
+      fault: {
+        error: () => new UsageLimitPause("claude", systemClock.now() + 200, null, null),
+        times: 3,
+      },
+      ...{ state: "merge_queue", asks: null, faults: 3 },
+    },
+  ],
+  [
+    "repository access denied",
+    {
+      fault: {
+        error: mirrorFetch(
+          "remote: Repository not found.\nfatal: Authentication failed for 'https://github.com/acme/widgets.git/'\n",
+        ),
+        times: Infinity,
+      },
+      ...{ state: "awaiting_input", asks: /GitHub refused access to the repository/, faults: 1 },
+    },
+  ],
+];
+
+test.each(errorRows)(
+  "%s",
+  async (_, row) => {
+    const result = await runWithFault(row.fault);
+    expect(result.state, result.detail).toBe(row.state);
+    expect(result.states, result.detail).not.toContain("failed");
+    const asked = result.questions.map((question) => question.body);
+    if (row.asks === null) expect(asked, result.detail).toEqual([]);
+    else expect(asked, result.detail).toEqual([expect.stringMatching(row.asks)]);
+    expect(result.faults, result.detail).toBe(row.faults as number);
+  },
+  90_000,
+);
 
 async function runWithFault(fault: {
   error: () => unknown;
@@ -429,7 +498,10 @@ async function runWithFault(fault: {
   loseJobLease?: boolean;
   /** Fails the session helper that classifies the task, before any agent turn. */
   atClassify?: boolean;
+  pullRefusal?: string;
 }): Promise<{
+  faults: number;
+  questions: { body: string; options: unknown }[];
   state: string | null;
   states: (string | null)[];
   thoughts: string[];
@@ -503,6 +575,9 @@ async function runWithFault(fault: {
     linearTaskModes: true,
     linearAccess: gate,
     retryBaseMs: 10,
+    ...(fault.pullRefusal
+      ? { githubForRepository: () => refusingGitHub(layout.bare, fault.pullRefusal!, pulls) }
+      : {}),
     placementPollMs: 1_000,
     clock,
     journal: (line) => journal.push(line),
@@ -517,6 +592,7 @@ async function runWithFault(fault: {
     launch(input) {
       if (fault.atClassify && input.purpose === "classify" && remaining > 0) {
         remaining -= 1;
+        faults += 1;
         throw fault.error();
       }
       sequence += 1;
@@ -551,6 +627,8 @@ async function runWithFault(fault: {
   });
   const startCodeIssue = lifecycle.startCodeIssue;
   let remaining = fault.times;
+  let faults = 0;
+  const pulls = { posts: 0 };
   let leaseLost = false;
   const states: (string | null)[] = [];
   const listSessionActivities = tracker.listSessionActivities!;
@@ -570,6 +648,7 @@ async function runWithFault(fault: {
       (await stateOfPg(db, "ENG-7")) === "running"
     ) {
       remaining -= 1;
+      faults += 1;
       if (fault.loseJobLease) {
         await db.run((q) =>
           q.exec(
@@ -612,9 +691,10 @@ async function runWithFault(fault: {
     let stopped = false;
     while (
       Date.now() < deadline &&
-      !["merge_queue", "merged", "failed", "cancelled", "paused"].includes(
-        (await stateOfPg(db, "ENG-7")) ?? "",
-      ) &&
+      ![
+        ...(fault.pullRefusal && pulls.posts === 0 ? [] : ["merge_queue"]),
+        ...["merged", "failed", "cancelled", "paused", "awaiting_input"],
+      ].includes((await stateOfPg(db, "ENG-7")) ?? "") &&
       (fault.untilMs === undefined || clock.now() - startedAt < fault.untilMs)
     ) {
       if (leaseLost) break;
@@ -664,6 +744,8 @@ async function runWithFault(fault: {
     const item = await itemOf(db);
     const recorded = item ? await getWorkItem(db, item.id) : null;
     return {
+      faults: fault.pullRefusal ? pulls.posts : faults,
+      questions: tracker.questions.map(({ body, options }) => ({ body, options })),
       events: item
         ? (await listWorkItemEventRows(db, item.id, 10_000)).map((row) => row.event)
         : [],
@@ -708,4 +790,45 @@ async function runWithFault(fault: {
 
 async function itemOf(db: Db) {
   return (await listWorkItems(db)).find((item) => item.linearIdentifier === "ENG-7");
+}
+
+const { privateKey } = generateKeyPairSync("rsa", {
+  modulusLength: 2048,
+  publicKeyEncoding: { type: "spki", format: "pem" },
+  privateKeyEncoding: { type: "pkcs8", format: "pem" },
+});
+
+function refusingGitHub(bare: string, refusal: string, pulls: { posts: number }) {
+  const github = createFakeGitHub();
+  const client = githubClient(bare, github);
+  return {
+    appId: "1",
+    installationId: "2",
+    privateKeyPem: privateKey,
+    client: {
+      async request(req: Parameters<GitHubClient["request"]>[0]): Promise<GitHubResponse> {
+        const [method, route] = [req.method, req.path.split("?")[0]!];
+        if (method === "POST" && route.endsWith("/pulls")) {
+          pulls.posts += 1;
+          if (/already exists/.test(refusal) && github.opened.length === 0)
+            await github.open({
+              repository: "pmdroid/paws-demo",
+              title: "",
+              head: "",
+              base: "main",
+              body: "",
+            });
+          return { status: 422, body: { errors: [{ message: refusal }] } };
+        }
+        if (method === "GET" && route.endsWith("/pulls"))
+          return { status: 200, body: github.opened.map((_, index) => ({ number: index + 1 })) };
+        if (method === "PATCH" && /\/pulls\/1$/.test(route))
+          return {
+            status: 200,
+            body: { number: 1, html_url: "https://github.com/pmdroid/paws-demo/pull/1" },
+          };
+        return client.request(req);
+      },
+    },
+  };
 }

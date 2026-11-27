@@ -68,6 +68,8 @@ export {
 export type { MemberVmProviderName, MemberVmSize, VmSizes } from "./member-vm";
 export { issueVmSettings, parseIssueVmSettings, writeIssueVmSettings } from "./issue-vm";
 export type { IssueVmSettings, StoredIssueVmSettings } from "./issue-vm";
+export { parseSplitSettings, splitSettings, writeSplitSettings } from "./splits";
+export type { SplitSettings } from "./splits";
 export { ensureLayout, pawsPaths } from "./paths";
 export { parseRepositoryList } from "./repositories";
 export type { PawsPaths } from "./paths";

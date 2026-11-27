@@ -295,6 +295,48 @@
       "when": 1795723769063,
       "tag": "0041_probe_write_without_session",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1795735503057,
+      "tag": "0042_issue_vm_lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1795739520603,
+      "tag": "0043_issue_vm_unit_report",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1795741250363,
+      "tag": "0044_issue_vm_sleep_refusal",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1795743519106,
+      "tag": "0045_issue_vm_enrollment",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1795750374693,
+      "tag": "0046_issue_splits",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1795770046659,
+      "tag": "0047_retro_transcript_read_budget",
+      "breakpoints": true
     }
   ]
 }

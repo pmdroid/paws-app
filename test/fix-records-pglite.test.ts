@@ -1,7 +1,15 @@
 import { expect, test } from "bun:test";
 import { describePglite, insertWorkItem } from "./pglite-fixtures";
 import { handleFixRecordsRequest } from "../src/server/fix-records";
-import { getWorkItem, listFixRecords, restart, type Db, type FixTriggers } from "../src/db";
+import {
+  fixRounds,
+  getWorkItem,
+  listFixRecords,
+  listJobs,
+  restart,
+  type Db,
+  type FixTriggers,
+} from "../src/db";
 
 const comment = (id: number): FixTriggers => ({
   comments: [{ id, author: "reviewer", excerpt: "Rename this helper." }],
@@ -55,6 +63,27 @@ describePglite((open) => {
         ["ci", "not_fixed"],
         ["review", null],
       ]);
+    } finally {
+      await close();
+    }
+  });
+
+  test("a carried restart keeps the round's handoff and counts no extra fix round", async () => {
+    const { db, close } = await open();
+    try {
+      await insertWorkItem(db, "item");
+      await sendBack(db, "review", comment(7), 1);
+      const item = (await getWorkItem(db, "item"))!;
+      expect(await fixRounds(db, "item")).toBe(1);
+      const carried = { reason: "review", fixRound: true, fixRounds: 1 };
+      await restart(db, item, { reason: "follow_up", body: "Fix it.", now: 2, carried });
+      expect((await listFixRecords(db)).map((row) => row.outcome)).toEqual([null]);
+      expect((await listJobs(db)).at(-1)?.payload).toMatchObject({
+        handoff: "Fix it.",
+        reason: "review",
+        fixRound: true,
+      });
+      expect(await fixRounds(db, "item")).toBe(1);
     } finally {
       await close();
     }

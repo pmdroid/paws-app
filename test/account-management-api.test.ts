@@ -78,6 +78,11 @@ describePglite((connect) => {
         secretsDir,
         now: () => NOW,
         checkClaudeToken: async (token) => accepted.has(token),
+        agentAuth: {
+          device: async () => {
+            throw new Error("device sign-in started");
+          },
+        },
       });
       const send = (method: string, path: string, body?: unknown) =>
         api(
@@ -123,14 +128,26 @@ describePglite((connect) => {
             "OpenCode signs in in the browser. Choose Sign in in Settings › Agent accounts and enter the code shown there.",
         },
       });
+      expect(await send("POST", `/${claude.id}/device`)).toEqual({
+        status: 400,
+        body: {
+          error:
+            "Claude accounts can't sign in with a browser sign-in. Use a runner sign-in, a setup token, or an API key.",
+        },
+      });
       expect((await send("PUT", `/${claude.id}/token`, { token: "not-a-token" })).status).toBe(400);
       expect(await send("PUT", `/${claude.id}/token`, { token: "sk-ant-oat01-bad" })).toEqual({
         status: 400,
         body: { error: "This token was not accepted by Claude." },
       });
-      expect((await send("PUT", `/${codex.id}/token`, { token: "sk-ant-oat01-good" })).status).toBe(
-        400,
-      );
+      expect(await send("PUT", `/${codex.id}/token`, { token: "sk-ant-oat01-good" })).toEqual({
+        status: 400,
+        body: {
+          error:
+            "Codex accounts can't sign in with a setup token. Use a runner sign-in, a browser sign-in, or an API key.",
+        },
+      });
+      expect(await db.run((q) => agentCredentialCiphertextSteps(q, String(codex.id)))).toBeNull();
       expect(await db.run((q) => agentCredentialCiphertextSteps(q, String(claude.id)))).toBeNull();
       expect(await send("PUT", `/${claude.id}/token`, { token: "sk-ant-oat01-good" })).toEqual({
         status: 200,

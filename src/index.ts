@@ -64,7 +64,7 @@ import {
 } from "./credentials";
 import { ArtifactRejectedError, commitCheckpointSync, git, mirrorFiles, worktreePath } from "./acp";
 import { useGitReader } from "./closeout";
-import { useEvidenceRecordObjects } from "./closeout-spec";
+import { credentialSecrets, useEvidenceRecordObjects } from "./closeout-spec";
 import {
   closeoutRecordObjects,
   createEvidenceStore,
@@ -200,6 +200,7 @@ import {
   memberVmProviderId,
   observeDb,
   readAgentAuthSteps,
+  onCommittedTransition,
 } from "./db";
 import {
   METRICS_FLUSH_EVERY_MS,
@@ -303,7 +304,14 @@ import {
   POLICY_BLOCK_CHECK_MS,
   repositoryGrant,
   recordMissingProjectTeams,
+  createRepositoryGit,
 } from "./loop";
+import {
+  PROBE_COLLECT_JOB,
+  createProbeCollection,
+  handleProbeCollectionRequest,
+  probeCollectionAllowedSteps,
+} from "./probe-collector";
 import { handleLinkAskAnswer, handleQuestionAnswer } from "./questions";
 import { createFindingIssueRoute } from "./finding-issues";
 import { dashboardUrl } from "./dashboard-links";
@@ -333,7 +341,7 @@ import {
 } from "./runner-placement";
 import { releaseVersionFromPath } from "./runner-protocol";
 import { startServer } from "./server";
-import { activeRunnerReadiness } from "./settings";
+import { activeAgentFleet, activeRunnerReadiness } from "./settings";
 import {
   createRetroDispatcher,
   createRetroPreviewHttp,
@@ -349,6 +357,12 @@ import {
   type RetroDispatcher,
 } from "./retros";
 import { createStorageUsage } from "./storage-usage";
+import {
+  createTelemetry,
+  itemTransitionLogs,
+  readTelemetrySettings,
+  telemetryHeader,
+} from "./telemetry";
 import { handleVmHostRunnerRequest } from "./vm-hosts";
 import {
   STORAGE_CLEANUP_JOB,
@@ -745,6 +759,30 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     helpers: async () => (await runnerReady)?.helpers,
     placement: createRunnerPlacement({ store }),
     profile: () => resolveAgentProfiles(loadSettings(paths.home)).implementer,
+  });
+  const probeCollection = createProbeCollection({
+    store,
+    pawsRoot: paths.home,
+    helpers: async () => (await runnerReady)?.helpers,
+    placement: createRunnerPlacement({ store }),
+    profile: () => resolveAgentProfiles(loadSettings(paths.home)).implementer,
+    locate: (name) => {
+      const binding = repositoryBinding(name);
+      const provider = binding && authProvider(runtime, binding, "read", resolveApp);
+      const github = githubBinding(provider);
+      if (!binding || !provider || !github?.tokenProvider) return null;
+      return {
+        repository: binding,
+        github: { client: github.client, tokenProvider: github.tokenProvider },
+        networkGit: createRepositoryGit({
+          remoteUrl: binding.remoteUrl,
+          token: () => provider.token(),
+          signal: abort.signal,
+          assert: async () => abort.signal.throwIfAborted(),
+          onCleanupFailure: () => undefined,
+        }),
+      };
+    },
   });
   if (options?.refreshRepositories)
     periodic.push({
@@ -1195,9 +1233,17 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     store,
     artifactRoot: join(paths.home, "retros"),
     catalogs: retroCatalog,
+    secrets: () => credentialSecrets(),
+    transcripts: () => runner?.transcripts,
   });
   const runnerHostRefusals = createRunnerHostRefusals();
   const storageUsage = createStorageUsage({ paths, store, runners: async () => runner?.work });
+  const telemetry = createTelemetry({
+    version: installedPawsVersion() ?? "unknown",
+    instanceId: runtime.publicUrl === null ? hostname() : new URL(runtime.publicUrl).hostname,
+  });
+  await telemetry.apply(await readTelemetrySettings(store), telemetryHeader.read(paths.home));
+  onCommittedTransition(itemTransitionLogs(telemetry));
   const storageCleanup = createStorageCleanup({
     paths,
     store,
@@ -1239,8 +1285,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             (await storageUsage.fetch(request, runnerId)) ??
             storageCleanup.fetch(request, runnerId),
           issueVms: (request, runnerId) => handleVmHostRunnerRequest(request, runnerId, store),
+          observeRequest: (labels, ms) => recordDuration("http.request", labels, ms),
           slackReplyAuthority: (q, input) => slackReplyAllowedSteps(q, paths.home, input),
           repositorySummaryAuthority: repositorySummaryAllowedSteps,
+          probeAuthority: probeCollectionAllowedSteps,
         }).then(async (value) => {
           if (runnerStopping) {
             await value.stop();
@@ -1252,6 +1300,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             artifactRoot: join(paths.home, "retros"),
             sign: value.signRetroCommand,
             credentials: value.attachCredentials,
+            transcripts: () => value.transcripts,
+            secrets: () => credentialSecrets(),
           });
           return value;
         });
@@ -1550,6 +1600,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   try {
     server = startServer({
       storageUsage,
+      telemetry,
       doctor: () =>
         realProbe(envSource, store).then(doctorChecks, (error: unknown) => [
           {
@@ -1563,6 +1614,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         nextCheckAt: () => store.run((q) => jobRunAtByKeySteps(q, VM_PROVIDER_CHECK_JOB)),
       },
       storageCleanup,
+      probeCollection: (request, context) =>
+        handleProbeCollectionRequest(request, { ...context, collection: probeCollection }),
       server: options?.server,
       linearUsage: linear === null ? undefined : () => linear.usage(),
       riskApproval: async (itemId) => orchestrator?.riskDisplay(itemId) ?? null,
@@ -1710,6 +1763,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       agentSettings: {
         applyToWaiting: async () => (await orchestrator?.applyAgentSettingsToWaiting()) ?? 0,
         runnerReadiness: (agent) => activeRunnerReadiness(store, agent),
+        fleet: () => activeAgentFleet(store),
         ...(linear?.tracker?.readBriefIssue
           ? {
               readIssue: (identifier: string, signal: AbortSignal) =>
@@ -2498,7 +2552,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         now: Date.now(),
       });
       created.jobs.register(METRICS_FLUSH_JOB, async () => {
-        await flushMetrics(store);
+        const { rows } = await flushMetrics(store);
+        telemetry.exportMetricMinutes(rows);
       });
       await enqueueJobOnce(store, {
         queue: METRICS_FLUSH_JOB,
@@ -2582,6 +2637,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       });
       await maintainPglite(store, created.jobs, journal);
       created.jobs.register(STORAGE_CLEANUP_JOB, () => storageCleanup.tick());
+      created.jobs.register(PROBE_COLLECT_JOB, async (job, context) => {
+        await probeCollection.run(job.payload, AbortSignal.any([context.signal, abort.signal]));
+      });
       await enqueueJobOnce(store, {
         queue: STORAGE_CLEANUP_JOB,
         jobKey: STORAGE_CLEANUP_JOB,
@@ -2708,6 +2766,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             { name: "Linear", stop: () => running.stop() },
             { name: "server", stop: () => server.stop(true) },
             { name: "storage usage", stop: () => storageUsage.stop() },
+            { name: "telemetry", stop: () => telemetry.shutdown() },
             { name: "reconciler", stop: () => reconciler?.close() },
             { name: "orchestrator", stop: () => orchestrator?.shutdown() },
           ],

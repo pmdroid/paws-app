@@ -18,7 +18,8 @@ import {
   type AnyColumn,
   type SQL,
 } from "drizzle-orm";
-import type { Db, Q, Steps } from "./db";
+import { afterCommit, type Db, type Q, type Steps } from "./db";
+import { journalCaught } from "../journal";
 import { haltSteps } from "./halt";
 import { jsonField as jsonPath } from "./json-text";
 import { wakeMergesBehindSteps } from "./merge-queue";
@@ -68,6 +69,8 @@ import {
   mergeStopRequestedSteps,
 } from "./remote-merges";
 import { getPullRequestDraftSteps } from "./pull-request-drafts";
+import { closeMergedSplitSteps } from "./issue-splits";
+import { enqueueIssueStatusSteps } from "./linear-delegation";
 import type { workItem as pgWorkItem } from "./schema-pg";
 import { runnerLeaseCutoff } from "./runner-lease";
 
@@ -277,7 +280,52 @@ export function* applyWorkItemEventSteps(
   journal(
     `transition ${next.linearIdentifier} ${current.state} --${event}--> ${next.state} v${next.version}`,
   );
+  const listener = transitionListener;
+  if (listener !== null) {
+    const { workItemRepository: repo, runnerWork } = q.t;
+    const where = yield* q.one(
+      q.orm
+        .select({ owner: repo.owner, repo: repo.repo, runnerId: runnerWork.runnerId })
+        .from(workItem)
+        .leftJoin(repo, eq(repo.itemId, workItem.id))
+        .leftJoin(runnerWork, eq(runnerWork.runId, workItem.currentRunId))
+        .where(eq(workItem.id, id)),
+    );
+    const repository = where?.owner && where.repo ? `${where.owner}/${where.repo}` : null;
+    const { linearIdentifier: issue, version } = next;
+    const done = { issue, itemId: id, from: current.state, event, to: next.state, version };
+    afterCommit(q, () => {
+      try {
+        listener({ ...done, repository, runnerId: where?.runnerId ?? null });
+      } catch (error) {
+        journalCaught(error, "items.transitionListener", id);
+      }
+    });
+  }
   return next;
+}
+
+export type CommittedTransition = {
+  issue: string;
+  itemId: string;
+  from: WorkItemState;
+  event: WorkItemEvent;
+  to: WorkItemState;
+  version: number;
+  repository: string | null;
+  runnerId: string | null;
+};
+
+let transitionListener: ((transition: CommittedTransition) => void) | null = null;
+
+export function onCommittedTransition(
+  listener: (transition: CommittedTransition) => void,
+): () => void {
+  const previous = transitionListener;
+  transitionListener = listener;
+  return () => {
+    transitionListener = previous;
+  };
 }
 
 /**
@@ -1246,6 +1294,7 @@ export function* completeMergedItemSteps(
       },
       now: input.now,
     });
+  yield* closeSplitParentSteps(q, current.linearIssueId, input.now);
   if (input.announce) yield* input.announce(q, current);
   const merged = yield* applyWorkItemEventSteps(q, current.id, "merge_accepted", {
     now: input.now,
@@ -1254,6 +1303,32 @@ export function* completeMergedItemSteps(
   yield* endActiveRunSteps(q, current.currentRunId, input.now);
   yield* cancelAdvancingJobsSteps(q, current.id, "merged", input.now);
   return merged;
+}
+
+function* closeSplitParentSteps(q: Q, issueId: string, now: number): Steps<void> {
+  const closed = yield* closeMergedSplitSteps(q, issueId, now);
+  const parent = closed && (yield* getWorkItemSteps(q, closed.split.itemId));
+  if (!closed || !parent) return;
+  yield* enqueueIssueStatusSteps(q, parent, "completed", now);
+  const sessionId = parent.sessionKey ?? parent.id;
+  const generation = yield* getLinearSessionGenerationSteps(q, sessionId);
+  const links = closed.parts.map((part) =>
+    part.url ? `[${part.identifier}](<${part.url}>)` : part.identifier,
+  );
+  yield* enqueueOutboxOnceSteps(q, {
+    target: "linear",
+    op: "activity",
+    orderingKey: sessionId,
+    generation,
+    idempotencyKey: `merged:split:${closed.split.id}`,
+    payload: {
+      sessionId,
+      itemId: parent.id,
+      kind: "response",
+      body: `Every sub-issue of ${parent.linearIdentifier} merged: ${links.join(", ")}. ${parent.linearIdentifier} is Done; its branch \`${parent.branchName}\` stays.`,
+    },
+    now,
+  });
 }
 
 export async function completeMergedItem(

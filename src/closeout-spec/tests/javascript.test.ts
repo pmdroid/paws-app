@@ -270,16 +270,22 @@ test("over_max direct also runs the direct tests when the selection can't be pro
   const lazy = {
     "lib/math.ts": "export const add = 2;\n",
     "lib/math.test.ts": 'import { add } from "./math";\nadd;\n',
-    "test/lazy.test.ts": "await import(`../lib/${process.env.X}`);\n",
+    "lib/index.ts": 'export * from "./math";\nrequire(process.env.X!);\n',
   };
   const unprovable = await planned(lazy, { over_max: "direct", always: ["test/always.test.ts"] });
   expect(unprovable.selection).toEqual({
     mode: "selected",
-    targets: ["lib/math.test.ts", "test/always.test.ts", "test/lazy.test.ts"],
+    targets: [
+      "lib/math.test.ts",
+      "test/always.test.ts",
+      "test/barrel.test.ts",
+      "test/lazy.test.ts",
+    ],
     reasons: [
-      "at head: test/lazy.test.ts has a non-literal dynamic import or require",
+      "at head: lib/index.ts has a non-literal dynamic import or require",
       "running the change's direct tests and leaving the rest to CI",
       "lib/math.test.ts is a direct test of the change",
+      "test/barrel.test.ts is a direct test of the change",
       "test/lazy.test.ts is a direct test of the change",
       "test/always.test.ts is in select.always",
     ],
@@ -315,6 +321,39 @@ test("over_max direct picks tests that import a changed file or sit beside it, n
   expect(targets(plan)).toEqual(["lib/math.test.ts", "test/lazy.test.ts"]);
 });
 
+test("a test with a non-literal import always runs, and the rest of the selection stays proven", async () => {
+  const plan = await planned({
+    "lib/math.ts": "export const add = 2;\n",
+    "test/opaque.test.ts": "await import(`../lib/${process.env.X}`);\n",
+  });
+  expect(plan.selection.mode).toBe("selected");
+  expect(targets(plan)).toEqual([
+    "test/barrel.test.ts",
+    "test/lazy.test.ts",
+    "test/opaque.test.ts",
+  ]);
+  expect(plan.selection.reasons).toContain(
+    "test/opaque.test.ts has a non-literal dynamic import or require, so it always runs",
+  );
+});
+
+test("over_max direct still runs an unchanged test with a non-literal import", async () => {
+  const plan = await planned(
+    { "lib/math.ts": "export const add = 2;\n" },
+    { max_selected: 1, over_max: "direct" },
+    undefined,
+    bunTestAdapter,
+    ["bun", "test"],
+    (root) =>
+      writeFileSync(
+        join(root, "test/opaque.test.ts"),
+        "await import(`../lib/${process.env.X}`);\n",
+      ),
+  );
+  expect(plan.selection.mode).toBe("selected");
+  expect(targets(plan)).toContain("test/opaque.test.ts");
+});
+
 test("the bun runner runs the full suite when it can't prove the selection", async () => {
   const math = { "lib/math.ts": "export const add = 2;\n" };
   const reasons = async (...args: Parameters<typeof planned>) => {
@@ -326,9 +365,6 @@ test("the bun runner runs the full suite when it can't prove the selection", asy
   expect(
     await reasons({ "lib/index.ts": 'export * from "./math";\nrequire(process.env.X!);\n' }),
   ).toEqual(["at head: lib/index.ts has a non-literal dynamic import or require"]);
-  expect(
-    await reasons({ "test/lazy.test.ts": "await import(`../lib/${process.env.X}`);\n" }),
-  ).toEqual(["at head: test/lazy.test.ts has a non-literal dynamic import or require"]);
   expect(await reasons({ "package.json": "{}" })).toContain("package.json changed");
   expect(await reasons({ "test/setup.ts": "export const x = 1;\n" })).toContain(
     "test/setup.ts changed",

@@ -318,7 +318,6 @@ function claudeStopMeta(
       options: {
         settingSources: ["user", "project"],
         settings: {
-          attribution: { commit: "", pr: "" },
           hooks: mergeHooks(
             {
               hooks: [

@@ -135,6 +135,17 @@ export class NothingToPublishError extends Error {
   }
 }
 
+export class ClosedPullAtHeadError extends NothingToPublishError {
+  constructor(
+    branch: string,
+    readonly pullNumber: number,
+  ) {
+    super(branch, `PR #${pullNumber} was closed without merging at this head`);
+    this.message = `${branch}: PR #${pullNumber} was closed without merging at this head`;
+    this.name = "ClosedPullAtHeadError";
+  }
+}
+
 export class GitCommandError extends Error {
   readonly args: string[];
   readonly stderr: string;
@@ -150,6 +161,7 @@ export type OpenedPull = {
   number: number;
   url: string | null;
   body: string;
+  evidence?: string;
   memberRefused?: { login: string; status: number };
 };
 

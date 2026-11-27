@@ -229,8 +229,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         })
       : undefined;
   const sessionMeta =
-    profile.agent === "claude" && options.agentSkills
-      ? claudeSkillsMeta(stopHook?.sessionMeta, options.agentSkills.claude)
+    profile.agent === "claude"
+      ? claudeSessionMeta(stopHook?.sessionMeta, options.agentSkills?.claude)
       : stopHook?.sessionMeta;
   const agentEnv = {
     ...minimalAgentEnv(sourceEnv),
@@ -1034,16 +1034,21 @@ function leftoverMessage(reason: "timeout" | "error" | "prompt_complete"): strin
   return `Save changes the agent left uncommitted (${why})`;
 }
 
-function claudeSkillsMeta(
+function claudeSessionMeta(
   meta: Record<string, unknown> | undefined,
-  directory: string,
+  directory: string | undefined,
 ): Record<string, unknown> {
   const claudeCode = (meta?.claudeCode ?? {}) as { options?: Record<string, unknown> };
+  const settings = (claudeCode.options?.settings ?? {}) as Record<string, unknown>;
   return {
     ...meta,
     claudeCode: {
       ...claudeCode,
-      options: { ...claudeCode.options, additionalDirectories: [directory] },
+      options: {
+        ...claudeCode.options,
+        settings: { ...settings, attribution: { commit: "", pr: "" } },
+        ...(directory ? { additionalDirectories: [directory] } : {}),
+      },
     },
   };
 }

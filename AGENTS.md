@@ -14,9 +14,11 @@ bun run paws          # 127.0.0.1:8787, data in ~/.paws
 bun run check         # lint, fmt:check, typecheck, test, build:dashboard, links, raw-sql, graphql, knip
 ```
 
-Individual scripts: `lint` (oxlint), `fmt` / `fmt:check` (oxfmt), `typecheck` (`tsc --noEmit`), `test` (`bun test --parallel=4 --timeout=20000 --no-orphans`), `links` (documentation links, orphaned docs and source paths), `raw-sql` (Drizzle SQL template calls outside `src/db`), `graphql` (every GitHub and Linear GraphQL document in `src/github`, `src/linear` and `src/doctor/probe.ts` validated against GitHub's published schema from `@octokit/graphql-schema` and Linear's in `scripts/graphql-schemas/linear.graphql.gz`; refresh Linear's with `LINEAR_API_KEY=… bun scripts/refresh-linear-schema.ts`), `knip` (unused files, dependencies and duplicate exports). CI (`.github/workflows/ci.yml`) runs those on Bun 1.4.4, with tests four files at a time (`bun test --parallel=4`) under `scripts/test-watchdog.ts`, which fails a shard after three minutes without progress and names the files still running; Closeout's `test` check uses `select` with the `bun` runner in `.agents/closeout.yaml`: it runs only the test files whose imports reach a changed file, plus `test/boundaries.test.ts` and `test/empty-catches.test.ts`, and runs the full suite when a shared file or `scripts/` changes or more than 120 files are selected. CI always runs the full suite.
+Individual scripts: `lint` (oxlint), `fmt` / `fmt:check` (oxfmt), `typecheck` (`tsc --noEmit`), `test` (`bun test --parallel=4 --timeout=20000 --no-orphans`), `links` (documentation links, orphaned docs and source paths), `raw-sql` (Drizzle SQL template calls outside `src/db`), `graphql` (every GitHub and Linear GraphQL document in `src/github`, `src/linear` and `src/doctor/probe.ts` validated against GitHub's published schema from `@octokit/graphql-schema` and Linear's in `scripts/graphql-schemas/linear.graphql.gz`; refresh Linear's with `LINEAR_API_KEY=… bun scripts/refresh-linear-schema.ts`), `knip` (unused files, dependencies and duplicate exports). CI (`.github/workflows/ci.yml`) runs those on Bun 1.4.4, with tests four files at a time (`bun test --parallel=4`) under `scripts/test-watchdog.ts`, which fails a shard after three minutes without progress and names the files still running; Closeout's `test` check uses `select` with the `bun` runner in `.agents/closeout.yaml`: it runs only the test files whose imports reach a changed file, plus `test/boundaries.test.ts` and `test/empty-catches.test.ts` and any test with a non-literal import, and runs the full suite when a shared file or `scripts/` changes. Above 120 selected files, or when the selection can't be proved, it runs the direct tests: tests that import a changed file and same-name tests beside it. Markdown and `docs/` changes don't run it. CI always runs the full suite.
 
 Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported from each module.
+
+Asynchronous lifecycle tests wait for a completion signal (a promise the code resolves, a fake's recorded call, or a condition polled with `waitFor` from `test/wait-for.ts`), never a fixed sleep or a wall-clock duration bound; `test/empty-catches.test.ts` rejects new `await sleep(` and `Bun.sleep(` calls in test files.
 
 `bun run verify:proof [--changed <base>] [name…]` runs the end-to-end proof scenarios in `test/proofs/` (all, the named ones, or those whose `covers` globs match files changed since `<base>`). Each runs in a fresh throwaway home with fake Linear, fake GitHub and the scripted ACP agent, and writes `proof-<name>.md` and `proof-<name>.json` to `PAWS_EVIDENCE_DIR` (default `./proof-evidence`). A scenario exports `covers`, `summary`, the agent's steps and `run(proof)`, which scripts the person's actions and asserts on the fakes; `test/proofs/harness.ts` is the shared setup.
 
@@ -28,6 +30,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/onboarding-start.ts`, `src/onboarding-readiness.ts` | Onboarding startup and readiness wiring                               |
 | `src/account-management`                                 | Dashboard agent accounts, runner bindings and eligibility preview     |
 | `src/acp`                                                | ACP agents, permissions, worktrees, checkpoints and tool servers      |
+| `src/alerts`                                             | Health alerts read from metrics, jobs, outbox and Closeout            |
 | `src/agent-catalog`                                      | Agent and model catalog and registry                                  |
 | `src/agent-sessions`                                     | Stored agent session snapshots and their object storage               |
 | `src/auth`                                               | GitHub App credentials and hosted workspace authentication            |
@@ -66,6 +69,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/project-context`                                    | Scoped project context records: provenance, access and invalidation   |
 | `src/provisioning`                                       | Remote VM bootstrap, releases, mise and Tailscale setup               |
 | `src/questions`                                          | Elicitations, answer authorization, lifecycle and visual review       |
+| `src/rulecheck-shadow`                                   | Rulecheck CI and Closeout receipt comparison, shadow only             |
 | `src/run-files`                                          | Encrypted, chunked run files: transcripts and session snapshots       |
 | `src/retros`                                             | Retro settings revisions, frozen run profiles and their API           |
 | `src/review-score`                                       | Reviewer escape scoring after the PR and after merge                  |
@@ -105,6 +109,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/slack`                                              | Slack OAuth, identity, authorization and webhooks                     |
 | `src/storage-cleanup`                                    | Admin cleanups: preview, run, daily schedule and history              |
 | `src/storage-usage`                                      | Disk use per category under the Paws home, and stored snapshots       |
+| `src/telemetry`                                          | OTLP export: settings, header secret, exporters and export status     |
 | `src/vm-hosts`                                           | VM hosts: issue VM size and slots per machine                         |
 | `src/vm-provider-checks`                                 | VM provider key checks: when they run and the latest result kept      |
 | `src/webhook-body`                                       | Bounded webhook request bodies and raw signature checks               |

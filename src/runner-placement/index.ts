@@ -134,6 +134,7 @@ type PlacementFinish = {
 };
 export type PlacementDisposition = {
   retryable: boolean;
+  modelMissing?: string;
   usageLimit?: { resetsAt: number | null; recheckAt?: number };
 };
 export type RunnerPlacement = {
@@ -163,7 +164,14 @@ export {
 } from "./placement";
 
 export { createRunnerPlacementBrowser } from "./browser";
-export { credentialRefreshable, itemRunnerVerdictsSteps, signInFitSteps } from "./fit";
+export {
+  credentialRefreshable,
+  itemRunnerVerdictsSteps,
+  RETRO_ACCOUNT_CHECKS,
+  runnerModelCatalogSteps,
+  resolveRunnerAccountSteps,
+  type AccountRefusal,
+} from "./fit";
 export { createRunnerHostRefusals } from "./host-refusals";
 
 export { sessionHolderSteps, runRunnerSteps } from "./session";

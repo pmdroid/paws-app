@@ -13,6 +13,10 @@ on:
         description: Re-sign apt metadata without changing packages; select the latest v* tag as the run ref
         type: boolean
         default: false
+      paws_ref:
+        description: Deployed Paws ref the runner must work with; defaults to the newest main pull request the release notes name
+        type: string
+        default: ""
 
 permissions: {}
 
@@ -67,8 +71,49 @@ jobs:
           path: ${{ runner.temp }}/runner-archive/*
           if-no-files-found: error
 
+  compatibility:
+    if: github.event_name == 'release' || (inputs.dry_run && !inputs.resign_only && startsWith(github.ref, 'refs/tags/v'))
+    name: Runner and Paws compatibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - name: Choose the deployed Paws ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAWS_REF: ${{ inputs.paws_ref }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+        run: |
+          set -euo pipefail
+          ref="$PAWS_REF"
+          if [ -z "$ref" ]; then
+            notes=$(gh release view "$RELEASE_TAG" --repo pmdroid/paws-app --json body --jq .body || true)
+            for number in $(grep -oE '#[0-9]+' <<<"$notes" | tr -d '#' | sort -rnu || true); do
+              ref=$(gh api "repos/pmdroid/paws-app/pulls/$number" --jq 'select(.merged_at != null and .base.ref == "main") | .merge_commit_sha' || true)
+              if [ -n "$ref" ]; then break; fi
+            done
+          fi
+          if [ -z "$ref" ]; then
+            ref=$(git tag --list 'v*' --sort=-v:refname | grep -vxF "$RELEASE_TAG" | head -n 1)
+          fi
+          test -n "$ref"
+          echo "Deployed Paws: $ref"
+          echo "DEPLOYED_PAWS=$ref" >> "$GITHUB_ENV"
+      - run: bun scripts/runner-compat.ts --deployed "$DEPLOYED_PAWS"
+
   build:
-    needs: prepare
+    needs: [prepare, compatibility]
     if: github.event_name == 'release' || (inputs.dry_run && !inputs.resign_only && startsWith(github.ref, 'refs/tags/v'))
     name: Debian and RPM packages (${{ matrix.architecture }})
     strategy:

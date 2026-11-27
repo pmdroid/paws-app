@@ -306,6 +306,7 @@ export function validateSessionUpdate(update: SessionUpdate): void {
       throw new Error("Linear session summary requires 1 to 255 characters without line breaks");
     }
   }
+  if (update.plan?.length === 0) throw new Error("Invalid plan");
   for (const step of update.plan ?? []) {
     if (!["pending", "inProgress", "completed", "canceled"].includes(step.status)) {
       throw new Error("Invalid Linear session plan status");

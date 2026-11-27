@@ -8,6 +8,8 @@ export {
 export type { RepositoryDescriptionSettingsOptions } from "./repository-descriptions";
 export type { AgentSettingsOptions } from "./handler";
 export { activeRunnerReadiness } from "./reviewer-runners";
+export { activeAgentFleet } from "./agent-fleet";
+export type { AgentFleet } from "./agent-fleet";
 export { SKILL_SETTINGS_PATH, handleSkillSettingsRequest } from "./skills";
 export type { SkillSettingsOptions } from "./skills";
 export { handleMergeSettingsRequest, MERGE_SETTINGS_PATH } from "./merging";
@@ -38,6 +40,12 @@ export type { CloseoutSummaryOptions } from "./closeout-summary";
 export { STORAGE_CHECK_PATH, STORAGE_SETTINGS_PATH, handleStorageSettingsRequest } from "./storage";
 export type { StorageSettingsOptions } from "./storage";
 export {
+  TELEMETRY_CHECK_PATH,
+  TELEMETRY_SETTINGS_PATH,
+  handleTelemetrySettingsRequest,
+} from "./telemetry";
+export type { TelemetrySettingsOptions } from "./telemetry";
+export {
   STORAGE_USAGE_PATH,
   STORAGE_USAGE_REFRESH_PATH,
   handleStorageUsageRequest,
@@ -49,6 +57,8 @@ export { MEMBER_VM_SETTINGS_PATH, handleMemberVmSettingsRequest } from "./member
 export type { MemberVmSettingsOptions } from "./member-vm";
 export { ISSUE_VM_SETTINGS_PATH, handleIssueVmSettingsRequest } from "./issue-vm";
 export type { IssueVmSettingsOptions } from "./issue-vm";
+export { SPLIT_SETTINGS_PATH, handleSplitSettingsRequest } from "./splits";
+export type { SplitSettingsOptions } from "./splits";
 export { RUNNER_VM_KEYS_SETTINGS_PATH, handleRunnerVmKeysSettingsRequest } from "./runner-vm-keys";
 export type { RunnerVmKeysSettingsOptions, VmProviderCheckService } from "./runner-vm-keys";
 export {

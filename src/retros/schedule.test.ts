@@ -100,7 +100,13 @@ async function world(options: { activity?: boolean; retries?: number; settings?:
       now: () => clock.now,
     });
   const dispatcher = () =>
-    createRetroDispatcher({ store: db, artifactRoot: root, sign, now: () => clock.now });
+    createRetroDispatcher({
+      store: db,
+      artifactRoot: root,
+      sign,
+      secrets: () => [],
+      now: () => clock.now,
+    });
   return { db, root, clock, catalog, open, dispatcher };
 }
 

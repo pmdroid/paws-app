@@ -63,7 +63,12 @@ function queries(handle: unknown, hooks: (() => void)[]): Q {
 async function drivePg<T>(pg: PgOrm, body: Body<T>, hooks: (() => void)[]): Promise<T> {
   const steps = body(queries(pg, hooks));
   const perform = async (step: Step): Promise<unknown> => {
-    if (step.kind === "transaction") return pg.transaction((tx) => drivePg(tx, step.body, hooks));
+    if (step.kind === "transaction") {
+      const inner: (() => void)[] = [];
+      const value = await pg.transaction((tx) => drivePg(tx, step.body, inner));
+      hooks.push(...inner);
+      return value;
+    }
     const rows = await (step.query as PromiseLike<unknown>);
     if (step.kind === "exec") return undefined;
     return step.kind === "all" ? rows : (rows as unknown[])[0];

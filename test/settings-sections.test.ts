@@ -69,6 +69,10 @@ root = ".agents/skills"
 
 [checkout.projects."acme/app"]
 exclude = ["node_modules"]
+
+[splits]
+enabled = false
+max_sub_issues = 3
 `;
 
 const EVERY_SECTION = `${KNOWN}\n[project_memory]\nwork_summary = true\n`;

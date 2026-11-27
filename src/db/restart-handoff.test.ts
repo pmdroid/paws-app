@@ -68,7 +68,7 @@ for (const reason of ["findings", "review", "ci"] as const) {
       } else if (recovery === "startup") {
         await recoverOnStartup(db, 10);
       } else {
-        expect(await requeueOrphanedWork(db, 400_000)).toEqual(["item"]);
+        expect(await requeueOrphanedWork(db, 700_000)).toEqual(["item"]);
       }
       const job = (await listJobs(db)).at(-1)!;
       expect(job.payload).toMatchObject({ handoff: body, limit: 4 });

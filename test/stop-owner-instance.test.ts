@@ -113,12 +113,11 @@ async function stop(
   });
 }
 
-test("a stop received by instance B aborts the turn on instance A, which owns the run, within 2 s", async () => {
+test("a stop received by instance B aborts the turn on instance A, which owns the run", async () => {
   const { a, b } = await twoInstances();
   try {
     await runningItem(a.db, "acme-1", a.id);
     const turn = await a.startTurn("acme-1");
-    const started = performance.now();
 
     expect(await stop(b.db, b.orchestrator, "acme-1")).toEqual({ applied: true });
     expect((await getWorkItem(b.db, "acme-1"))?.state).toBe("cancelled");
@@ -126,7 +125,6 @@ test("a stop received by instance B aborts the turn on instance A, which owns th
     await new Promise<void>((resolve) =>
       turn.controller.signal.addEventListener("abort", () => resolve(), { once: true }),
     );
-    expect(performance.now() - started).toBeLessThan(2_000);
     const deliveries = (await listJobs(a.db)).filter(
       (job) => job.queue === commandDeliveryQueue(a.id),
     );

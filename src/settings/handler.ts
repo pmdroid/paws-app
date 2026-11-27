@@ -14,12 +14,14 @@ import {
   readQueueSettings,
   storedMerge,
   writeAgentSettings,
+  type AgentProfiles,
   type ImplementerName,
   type QueueSettings,
   type StoredMerge,
 } from "../config";
 import { isWorkspaceAdmin } from "../workspace";
 import { reviewerRunnerWarnings, type RunnerReadiness } from "./reviewer-runners";
+import { checkAgentDefaults, type AgentFleet } from "./agent-fleet";
 
 export type AgentSettingsOptions = {
   trustedOrigin?: string;
@@ -32,6 +34,8 @@ export type AgentSettingsOptions = {
   /** Records a changed workspace setting in the audit history. */
   audit?: (action: string, subject: string) => Promise<void>;
   runnerReadiness?: (agent: ImplementerName) => RunnerReadiness[] | Promise<RunnerReadiness[]>;
+  fleet?: () => Promise<AgentFleet>;
+  now?: () => number;
 };
 
 function settingsRevision(home: string): string {
@@ -80,6 +84,7 @@ export async function handleAgentSettingsRequest(
   let mergeBody: unknown;
   let queueBody: unknown;
   let applyToWaiting = false;
+  let confirmed = false;
   let expectedRevision: string | undefined;
   try {
     // The workspace merge and queue settings travel next to the agent profiles.
@@ -88,8 +93,12 @@ export async function handleAgentSettingsRequest(
       queue,
       applyToWaiting: apply,
       revision,
+      confirm,
       ...agents
     }: Record<string, unknown> = isRecord(body) ? body : {};
+    if (confirm !== undefined && typeof confirm !== "boolean")
+      throw new Error("confirm must be a boolean");
+    confirmed = confirm === true;
     if (apply !== undefined && typeof apply !== "boolean")
       throw new Error("applyToWaiting must be a boolean");
     if (revision !== undefined && typeof revision !== "string")
@@ -106,8 +115,10 @@ export async function handleAgentSettingsRequest(
   // A malformed saved file is repaired by this write, so its merge values fall back to defaults.
   let previous: StoredMerge = {};
   let previousQueue: QueueSettings | null = null;
+  let previousDefaults: AgentProfiles | null = null;
   try {
     const config = loadSettings(options.home);
+    previousDefaults = readAgentSettings(config).defaults;
     previous = storedMerge(config);
     previousQueue = readQueueSettings(config);
   } catch (caughtError3) {
@@ -137,6 +148,32 @@ export async function handleAgentSettingsRequest(
       },
       409,
     );
+  let fleetWarnings: string[] = [];
+  if (options.fleet && !sameDefaults(previousDefaults, settings.defaults)) {
+    let check;
+    try {
+      check = checkAgentDefaults(
+        settings.defaults,
+        await options.fleet(),
+        options.now?.() ?? Date.now(),
+      );
+    } catch (caughtError6) {
+      journalCaught(caughtError6, "handler.handleAgentSettingsRequest.fleet", null);
+      return json({ error: "Runner model catalogs could not be read" }, 503);
+    }
+    if (check.refusals.length)
+      return json({ error: check.refusals.join(" "), refusals: check.refusals }, 400);
+    if (check.warnings.length && !confirmed)
+      return json(
+        {
+          error: "Confirm these warnings to save the agent defaults.",
+          warnings: check.warnings,
+          confirmRequired: true,
+        },
+        409,
+      );
+    fleetWarnings = check.warnings;
+  }
   let saved: number;
   let savedQueue: QueueSettings;
   let waitingRuns = 0;
@@ -168,10 +205,10 @@ export async function handleAgentSettingsRequest(
       "settings.queue-owner-cap",
       `Running tasks per owner ${capBefore ?? "no cap"} → ${queue.maxRunningPerOwner ?? "no cap"}`,
     );
-  let warnings: string[] = [];
+  let warnings: string[] = [...fleetWarnings];
   try {
     if (options.runnerReadiness)
-      warnings = await reviewerRunnerWarnings(settings, options.runnerReadiness);
+      warnings.push(...(await reviewerRunnerWarnings(settings, options.runnerReadiness)));
   } catch (caughtError5) {
     journalCaught(caughtError5, "handler.handleAgentSettingsRequest.runnerReadiness", null);
   }
@@ -183,6 +220,17 @@ export async function handleAgentSettingsRequest(
     ...(applyToWaiting ? { waitingRuns } : {}),
     ...(warnings.length ? { warnings } : {}),
   });
+}
+
+function sameDefaults(previous: AgentProfiles | null, next: AgentProfiles): boolean {
+  if (!previous) return false;
+  const key = (defaults: AgentProfiles) =>
+    JSON.stringify(
+      [defaults.implementer, defaults.reviewer, defaults.reviewerFallback ?? null].map((profile) =>
+        profile ? [profile.agent, profile.model] : null,
+      ),
+    );
+  return key(previous) === key(next);
 }
 
 export function localRequest(request: Request, trustedOrigin?: string): boolean {

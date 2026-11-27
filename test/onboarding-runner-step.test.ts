@@ -1,4 +1,4 @@
-import { bindFixtureAccounts } from "./pglite-fixtures";
+import { bindFixtureAccounts, offerFixtureModels } from "./pglite-fixtures";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -414,6 +414,7 @@ test("Create VM creates the member's VM, its steps update without a reload, and 
     );
   expect(await ready()).toBe(false);
   await bindFixtureAccounts(f.db, vm.runnerId!);
+  await offerFixtureModels(f.db, vm.runnerId!, "claude", ["test"]);
   const placement = createRunnerPlacement({ store: f.db, now: () => f.clock.now() });
   const candidates = () =>
     placement.candidates({

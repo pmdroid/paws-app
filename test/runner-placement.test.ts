@@ -1,5 +1,5 @@
 import { boundAccountSteps } from "./bound-runner-account";
-import { bindFixtureAccounts } from "./pglite-fixtures";
+import { bindFixtureAccounts, offerFixtureModels } from "./pglite-fixtures";
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -59,6 +59,7 @@ async function insertRunner(db: Db, { agent = "codex", capacity, ...runner }: Ru
       : [(q: Q) => q.orm.insert(q.t.runnerCapacity).values({ runnerId: runner.id, capacity })]),
   );
   await bindFixtureAccounts(db, runner.id, agent);
+  await offerFixtureModels(db, runner.id, agent, ["implementation-model", "review-model"]);
 }
 
 type Work = {

@@ -358,11 +358,13 @@ test("response plans recover their ACP steps without code milestones and reset f
   const artifact = await createLinearSessionProgress(db, "session", "ENG-1", Date.now, "artifact");
   await artifact.phase("working");
   expect(
-    (await listOutbox(db, "session")).findLast((row) => row.op === "linear.session.plan")?.payload,
-  ).toMatchObject({
-    mode: "artifact",
-    plan: [],
-  });
+    (await listOutbox(db, "session")).filter(
+      (row) => (row.payload as SessionUpdate).plan?.length === 0,
+    ),
+  ).toEqual([]);
+  await expect(
+    createFakeTracker([]).updateSession!({ sessionId: "session", plan: [] }),
+  ).rejects.toThrow("Invalid plan");
   expect(
     (await listOutbox(db, "session")).findLast((row) => row.op === "linear.session.summary")
       ?.payload,

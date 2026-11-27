@@ -37,10 +37,14 @@ export function commitPolicyMessage(message: string, policy: GitCommitPolicy): s
   return `${message.trim()}${trailers.length ? `\n\n${trailers.join("\n")}` : ""}\n`;
 }
 
+export const COAUTHOR_REJECTION =
+  "Candidate attribution rejected: Co-authored-by trailers must match the consenting identities in the run policy.";
+
 export function validateCommitAttribution(
   policy: GitCommitPolicy,
   metadata: readonly string[],
   trailers: readonly string[],
+  commit?: string,
 ): void {
   const identity = appBotCommitIdentity(policy.bot);
   const names = [identity.name, policy.bot.login];
@@ -58,10 +62,17 @@ export function validateCommitAttribution(
   const expected = policyCoauthors(policy)
     .map((human) => `${human.name} <${human.email}>`)
     .sort();
-  if (JSON.stringify([...new Set(trailers)].sort()) !== JSON.stringify(expected))
-    throw new Error(
-      "Candidate attribution rejected: Co-authored-by trailers must match the consenting identities in the run policy. No candidate was rewritten.",
-    );
+  const found = [...new Set(trailers)].sort();
+  if (JSON.stringify(found) === JSON.stringify(expected)) return;
+  const extra = found.filter((trailer) => !expected.includes(trailer));
+  const missing = expected.filter((trailer) => !found.includes(trailer));
+  const problems = [
+    extra.length ? `has unexpected Co-authored-by: ${extra.join(", ")}` : "",
+    missing.length ? `is missing Co-authored-by: ${missing.join(", ")}` : "",
+  ].filter(Boolean);
+  throw new Error(
+    `${COAUTHOR_REJECTION} ${commit ? `Commit ${commit.slice(0, 12)}` : "A commit"} ${problems.join(" and ")}; expected ${expected.length ? expected.join(", ") : "no Co-authored-by trailers"}. No candidate was rewritten.`,
+  );
 }
 
 export function policyPullRequestCredit(policy: GitCommitPolicy): string {

@@ -20,6 +20,13 @@ export {
   numberSources,
 } from "./sources";
 export { probePath, writePrompt, writeProbe } from "./write";
+export {
+  PROBE_COLLECT_JOB,
+  createProbeCollection,
+  handleProbeCollectionRequest,
+  probeCollectionAllowedSteps,
+} from "./runner";
+export type { ProbeCollection } from "./runner";
 export type {
   AgentTurn,
   BreakCheck,

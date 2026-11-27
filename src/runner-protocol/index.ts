@@ -189,6 +189,7 @@ export {
 
 export {
   MINIMUM_RUNNER_VERSION,
+  RETRO_TRANSCRIPT_TOOLS_RUNNER_VERSION,
   REVIEW_COMMAND_OAUTH_RUNNER_VERSION,
   type RunnerVersion,
 } from "./versions";
@@ -222,6 +223,8 @@ export {
 
 export {
   RUNNER_AGENT_CREDENTIAL_FILES,
+  RUNNER_AGENT_SIGN_INS,
+  runnerAgentSignInRefusal,
   RunnerAgentCredentialSchema,
   accessCredentialFiles,
   accessCredentialExpiry,
@@ -238,6 +241,7 @@ export {
   type RunnerAgentCredential,
   type RunnerAgentCredentialFiles,
   type RunnerAgentCredentialStore,
+  type RunnerAgentSignIn,
 } from "./agent-credentials";
 
 export { RunnerTerminationSchema, type RunnerTermination } from "./teardown";
@@ -251,8 +255,10 @@ export {
   RunnerRetroInputRequestSchema,
   RunnerRetroInputSchema,
   RunnerRetroResultSchema,
+  RunnerRetroTranscriptRequestSchema,
   acceptRetroResult,
   authorizeRetroInput,
+  authorizeRetroTranscript,
   runnerRetroInputGrant,
   runnerRetroSlot,
   runnerRetroSlotKey,
@@ -268,6 +274,7 @@ export {
   type RunnerRetroInputRequest,
   type RunnerRetroResult,
   type RunnerRetroResultRejection,
+  type RunnerRetroTranscriptRequest,
   type RunnerRetroSlot,
   type RunnerRetroSlotRelease,
 } from "./retro";

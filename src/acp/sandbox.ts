@@ -12,6 +12,7 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AgentProfile } from "../config";
 
 const SESSION_DIRECTORIES: Partial<Record<AgentProfile["agent"], string>> = {
@@ -19,6 +20,9 @@ const SESSION_DIRECTORIES: Partial<Record<AgentProfile["agent"], string>> = {
   codex: ".codex/sessions",
   grok: ".grok/sessions",
 };
+
+const OPENCODE_CREDENTIAL = ".paws/opencode-credential.json";
+const OPENCODE_TURN = fileURLToPath(new URL("./opencode-turn.ts", import.meta.url));
 
 const runtimeDirectory = () => `/run/user/${process.getuid!()}`;
 
@@ -44,14 +48,10 @@ export function sandboxedLaunch(input: {
   home: string;
   writable?: string;
 }) {
-  const session = SESSION_DIRECTORIES[input.agent];
-  if (!session) throw new Error(`${input.agent} can't run in a sandboxed helper turn`);
   const scratch = plainDirectory(input.scratch, "");
-  const sessions = plainDirectory(input.home, session);
-  const turnSessions = plainDirectory(scratch, "sessions");
   const writable = input.writable ? [plainDirectory(input.cwd, input.writable)] : [];
-  const env = Object.fromEntries(
-    Object.entries(input.env).filter(([key]) => key !== "DOCKER_HOST"),
+  const env: Record<string, string> = Object.fromEntries(
+    Object.entries(input.env).filter(([key]) => key !== "DOCKER_HOST" && key !== "OPENCODE_DB"),
   );
   const unit = `paws-helper-${randomUUID()}.service`;
   const properties = [
@@ -64,21 +64,49 @@ export function sandboxedLaunch(input: {
     "InaccessiblePaths=/run/user -/run/paws-agent-docker -/run/paws-docker -/run/dbus",
     "RuntimeMaxSec=900",
     `ReadWritePaths=${[scratch, ...writable].join(" ")}`,
-    `BindPaths=${turnSessions}:${sessions}`,
   ];
+  let command = [input.command, ...input.args];
+  let cwd = input.cwd;
+  if (input.agent === "opencode") {
+    const data = plainDirectory(scratch, "opencode");
+    plainDirectory(input.home, ".config/opencode");
+    properties.push(`TemporaryFileSystem=${data}:mode=0700`);
+    Object.assign(env, {
+      XDG_DATA_HOME: join(data, "share"),
+      XDG_STATE_HOME: join(data, "state"),
+      XDG_CACHE_HOME: join(data, "cache"),
+      OPENCODE_DB: join(data, "share", "opencode", "opencode.db"),
+    });
+    command = [
+      process.execPath,
+      "--no-env-file",
+      "--config=/dev/null",
+      OPENCODE_TURN,
+      join(input.home, OPENCODE_CREDENTIAL),
+      env.OPENCODE_DB!,
+      input.cwd,
+      ...command,
+    ];
+    cwd = scratch;
+  } else {
+    const session = SESSION_DIRECTORIES[input.agent];
+    if (!session) throw new Error(`${input.agent} can't run in a sandboxed helper turn`);
+    const sessions = plainDirectory(input.home, session);
+    properties.push(`BindPaths=${plainDirectory(scratch, "sessions")}:${sessions}`);
+  }
+  const launchEnv: Record<string, string> = { ...env, XDG_RUNTIME_DIR: runtimeDirectory() };
   return {
     command: "/usr/bin/systemd-run",
     args: [
       ...["--user", "--quiet", "--pipe", "--wait", "--collect", "--service-type=exec"],
       `--unit=${unit}`,
-      `--working-directory=${input.cwd}`,
+      `--working-directory=${cwd}`,
       ...properties.flatMap((property) => ["-p", property]),
       ...Object.keys(env).map((key) => `--setenv=${key}`),
       "--",
-      input.command,
-      ...input.args,
+      ...command,
     ],
-    env: { ...env, XDG_RUNTIME_DIR: runtimeDirectory() },
+    env: launchEnv,
     cleanup() {
       spawnSync("/usr/bin/systemctl", ["--user", "stop", unit], {
         env: { PATH: "/usr/bin:/bin", XDG_RUNTIME_DIR: runtimeDirectory() },

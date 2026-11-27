@@ -5,6 +5,7 @@ import { journalCaught } from "../journal";
 import type { DoctorCheck } from "../doctor";
 import { recordDuration } from "../metrics";
 import { observeRequest, type RequestMetrics } from "./request-metrics";
+import { ALERTS_PATH, readAlerts } from "../alerts";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
 import { createGitHubStatusCache, type GitHubStatusCache } from "./github-status-cache";
@@ -76,12 +77,14 @@ import {
   handleMemberVmSettingsRequest,
   handleIssueVmSettingsRequest,
   ISSUE_VM_SETTINGS_PATH,
+  SPLIT_SETTINGS_PATH,
   handleRunnerVmKeysSettingsRequest,
   RUNNER_VM_KEYS_SETTINGS_PATH,
   handleVmProvidersSettingsRequest,
   VM_PROVIDERS_CHECK_PATH,
   VM_PROVIDERS_SETTINGS_PATH,
   handleTimeLimitSettingsRequest,
+  handleSplitSettingsRequest,
   handleLinearCommentSettingsRequest,
   LINEAR_COMMENT_SETTINGS_PATH,
   handleGitHubAccessSettingsRequest,
@@ -93,6 +96,10 @@ import {
   handleStorageSettingsRequest,
   STORAGE_CHECK_PATH,
   STORAGE_SETTINGS_PATH,
+  handleTelemetrySettingsRequest,
+  TELEMETRY_CHECK_PATH,
+  TELEMETRY_SETTINGS_PATH,
+  type TelemetrySettingsOptions,
   handleStorageCleanupRequest,
   handleStorageUsageRequest,
   handleMetricsRequest,
@@ -166,6 +173,13 @@ export type ServerOptions = {
   ) => Promise<Response | null>;
   storageUsage?: StorageUsageSettingsOptions["usage"];
   storageCleanup?: StorageCleanupSettingsOptions["cleanup"];
+  telemetry?: TelemetrySettingsOptions["telemetry"];
+  probeCollection?: (
+    request: Request,
+    context: { csrfToken: string; workspaceId: string } & {
+      [key in "role" | "userId" | "trustedOrigin"]?: string;
+    },
+  ) => Promise<Response>;
   vmProviderChecks?: VmProviderCheckService;
   doctor?: () => Promise<readonly DoctorCheck[]>;
   retros?: (
@@ -360,9 +374,11 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
           ...(options.retros ? { retros: options.retros } : {}),
           ...(options.storageUsage ? { storageUsage: options.storageUsage } : {}),
+          ...(options.telemetry ? { telemetry: options.telemetry } : {}),
           ...(options.vmProviderChecks ? { vmProviderChecks: options.vmProviderChecks } : {}),
           ...(options.doctor ? { doctor: options.doctor } : {}),
           ...(options.storageCleanup ? { storageCleanup: options.storageCleanup } : {}),
+          ...(options.probeCollection ? { probeCollection: options.probeCollection } : {}),
           ...(options.improvements ? { improvements: options.improvements } : {}),
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
           ...(options.blockerChecks ? { blockerChecks: options.blockerChecks } : {}),
@@ -426,6 +442,8 @@ type Secrets = {
   retros?: ServerOptions["retros"];
   storageUsage?: ServerOptions["storageUsage"];
   storageCleanup?: ServerOptions["storageCleanup"];
+  telemetry?: ServerOptions["telemetry"];
+  probeCollection?: ServerOptions["probeCollection"];
   vmProviderChecks?: ServerOptions["vmProviderChecks"];
   doctor?: ServerOptions["doctor"];
   improvements?: ServerOptions["improvements"];
@@ -585,7 +603,9 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       const privileged =
         (path.startsWith("/api/settings/") &&
           !(
-            (path === ISSUE_VM_MEMBERS_PATH || path === ISSUE_VM_SPEND_PATH) &&
+            (path === ISSUE_VM_MEMBERS_PATH ||
+              path === ISSUE_VM_SPEND_PATH ||
+              path === SPLIT_SETTINGS_PATH) &&
             request.method === "GET"
           )) ||
         (path === "/api/linear/sessions" && request.method !== "GET");
@@ -865,6 +885,16 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     });
     if (response) return response;
   }
+  if (path === "/api/settings/probes/collect" && secrets.probeCollection && secrets.store) {
+    const workspaceId = principal?.workspaceId ?? (await secrets.store.run(firstWorkspaceIdSteps));
+    if (!workspaceId) return Response.json({ error: "Connect Linear first." }, { status: 404 });
+    return secrets.probeCollection(request, {
+      csrfToken,
+      workspaceId,
+      ...(principal === undefined ? {} : { role: principal.role, userId: principal.userId }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    });
+  }
   if ((path === STORAGE_SETTINGS_PATH || path === STORAGE_CHECK_PATH) && secrets.store) {
     const store = secrets.store;
     return (
@@ -884,6 +914,36 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
       })) ?? Response.json({ error: "Not found" }, { status: 404 })
     );
+  }
+  if (
+    (path === TELEMETRY_SETTINGS_PATH || path === TELEMETRY_CHECK_PATH) &&
+    secrets.store &&
+    secrets.telemetry
+  ) {
+    const store = secrets.store;
+    return (await handleTelemetrySettingsRequest(request, {
+      home: loadRuntime(secrets.statusEnv ?? process.env).env.home,
+      store,
+      telemetry: secrets.telemetry,
+      csrfToken,
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(store, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
+  if (path === ALERTS_PATH && secrets.store) {
+    if (request.method !== "GET")
+      return Response.json({ error: "Method not allowed" }, { status: 405 });
+    if (principal !== undefined && !isWorkspaceAdmin(principal.role))
+      return Response.json({ error: "Workspace admin required." }, { status: 403 });
+    return Response.json(await readAlerts(secrets.store));
   }
   if (path === "/api/settings/doctor" && secrets.doctor) {
     if (request.method !== "GET")
@@ -969,6 +1029,25 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     return (await handleIssueVmSettingsRequest(request, {
       home: secrets.agentSettings.home,
       csrfToken,
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(store, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
+  if (path === SPLIT_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
+    const store = secrets.store;
+    return (await handleSplitSettingsRequest(request, {
+      home: secrets.agentSettings.home,
+      csrfToken,
+      store,
+      workspaceId: principal?.workspaceId ?? null,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
         auditWorkspaceAccess(store, {

@@ -42,6 +42,8 @@ export async function controlledGit(
   let failure: unknown;
   try {
     const completed = new Promise<void>((resolve, reject) => {
+      child.once("error", reject);
+      if (!child.stdout || !child.stderr) return;
       const read = (name: "stdout" | "stderr", chunk: string) => {
         if (outputExceeded) return;
         outputBytes += Buffer.byteLength(chunk);
@@ -54,11 +56,10 @@ export async function controlledGit(
         if (name === "stdout") stdout += chunk;
         else stderr += chunk;
       };
-      child.stdout!.setEncoding("utf8");
-      child.stderr!.setEncoding("utf8");
-      child.stdout!.on("data", (chunk: string) => read("stdout", chunk));
-      child.stderr!.on("data", (chunk: string) => read("stderr", chunk));
-      child.once("error", reject);
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => read("stdout", chunk));
+      child.stderr.on("data", (chunk: string) => read("stderr", chunk));
       child.once("close", (code) =>
         code === 0 ? resolve() : reject(new GitCommandError(args, stderr)),
       );

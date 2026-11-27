@@ -16,7 +16,13 @@ import {
   type PlacementRequest,
 } from "../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { currentRunnerHost, seed, seedCredential } from "./pglite-fixtures";
+import {
+  currentRunnerHost,
+  offerFixtureModels,
+  reportFixtureBindings,
+  seed,
+  seedCredential,
+} from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
 const open: (() => Promise<void>)[] = [];
@@ -75,6 +81,7 @@ async function acme() {
         ]),
       (q) => currentRunnerHost(q, id, now),
     );
+  for (const id of ["acme-1", "acme-2"]) await offerFixtureModels(db, id, "claude", ["opus"]);
   const placement = createRunnerPlacement({ store: db, now: () => now });
   const place = async (request: Partial<PlacementRequest> = {}) => {
     const rejected: { runnerId: string; reason: string; until?: number }[] = [];
@@ -100,8 +107,17 @@ async function acme() {
     await seedCredential(db, account.id, "claude", now);
     return account;
   };
-  const bind = (runnerId: string, accountId: string) =>
-    bindAgentAccount(db, { userId: ada, workspaceId: workspace.id, runnerId, accountId, now });
+  const bind = async (runnerId: string, accountId: string) => {
+    const binding = await bindAgentAccount(db, {
+      userId: ada,
+      workspaceId: workspace.id,
+      runnerId,
+      accountId,
+      now,
+    });
+    await reportFixtureBindings(db, workspace.id, runnerId, now);
+    return binding;
+  };
   return { db, now, workspaceId: workspace.id, item, placement, place, createAccount, bind };
 }
 
@@ -293,7 +309,7 @@ test("a Claude review with a setup token needs a runner that passes the token to
   for (const id of ["acme-1", "acme-2"]) await f.bind(id, selected.id);
   for (const [runnerId, runnerVersion] of [
     ["acme-1", "0.1.87"],
-    ["acme-2", "0.1.106"],
+    ["acme-2", "0.1.109"],
   ] as const)
     await seed(f.db, (q) =>
       q.orm
@@ -324,10 +340,10 @@ test("a Claude review with a setup token needs a runner that passes the token to
   };
   expect(await place("implementer")).toEqual({
     placed: ["acme-2"],
-    rejected: ["Upgrade this runner to 0.1.106"],
+    rejected: ["Upgrade this runner to 0.1.109"],
   });
   expect(await place("reviewer")).toEqual({
     placed: ["acme-2"],
-    rejected: ["Upgrade this runner to 0.1.106"],
+    rejected: ["Upgrade this runner to 0.1.109"],
   });
 });

@@ -24,6 +24,7 @@ export type QuestionKind =
   | "visual-review"
   | "github-auth"
   | "plan-approval"
+  | "split"
   | "link"
   | "push-outage"
   | "policy-outage";

@@ -212,6 +212,7 @@ test.each([false, true, "cap"] as const)(
       },
     });
     let running: Promise<unknown> | undefined;
+    let capped: string | null | undefined;
     try {
       await orchestrator.onLinearEvent(linearEvent("created", null, null, "repair"));
       running = tickWithRestarts(jobs, orchestrator, db);
@@ -288,6 +289,7 @@ test.each([false, true, "cap"] as const)(
         expect((await getWorkItem(db, item.id))?.state, await debug(layout, db)).toBe(
           "awaiting_input",
         );
+        capped = (await getWorkItem(db, item.id))!.currentRunId;
         await orchestrator.onLinearEvent(linearEvent("prompted", "Continue the repair", null));
         expect(await getWorkItem(db, item.id)).toMatchObject({
           state: "queued",
@@ -301,6 +303,7 @@ test.each([false, true, "cap"] as const)(
       await running;
       while ((await outbox.tick()).length > 0) await outbox.idle();
       expect(await stateOf(db, "ENG-302")).toBe("merge_queue");
+      if (capped !== undefined) expect((await listWorkItems(db))[0]!.currentRunId).not.toBe(capped);
     } finally {
       writeFileSync(release, "go");
       await running;

@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { helperSandboxStarts } from "../../test/helper-sandbox";
 import {
@@ -6,6 +7,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -135,18 +137,115 @@ test.skipIf(!sandbox)(
   30_000,
 );
 
-test("sandboxed helper turns refuse an agent whose credential lives in its data directory", () => {
-  expect(() =>
-    sandboxedLaunch({
+const FAKE_OPENCODE = `
+const { Database } = require("bun:sqlite");
+const turn = process.env.OPENCODE_DB;
+if (process.argv[2] === "auth") {
+  require("fs").mkdirSync(require("path").dirname(turn), { recursive: true });
+  const db = new Database(turn);
+  db.run("CREATE TABLE credential (id text PRIMARY KEY, integration_id text, label text NOT NULL, value text NOT NULL, active integer, time_created integer NOT NULL, time_updated integer NOT NULL)");
+  db.close();
+  process.exit(0);
+}
+const db = new Database(turn);
+console.log("seeded " + db.query("SELECT value FROM credential").get().value);
+db.run("UPDATE credential SET value = 'refreshed'");
+db.close();
+try { new Database(process.argv[2]).run("UPDATE credential SET value = 'x'"); console.log("account ok") }
+catch (e) { console.log("account " + (e.code ?? e.message)) }
+console.log("cwd " + process.cwd());
+console.log("turn " + turn);
+for await (const line of console) { if (line === "go") break }
+`;
+
+test.skipIf(!sandbox)(
+  "an OpenCode helper unit gets the credential only in its own tmpfs and can't change the account's",
+  async () => {
+    const root = mkdtempSync(join(homedir(), ".paws-sandbox-"));
+    roots.push(root);
+    const home = join(root, "home");
+    const worktree = join(root, "worktree");
+    const scratch = join(root, "scratch");
+    const account = join(home, ".local/share/opencode/opencode.db");
+    const credential = join(home, ".paws/opencode-credential.json");
+    mkdirSync(join(home, ".local/share/opencode"), { recursive: true });
+    mkdirSync(join(home, ".paws"));
+    mkdirSync(worktree);
+    mkdirSync(scratch);
+    const value = JSON.stringify({ type: "oauth", access: "access-1", refresh: "" });
+    writeFileSync(credential, value);
+    const db = new Database(account);
+    db.run(
+      "CREATE TABLE credential (id text PRIMARY KEY, integration_id text, label text NOT NULL, value text NOT NULL, active integer, time_created integer NOT NULL, time_updated integer NOT NULL)",
+    );
+    db.run(`INSERT INTO credential VALUES ('c1', 'opencode', 'OAuth', ?, 1, 1, 1)`, [value]);
+    db.close();
+    const before = readFileSync(account);
+    const fake = join(root, "opencode.js");
+    writeFileSync(fake, `#!${process.execPath}\n${FAKE_OPENCODE}`, { mode: 0o755 });
+    const launch = sandboxedLaunch({
       agent: "opencode",
-      command: "x",
-      args: [],
-      env: {},
-      cwd: "/",
-      scratch: "/",
-      home: "/",
-    }),
-  ).toThrow("opencode can't run in a sandboxed helper turn");
+      command: fake,
+      args: [account],
+      env: { PATH: "/usr/bin:/bin", HOME: home, OPENCODE_DB: account },
+      cwd: worktree,
+      scratch,
+      home,
+    });
+    expect(launch.args.join(" ")).not.toContain("access-1");
+    const child = Bun.spawn([launch.command, ...launch.args], {
+      env: launch.env,
+      stdin: "pipe",
+      stdout: "pipe",
+    });
+    let output = "";
+    const decoder = new TextDecoder();
+    for await (const chunk of child.stdout) {
+      output += decoder.decode(chunk);
+      if (output.includes("\nturn ")) break;
+    }
+    const turn = /^turn (.+)$/m.exec(output)?.[1] ?? "";
+    expect(turn.startsWith(join(scratch, "opencode") + "/")).toBe(true);
+    expect(existsSync(turn)).toBe(false);
+    expect(readdirSync(join(scratch, "opencode"))).toEqual([]);
+    void child.stdin.write("go\n");
+    await child.stdin.end();
+    await child.exited;
+    launch.cleanup();
+    expect(child.exitCode).toBe(0);
+    expect(output).toContain(`seeded ${value}`);
+    expect(output).toMatch(/^account SQLITE_(READONLY|CANTOPEN)/m);
+    expect(output).toContain(`cwd ${worktree}`);
+    expect(readdirSync(join(scratch, "opencode"))).toEqual([]);
+    expect(readFileSync(account).equals(before)).toBe(true);
+    expect(readFileSync(credential, "utf8")).toBe(value);
+  },
+  60_000,
+);
+
+test("an OpenCode helper unit keeps its data in a private tmpfs and never gets the credential in its arguments or environment", () => {
+  const root = mkdtempSync(join(homedir(), ".paws-sandbox-"));
+  roots.push(root);
+  mkdirSync(join(root, "home", ".paws"), { recursive: true });
+  writeFileSync(join(root, "home", ".paws", "opencode-credential.json"), '{"access":"access-1"}');
+  const launch = sandboxedLaunch({
+    agent: "opencode",
+    command: "/usr/bin/opencode",
+    args: ["acp"],
+    env: { PATH: "/usr/bin:/bin", OPENCODE_DB: "/elsewhere.db" },
+    cwd: root,
+    scratch: root,
+    home: join(root, "home"),
+  });
+  const data = join(realpathSync(root), "opencode");
+  expect(launch.args).toContain(`TemporaryFileSystem=${data}:mode=0700`);
+  expect(launch.args.some((arg) => arg.startsWith("BindPaths="))).toBe(false);
+  expect(launch.env.OPENCODE_DB).toBe(join(data, "share", "opencode", "opencode.db"));
+  expect(launch.env.XDG_DATA_HOME).toBe(join(data, "share"));
+  expect(`${launch.args.join(" ")} ${Object.values(launch.env).join(" ")}`).not.toContain(
+    "access-1",
+  );
+  expect(launch.args.slice(-2)).toEqual(["/usr/bin/opencode", "acp"]);
 });
 
 test.skipIf(!sandbox)(

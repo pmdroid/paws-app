@@ -2411,29 +2411,31 @@ test("Claude refuses finish through a session stop hook", async () => {
   expect(trace.codexHome).toBe(process.env.CODEX_HOME);
 });
 
-test("Claude adds no commit or pull request attribution of its own", async () => {
-  const layout = await layoutRepo();
-  const files = await writeScript(layout.root, { steps: [{ type: "end" }] });
-  await runAgent({
-    role: "implementer",
-    profile: { agent: "claude", model: null },
-    itemId: "ENG-1",
-    runId: "claude-attribution",
-    prompt: "implement",
-    worktreePath: layout.worktree,
-    pawsRoot: layout.pawsRoot,
-    command: process.execPath,
-    args: fakeAgentArgs(files),
-    env: agentEnv(),
-    checkpoint: false,
-    updatePlan: { update: async () => undefined },
+for (const stopHook of [true, false])
+  test(`Claude adds no commit or pull request attribution of its own${stopHook ? "" : " without the stop hook"}`, async () => {
+    const layout = await layoutRepo();
+    const files = await writeScript(layout.root, { steps: [{ type: "end" }] });
+    await runAgent({
+      role: "implementer",
+      profile: { agent: "claude", model: null },
+      itemId: "ENG-1",
+      runId: "claude-attribution",
+      prompt: "implement",
+      worktreePath: layout.worktree,
+      pawsRoot: layout.pawsRoot,
+      command: process.execPath,
+      args: fakeAgentArgs(files),
+      env: agentEnv(),
+      checkpoint: false,
+      ...(stopHook ? { updatePlan: { update: async () => undefined } } : {}),
+    });
+    const trace = await readResult(files.resultPath);
+    const meta = trace.sessionMeta as {
+      claudeCode: { options: { settings: { attribution: unknown; hooks?: unknown } } };
+    };
+    expect(meta.claudeCode.options.settings.attribution).toEqual({ commit: "", pr: "" });
+    expect(meta.claudeCode.options.settings.hooks !== undefined).toBe(stopHook);
   });
-  const trace = await readResult(files.resultPath);
-  const meta = trace.sessionMeta as {
-    claudeCode: { options: { settings: { attribution: unknown } } };
-  };
-  expect(meta.claudeCode.options.settings.attribution).toEqual({ commit: "", pr: "" });
-});
 
 test("Codex refuses finish through a trusted stop hook in a session home", async () => {
   const layout = await layoutRepo();
@@ -2566,7 +2568,9 @@ test("a read-only session does not install a closeout stop hook", async () => {
   });
   expect(result.closeoutReport).toBeUndefined();
   const trace = await readResult(files.resultPath);
-  expect(trace.sessionMeta).toBeUndefined();
+  expect(trace.sessionMeta).toEqual({
+    claudeCode: { options: { settings: { attribution: { commit: "", pr: "" } } } },
+  });
   const script = join(layout.pawsRoot, "runs", "readonly-stop", "closeout-stop.ts");
   await expect(lstat(script)).rejects.toThrow();
 });

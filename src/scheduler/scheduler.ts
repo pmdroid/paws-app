@@ -45,6 +45,7 @@ import {
   saveQueuePositionsSteps,
   savePinnedSlotsSteps,
   type Db,
+  noRunnerOffersLine,
   RUNNER_FULL,
   type ConflictProneRule,
   type ItemHold,
@@ -858,6 +859,8 @@ async function admit(
       if (!verdicts) return "Waiting for placement scope to become available";
       if (!verdicts.runners.length)
         return `No runner can take ${verdicts.repository ?? "this item"}: no paired runners available to its owner`;
+      const unoffered = noRunnerOffersLine(verdicts);
+      if (unoffered) return unoffered;
       return `No runner can take ${verdicts.repository ?? "this item"}: ${verdicts.runners
         .map((runner) => `${runner.name}: ${runner.rejection ?? RUNNER_FULL}`)
         .join("; ")}`;

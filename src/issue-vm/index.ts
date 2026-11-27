@@ -28,3 +28,34 @@ export type { InstaBoxIssueVmCreate, InstaBoxIssueVms } from "./instabox";
 export { createStartQueue } from "./start-queue";
 export type { StartQueue, StartQueueOptions } from "./start-queue";
 export { ISSUE_VM_SLEEP_CHECK } from "./sleep-check";
+export {
+  createFakeIssueVmDriver,
+  createIssueVmLifecycle,
+  ISSUE_VM_DEADLINE_MS,
+  ISSUE_VM_RECONCILE_MS,
+  requestIssueVmAsleepSteps,
+  requestIssueVmAwakeSteps,
+} from "./lifecycle";
+export type {
+  FakeIssueVmDriver,
+  IssueVmCall,
+  IssueVmDriver,
+  IssueVmFound,
+  IssueVmLifecycle,
+  IssueVmLifecycleOptions,
+  IssueVmReadiness,
+  IssueVmRequest,
+} from "./lifecycle";
+export { createBoatIssueVmDriver } from "./boat";
+export { createInstaBoxIssueVmDriver } from "./instabox";
+export { createHostIssueVmDriver } from "./host";
+export type { HostIssueVmDriverOptions } from "./host";
+export { issueVmName } from "./driver";
+export type { IssueVmDriverOptions } from "./driver";
+export { createIssueVmReplacer } from "./replace";
+export type {
+  IssueVmReplacement,
+  IssueVmReplacementResult,
+  IssueVmReplacer,
+  IssueVmSession,
+} from "./replace";

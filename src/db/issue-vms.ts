@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gt, isNull, lt, max, notInArray, or } from "drizzle-orm";
+import { and, count, desc, eq, gt, inArray, isNull, lt, max, notInArray, or } from "drizzle-orm";
 import { type Q } from "./db";
 import { ulid } from "./ulid";
 
@@ -9,6 +9,7 @@ export const ISSUE_VM_STATES = [
   "creating",
   "awake",
   "asleep",
+  "unknown",
   "deleting",
   "deleted",
   "failed",
@@ -29,10 +30,17 @@ export type IssueVm = {
   createdAt: number;
   stateAt: number;
   deletedAt: number | null;
+  want: "awake" | "asleep";
+  operation: IssueVmOperation | null;
+  deadlineAt: number | null;
+  generation: number;
+  failure: string | null;
 };
 
+export type IssueVmOperation = "create" | "wake" | "sleep";
+
 export type NewIssueVm = {
-  id: string;
+  id?: string;
   workspaceId: string;
   itemId: string;
   memberUserId: string;
@@ -42,16 +50,18 @@ export type NewIssueVm = {
 };
 
 export function* insertIssueVmSteps(q: Q, input: NewIssueVm) {
-  const { now, hostRunnerId, ...row } = input;
+  const { now, hostRunnerId, id = ulid(now), ...row } = input;
   yield* q.exec(
     q.orm.insert(q.t.issueVm).values({
       ...row,
+      id,
       hostRunnerId: hostRunnerId ?? null,
       state: "creating",
       createdAt: now,
       stateAt: now,
     }),
   );
+  return id;
 }
 
 export function* issueVmByIdSteps(q: Q, id: string) {
@@ -79,6 +89,70 @@ export function* updateLiveIssueVmStateSteps(
   return rows.length;
 }
 
+export function* lockIssueVmSteps(q: Q, id: string) {
+  const { issueVm: v } = q.t;
+  const row = yield* q.one(q.orm.select().from(v).where(eq(v.id, id)).for("update"));
+  return (row ?? null) as IssueVm | null;
+}
+
+export function* latestItemIssueVmSteps(q: Q, itemId: string) {
+  const { issueVm: v } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select()
+      .from(v)
+      .where(eq(v.itemId, itemId))
+      .orderBy(desc(v.createdAt), desc(v.id))
+      .limit(1),
+  );
+  return (row ?? null) as IssueVm | null;
+}
+
+export type IssueVmMove = Partial<Pick<IssueVm, "state" | "operation" | "deadlineAt" | "failure">>;
+
+export function* moveIssueVmSteps(
+  q: Q,
+  input: { id: string; generation: number; set: IssueVmMove; now: number },
+) {
+  const { issueVm: v } = q.t;
+  const { state, ...rest } = input.set;
+  const rows = yield* q.all(
+    q.orm
+      .update(v)
+      .set({
+        ...rest,
+        ...(state === undefined ? {} : { state, stateAt: input.now }),
+        generation: input.generation + 1,
+      })
+      .where(
+        and(
+          eq(v.id, input.id),
+          eq(v.generation, input.generation),
+          notInArray(v.state, ENDED_STATES),
+        ),
+      )
+      .returning({ id: v.id }),
+  );
+  return rows.length > 0;
+}
+
+export function* setIssueVmWantSteps(q: Q, input: { id: string; want: IssueVm["want"] }) {
+  const { issueVm: v } = q.t;
+  yield* q.exec(q.orm.update(v).set({ want: input.want }).where(eq(v.id, input.id)));
+}
+
+export function* sweptIssueVmIdsSteps(q: Q) {
+  const { issueVm: v } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ id: v.id })
+      .from(v)
+      .where(notInArray(v.state, [...ENDED_STATES, "deleting"]))
+      .orderBy(v.id),
+  );
+  return rows.map((row) => row.id);
+}
+
 export function* deletingHostIssueVmIdsSteps(q: Q, hostRunnerId: string) {
   const { issueVm: v } = q.t;
   const rows = yield* q.all(
@@ -95,12 +169,114 @@ export function* liveHostIssueVmsSteps(q: Q, hostRunnerId: string) {
   const { issueVm: v } = q.t;
   const rows = yield* q.all(
     q.orm
-      .select({ id: v.id, state: v.state })
+      .select({ id: v.id, state: v.state, want: v.want })
       .from(v)
       .where(and(eq(v.hostRunnerId, hostRunnerId), notInArray(v.state, ENDED_STATES)))
       .orderBy(v.id),
   );
-  return rows.map((row) => ({ id: row.id, state: row.state as IssueVmState }));
+  return rows.map((row) => ({
+    id: row.id,
+    state: row.state as IssueVmState,
+    want: row.want as IssueVm["want"],
+  }));
+}
+
+export function* reportHostIssueVmUnitsSteps(
+  q: Q,
+  input: {
+    hostRunnerId: string;
+    running: string[];
+    refused?: { id: string; reason: string }[];
+    now: number;
+  },
+) {
+  const { issueVm: v } = q.t;
+  const live = and(eq(v.hostRunnerId, input.hostRunnerId), isNull(v.deletedAt));
+  yield* q.exec(
+    q.orm
+      .update(v)
+      .set({
+        unitRunning: input.running.length === 0 ? false : inArray(v.id, input.running),
+        unitSeenAt: input.now,
+      })
+      .where(live),
+  );
+  for (const { id, reason } of input.refused ?? [])
+    yield* q.exec(
+      q.orm
+        .update(v)
+        .set({ sleepRefusal: reason, sleepRefusedAt: input.now })
+        .where(and(live, eq(v.id, id))),
+    );
+}
+
+/** Host issue VMs still creating with no enrolled runner, and whether their member may still own one. */
+export function* hostIssueVmsAwaitingEnrollmentSteps(q: Q, hostRunnerId: string) {
+  const { issueVm: v, workspaceMember: m } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        id: v.id,
+        workspaceId: v.workspaceId,
+        memberUserId: v.memberUserId,
+        active: m.active,
+        revokedAt: m.revokedAt,
+      })
+      .from(v)
+      .leftJoin(m, and(eq(m.workspaceId, v.workspaceId), eq(m.userId, v.memberUserId)))
+      .where(
+        and(
+          eq(v.hostRunnerId, hostRunnerId),
+          eq(v.state, "creating"),
+          isNull(v.runnerId),
+          isNull(v.deletedAt),
+        ),
+      )
+      .orderBy(v.id),
+  );
+  return rows.map(({ active, revokedAt, ...row }) => ({
+    ...row,
+    memberUsable: active === 1 && revokedAt === null,
+  }));
+}
+
+/** Notes that Paws gave the VM a bootstrap token, so its host enrolls it and create waits for that. */
+export function* markIssueVmTokenMintedSteps(q: Q, input: { id: string; now: number }) {
+  const { issueVm: v } = q.t;
+  yield* q.exec(q.orm.update(v).set({ tokenMintedAt: input.now }).where(eq(v.id, input.id)));
+}
+
+export type HostIssueVmUnit = {
+  state: IssueVmState;
+  hostRunnerId: string | null;
+  runnerId: string | null;
+  deletedAt: number | null;
+  unitRunning: boolean | null;
+  unitSeenAt: number | null;
+  sleepRefusal: string | null;
+  sleepRefusedAt: number | null;
+  tokenMintedAt: number | null;
+};
+
+export function* hostIssueVmUnitSteps(q: Q, id: string) {
+  const { issueVm: v } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        state: v.state,
+        hostRunnerId: v.hostRunnerId,
+        runnerId: v.runnerId,
+        deletedAt: v.deletedAt,
+        unitRunning: v.unitRunning,
+        unitSeenAt: v.unitSeenAt,
+        sleepRefusal: v.sleepRefusal,
+        sleepRefusedAt: v.sleepRefusedAt,
+        tokenMintedAt: v.tokenMintedAt,
+      })
+      .from(v)
+      .where(eq(v.id, id)),
+  );
+  return (row ?? null) as HostIssueVmUnit | null;
 }
 
 export function* issueVmsInUseSteps(q: Q, input: { workspaceId: string; memberUserId?: string }) {
@@ -285,5 +461,32 @@ export function* saveIssueVmSpendSettingsSteps(
       .insert(q.t.issueVmSpend)
       .values({ workspaceId: input.workspaceId, monthlyLimitUsd: input.defaultLimitUsd, ...set })
       .onConflictDoUpdate({ target: q.t.issueVmSpend.workspaceId, set }),
+  );
+}
+
+export function* setIssueVmRunnerSteps(q: Q, input: { id: string; runnerId: string }) {
+  const { issueVm: v } = q.t;
+  yield* q.exec(q.orm.update(v).set({ runnerId: input.runnerId }).where(eq(v.id, input.id)));
+}
+
+export function* undeletedFailedIssueVmsSteps(q: Q) {
+  const { issueVm: v } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(v)
+      .where(and(eq(v.state, "failed"), isNull(v.deletedAt)))
+      .orderBy(v.id),
+  );
+  return rows as IssueVm[];
+}
+
+export function* markFailedIssueVmGoneSteps(q: Q, input: { id: string; now: number }) {
+  const { issueVm: v } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(v)
+      .set({ deletedAt: input.now })
+      .where(and(eq(v.id, input.id), eq(v.state, "failed"), isNull(v.deletedAt))),
   );
 }

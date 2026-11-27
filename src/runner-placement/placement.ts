@@ -4,6 +4,7 @@ import {
   enqueueJobSteps,
   commandAccountSteps,
   delegatedLinearUserIdSteps,
+  dropCatalogModelSteps,
   findingGroupingAdminsSteps,
   finishRunnerExecutionUsageSteps,
   getLinearSessionAccessSteps,
@@ -60,7 +61,7 @@ import {
   RUNNER_ONLINE_MS,
 } from "./eligible";
 import { BINDING_REASON_TEXT, classifyAgentFailure } from "./account-health";
-import { repositoryRejectionSteps, signInFitSteps } from "./fit";
+import { repositoryRejectionSteps, runnerOffersModelSteps, resolveRunnerAccountSteps } from "./fit";
 
 /** Receipt outcomes whose first `finished()` call returned `retryable: true`. */
 const UNUSABLE_PIN = new Set([
@@ -141,6 +142,11 @@ export function createRunnerPlacement(options: {
       input.role,
       input.profile,
     ]);
+  }
+  function* catalogSteps(q: Q, itemId: string | null | undefined, role?: string) {
+    if (role === "reviewer") return false;
+    const item = itemId ? yield* getWorkItemSteps(q, itemId) : null;
+    return item?.state !== "verifying" && item?.state !== "merge_queue";
   }
   function* policySteps(q: Q, id: string, agent?: string) {
     return JSON.stringify(yield* runnerPlacementPolicySteps(q, id, agent));
@@ -316,7 +322,7 @@ export function createRunnerPlacement(options: {
     )
       throw new PlacementRaceError("The command does not carry the sign-in placement chose");
     yield* lockAgentAccountSteps(q, account.accountId);
-    const fit = yield* signInFitSteps(
+    const fit = yield* resolveRunnerAccountSteps(
       q,
       { id: input.runnerId },
       workspaceId,
@@ -328,6 +334,7 @@ export function createRunnerPlacement(options: {
         exceptCommandId: input.commandId,
         bindingId: account.bindingId,
         role: input.role,
+        catalog: yield* catalogSteps(q, input.itemId, input.role),
       },
       options,
     );
@@ -340,6 +347,7 @@ export function createRunnerPlacement(options: {
     input.signal?.throwIfAborted();
     if (!input.profile) throw new Error("Runner agent profile is required");
     const current = yield* scopeSteps(q, input);
+    const catalog = yield* catalogSteps(q, input.itemId, input.role);
     let admissionRunner: string | null | undefined = null;
     if (!preview && input.purpose === "work" && input.role === "implementer" && input.itemId)
       for (const row of yield* schedulerRunnerSlotsSteps(q, now()))
@@ -394,7 +402,7 @@ export function createRunnerPlacement(options: {
     const agent = input.profile.agent as RunnerCodingAgent;
     const pinnedFit =
       pinnedReachable && input.role === "reviewer"
-        ? yield* signInFitSteps(
+        ? yield* resolveRunnerAccountSteps(
             q,
             { id: pinnedRunnerId! },
             current.workspace.id,
@@ -411,6 +419,9 @@ export function createRunnerPlacement(options: {
         : null;
     const pinnedOnline =
       pinnedReachable &&
+      (!catalog ||
+        !input.profile.model ||
+        (yield* runnerOffersModelSteps(q, pinnedRunnerId!, agent, input.profile.model))) &&
       !(
         pinnedFit &&
         "reason" in pinnedFit &&
@@ -478,7 +489,7 @@ export function createRunnerPlacement(options: {
         reject("excluded after failed attempt");
         continue;
       }
-      const fit = yield* signInFitSteps(
+      const fit = yield* resolveRunnerAccountSteps(
         q,
         runner,
         current.workspace.id,
@@ -488,6 +499,7 @@ export function createRunnerPlacement(options: {
           purpose: input.purpose,
           excludeBindingIds: input.excludeRunnerIds,
           role: input.role,
+          catalog,
           at,
         },
         options,
@@ -705,9 +717,20 @@ export function createRunnerPlacement(options: {
     const result = input.result;
     if ((!result && !input.failure) || (result && result.commandId !== input.commandId))
       throw new Error("Runner result is not bound to its command");
+    const selected = (yield* catalogSteps(q, usage.itemId, usage.role))
+      ? input.profile?.model
+      : undefined;
+    const missing = selected
+      ? [selected, selected.replace(/\[1m\]$/i, "")].find((id) =>
+          new RegExp(
+            `Agent does not advertise model ${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.?(?:\\s|$)`,
+          ).test(result?.errorMessage ?? ""),
+        )
+      : undefined;
     // A replay after a restart repeats the recorded decision without counting usage again.
     if (usage.endedAt !== null)
       return {
+        ...(missing ? { modelMissing: missing } : {}),
         retryable: RETRYABLE_OUTCOMES.has(usage.outcome ?? ""),
         ...(usage.outcome === "quota_exhausted"
           ? { usageLimit: { resetsAt: usage.resetsAt } }
@@ -797,7 +820,14 @@ export function createRunnerPlacement(options: {
       recheckAt
     )
       yield* setRunnerAgentCooldownSteps(q, input.runnerId, usage.agent, recheckAt);
+    if (missing && usage.agent)
+      yield* dropCatalogModelSteps(q, {
+        runnerId: input.runnerId,
+        agent: usage.agent,
+        model: missing,
+      });
     return {
+      ...(missing ? { modelMissing: missing } : {}),
       retryable: retryable || modelConflict,
       ...(quota?.state === "exhausted"
         ? {

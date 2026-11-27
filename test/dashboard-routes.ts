@@ -43,6 +43,7 @@ const WORKSPACE_PAGE_IDS = [
   "linear",
   "storage",
   "limits",
+  "splits",
   "issue-vms",
   "runner-vms",
   "brief",
@@ -269,6 +270,7 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     "findings",
     "hooks",
     "issue-vm",
+    "splits",
     "linear-comments",
     "vm-sizes",
     "merging",
@@ -322,9 +324,16 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   api("POST", "/api/settings/storage/check", "preserved", "src/settings", {
     sample: "/api/settings/storage/check",
   }),
+  api("GET PUT", "/api/settings/telemetry", "canonical", "src/settings", {
+    sample: "/api/settings/telemetry",
+  }),
+  api("POST", "/api/settings/telemetry/check", "canonical", "src/settings", {
+    sample: "/api/settings/telemetry/check",
+  }),
   api("GET", "/api/metrics", "preserved", "src/settings", {
     sample: "/api/metrics?names=http.request&step=hour",
   }),
+  api("GET", "/api/alerts", "canonical", "src/alerts", { sample: "/api/alerts", member: 403 }),
   api("GET", "/api/metrics/stages", "preserved", "src/settings", {
     sample: "/api/metrics/stages?repository=acme/app",
   }),
@@ -351,6 +360,9 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   }),
   api("GET", "/api/settings/storage-cleanup/history", "preserved", "src/settings", {
     sample: "/api/settings/storage-cleanup/history",
+  }),
+  api("POST", "/api/settings/probes/collect", "canonical", "src/probe-collector", {
+    sample: "/api/settings/probes/collect",
   }),
   api("*", "/api/retros/*", "delegated", "src/retros"),
   api("GET PUT", "/api/retros/settings", "delegated", "src/retros", {

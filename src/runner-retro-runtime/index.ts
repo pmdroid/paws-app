@@ -26,6 +26,7 @@ import {
   type RunnerRetroResult,
 } from "../runner-protocol";
 import { downloadRetroInput, RETRO_RESULT_FILE } from "../runner-worker";
+import { publishRunnerAnswer, readRunnerAnswer, RunnerAnswerSchema } from "../runner-answers";
 
 type Row = typeof retroExecution.$inferSelect;
 type Phase = Row["phase"];
@@ -171,8 +172,58 @@ export async function openRunnerRetroRuntime(options: {
   const reread = (id: string) =>
     q.select().from(retroExecution).where(eq(retroExecution.id, id)).get()!;
 
+  const relayed = new Set<string>();
+
+  async function relayTranscripts(row: Row, command: RunnerRetroCommand) {
+    if (!command.transcripts) return;
+    let raw: Buffer;
+    try {
+      raw = readRunnerResultFile(options.results, row.id, "events.jsonl");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    for (const line of raw.toString("utf8").split("\n")) {
+      if (!line.endsWith("}")) continue;
+      const event = JSON.parse(line) as Record<string, unknown>;
+      if (event.type !== "retro_transcript" || typeof event.requestId !== "string") continue;
+      const requestId = event.requestId;
+      if (relayed.has(requestId) || readRunnerAnswer(options.spool, row.id, requestId)) continue;
+      relayed.add(requestId);
+      let answer: string;
+      try {
+        const range = await options.daemon.retroInput({
+          commandId: command.id,
+          workspaceId: command.workspaceId,
+          retroId: command.retroId,
+          attempt: command.attempt,
+          kind: "transcript",
+          runId: event.runId as string,
+          generation: event.generation as number,
+          offset: event.offset as number,
+          limit: event.limit as number,
+        });
+        answer = JSON.stringify({ range });
+        if (answer.length > RunnerAnswerSchema.shape.answer.maxLength!)
+          answer = JSON.stringify({
+            error: "This range is too large to deliver. Ask for a smaller limit.",
+          });
+      } catch (error) {
+        journalCaught(error, "runner-retro-runtime.relayTranscripts", null);
+        answer = JSON.stringify({
+          error:
+            error instanceof RunnerRequestError && error.reason
+              ? error.reason
+              : "Paws could not serve the transcript.",
+        });
+      }
+      publishRunnerAnswer(options.spool, row.id, { requestId, answer });
+    }
+  }
+
   async function advance(row: Row) {
     const command = commandOf(row);
+    if (row.phase === "running") await relayTranscripts(row, command);
     if (row.phase === "preparing") {
       await settleTurn(row, command);
       row = reread(row.id);

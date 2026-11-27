@@ -70,6 +70,7 @@ const SUPERSEDES: Record<QuestionKind, "session" | "item" | null> = {
   "visual-review": null,
   "github-auth": null,
   "plan-approval": null,
+  split: null,
   link: null,
   "push-outage": null,
   "policy-outage": null,
@@ -133,7 +134,7 @@ export function* answerSteps(
   const open = yield* findOpenQuestionSteps(q, reply.sessionId);
   if (open === null) return { status: "unasked" };
   const answered = yield* answerQuestionSteps(q, open.id, {
-    answer: reply.body,
+    answer: selectedOption(open.options, reply.body) ?? reply.body,
     answeredBy: reply.answeredBy,
     eventKey: reply.deliveryId,
     ...(reply.now === undefined ? {} : { now: reply.now }),
@@ -146,6 +147,18 @@ export function* answerSteps(
     question: answered,
     next: yield* findOpenQuestionSteps(q, reply.sessionId),
   };
+}
+
+const ATTRIBUTION = /\n\s*\n[^\p{L}\n]*written by [^\n]*\bon [^\n]*behalf[^\p{L}\n]*$/iu;
+
+function selectedOption(options: readonly QuestionOption[], reply: string): string | null {
+  const text = reply.trim().replace(ATTRIBUTION, "").trim().toLowerCase();
+  for (const option of options) {
+    const value = typeof option === "string" ? option : option.value;
+    const label = typeof option === "string" ? option : (option.label ?? option.value);
+    if (text === label.trim().toLowerCase() || text === value.trim().toLowerCase()) return value;
+  }
+  return null;
 }
 
 type AnswerInput = { answer: string; answeredBy: string; eventKey?: string; now?: number };
@@ -189,6 +202,7 @@ const CRITERIA_QUESTIONS: Record<QuestionKind, boolean> = {
   "visual-review": true,
   "github-auth": false,
   "plan-approval": true,
+  split: true,
   link: false,
   "push-outage": false,
   "policy-outage": false,

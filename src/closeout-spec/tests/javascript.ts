@@ -63,9 +63,11 @@ async function plan(runner: JavaScriptRunner, context: TestContext): Promise<Tes
   const atHead = affectedTests(head, changed);
   reasons.push(...atBase.problems.map((problem) => `at base: ${problem}`));
   reasons.push(...atHead.problems.map((problem) => `at head: ${problem}`));
-  const selected = [...new Set([...atBase.affected, ...atHead.affected])]
-    .filter((path) => head.paths.has(path))
-    .sort();
+  const reaching = [...new Set([...atBase.affected, ...atHead.affected])].filter((path) =>
+    head.paths.has(path),
+  );
+  const opaque = atHead.opaque.filter((path) => !reaching.includes(path));
+  const selected = [...reaching, ...opaque].sort();
   const targets = [...new Set([...selected, ...always])].sort();
   if (selected.length === 0 && always.length === 0) {
     reasons.push("no test file reaches a changed path, and select.always is empty");
@@ -76,13 +78,17 @@ async function plan(runner: JavaScriptRunner, context: TestContext): Promise<Tes
   }
   if (reasons.length > 0 && (sharesEverything || item.select.over_max !== "direct"))
     return fullPlan(runner, context, reasons);
-  if (reasons.length > 0) return directPlan(runner, context, { changed, head, always, reasons });
+  if (reasons.length > 0)
+    return directPlan(runner, context, { changed, head, always, opaque, reasons });
   return {
     selection: {
       mode: "selected",
       targets,
       reasons: [
-        ...selected.map((path) => `${path} reaches a changed path`),
+        ...reaching.sort().map((path) => `${path} reaches a changed path`),
+        ...opaque.map(
+          (path) => `${path} has a non-literal dynamic import or require, so it always runs`,
+        ),
         ...always.map((path) => `${path} is in select.always`),
       ],
     },
@@ -97,21 +103,23 @@ function directPlan(
     changed: ReadonlySet<string>;
     head: Snapshot;
     always: readonly string[];
+    opaque: readonly string[];
     reasons: readonly string[];
   },
 ): TestPlan {
-  const { changed, head, always, reasons } = input;
+  const { changed, head, always, opaque, reasons } = input;
   const siblings = new Set([...changed].map(sourceStem));
   const importers = new Set(directTests(head, changed));
   const direct = testFilesOf(head).filter(
     (path) => !always.includes(path) && (importers.has(path) || siblings.has(testStem(path))),
   );
+  const opaqueOnly = opaque.filter((path) => !direct.includes(path) && !always.includes(path));
   if (direct.length === 0 && always.length === 0)
     return fullPlan(runner, context, [
       ...reasons,
       "the change has no direct test, and select.always is empty",
     ]);
-  const targets = [...direct, ...always].sort();
+  const targets = [...direct, ...always, ...opaqueOnly].sort();
   return {
     selection: {
       mode: "selected",
@@ -121,6 +129,9 @@ function directPlan(
         "running the change's direct tests and leaving the rest to CI",
         ...direct.map((path) => `${path} is a direct test of the change`),
         ...always.map((path) => `${path} is in select.always`),
+        ...opaqueOnly.map(
+          (path) => `${path} has a non-literal dynamic import or require, so it always runs`,
+        ),
       ],
     },
     ...runner.invocation(context, targets),

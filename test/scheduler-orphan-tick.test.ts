@@ -14,7 +14,7 @@ import { workspaceDispatchPg } from "./fake-workspace";
 import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
-const GRACE_MS = 5 * 60_000;
+const GRACE_MS = 10 * 60_000;
 
 test("one scheduler tick requeues an orphan and admits its resume in the same pass", async () => {
   const { db, close } = await tempStore();
@@ -61,6 +61,7 @@ test("one scheduler tick requeues an orphan and admits its resume in the same pa
       itemId: "orphan",
       freshSession: true,
       reason: "orphaned",
+      freshRun: true,
     });
     expect(
       await db.run((q) =>
@@ -75,7 +76,7 @@ test("one scheduler tick requeues an orphan and admits its resume in the same pa
     expect(ticks).toEqual([["next"]]);
     expect(
       (await listOutbox(db))
-        .filter((row) => row.idempotencyKey.startsWith("orphan:orphan:"))
+        .filter((row) => row.idempotencyKey.startsWith("runless:orphan:"))
         .map((row) => (row.payload as { body?: string }).body),
     ).toEqual(["Nothing was moving orphan forward, so Paws picked it up again."]);
 

@@ -17,6 +17,9 @@ export const RUNNER_RETRO_LIMITS = {
   digestBytes: 8 * 1024 * 1024,
   promptBytes: 8 * 1024 * 1024 + 64 * 1024,
   errorChars: 4_096,
+  transcriptReadBytes: 32 * 1024,
+  transcriptReads: 400,
+  transcriptBytes: 8 * 1024 * 1024,
 } as const;
 
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
@@ -61,6 +64,7 @@ export const RunnerRetroCommandSchema = z
     }),
     digest: RunnerRetroInputSchema,
     prompt: RunnerRetroInputSchema,
+    transcripts: z.literal(true).optional(),
   })
   .refine((command) => command.expiresAt > command.issuedAt)
   .refine(
@@ -90,6 +94,20 @@ export const RunnerRetroInputRequestSchema = z
   .refine((request) => request.offset + request.length <= RUNNER_RETRO_LIMITS.promptBytes);
 
 export type RunnerRetroInputRequest = z.infer<typeof RunnerRetroInputRequestSchema>;
+
+export const RunnerRetroTranscriptRequestSchema = z.strictObject({
+  commandId: id,
+  workspaceId: id,
+  retroId: id,
+  attempt,
+  kind: z.literal("transcript"),
+  runId: id,
+  generation: attempt,
+  offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  limit: z.number().int().min(1).max(RUNNER_RETRO_LIMITS.transcriptReadBytes),
+});
+
+export type RunnerRetroTranscriptRequest = z.infer<typeof RunnerRetroTranscriptRequestSchema>;
 
 export type RunnerRetroInputGrant = {
   commandId: string;
@@ -134,6 +152,32 @@ export function authorizeRetroInput(
   const parsed = RunnerRetroInputRequestSchema.safeParse(input.request);
   if (!parsed.success) return { ok: false, reason: "invalid_request" };
   const request = parsed.data;
+  const denied = grantDenial(grant, request, input);
+  if (denied !== null) return { ok: false, reason: denied };
+  const granted = grant.inputs[request.kind];
+  if (request.sha256 !== granted.sha256) return { ok: false, reason: "input_mismatch" };
+  if (request.offset + request.length > granted.sizeBytes)
+    return { ok: false, reason: "out_of_range" };
+  return { ok: true, request };
+}
+
+export function authorizeRetroTranscript(
+  grant: RunnerRetroInputGrant,
+  input: { runnerId: string; request: unknown; currentAttempt: number; now: number },
+):
+  | { ok: true; request: RunnerRetroTranscriptRequest }
+  | { ok: false; reason: RunnerRetroInputDenial } {
+  const parsed = RunnerRetroTranscriptRequestSchema.safeParse(input.request);
+  if (!parsed.success) return { ok: false, reason: "invalid_request" };
+  const denied = grantDenial(grant, parsed.data, input);
+  return denied === null ? { ok: true, request: parsed.data } : { ok: false, reason: denied };
+}
+
+function grantDenial(
+  grant: RunnerRetroInputGrant,
+  request: { commandId: string; workspaceId: string; retroId: string; attempt: number },
+  input: { runnerId: string; currentAttempt: number; now: number },
+): RunnerRetroInputDenial | null {
   if (
     input.runnerId !== grant.runnerId ||
     request.commandId !== grant.commandId ||
@@ -141,14 +185,10 @@ export function authorizeRetroInput(
     request.retroId !== grant.retroId ||
     request.attempt !== grant.attempt
   )
-    return { ok: false, reason: "identity_mismatch" };
-  if (grant.attempt !== input.currentAttempt) return { ok: false, reason: "stale_attempt" };
-  if (input.now >= grant.expiresAt) return { ok: false, reason: "expired" };
-  const granted = grant.inputs[request.kind];
-  if (request.sha256 !== granted.sha256) return { ok: false, reason: "input_mismatch" };
-  if (request.offset + request.length > granted.sizeBytes)
-    return { ok: false, reason: "out_of_range" };
-  return { ok: true, request };
+    return "identity_mismatch";
+  if (grant.attempt !== input.currentAttempt) return "stale_attempt";
+  if (input.now >= grant.expiresAt) return "expired";
+  return null;
 }
 
 export type RunnerRetroSlot = {

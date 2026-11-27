@@ -71,7 +71,7 @@ describe("[merge] parallel", () => {
     await lane(h, { "ENG-1": ["a.ts"], "ENG-2": ["b.ts"] });
     const reads = h.state.ciReads.length;
     expect(await h.pass("ENG-2")).toMatchObject({ kind: "wait", reason: "ahead" });
-    expect(h.state.ciReads.length).toBe(reads);
+    expect(h.state.ciReads.length).toBe(reads + 1);
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(await h.pass("ENG-2")).toEqual({ kind: "merged" });
     expect(merged(h)).toEqual([1, 2]);

@@ -284,6 +284,7 @@ test("Continue after the time limit stopped Closeout checks the same head again 
 
 test("Continue after the time limit stopped an agent without an accepted head resumes it", async () => {
   const { clock, db, item } = await askedBeforeAcceptance("running");
+  const runId = (await getWorkItem(db, item.id))!.currentRunId;
   expect((await reply(db, "Continue", clock.now())).status).toBe("answered");
   expect(await getWorkItem(db, item.id)).toMatchObject({
     state: "queued",
@@ -292,7 +293,7 @@ test("Continue after the time limit stopped an agent without an accepted head re
   });
   expect(
     (await listJobs(db)).find((job) => job.queue === "run.resume" && job.status === "pending"),
-  ).toMatchObject({ payload: { reason: "answer" } });
+  ).toMatchObject({ payload: { reason: "answer", runId, freshRun: true } });
 });
 
 test("Stop at the time limit without an accepted head names the branch with the work", async () => {

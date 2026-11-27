@@ -22,4 +22,6 @@ Read the failed check and its output before choosing an action. When review roun
 
 After verification accepts the candidate, the pull request enters the merge queue. Paws waits for required CI and reviews. If the target branch moves or a reviewer requests changes, Paws follows your [merge settings](configuration.md#merging) and may ask the agent to fix or recheck the work.
 
+To compare Rulecheck's CI receipts with Closeout without changing what Closeout decides, see [Rulecheck shadow comparison](rulecheck-shadow.md).
+
 Keep work left for later in tracker issues so it can be delegated and reviewed separately.

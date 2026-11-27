@@ -34,15 +34,21 @@ export function testFilesOf(snapshot: Snapshot): string[] {
   return [...snapshot.paths].filter((path) => TEST_FILE.test(path) && !SKIPPED.test(path)).sort();
 }
 
-export type GraphResult = { affected: string[]; problems: string[] };
+export type GraphResult = { affected: string[]; opaque: string[]; problems: string[] };
 
-type Graph = { tests: string[]; edges: Map<string, string[]>; problems: string[] };
+type Graph = {
+  tests: string[];
+  edges: Map<string, string[]>;
+  opaque: string[];
+  problems: string[];
+};
 
 function importGraph(snapshot: Snapshot, changed: ReadonlySet<string>): Graph {
   const config = repositoryConfig(snapshot);
   const tests = testFilesOf(snapshot);
   const edges = new Map<string, string[]>();
   const problems: string[] = [];
+  const opaque: string[] = [];
   const pending = [...tests];
   while (pending.length > 0) {
     const path = pending.pop()!;
@@ -60,7 +66,8 @@ function importGraph(snapshot: Snapshot, changed: ReadonlySet<string>): Graph {
       );
       continue;
     }
-    if (found.dynamic) problems.push(`${path} has a non-literal dynamic import or require`);
+    if (found.dynamic && TEST_FILE.test(path)) opaque.push(path);
+    else if (found.dynamic) problems.push(`${path} has a non-literal dynamic import or require`);
     for (const specifier of found.literal) {
       const target = resolve(path, specifier, snapshot, config, changed);
       if (target === null) continue;
@@ -72,7 +79,7 @@ function importGraph(snapshot: Snapshot, changed: ReadonlySet<string>): Graph {
       pending.push(target);
     }
   }
-  return { tests, edges, problems };
+  return { tests, edges, opaque, problems };
 }
 
 export function directTests(snapshot: Snapshot, changed: ReadonlySet<string>): string[] {
@@ -83,7 +90,7 @@ export function directTests(snapshot: Snapshot, changed: ReadonlySet<string>): s
 }
 
 export function affectedTests(snapshot: Snapshot, changed: ReadonlySet<string>): GraphResult {
-  const { tests, edges, problems } = importGraph(snapshot, changed);
+  const { tests, edges, opaque, problems } = importGraph(snapshot, changed);
   const users = new Map<string, string[]>();
   for (const [path, targets] of edges) {
     for (const target of targets) users.set(target, [...(users.get(target) ?? []), path]);
@@ -98,7 +105,11 @@ export function affectedTests(snapshot: Snapshot, changed: ReadonlySet<string>):
   }
   const shown = problems.slice(0, SHOWN_PROBLEMS);
   if (problems.length > SHOWN_PROBLEMS) shown.push(`and ${problems.length - SHOWN_PROBLEMS} more`);
-  return { affected: tests.filter((test) => reached.has(test)), problems: shown };
+  return {
+    affected: tests.filter((test) => reached.has(test) && !opaque.includes(test)),
+    opaque: opaque.sort(),
+    problems: shown,
+  };
 }
 
 function specifiers(path: string, text: string): { literal: Set<string>; dynamic: boolean } {

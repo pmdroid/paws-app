@@ -24,3 +24,4 @@ export * from "./issue-vms";
 export * from "./vm-hosts";
 export * from "./vm-provider-checks";
 export * from "./metrics";
+export * from "./splits";

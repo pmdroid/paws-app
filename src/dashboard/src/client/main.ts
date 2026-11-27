@@ -65,6 +65,7 @@ import { createTimeLimitSettings } from "./time-limit-settings";
 import { createNotebooks } from "./notebooks";
 import { createPerformance } from "./performance";
 import { createQueueSettings } from "./queue-settings";
+import { createSplitSettings } from "./split-settings";
 import { createAgentAccountSettings } from "./agent-account-settings";
 import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
@@ -105,6 +106,7 @@ const runnerVmKeys = createRunnerVmKeys();
 const doctorChecks = createDoctorChecks();
 const timeLimitSettings = createTimeLimitSettings();
 const queueSettings = createQueueSettings(() => settings.stale());
+const splitSettings = createSplitSettings();
 const notebooks = createNotebooks();
 const agentAccountSettings = createAgentAccountSettings();
 const sessionStart = createSessionStart(reload);
@@ -466,6 +468,7 @@ function paint(): void {
     issues: page.issues,
     issue: page.issue,
     overview: page.overview,
+    alerts: page.alerts,
     mergeQueue: page.mergeQueue,
     mergeLanes: { ...mergeSearch(), userId: signedInUserId() },
     questions: page.questions,
@@ -525,6 +528,8 @@ function paint(): void {
   if (accountsRoot) agentAccountSettings.mount(accountsRoot, currentEngine());
   const queueRoot = document.querySelector<HTMLElement>("#queue-settings");
   if (queueRoot) queueSettings.mount(queueRoot, currentEngine());
+  const splitRoot = document.querySelector<HTMLElement>("#split-settings");
+  if (splitRoot) splitSettings.mount(splitRoot, currentEngine());
   const notebooksRoot = document.querySelector<HTMLElement>("#notebooks-page");
   if (notebooksRoot) notebooks.mount(notebooksRoot, currentEngine());
   const storageRoot = document.querySelector<HTMLElement>("#storage-settings");

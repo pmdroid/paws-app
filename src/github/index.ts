@@ -135,6 +135,7 @@ export {
   GitHubTokenError,
   GitHubHttpError,
   NothingToPublishError,
+  ClosedPullAtHeadError,
   SquashServerError,
   AGENT_READ_PERMISSIONS,
   INSTALLATION_PERMISSIONS,

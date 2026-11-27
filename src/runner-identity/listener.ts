@@ -23,6 +23,17 @@ class RunnerAuthorizationError extends Error {
 
 class RunnerRevokedError extends RunnerAuthorizationError {}
 
+export type RunnerRequestLabels = { route: string; method: string; status_class: string };
+
+function runnerRouteName(path: string): string {
+  const parts = path.split("/");
+  if (parts[0] !== "" || parts[1] !== "v1" || !parts[2]) return "other";
+  return parts
+    .slice(0, 6)
+    .map((part, index) => (index === 3 || (index === 4 && parts[2] === "skills") ? ":id" : part))
+    .join("/");
+}
+
 export async function startRunnerListener(options: {
   tls: RunnerTls;
   hostname?: string;
@@ -34,6 +45,7 @@ export async function startRunnerListener(options: {
   log?: (line: string) => void;
   /** Extra text for the log line of a logged response. */
   takeLogDetail?: (response: Response) => string;
+  observe?: (labels: RunnerRequestLabels, elapsedMs: number) => void;
 }): Promise<RunnerListener> {
   const now = options.now ?? Date.now;
   const log = options.log ?? console.warn;
@@ -174,6 +186,14 @@ export async function startRunnerListener(options: {
       else reject(response, 503);
     } finally {
       const elapsed = now() - started;
+      options.observe?.(
+        {
+          route: runnerRouteName(request.url.split("?", 1)[0]!),
+          method: request.method,
+          status_class: `${Math.floor(response.statusCode / 100)}xx`,
+        },
+        elapsed,
+      );
       if (response.statusCode >= 500 || response.statusCode === 403 || elapsed >= 5_000)
         log(
           `Runner request ${request.method} ${request.url.split("?", 1)[0]} answered ${response.statusCode} in ${elapsed} ms${logDetail}`,

@@ -9,6 +9,8 @@ enroll=${PAWS_ISSUE_VM_ENROLL:-/var/lib/paws-runner/issue-vm-enroll}
 config=${PAWS_ISSUE_VM_CONFIG:-/etc/paws-runner/config.json}
 proc=${PAWS_ISSUE_VM_PROC:-/proc}
 network=${PAWS_ISSUE_VM_NETWORK:-/opt/paws-runner/current/deploy/linux/issue-vm-network.py}
+checks=${PAWS_ISSUE_VM_CHECKS:-/run/paws-issue-vm-sleep-check}
+check_port=7101
 user=paws-issue-vm
 id_pattern='^[0-7][0-9A-HJKMNP-TV-Z]{25}$'
 live='active|activating|deactivating|reloading|refreshing'
@@ -106,7 +108,7 @@ prepare() {
   mkdir -p "$dir"
   chown "$user:$user" "$dir"
   chmod 0700 "$dir"
-  rm -f "$dir/api.sock"
+  rm -f "$dir/api.sock" "$dir/vsock.sock"
   write_seed
   chown "$user" "$(readlink -f "$disk")"
   systemctl start "paws-issue-vm-network@$slot.service"
@@ -117,12 +119,13 @@ run() {
     --disk "path=$disk,image_type=raw" "path=$seed.img,readonly=on,image_type=raw" \
     --cpus "boot=$cpus" --memory "size=${memory}G" \
     --net "tap=$tap,ip=$host_ip,mask=255.255.255.0,mac=52:54:00:c7:00:$(printf %02x "$slot")" \
+    --vsock "cid=3,socket=$dir/vsock.sock" \
     --serial "file=$dir/serial.log" --console off --api-socket "path=$dir/api.sock"
 }
 
 clean() {
   if [[ -z $(others "$id-*") ]]; then
-    rm -f "$dir/api.sock"
+    rm -f "$dir/api.sock" "$dir/vsock.sock"
     rm -rf "$seed" "$seed.img"
     if [[ -e $disk ]]; then chown root "$(readlink -f "$disk")"; fi
   fi
@@ -144,13 +147,64 @@ unseed() {
   done
 }
 
+ask_guest() {
+  python3 -I -B -c '
+import os, socket, sys
+
+try:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(50)
+        os.chdir(os.path.dirname(sys.argv[1]))
+        s.connect(os.path.basename(sys.argv[1]))
+        s.sendall(b"CONNECT %d\n" % int(sys.argv[2]))
+        data = b""
+        while len(data) < 65536:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+except OSError as error:
+    sys.exit("The VM did not answer the sign-in check: %s" % (error.strerror or error))
+head, _, rest = data.partition(b"\n")
+if not head.startswith(b"OK "):
+    sys.exit("The VM did not answer the sign-in check")
+lines = rest.decode("utf-8", "replace").strip().split("\n")
+last = lines.pop() if lines[-1].startswith("paws-sleep-check-exit=") else ""
+said = " ".join(line.strip() for line in lines if line.strip())
+if not last:
+    sys.exit(said or "The sign-in check in the VM did not finish")
+if said:
+    print(said)
+sys.exit(0 if last == "paws-sleep-check-exit=0" else 1)
+' "$dir/vsock.sock" "$check_port"
+}
+
+sleep_check() {
+  local out=$checks/$instance.out text code=0
+  mkdir -p "$checks"
+  rm -f "$out"
+  if [[ -z $(systemctl list-units --all --plain --no-legend --no-pager "paws-issue-vm@$instance.service" |
+    awk -v live="^($live)\$" '$3 ~ live { print $1 }') ]]; then
+    text="Issue VM $instance is not running"
+    code=1
+  else
+    text=$(ask_guest 2>&1) || code=$?
+  fi
+  if [[ $code -ne 0 && -z $text ]]; then text="The sign-in check in the VM failed"; fi
+  printf '%s\n' "${text:0:300}" >"$out.tmp"
+  chmod 0644 "$out.tmp"
+  mv -f "$out.tmp" "$out"
+  if [[ -n $text ]]; then printf '%s\n' "$text" >&2; fi
+  return "$code"
+}
+
 case "${1:-}" in
-prepare | run | unseed | clean)
+prepare | run | unseed | clean | sleep-check)
   parse "${2:-}"
-  "$1"
+  "${1/-/_}"
   ;;
 *)
-  printf '%s\n' "Usage: vm.sh prepare|run|unseed|clean ID-SLOT-VCPUS-MEMORY_GB" >&2
+  printf '%s\n' "Usage: vm.sh prepare|run|unseed|clean|sleep-check ID-SLOT-VCPUS-MEMORY_GB" >&2
   exit 2
   ;;
 esac
