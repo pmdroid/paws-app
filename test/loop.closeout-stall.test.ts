@@ -979,9 +979,10 @@ for (const state of ["verifying", "merge_queue"] as const)
       }
     }, 90_000);
 
-for (const idle of [true, false])
-  test(`a reverify ${idle ? "frees a taken-over recheck idle for two minutes" : "keeps waiting on a recheck taken over just now"}`, async () => {
+for (const owner of ["acme-b", "acme-a"])
+  test(`a reverify ${owner === "acme-b" ? "reattaches to a recheck this instance took over" : "waits on a recheck another instance runs"}`, async () => {
     const f = await verifyingWithHeldGate({ remote: true, instanceId: "acme-b" });
+    const mine = owner === "acme-b";
     try {
       f.release();
       await f.turn;
@@ -992,12 +993,7 @@ for (const idle of [true, false])
         state: "verifying",
         checkpoint: { ...(await checkpointOf(f.db, item.id)), phase: "verifying" },
       });
-      await setRun(f.db, runId, {
-        status: "active",
-        kind: "recheck",
-        ownerInstance: "acme-b",
-        updatedAt: Date.now() - (idle ? 120_001 : 0),
-      });
+      await setRun(f.db, runId, { status: "active", kind: "recheck", ownerInstance: owner });
       await setRunnerWork(f.db, runId, { endedAt: null, leaseUntil: Date.now() + 60_000 });
       await runnerEvent(f.db, runId, Date.now());
       const jobId = await enqueueJob(f.db, {
@@ -1009,14 +1005,17 @@ for (const idle of [true, false])
       await f.tickReverify();
 
       expect((await listJobs(f.db)).find((job) => job.id === jobId)?.status).toBe(
-        idle ? "done" : "pending",
+        mine ? "done" : "pending",
       );
-      expect((await getRun(f.db, runId))?.status).toBe(idle ? "lost" : "active");
-      expect(await runnerWorkOpen(f.db, runId)).toBe(!idle);
-      expect(f.gate.runs).toHaveLength(idle ? 2 : 1);
+      expect(f.gate.runs).toHaveLength(mine ? 2 : 1);
+      expect(await getWorkItem(f.db, item.id)).toMatchObject({
+        state: mine ? "merge_queue" : "verifying",
+        currentRunId: runId,
+      });
+      expect((await getRun(f.db, runId))?.status).toBe(mine ? "ended" : "active");
       expect(
-        f.lines().filter((line) => line.startsWith(`run ${runId} released item=${item.id}`)),
-      ).toHaveLength(idle ? 1 : 0);
+        f.lines().filter((line) => line === `run ${runId} reattached item=${item.id}`),
+      ).toHaveLength(mine ? 1 : 0);
     } finally {
       f.release();
       await f.turn;

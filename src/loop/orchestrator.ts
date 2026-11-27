@@ -4911,6 +4911,7 @@ export class Orchestrator {
         this.verificationHolderSteps(q, current, false);
       const ownerInstance = this.options.instanceId ?? null;
       const journalLine = this.options.journal ?? journal;
+      const reattachable = (q: Q, current: WorkItemRecord) => this.reattachableSteps(q, current);
       item = await this.store.transaction(function* (q) {
         const current = yield* getWorkItemSteps(q, item.id);
         if (
@@ -4933,7 +4934,9 @@ export class Orchestrator {
             if (recheck || current.state !== "verifying") throw new VerificationHeld();
             return current;
           }
-          if (yield* runnerWorkHasResultSteps(q, prior.id)) {
+          const reattach = yield* reattachable(q, current);
+          if (reattach) journalLine(`run ${prior.id} reattached item=${current.id}`);
+          if (reattach || (yield* runnerWorkHasResultSteps(q, prior.id))) {
             // Keep the original run so the backend can import its delivered result.
             if (current.state === "merge_queue")
               yield* applyWorkItemEventSteps(q, current.id, "reverify_requested");
@@ -4944,7 +4947,6 @@ export class Orchestrator {
           // An abandoned run did not finish cleanly. Preserve that in its history.
           yield* closeActiveRunSteps(q, prior.id, now(), "lost");
           yield* releaseRunCapacitySteps(q, prior.id, now());
-          journalLine(`run ${prior.id} released item=${current.id}: no live process holds it`);
         } else if (prior.status !== "ended" && prior.status !== "lost")
           throw new Error("Prior verification run is still provisioning");
         if (current.state === "merge_queue")
@@ -6419,20 +6421,29 @@ export class Orchestrator {
         this.now() - 2 * 60_000,
       )) &&
       !(yield* runnerWorkHasResultSteps(q, item.currentRunId)) &&
-      !(yield* this.idleSinceTakeoverSteps(q, item.currentRunId))
+      !(yield* this.ownedHereSteps(q, item.currentRunId))
     )
       return "runner";
     return null;
   }
 
-  private *idleSinceTakeoverSteps(q: Q, runId: string): Steps<boolean> {
+  private *ownedHereSteps(q: Q, runId: string): Steps<boolean> {
     const instanceId = this.options.instanceId;
-    if (instanceId === undefined || (yield* runOwnerSteps(q, runId)) !== instanceId) return false;
-    const run = yield* getRunSteps(q, runId);
+    return instanceId !== undefined && (yield* runOwnerSteps(q, runId)) === instanceId;
+  }
+
+  private *reattachableSteps(q: Q, item: WorkItemRecord): Steps<boolean> {
+    const runId = item.currentRunId;
     return (
-      run !== null &&
-      VERIFICATION_RUN_KINDS.has(run.kind) &&
-      this.now() - run.updatedAt >= VERIFICATION_TAKEOVER_IDLE_MS
+      runId !== null &&
+      (yield* this.ownedHereSteps(q, runId)) &&
+      (yield* runnerHoldsRunWorkSteps(
+        q,
+        runId,
+        this.now(),
+        item.cancelRequested,
+        this.now() - 2 * 60_000,
+      ))
     );
   }
 
@@ -13058,8 +13069,6 @@ class VerificationHeld extends Error {
 
 const VERIFICATION_OWNER_WAIT_MS = 20 * 60_000;
 const VERIFICATION_OWNER_POLL_MS = 5_000;
-const VERIFICATION_TAKEOVER_IDLE_MS = 2 * 60_000;
-const VERIFICATION_RUN_KINDS: ReadonlySet<string> = new Set(["recheck", "review"]);
 
 const SLOTS_BUSY_RETRY_MS = 60_000;
 

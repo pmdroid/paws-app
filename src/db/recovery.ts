@@ -26,7 +26,6 @@ import type { WorkItemRecord } from "./items";
 import {
   runnerHoldsRunWorkSteps,
   runnerLeaseCutoff,
-  runnerWorkHasResultSteps,
   shiftRunnerLeasesForDowntimeSteps,
 } from "./runner-lease";
 import { mergeCallInFlightSteps } from "./remote-merges";
@@ -131,16 +130,13 @@ function* recoverItemsSteps(
   let resumes = 0;
   const nextResumeAt = () => now + STARTUP_RESUME_SPACING_MS * resumes++;
   for (const item of items) {
-    let interrupted = false;
     if (instanceId !== undefined && item.currentRunId !== null) {
       const from = yield* runOwnerSteps(q, item.currentRunId);
-      yield* claimRunSteps(q, item.currentRunId, instanceId, from === instanceId ? undefined : now);
+      yield* claimRunSteps(q, item.currentRunId, instanceId);
       if (from !== null)
         journal(
           `run ${item.currentRunId} taken over item=${item.id} from=${from} by=${instanceId}`,
         );
-      if (from !== null && from !== instanceId)
-        interrupted = yield* releaseInterruptedVerificationSteps(q, item, now);
     }
     const restart = yield* ensureRestartQuestionSteps(q, item, now);
     if (restart.armed) wake.armed = true;
@@ -151,7 +147,7 @@ function* recoverItemsSteps(
     if (yield* hasParkedCapacityWaitSteps(q, item)) continue;
     if (yield* hasPendingAnswerResumeSteps(q, item.id)) continue;
     if (yield* hasPendingTransientRetrySteps(q, item)) continue;
-    const holds = interrupted || (yield* runnerHoldsWorkSteps(q, item, now));
+    const holds = yield* runnerHoldsWorkSteps(q, item, now);
     const decision = decideStartup({
       itemState: item.state,
       recoveryAttempts: item.recoveryAttempts,
@@ -194,22 +190,6 @@ function* recoverItemsSteps(
     if (inserted) wake.armed = true;
   }
   return decisions;
-}
-
-function* releaseInterruptedVerificationSteps(q: Q, item: WorkItemRecord, now: number) {
-  const runId = item.currentRunId;
-  if (
-    runId === null ||
-    !keepsVerification(item) ||
-    !(yield* runnerHoldsWorkSteps(q, item, now)) ||
-    !(yield* runActiveSteps(q, item)) ||
-    (yield* runnerWorkHasResultSteps(q, runId))
-  )
-    return false;
-  yield* markRunSteps(q, runId, "lost", now);
-  yield* releaseRunCapacitySteps(q, runId, now);
-  journal(`run ${runId} interrupted by a restart: released item=${item.id}`);
-  return true;
 }
 
 /** A capacity wait already has its next attempt; restarting neither spends recovery nor adds a job. */

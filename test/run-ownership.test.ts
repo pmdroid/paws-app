@@ -19,11 +19,8 @@ import {
   takeOverGoneRuns,
   type Db,
 } from "../src/db";
-import { eq } from "drizzle-orm";
 import { tempHome } from "./helpers";
 import { pgliteServer, tempStore } from "./pglite";
-import { seed } from "./pglite-fixtures";
-import { seedRunnerLease } from "./runner-lease-seed";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const checkpoint: Checkpoint = { phase: "running", wipCommit: "wip", turn: 1, baseSha: "base" };
@@ -197,54 +194,6 @@ describe("run ownership", () => {
       await shared.close();
     }
   });
-
-  for (const ownerAlive of [false, true])
-    test(`a recheck ${ownerAlive ? "its live owner still runs keeps its ownership" : "cut off by a restart is ended at takeover and re-verifies at once"}`, async () => {
-      const shared = await sharedStore();
-      const db = shared.open();
-      const now = Date.now();
-      try {
-        const owner = await registerInstance(db, {
-          role: "all",
-          host: ownerAlive ? "acme-a" : "acme",
-          version: null,
-          now,
-          pid: ownerAlive ? process.pid : Bun.spawnSync(["true"]).pid,
-        });
-        const runId = await runningItem(db, "acme-1", owner.id, 0);
-        const verifying = { ...checkpoint, phase: "verifying" as const };
-        await seed(
-          db,
-          (q) => q.orm.update(q.t.run).set({ kind: "recheck" }).where(eq(q.t.run.id, runId)),
-          (q) =>
-            q.orm
-              .update(q.t.workItem)
-              .set({ state: "verifying", checkpoint: verifying })
-              .where(eq(q.t.workItem.id, "acme-1")),
-        );
-        await seedRunnerLease(db, runId);
-        const restarted = await registerInstance(db, {
-          role: "all",
-          host: "acme",
-          version: null,
-          now,
-          pid: process.pid,
-        });
-        expect(await recoverOnStartup(db, now, undefined, restarted.id)).toEqual(
-          ownerAlive ? [] : [{ type: "reverify" }],
-        );
-        expect((await getRun(db, runId))?.status).toBe(ownerAlive ? "active" : "lost");
-        expect(await runOwner(db, runId)).toBe(ownerAlive ? owner.id : restarted.id);
-        const reverify = (await listJobs(db)).filter((job) => job.queue === JOB_KIND.reverify);
-        expect(reverify.map((job) => job.runAt <= now)).toEqual(ownerAlive ? [] : [true]);
-        expect(await recoverOnStartup(db, now + 1, undefined, restarted.id)).toEqual([]);
-        expect((await listJobs(db)).filter((job) => job.queue === JOB_KIND.reverify)).toHaveLength(
-          reverify.length,
-        );
-      } finally {
-        await shared.close();
-      }
-    });
 
   test("a clean stop releases only the stopping instance's runs", async () => {
     const shared = await sharedStore();

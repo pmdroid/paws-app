@@ -104,21 +104,9 @@ export async function runOwner(store: Db, runId: string): Promise<string | null>
   return store.run((q) => runOwnerSteps(q, runId));
 }
 
-export function* claimRunSteps(
-  q: Q,
-  runId: string,
-  ownerInstance: string,
-  takenOverAt?: number,
-): Steps<void> {
+export function* claimRunSteps(q: Q, runId: string, ownerInstance: string): Steps<void> {
   const { run: runTable } = q.t;
-  yield* q.exec(
-    q.orm
-      .update(runTable)
-      .set(
-        takenOverAt === undefined ? { ownerInstance } : { ownerInstance, updatedAt: takenOverAt },
-      )
-      .where(eq(runTable.id, runId)),
-  );
+  yield* q.exec(q.orm.update(runTable).set({ ownerInstance }).where(eq(runTable.id, runId)));
 }
 
 export async function claimRun(store: Db, runId: string, ownerInstance: string): Promise<void> {
