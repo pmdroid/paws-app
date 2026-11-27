@@ -2,12 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { systemClock, WORK_ITEM_STATES } from "../../src/core";
-import {
-  loadRuntime,
-  useMemorySettings,
-  writeAgentSettings,
-  type AgentSettings,
-} from "../../src/config";
+import { useMemorySettings, writeAgentSettings, type AgentSettings } from "../../src/config";
 import {
   JobLoop,
   OutboxDispatcher,
@@ -449,12 +444,6 @@ try {
         pageText.includes("<script") &&
         webhook.status === 404,
       { health, source, pageStatus: page.status, webhookStatus: webhook.status },
-    );
-    const trackerKind = loadRuntime({ PAWS_HOME: process.env.PAWS_HOME }).trackerKind;
-    observe(
-      "fresh instance configures Linear issue tracking",
-      trackerKind === "linear",
-      trackerKind,
     );
     observe("documented root URL opens the dashboard", rootResponse.ok, rootResponse.status);
     observe(

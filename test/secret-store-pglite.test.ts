@@ -17,6 +17,7 @@ import { realProbe } from "../src/doctor";
 import { configureRunnerTranscriptStorage } from "../src/runner-transcript-config";
 import { setJournalSink } from "../src/journal";
 import { describePglite, type PgliteTestDb } from "./pglite-fixtures";
+import { tempStore } from "./pglite";
 
 const open: PgliteTestDb[] = [];
 const cleanup: (() => unknown)[] = [];
@@ -66,7 +67,9 @@ test("doctor reports undecryptable secret files before it loads the runtime", as
   withSecretKey(randomBytes(32).toString("base64"));
   writeSecretFile(join(home, "secrets", "github-webhook"), "whsec");
   withSecretKey(randomBytes(32).toString("base64"));
-  await expect(realProbe({ PAWS_HOME: home })).rejects.toThrow(
+  const store = await tempStore();
+  cleanup.push(() => store.close());
+  await expect(realProbe({ PAWS_HOME: home }, store.db)).rejects.toThrow(
     `missing secrets: PAWS_SECRET_KEY does not decrypt github-webhook in files in ${join(home, "secrets")}`,
   );
 });

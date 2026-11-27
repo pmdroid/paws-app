@@ -132,7 +132,6 @@ describe("config", () => {
     expect(runtime.repos).toEqual([]);
     expect(runtime.publicUrl).toBeNull();
     expect(runtime.webhooks).toBe(false);
-    expect(runtime.githubAuth).toBe("app");
     expect(runtime.maxAwakeMs).toBe(DEFAULT_MAX_AWAKE_MS);
 
     const set = loadRuntime({

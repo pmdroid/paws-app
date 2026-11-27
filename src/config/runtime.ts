@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_MAX_AWAKE_MS } from "../core";
 import { loadEnv, type EnvSource, type PawsEnv } from "./env";
-import { emptyConfigFile, loadSettings, type GitHubConfigAuth, type PawsConfigFile } from "./file";
+import { emptyConfigFile, loadSettings, type PawsConfigFile } from "./file";
 import { pawsPaths } from "./paths";
 import { loadGitHubAppCredentials } from "./github-app";
 import { checkDatabaseUrl } from "./database";
@@ -33,8 +33,6 @@ export type RuntimeConfig = {
   linearClientId: string | null;
   linearClientSecret: string | null;
   linearOrganizationId: string | null;
-  githubAuth: GitHubConfigAuth;
-  trackerKind: "linear";
   /** `PAWS_GITHUB_REPOS`. Workspaces choose theirs in the dashboard. */
   repos: string[];
   publicUrl: string | null;
@@ -105,7 +103,6 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     }
   }
   const secrets = readLinearClient(env.home);
-  const githubAuth: GitHubConfigAuth = "app";
 
   return {
     env,
@@ -121,8 +118,6 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     linearClientId: optional(source, "LINEAR_CLIENT_ID") ?? secrets.clientId,
     linearClientSecret: optional(source, "LINEAR_CLIENT_SECRET") ?? secrets.clientSecret,
     linearOrganizationId: optional(source, "LINEAR_ORGANIZATION_ID"),
-    githubAuth,
-    trackerKind: "linear",
     repos,
     publicUrl: optional(source, "PAWS_PUBLIC_URL"),
     maxAwakeMs: maxAwakeMsFrom(source),
