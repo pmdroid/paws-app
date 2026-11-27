@@ -61,6 +61,7 @@ import { renderMergeQueue, type LaneFilter } from "./merge-queue";
 import { renderIntake } from "./intake";
 import { renderSetupChecklist } from "./setup-checklist";
 import { renderPushOutages } from "./push-outage";
+import { renderHealthAlerts, type HealthAlert } from "./health-alerts";
 import { hoursLabel, itemAge, mergedTimesSection, stateTimeBar } from "./state-times";
 import { doingLabel, doingTimeLine, issueTimeLine, itemPill, itemTime } from "./doing";
 import { journey, journeyStepper } from "./journey";
@@ -75,6 +76,7 @@ export interface RenderModel {
   route: Route;
   phase: "loading" | "ready" | "error";
   overview?: OverviewResponse | null;
+  alerts?: readonly HealthAlert[];
   mergeQueue?: MergeQueueResponse | null;
   mergeLanes?: { filter: LaneFilter; userId: string | null; query?: string };
   issues?: IssueListResponse | null;
@@ -139,7 +141,7 @@ export function render(model: RenderModel): Rendered {
                     ? renderEvidence(model)
                     : model.route.view === "overview"
                       ? model.overview
-                        ? viewOverview(model.overview)
+                        ? viewOverview(model.overview, model.alerts)
                         : renderPending(model)
                       : model.route.view === "mergeQueue"
                         ? viewMergeQueue(model)
@@ -370,8 +372,8 @@ function waitingCell(item: OverviewIssue, now: number): string {
   return line ? `<span data-item-time>${esc(line)}</span>` : "—";
 }
 
-function viewOverview(overview: OverviewResponse): string {
-  const warnings = `${renderSetupChecklist(overview.setup)}${renderPushOutages(overview)}`;
+function viewOverview(overview: OverviewResponse, alerts?: readonly HealthAlert[]): string {
+  const warnings = `${renderHealthAlerts(alerts, overview.generatedAt)}${renderSetupChecklist(overview.setup)}${renderPushOutages(overview)}`;
   const intake = renderIntake(overview);
   if (!overview.issues.length && !overview.questions.length)
     return `${pageHeading("overview")}${warnings}${intake}<div class="empty">${esc(EMPTY_ISSUES)}<p class="muted">${esc(EMPTY_PAGES)}</p></div>`;

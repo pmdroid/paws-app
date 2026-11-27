@@ -25,13 +25,16 @@ import {
   type QuestionListResponse,
 } from "../contract";
 import { journalCaught } from "../journal";
+import { readHealthAlerts, type HealthAlert } from "./health-alerts";
 import { createResourceReader, type ResourceReader } from "./resource-reader";
 import { routeResource, type Route } from "./route";
+import { settingsAreEditable } from "./settings-pages";
 
 export interface PageResources {
   issues: IssueListResponse | null;
   issue: IssueDetailResponse | null;
   overview: OverviewResponse | null;
+  alerts: HealthAlert[];
   mergeQueue: MergeQueueResponse | null;
   questions: QuestionListResponse | null;
   question: QuestionDetailResponse | null;
@@ -47,6 +50,7 @@ export interface PageLoaderOptions {
   reader: () => string;
   signedIn: (response: Response) => Promise<boolean>;
   resources?: ResourceReader;
+  alerts?: () => Promise<HealthAlert[]>;
 }
 
 function parseList(input: unknown) {
@@ -91,10 +95,13 @@ function parseDetail(input: unknown) {
 
 export function createPageLoader(options: PageLoaderOptions) {
   const resources = options.resources ?? createResourceReader();
+  const alerts =
+    options.alerts ?? (() => (settingsAreEditable() ? readHealthAlerts() : Promise.resolve([])));
   const data: PageResources = {
     issues: null,
     issue: null,
     overview: null,
+    alerts: [],
     mergeQueue: null,
     questions: null,
     question: null,
@@ -139,9 +146,15 @@ export function createPageLoader(options: PageLoaderOptions) {
         });
       }
       if (resource === "overview") {
-        const read = await resources.read(OVERVIEW_API_PATH, reader, parseOverview);
+        const [read, active] = await Promise.all([
+          resources.read(OVERVIEW_API_PATH, reader, parseOverview),
+          alerts(),
+        ]);
         if (read.kind === "response") return await refused(read.response);
-        return apply(() => (data.overview = read.body));
+        return apply(() => {
+          data.overview = read.body;
+          data.alerts = active;
+        });
       }
       if (resource === "mergeQueue") {
         const read = await resources.read(MERGE_QUEUE_API_PATH, reader, parseMergeQueue);
@@ -214,6 +227,7 @@ export function createPageLoader(options: PageLoaderOptions) {
       data.issues = null;
       data.issue = null;
       data.overview = null;
+      data.alerts = [];
       data.mergeQueue = null;
       data.questions = null;
       data.question = null;
