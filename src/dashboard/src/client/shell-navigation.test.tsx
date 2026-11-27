@@ -84,10 +84,12 @@ test("admins and members see the Settings submenu on a Settings page, marking th
       current: page.id === "agent-accounts" ? "page" : null,
       group: "Settings pages",
     }));
-    const member = [
-      ["Issue splits", "splits"],
-      ["Issue VMs", "issue-vms"],
-    ].map(([text, id]) => ({
+    const member = (
+      [
+        ["Issue splits", "splits"],
+        ["Issue VMs", "issue-vms"],
+      ] as const
+    ).map(([text, id]) => ({
       text,
       href: `/workspace/${id}`,
       current: null,
