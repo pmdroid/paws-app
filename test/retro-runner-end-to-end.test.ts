@@ -14,7 +14,7 @@ import {
   readRunnerJobInputs,
 } from "../src/runner-execution";
 import {
-  RETRO_TRANSCRIPT_TOOLS_RUNNER_VERSION,
+  MINIMUM_RUNNER_VERSION,
   verifyRunnerRetroCommand,
   type RunnerAccount,
   type RunnerRetroCommand,
@@ -474,7 +474,7 @@ test.skipIf(!nonRootLinux)(
     roots.push(root);
     const account = (await addRunner(w.db, {
       id: "R1",
-      version: RETRO_TRANSCRIPT_TOOLS_RUNNER_VERSION.join("."),
+      version: MINIMUM_RUNNER_VERSION.join("."),
     }))!;
     await seen(w.db, w.clock.now);
     const reader = { download: async () => new TextEncoder().encode(transcript) };

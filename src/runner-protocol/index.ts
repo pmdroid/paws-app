@@ -189,7 +189,6 @@ export {
 
 export {
   MINIMUM_RUNNER_VERSION,
-  RETRO_TRANSCRIPT_TOOLS_RUNNER_VERSION,
   REVIEW_COMMAND_OAUTH_RUNNER_VERSION,
   type RunnerVersion,
 } from "./versions";

@@ -6,5 +6,4 @@
 export type RunnerVersion = readonly [major: number, minor: number, patch: number];
 
 export const MINIMUM_RUNNER_VERSION: RunnerVersion = [0, 1, 109];
-export const RETRO_TRANSCRIPT_TOOLS_RUNNER_VERSION: RunnerVersion = [0, 1, 109];
 export const REVIEW_COMMAND_OAUTH_RUNNER_VERSION: RunnerVersion = [0, 1, 88];
