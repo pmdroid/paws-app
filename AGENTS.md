@@ -53,7 +53,7 @@ Asynchronous lifecycle tests wait for a completion signal (a promise the code re
 | `src/host-operation`                                     | Tracking which host operation runs, for the event-loop lag watchdog   |
 | `src/improvements`                                       | Improvement inbox sources: daily findings and legacy actions          |
 | `src/install`                                            | Agent adapter installation, login and usage probes                    |
-| `src/installer`                                          | `paws install secrets`: prompts, env file and the secrets step        |
+| `src/installer`                                          | `paws install secrets`: env file reading and the secrets step         |
 | `src/intake`                                             | Delegation intake, dependencies, ordering and repository readiness    |
 | `src/issue-vm`                                           | Issue VMs: records, budget and admission                              |
 | `src/journal`                                            | Durable journal lines for process and workflow events                 |

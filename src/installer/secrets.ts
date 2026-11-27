@@ -1,6 +1,5 @@
 import { pawsPaths } from "../config";
 import { setupLink } from "../onboarding";
-import type { Prompter } from "./prompt";
 
 export const SETUP_LINK_HINT = "Start Paws, then run paws setup-link to get the setup link.";
 
@@ -9,7 +8,7 @@ export const BROWSER_SETUP_LINE =
 
 export type SecretsStepInput = {
   home: string;
-  prompter: Prompter;
+  prompter: { say(text: string): void };
   publicUrl: string | null;
 };
 
