@@ -29,9 +29,10 @@ import {
   improvementSourceStatus,
   inboxCounts,
   ingestDailyFindings,
-  itemsForIssue,
+  createFakeIssueLookup,
+  decideInboxItem,
+  improvementDetail,
   listInboxItemsSteps,
-  reuseChoice,
   type ImprovementAccess,
 } from "../src/improvements";
 import { tempStore } from "./pglite";
@@ -358,14 +359,45 @@ describe("daily findings and retros share one inbox", () => {
       now: 10,
     });
     const items = await listInboxItems(db, { workspaceId: "ws" });
-    const shared = itemsForIssue(items, { identifier: "PAS-20" });
-    expect(shared.map((i) => i.sourceKind).sort()).toEqual(["daily_finding", "retro_item"]);
-    expect(shared.find((i) => i.sourceKind === "retro_item")!.proposal.evidence).toEqual([
-      "retro:r1:e1",
-    ]);
-    const retroItem = shared.find((i) => i.sourceKind === "retro_item")!;
+    const retroItem = items.find((i) => i.sourceKind === "retro_item")!;
+    expect(retroItem.proposal.evidence).toEqual(["retro:r1:e1"]);
     expect(retroItem.criterion).toBe("No repair questions");
-    expect(reuseChoice(retroItem, "open")).toMatchObject({ kind: "reuse" });
+    const reviewer = { workspaceId: "ws", userId: "ada", role: "admin" as const, teamIds: [] };
+    const open = items.find((i) => i.lifecycle === "needs_review")!;
+    const detail = (await improvementDetail(db, reviewer, open.improvement.id))!;
+    expect(detail.candidates.flatMap((c) => c.improvements)).toHaveLength(2);
+    expect(detail.candidates).toEqual([
+      {
+        issue: expect.objectContaining({ id: "issue-20", identifier: "PAS-20" }),
+        improvements: expect.arrayContaining([dailyId, retroItem.improvement.id]),
+      },
+    ]);
+    await db.run((q) =>
+      q.exec(
+        q.orm
+          .insert(q.t.workspaceRepository)
+          .values({ workspaceId: "ws", repository: REPO, teamId: "team" }),
+      ),
+    );
+    const lookup = createFakeIssueLookup([
+      { id: "issue-20", identifier: "PAS-20", url: null, teamId: "team", state: "closed" },
+    ]).lookup;
+    const link = (allowClosed: boolean) =>
+      decideInboxItem(db, {
+        reviewer,
+        improvementId: open.improvement.id,
+        expectedVersion: open.improvement.version,
+        request: {
+          kind: "accept",
+          proposalVersion: open.proposal.version,
+          verificationCriterion: "No repeats",
+          intent: { kind: "link", issue: "PAS-20", allowClosed },
+        },
+        lookup,
+        now: () => 11,
+      });
+    expect(await link(false)).toMatchObject({ status: "conflict", reason: "issue_closed" });
+    expect(await link(true)).toMatchObject({ status: "decided" });
     expect((await getImprovement(db, retroItem.improvement.id))!.issue!.id).toBe("issue-20");
     expect(await listInboxItems(db, { workspaceId: "ws", repositories: ["acme/other"] })).toEqual(
       [],

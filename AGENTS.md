@@ -51,7 +51,7 @@ Asynchronous lifecycle tests wait for a completion signal (a promise the code re
 | `src/github`                                             | GitHub App API, repository access, pull requests and Git operations   |
 | `src/host`                                               | Sleep, wake and process supervision                                   |
 | `src/host-operation`                                     | Tracking which host operation runs, for the event-loop lag watchdog   |
-| `src/improvements`                                       | Improvement inbox sources: daily findings and legacy actions          |
+| `src/improvements`                                       | Improvement inbox: daily findings, retros, review and delivery        |
 | `src/install`                                            | Agent adapter installation, login and usage probes                    |
 | `src/installer`                                          | `paws install secrets`: env file reading and the secrets step         |
 | `src/intake`                                             | Delegation intake, dependencies, ordering and repository readiness    |
