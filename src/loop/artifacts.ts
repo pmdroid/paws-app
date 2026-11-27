@@ -1,7 +1,7 @@
 import { journalCaught } from "../journal";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type {
   ArtifactSnapshot,
@@ -28,6 +28,7 @@ import {
 } from "../db";
 import type { StoredEvidence, WorkItemRecord } from "../db";
 import type { LinearFileTransfer, PreparedLinearUpload } from "../linear";
+import { readSecretFile, removeSecret, saveSecret, secretFileExists } from "../credentials";
 import type { PublishedEvidence } from "../closeout";
 import { pawsIssueUrl } from "./open-findings";
 import { rejectedEvidenceIdsSteps } from "../questions";
@@ -382,34 +383,33 @@ export async function createLinearArtifactPublisher(options: {
       throw new Error("Artifact snapshot integrity check failed");
     }
     const manifestPath = join(directory, `${row.id}.upload`);
+    const grantPath = join(options.secretsDir, `linear-upload-${row.id}`);
+    const prepare = async (): Promise<PreparedLinearUpload> => {
+      const upload = await options.files.prepareUpload({
+        filename: row.displayName,
+        contentType: row.mimeType,
+        size: row.sizeBytes,
+        signal,
+      });
+      await saveUpload(manifestPath, grantPath, upload, now());
+      return upload;
+    };
     let assetUrl = row.assetUrl;
     if (assetUrl === null) {
       try {
-        let upload: PreparedLinearUpload | null = null;
-        try {
-          upload = JSON.parse(new TextDecoder().decode(await readPrivate(manifestPath, 64 * 1024)));
-        } catch (error) {
-          if (!isMissing(error))
-            throw new Error("Artifact upload state is invalid", { cause: error });
-          journalCaught(
-            error,
-            "artifacts.publish.parse",
-            options.itemId,
-            "optional file may be absent",
-          );
-        }
+        const manifest = await readManifest(manifestPath);
         let remoteMissing = false;
-        if (upload !== null) {
+        if (manifest !== null) {
           if (
-            upload.filename !== row.displayName ||
-            upload.contentType !== row.mimeType ||
-            upload.size !== row.sizeBytes
+            manifest.filename !== row.displayName ||
+            manifest.contentType !== row.mimeType ||
+            manifest.size !== row.sizeBytes
           ) {
             throw new Error("Artifact upload state does not match the snapshot");
           }
           try {
-            const remote = await options.files.download({ url: upload.assetUrl, signal });
-            if (digest(remote.bytes) === row.sha256) assetUrl = upload.assetUrl;
+            const remote = await options.files.download({ url: manifest.assetUrl, signal });
+            if (digest(remote.bytes) === row.sha256) assetUrl = manifest.assetUrl;
           } catch (error) {
             signal.throwIfAborted();
             if (!(error instanceof Error) || !error.message.includes("HTTP 404")) throw error;
@@ -418,15 +418,10 @@ export async function createLinearArtifactPublisher(options: {
           }
         }
         if (assetUrl === null) {
-          if (upload === null) {
-            upload = await options.files.prepareUpload({
-              filename: row.displayName,
-              contentType: row.mimeType,
-              size: row.sizeBytes,
-              signal,
-            });
-            await writeManifest(manifestPath, upload);
-          }
+          const grant =
+            manifest !== null && manifest.expiresAt > now() ? readGrant(grantPath) : null;
+          let upload: PreparedLinearUpload =
+            manifest !== null && grant !== null ? { ...manifest, ...grant } : await prepare();
           try {
             assetUrl = (await options.files.uploadPrepared({ upload, bytes: persisted, signal }))
               .assetUrl;
@@ -435,13 +430,7 @@ export async function createLinearArtifactPublisher(options: {
             if (!remoteMissing || !(error instanceof Error) || !error.message.includes("HTTP 403"))
               throw error;
             journalCaught(error, "artifacts.publish.uploadPrepared", options.itemId);
-            upload = await options.files.prepareUpload({
-              filename: row.displayName,
-              contentType: row.mimeType,
-              size: row.sizeBytes,
-              signal,
-            });
-            await writeManifest(manifestPath, upload);
+            upload = await prepare();
             assetUrl = (await options.files.uploadPrepared({ upload, bytes: persisted, signal }))
               .assetUrl;
           }
@@ -499,6 +488,7 @@ export async function createLinearArtifactPublisher(options: {
         payload: { id: row.id, sessionId: options.sessionId, kind: "thought", body },
       });
     });
+    if (secretFileExists(grantPath)) await removeSecret(grantPath);
     return { url: assetUrl, displayName: row.displayName };
   }
 }
@@ -550,8 +540,71 @@ async function readPrivate(path: string, limit: number): Promise<Uint8Array> {
   }
 }
 
-async function writeManifest(path: string, upload: PreparedLinearUpload): Promise<void> {
-  await writeAtomic(path, new TextEncoder().encode(JSON.stringify(upload)));
+const UPLOAD_GRANT_MS = 10 * 60 * 1000;
+
+type UploadManifest = {
+  filename: string;
+  contentType: string;
+  size: number;
+  assetUrl: string;
+  expiresAt: number;
+};
+
+async function readManifest(path: string): Promise<UploadManifest | null> {
+  try {
+    const text = new TextDecoder().decode(await readPrivate(path, 64 * 1024));
+    const { filename, contentType, size, assetUrl, expiresAt } = JSON.parse(text);
+    return { filename, contentType, size, assetUrl, expiresAt: Number(expiresAt ?? 0) };
+  } catch (error) {
+    if (!isMissing(error)) throw new Error("Artifact upload state is invalid", { cause: error });
+    journalCaught(error, "artifacts.readManifest", null, "optional file may be absent");
+    return null;
+  }
+}
+
+function readGrant(path: string): Pick<PreparedLinearUpload, "uploadUrl" | "headers"> | null {
+  const text = readSecretFile(path, false);
+  if (text === null) return null;
+  const { uploadUrl, headers } = JSON.parse(text);
+  return { uploadUrl, headers };
+}
+
+async function saveUpload(
+  manifestPath: string,
+  grantPath: string,
+  upload: Omit<PreparedLinearUpload, "uploadUrl" | "headers"> &
+    Partial<PreparedLinearUpload> & { expiresAt?: number },
+  preparedAt: number,
+): Promise<void> {
+  const { uploadUrl, headers, filename, contentType, size, assetUrl } = upload;
+  if (uploadUrl !== undefined)
+    await saveSecret(grantPath, JSON.stringify({ uploadUrl, headers: headers ?? [] }));
+  const expiresAt = upload.expiresAt ?? preparedAt + UPLOAD_GRANT_MS;
+  const manifest: UploadManifest = { filename, contentType, size, assetUrl, expiresAt };
+  await writeAtomic(manifestPath, new TextEncoder().encode(JSON.stringify(manifest)));
+}
+
+export async function convertLinearUploadManifests(secretsDir: string, now = Date.now()) {
+  const directory = join(secretsDir, "linear-artifacts");
+  const names = await readdir(directory).catch((error: unknown) => {
+    if (!isMissing(error)) throw error;
+    journalCaught(error, "artifacts.convertLinearUploadManifests", null, "no artifacts yet");
+    return [];
+  });
+  let converted = 0;
+  for (const name of names) {
+    const match = /^(.+)\.upload$/.exec(name);
+    if (match === null) continue;
+    const path = join(directory, name);
+    const grantPath = join(secretsDir, `linear-upload-${match[1]}`);
+    const upload = JSON.parse(new TextDecoder().decode(await readPrivate(path, 64 * 1024)));
+    if (upload.uploadUrl !== undefined || upload.headers !== undefined) {
+      await saveUpload(path, grantPath, upload, now);
+      converted++;
+    } else if (Number(upload.expiresAt ?? 0) <= now && secretFileExists(grantPath))
+      await removeSecret(grantPath);
+  }
+  return converted;
 }
 
 async function writeAtomic(path: string, bytes: Uint8Array): Promise<void> {
