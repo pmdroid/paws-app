@@ -1,3 +1,4 @@
+import { envNote, envVariable, type FieldSources } from "./env-source";
 import { esc } from "./format";
 import { loadWhenShown } from "./settings-loads";
 import { renderMarkup } from "./theme";
@@ -51,10 +52,11 @@ const FIELDS: [string, string, string][] = [
   ["clientSecret", "Client secret", "password"],
   ["signingSecret", "Signing secret", "password"],
 ];
-const FORM = `<form class="col" data-slack-app>${FIELDS.map(
-  ([name, label, type]) =>
-    `<label class="field"><span>${label}</span><input name="${name}" type="${type}" required maxlength="512" autocomplete="off" spellcheck="false"></label>`,
-).join("")}<button class="btn primary" type="submit">Save</button></form>`;
+const appForm = (sources: FieldSources) =>
+  `<form class="col" data-slack-app>${FIELDS.map(([name, label, type]) => {
+    const variable = envVariable(sources, name);
+    return `<label class="field"><span>${label}</span><input name="${name}" type="${type}" ${variable ? "readonly" : "required"} maxlength="512" autocomplete="off" spellcheck="false">${variable ? envNote(variable) : ""}</label>`;
+  }).join("")}<button class="btn primary" type="submit">Save</button></form>`;
 
 export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): void {
   const section = document.createElement("section");
@@ -65,6 +67,7 @@ export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): 
   const params = new URLSearchParams(location.search);
   let notice = RESULTS[params.get("slack") ?? ""] ?? "";
   let detailsOpen = false;
+  let sources: FieldSources = {};
   if (params.has("slack")) history.replaceState(null, "", location.pathname);
 
   async function load() {
@@ -81,6 +84,14 @@ export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): 
       login,
       reconnect,
     } = (await response.json()) as SlackStatus;
+    sources = configured
+      ? {}
+      : await fetch("/api/settings/slack-app", { cache: "no-store" })
+          .then((reply) =>
+            reply.ok ? (reply.json() as Promise<{ sources?: FieldSources }>) : null,
+          )
+          .then((app) => app?.sources ?? {})
+          .catch(() => ({}));
     const linked = connection
       ? await fetch("/api/workspaces/slack/links", { cache: "no-store" })
           .then((reply) => (reply.ok ? (reply.json() as Promise<{ links: SlackLink[] }>) : null))
@@ -149,10 +160,8 @@ export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): 
             ? login
               ? `Not connected. <code>paws login slack</code> connected ${esc(login.teamName ?? login.teamId)} (${esc(login.teamId)}) on this server; you can use it here.`
               : "Not connected."
-            : environment
-              ? "The Slack app credentials in the server environment are incomplete."
-              : "Enter the Slack app credentials. Create the app in Slack with the redirect and events URLs below."
-        }${environment ? " The Slack app comes from the server environment." : ""}</p>`;
+            : "Enter the Slack app credentials. Create the app in Slack with the redirect and events URLs below."
+        }${configured && environment ? " The Slack app comes from the server environment." : ""}</p>`;
     renderMarkup(
       section,
       `<div><h2>Slack</h2><p class="sub">Install Paws in Slack. Installing gives Slack users no access to Paws or its repositories.</p></div><div class="settings-account"><div class="card w-full gap-4"><div class="between"><div class="row"><h3>Slack</h3>${connection ? `<span>${esc(connection.teamName ?? connection.teamId)}</span>` : ""}${pill}</div>${connection ? `<div class="row">${buttons}</div>` : ""}</div>${status}${
@@ -163,7 +172,7 @@ export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): 
         cells.length
           ? `<div class="grid min-w-0 grid-cols-[repeat(auto-fill,minmax(min(100%,13rem),1fr))] gap-2">${cells.join("")}</div>`
           : ""
-      }${details}${configured || environment ? "" : FORM}${links}<p data-slack-notice role="alert">${esc(notice)}</p>${connection ? "" : `<div class="row">${buttons}</div>`}</div></div>`,
+      }${details}${configured ? "" : appForm(sources)}${links}<p data-slack-notice role="alert">${esc(notice)}</p>${connection ? "" : `<div class="row">${buttons}</div>`}</div></div>`,
     );
     section.querySelector("[data-slack-details]")?.addEventListener("toggle", (event) => {
       if (connection) detailsOpen = (event.currentTarget as HTMLDetailsElement).open;
@@ -185,7 +194,14 @@ export function initializeWorkspaceSlack(root: HTMLElement, csrfToken: string): 
     const response = await fetch("/api/settings/slack-app", {
       method: "PUT",
       headers: { "content-type": "application/json", "x-paws-csrf": csrfToken },
-      body: JSON.stringify(Object.fromEntries(FIELDS.map(([name]) => [name, data.get(name)]))),
+      body: JSON.stringify(
+        Object.fromEntries(
+          FIELDS.filter(([name]) => !envVariable(sources, name)).map(([name]) => [
+            name,
+            data.get(name),
+          ]),
+        ),
+      ),
     });
     const body = (await response.json().catch(() => ({}))) as { error?: string };
     notice = response.ok ? "Saved" : (body.error ?? "The Slack app could not be saved.");

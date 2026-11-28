@@ -681,11 +681,16 @@ try {
     await admin.getByRole("button", { name: "Save storage settings" }).click();
     await expect(admin.getByText("Storage settings saved.", { exact: true })).toBeVisible();
     await admin.screenshot({ path: join(out, `storage-s3-${width}.png`), fullPage: true });
-    storage.source = "environment";
+    Object.assign(storage, {
+      source: "environment",
+      sources: { bucket: { source: "environment", variable: "PAWS_S3_BUCKET" } },
+    });
     await admin.reload();
-    await expect(admin.getByText("Set by PAWS_S3_* on this host")).toBeVisible();
+    await expect(admin.getByText("Set by PAWS_S3_BUCKET in the service environment")).toBeVisible();
+    await expect(admin.locator("#storage-bucket")).toHaveAttribute("readonly", "");
     await expect(admin.locator("#storage-kind")).toBeDisabled();
-    await expect(admin.locator("#storage-days")).toBeDisabled();
+    await expect(admin.locator("#storage-region")).toBeEditable();
+    await expect(admin.locator("#storage-days")).toBeEnabled();
     await admin.screenshot({ path: join(out, `storage-environment-${width}.png`), fullPage: true });
     const GB = 1024 ** 3;
     const disk = (mount: string, total: number, free: number) => ({
