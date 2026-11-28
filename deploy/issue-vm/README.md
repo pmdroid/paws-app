@@ -21,7 +21,7 @@ The host needs `curl`, `git`, `qemu-img`, `mkfs.vfat` and `mcopy` (dosfstools an
 sudo deploy/issue-vm/base-disk.sh build --out /var/lib/paws-issue-vm
 ```
 
-The build downloads the pinned Cloud Hypervisor binary, its UEFI firmware and the Ubuntu cloud image into `/var/lib/paws-issue-vm-build/cache` and checks each against `image.env`. It converts the cloud image to a raw disk (8 GB by default; `--size` changes it), boots it with a NoCloud seed (an 8 MB vfat disk labelled `CIDATA`), and waits for the guest to provision, seal and power off. Then it mounts the disk, clears the logs written during shutdown, and refuses the image if any SSH host key, machine id, cloud-init instance, runner enrollment, runner state, `authorized_keys` or Docker engine id is left, or if the pinned runner release, the overcommit setting or the enabled sign-in check socket is missing. It reads the runner's release links inside the image, so the host doesn't need that runner release itself.
+The build downloads the pinned Cloud Hypervisor binary, its UEFI firmware and the Ubuntu cloud image into `/var/lib/paws-issue-vm-build/cache` and checks each against `image.env`. It converts the cloud image to a raw disk (16 GB by default; `--size` changes it), boots it with a NoCloud seed (an 8 MB vfat disk labelled `CIDATA`), and waits for the guest to provision, seal and power off. Then it mounts the disk, clears the logs written during shutdown, and refuses the image if any SSH host key, machine id, cloud-init instance, runner enrollment, runner state, `authorized_keys` or Docker engine id is left, or if the pinned runner release, the overcommit setting or the enabled sign-in check socket is missing. It reads the runner's release links inside the image, so the host doesn't need that runner release itself.
 
 The result is `paws-issue-vm-<ubuntu serial>-runner-<version>-<arch>.raw` in the output folder, with its line in `SHA256SUMS`. Write it to a thin volume with `dd conv=sparse` or copy it with `cp --sparse=always`; the root partition grows to the volume on first boot.
 
@@ -30,7 +30,7 @@ While the build VM runs, the script gives it the tap device `pawsimg0` with `10.
 ## Check
 
 ```sh
-sudo deploy/issue-vm/base-disk.sh check /var/lib/paws-issue-vm/paws-issue-vm-20261017-runner-0.1.106-arm64.raw
+sudo deploy/issue-vm/base-disk.sh check /var/lib/paws-issue-vm/paws-issue-vm-20261017-runner-0.1.110-arm64.raw
 ```
 
 `check` verifies the image against `SHA256SUMS` beside it, inspects a copy the same way the build does, boots that copy with a throwaway `paws` user and SSH key, and waits for SSH. Over SSH it checks that the VM made its own machine id and SSH host keys, has no runner enrollment, runs a container on Docker, reaches the agents' rootless Docker daemon, starts and deletes a kind cluster, and has `vm.overcommit_memory=1`. Then it copies the paws-app checkout the script sits in (its committed `HEAD`) into the VM and runs `bun install --frozen-lockfile` and `bun run knip` there with the runner's Bun, on the default 4 GB VM.
@@ -43,7 +43,7 @@ Each issue VM gets its own thin snapshot of the base disk, named by its issue VM
 install -m 0755 deploy/issue-vm/disk.sh /usr/local/sbin/paws-issue-vm-disk
 install -m 0644 deploy/issue-vm/paws-issue-vm-pool.service 'deploy/issue-vm/paws-issue-vm-disk@.service' /etc/systemd/system/
 install -m 0644 deploy/issue-vm/paws-issue-vm-disk.polkit /etc/polkit-1/rules.d/60-paws-issue-vm-disk.rules
-paws-issue-vm-disk init 400 /var/lib/paws-issue-vm/paws-issue-vm-20261017-runner-0.1.106-arm64.raw
+paws-issue-vm-disk init 400 /var/lib/paws-issue-vm/paws-issue-vm-20261017-runner-0.1.110-arm64.raw
 systemctl daemon-reload
 systemctl enable paws-issue-vm-pool.service
 ```
