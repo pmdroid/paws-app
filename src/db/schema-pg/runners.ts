@@ -91,6 +91,7 @@ export const runnerWork = pgTable(
   },
   (table) => [
     unique().on(table.commandId),
+    index("runner_work_runner").on(table.runnerId),
     check("runner_work_check_1", sql`generation>0`),
     check("runner_work_check_2", sql`runner_fence>=0`),
     check("runner_work_check_3", sql`last_sequence>=0`),

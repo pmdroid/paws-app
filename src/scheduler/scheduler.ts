@@ -541,8 +541,32 @@ function* reportDependencyCycles(
   }
 }
 
+type PassQueue = {
+  tail: Promise<unknown>;
+  next: { options: SchedulerOptions; result: Promise<string[]> } | null;
+};
+
+const passes = new WeakMap<Db, PassQueue>();
+
 export function dispatch(db: Db, options: SchedulerOptions = {}): Promise<string[]> {
-  return admit(db, options.admission ?? createAdmission({ db }), options);
+  let queue = passes.get(db);
+  if (!queue) {
+    queue = { tail: Promise.resolve(), next: null };
+    passes.set(db, queue);
+  }
+  if (queue.next) {
+    queue.next.options = options;
+    return queue.next.result;
+  }
+  const pending = queue;
+  const next = { options, result: Promise.resolve<string[]>([]) };
+  next.result = pending.tail.then(() => {
+    pending.next = null;
+    return admit(db, next.options.admission ?? createAdmission({ db }), next.options);
+  });
+  pending.next = next;
+  pending.tail = next.result.catch(() => undefined);
+  return next.result;
 }
 
 async function admit(
@@ -914,16 +938,6 @@ async function admit(
           ),
         );
       }
-    yield* q.transaction((tx) =>
-      saveQueuePositionsSteps(
-        tx,
-        line,
-        busy,
-        now,
-        new Map(waiting.flatMap(({ item, capped }) => (capped && cap ? [[item.id, cap]] : []))),
-        waitingFor,
-      ),
-    );
     const holds: ItemHold[] = [];
     for (const { item, start } of starts)
       if (!start.ok && start.held !== "missing" && start.held !== "cancelled")
@@ -950,6 +964,22 @@ async function admit(
         ...(overlap.start ? { start: overlap.start } : {}),
       })),
     );
+    const verdicts: ItemRunnerVerdicts[] = [];
+    for (const item of items)
+      if (item.state === "queued" && !item.cancelRequested && !item.absent) {
+        const found = yield* verdictsFor(item.id);
+        if (found) verdicts.push(found);
+      }
+    yield* q.transaction((tx) =>
+      saveQueuePositionsSteps(
+        tx,
+        line,
+        busy,
+        now,
+        new Map(waiting.flatMap(({ item, capped }) => (capped && cap ? [[item.id, cap]] : []))),
+        waitingFor,
+      ),
+    );
     const changes: string[] = [];
     for (const change of yield* saveItemHoldsSteps(q, holds, now)) {
       const name =
@@ -970,12 +1000,6 @@ async function admit(
     );
     yield* postWaitKeepalivesSteps(q, waits, now);
     yield* postConflictHoldsSteps(q, waits, now);
-    const verdicts: ItemRunnerVerdicts[] = [];
-    for (const item of items)
-      if (item.state === "queued" && !item.cancelRequested && !item.absent) {
-        const found = yield* verdictsFor(item.id);
-        if (found) verdicts.push(found);
-      }
     return {
       armed,
       admitted,
