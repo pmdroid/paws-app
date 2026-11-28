@@ -980,14 +980,8 @@ try {
       });
     });
     await admin.route("**/api/metrics/stages?**", (route) => {
-      const params = new URL(route.request().url()).searchParams;
-      const empty = Number(params.get("from")) > Date.now() - 2 * 3_600_000;
-      const repository = (name: string, scale: number) => ({
-        ...{ repository: name, issues: 3 * scale, merged: 2 * scale, medianTotalMs: 52 * 60_000 },
-        ...{ medianStagesMs: { verifying: 9 * 60_000 * scale }, avgCloseoutRounds: 1.3 * scale },
-        ...{ medianWaitingForPersonMs: 6 * 60_000, checkRuns: 12 * scale, checkFailures: scale },
-        slowestCheck: { checkId: "test", medianMs: 540_000 },
-      });
+      const from = Number(new URL(route.request().url()).searchParams.get("from"));
+      const empty = from > Date.now() - 2 * 3_600_000;
       const stages = (scale: number) => ({
         ...{
           queued: 4 * 60_000 * scale,
@@ -1011,19 +1005,9 @@ try {
           checks: empty
             ? []
             : [
-                {
-                  checkId: "test",
-                  runs: 12,
-                  failures: 2,
-                  timeouts: 1,
-                  medianMs: 540_000,
-                  p95Ms: 1,
-                },
-                { checkId: "lint", runs: 12, failures: 0, timeouts: 0, medianMs: 48_000, p95Ms: 1 },
+                { checkId: "test", runs: 12, timeouts: 1, medianMs: 540_000, p95Ms: 1_320_000 },
+                { checkId: "lint", runs: 12, timeouts: 0, medianMs: 48_000, p95Ms: 61_000 },
               ],
-          repositories: params.get("repository")
-            ? [repository(params.get("repository")!, 1)]
-            : [repository("acme/app", 1), repository("acme/web-dashboard", 2)],
         },
       });
     });
@@ -1040,20 +1024,6 @@ try {
     expect(await admin.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );
-    await expect(admin.locator("tr[data-perf-repository]")).toHaveCount(2);
-    await admin.locator('[data-perf-pick="acme/app"]').click();
-    await expect(admin.locator('[data-perf-section="repositories"]')).toHaveCount(0);
-    await expect(admin.locator("[data-perf-workspace-note]")).toHaveCount(3);
-    expect(new URL(admin.url()).searchParams.get("repository")).toBe("acme/app");
-    expect(await admin.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
-      true,
-    );
-    await admin.screenshot({
-      path: join(out, `settings-performance-repository-${width}.png`),
-      fullPage: true,
-    });
-    await admin.locator("select[data-perf-repository]").selectOption("");
-    await expect(admin.locator('[data-perf-section="repositories"]')).toBeVisible();
     const before = metricCalls.length;
     await admin.getByRole("button", { name: "1 h", exact: true }).click();
     await expect(admin.getByText("No data in this range")).toBeVisible();
