@@ -1,4 +1,17 @@
-import { and, asc, eq, inArray, isNotNull, isNull, lt, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  exists,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  ne,
+  not,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import { type Q, type Steps, type Db } from "./db";
 import { ensureLinearSessionSteps } from "./linear-sessions";
 
@@ -376,14 +389,68 @@ export async function getLinearSessionInstallation(
   return store.run((q) => getLinearSessionInstallationSteps(q, sessionId));
 }
 
+function linearSessionAccessParts(q: Q) {
+  const { linearSession: s, linearAppRevocation: r, linearTeamAccess: t } = q.t;
+  const known = and(
+    ne(s.organizationId, ""),
+    ne(s.oauthClientId, ""),
+    ne(s.appUserId, ""),
+    isNotNull(s.installationObservedAt),
+  )!;
+  const revoked = exists(
+    q.orm
+      .select({ one: sql`1` })
+      .from(r)
+      .where(
+        and(
+          eq(r.organizationId, s.organizationId),
+          eq(r.oauthClientId, s.oauthClientId),
+          isNull(r.restoredAfter),
+        ),
+      ),
+  );
+  const removed = exists(
+    q.orm
+      .select({ one: sql`1` })
+      .from(t)
+      .where(
+        and(
+          eq(t.organizationId, s.organizationId),
+          eq(t.oauthClientId, s.oauthClientId),
+          eq(t.appUserId, s.appUserId),
+          eq(t.teamId, s.teamId),
+          eq(t.allowed, 0),
+        ),
+      ),
+  );
+  const allowed = and(known, not(revoked), isNotNull(s.teamId), not(removed))!;
+  return { known, revoked, removed, allowed };
+}
+
+export function linearSessionAllowedSql(q: Q): SQL {
+  return linearSessionAccessParts(q).allowed;
+}
+
 export function* getLinearSessionAccessSteps(q: Q, sessionId: string): Steps<LinearSessionAccess> {
-  const installation = yield* getLinearSessionInstallationSteps(q, sessionId);
-  if (installation === null) return "unknown";
-  if (yield* unrestoredSteps(q, installation.organizationId, installation.oauthClientId))
-    return "revoked";
-  if (installation.teamId === null) return "unknown";
-  const team = yield* getLinearTeamAccessSteps(q, { ...installation, teamId: installation.teamId });
-  return team === "removed" ? "team_removed" : "allowed";
+  const { linearSession: s } = q.t;
+  const parts = linearSessionAccessParts(q);
+  const row = yield* q.one(
+    q.orm
+      .select({
+        allowed: sql<boolean | null>`${parts.allowed}`,
+        known: sql<boolean | null>`${parts.known}`,
+        revoked: sql<boolean>`${parts.revoked}`,
+        removed: sql<boolean>`${parts.removed}`,
+        teamId: s.teamId,
+      })
+      .from(s)
+      .where(eq(s.sessionId, sessionId)),
+  );
+  if (row?.allowed) return "allowed";
+  if (!row?.known) return "unknown";
+  if (row.revoked) return "revoked";
+  if (row.teamId === null) return "unknown";
+  return row.removed ? "team_removed" : "unknown";
 }
 
 export async function getLinearSessionAccess(

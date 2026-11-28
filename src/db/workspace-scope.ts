@@ -1,8 +1,8 @@
-import { and, asc, eq, exists, inArray, isNotNull, not, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, exists, inArray, isNotNull, not, or, sql, type SQL } from "drizzle-orm";
 import type { Q, Steps, Db } from "./db";
-import { workspaceMemberUsable, workspaceMemberSteps } from "./workspace";
+import { workspaceMemberUsableWhere } from "./workspace";
 import { teamRepositoryAllowedSql } from "./repository-catalog";
-import { getLinearSessionAccessSteps } from "./linear-access";
+import { linearSessionAllowedSql } from "./linear-access";
 
 export function sessionRepositoryAllowed(repository: SQL): SQL {
   const parts = teamRepositoryAllowedSql("workspace.id", "linear_session.team_id", "\0").split(
@@ -19,11 +19,10 @@ export function* workspaceSessionCandidatesSteps(
   workspaceId: string,
   userId: string,
   clientId: string,
-) {
+  checkAccess = false,
+): Steps<string[]> {
   const { linearSession: s, workspace: w, workspaceUserTeam: t, workItem: i } = q.t;
-  const r = q.t.workItemRepository;
-  const member = yield* workspaceMemberSteps(q, workspaceId, userId);
-  if (!workspaceMemberUsable(member)) return [];
+  const { workItemRepository: r, workspaceMember: m } = q.t;
   const onTeam = exists(
     q.orm
       .select({ one: sql`1` })
@@ -47,14 +46,17 @@ export function* workspaceSessionCandidatesSteps(
       .select({ sessionId: s.sessionId })
       .from(s)
       .innerJoin(w, eq(w.linearOrganizationId, s.organizationId))
+      .innerJoin(m, and(eq(m.workspaceId, w.id), eq(m.userId, userId)))
       .where(
         and(
           eq(w.id, workspaceId),
+          workspaceMemberUsableWhere(m),
           eq(s.oauthClientId, clientId),
           isNotNull(s.installationObservedAt),
           isNotNull(s.teamId),
-          member.role === "admin" ? undefined : onTeam,
+          or(eq(m.role, "admin"), onTeam),
           not(outsideScope),
+          checkAccess ? linearSessionAllowedSql(q) : undefined,
         ),
       )
       .orderBy(asc(s.sessionId)),
@@ -68,10 +70,7 @@ export function* workspaceSessionIdsSteps(
   userId: string,
   clientId: string,
 ): Steps<string[]> {
-  const ids: string[] = [];
-  for (const id of yield* workspaceSessionCandidatesSteps(q, workspaceId, userId, clientId))
-    if ((yield* getLinearSessionAccessSteps(q, id)) === "allowed") ids.push(id);
-  return ids;
+  return yield* workspaceSessionCandidatesSteps(q, workspaceId, userId, clientId, true);
 }
 
 export function workspaceSessionIds(
