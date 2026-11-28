@@ -298,7 +298,9 @@ export function* claimOutboxHeadsSteps(q: Q, options: OutboxClaimOptions) {
       )
       .returning(),
   );
-  return rows.map((row) => mapOutbox(q, row));
+  return rows
+    .sort((a, b) => a.priority - b.priority || a.id - b.id)
+    .map((row) => mapOutbox(q, row));
 }
 
 export async function isOutboxCurrent(store: Db, row: OutboxRow): Promise<boolean> {
