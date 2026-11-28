@@ -214,7 +214,14 @@ import {
   setGauge,
 } from "./metrics";
 import { doctorChecks, realProbe } from "./doctor";
-import { createDeployLagCheck, deployLagUnavailable, runningDeployIncludes } from "./alerts";
+import {
+  ALERTS_EXPORT_EVERY_MS,
+  ALERTS_EXPORT_JOB,
+  createDeployLagCheck,
+  deployLagUnavailable,
+  exportAlerts,
+  runningDeployIncludes,
+} from "./alerts";
 import { runInstallCli } from "./installer";
 import {
   createGitHubTokenProvider,
@@ -2635,6 +2642,13 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         queue: TRACES_EXPORT_JOB,
         jobKey: TRACES_EXPORT_JOB,
         recurringEveryMs: TRACES_EXPORT_EVERY_MS,
+        now: Date.now(),
+      });
+      created.jobs.register(ALERTS_EXPORT_JOB, () => exportAlerts(store, telemetry));
+      await enqueueJobOnce(store, {
+        queue: ALERTS_EXPORT_JOB,
+        jobKey: ALERTS_EXPORT_JOB,
+        recurringEveryMs: ALERTS_EXPORT_EVERY_MS,
         now: Date.now(),
       });
       created.jobs.register(QUEUE_DEPTH_JOB, () => recordQueueDepths(store));

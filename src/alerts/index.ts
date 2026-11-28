@@ -7,3 +7,4 @@ export {
   runningRevisionContains,
 } from "./deploy-lag";
 export type { DeployLagCheck } from "./deploy-lag";
+export { ALERTS_EXPORT_EVERY_MS, ALERTS_EXPORT_JOB, exportAlerts } from "./export";

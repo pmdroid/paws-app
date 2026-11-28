@@ -53,3 +53,22 @@ export const traceExport = pgTable("trace_export", {
   endedAt: bigint("ended_at", { mode: "number" }).notNull(),
   exportedAt: bigint("exported_at", { mode: "number" }).notNull(),
 });
+
+export const exportedAlert = pgTable("exported_alert", {
+  key: text().primaryKey(),
+  severity: text().notNull(),
+  title: text().notNull(),
+  since: bigint({ mode: "number" }).notNull(),
+  count: doublePrecision().notNull(),
+});
+
+export const alertEvent = pgTable("alert_event", {
+  id: bigint({ mode: "number" }).primaryKey().generatedByDefaultAsIdentity(),
+  eventId: text("event_id").notNull(),
+  event: text().notNull(),
+  key: text().notNull(),
+  severity: text().notNull(),
+  title: text().notNull(),
+  since: bigint({ mode: "number" }).notNull(),
+  count: doublePrecision().notNull(),
+});

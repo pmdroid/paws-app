@@ -448,7 +448,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "vm-hosts": ["db", "journal", "webhook-body", "workspace"],
   "vm-provider-checks": ["config", "db", "journal", "provisioning"],
   "review-score": ["db"],
-  alerts: ["db"],
+  alerts: ["db", "telemetry"],
 };
 
 describe("module boundaries", () => {

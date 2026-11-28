@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { pawsPaths } from "../config";
 import { readSecretFile, removeSecret, saveSecret, secretFileExists } from "../credentials";
-import { readSetting, updateSetting, type Db } from "../db";
+import { clearExportedAlertsSteps, readSetting, updateSetting, type Db } from "../db";
 import { journalCaught } from "../journal";
 
 export const PROTOCOLS = ["http/protobuf", "http/json", "grpc"] as const;
@@ -154,7 +154,7 @@ export function checkHeaderValue(value: unknown): string {
   return value.trim();
 }
 
-const SETTINGS_KEY = "telemetry.otlp";
+export const SETTINGS_KEY = "telemetry.otlp";
 const headerPath = (home: string) => join(pawsPaths(home).secretsDir, "telemetry-otlp-header");
 
 export async function readTelemetrySettings(store: Db): Promise<TelemetrySettings> {
@@ -171,6 +171,7 @@ export async function readTelemetrySettings(store: Db): Promise<TelemetrySetting
 
 export const TRACES_SINCE_KEY = "telemetry.traces.since";
 const tracesOn = (settings: TelemetrySettings) => settings.enabled && settings.traces.enabled;
+const alertsOn = (settings: TelemetrySettings) => settings.enabled && settings.alerts.enabled;
 
 export async function saveTelemetrySettings(
   store: Db,
@@ -181,6 +182,7 @@ export async function saveTelemetrySettings(
   await updateSetting(store, SETTINGS_KEY, () => JSON.stringify(settings));
   if (tracesOn(before) !== tracesOn(settings))
     await updateSetting(store, TRACES_SINCE_KEY, () => (tracesOn(settings) ? String(now) : ""));
+  if (alertsOn(before) && !alertsOn(settings)) await store.run((q) => clearExportedAlertsSteps(q));
 }
 
 export const telemetryHeader = {
