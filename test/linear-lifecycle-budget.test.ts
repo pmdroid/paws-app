@@ -28,6 +28,7 @@ import {
 } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempStore } from "./pglite";
+import { waitFor } from "./wait-for";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -443,63 +444,65 @@ async function runTask(input: {
       },
       "created-delivery",
     );
-    const deadline = Date.now() + 20_000;
-    while (!["merged", "failed"].includes((await state()) ?? "")) {
-      if (Date.now() > deadline) throw new Error(`The task is stuck in ${await state()}`);
-      while ((await outbox.tick()).length > 0) await outbox.idle();
-      const open = await findOpenQuestion(db, "session");
-      if (open !== null && open.kind === "link" && !asked.includes("visual-review")) {
-        // The screens are approved on the item page; a Linear reply never approves them.
-        asked.push("visual-review");
-        const workspaceId = (
-          await db.run((q) => q.all(q.orm.select({ id: q.t.workspace.id }).from(q.t.workspace)))
-        )[0]!.id;
-        const userId = await putWorkspaceUser(db, {
-          id: "user-pascal",
-          linearUserId: "pascal",
-          name: "Pascal",
-          email: "pascal@example.invalid",
-        });
-        expect(
-          await orchestrator.decideLinkAsk({
-            questionId: open.id,
-            decision: "approve",
-            note: null,
-            answeredBy: "pascal",
-            actor: { workspaceId, userId, name: "Pascal" },
-          }),
-        ).toBe("answered");
-      } else if (open !== null && !asked.includes(open.kind)) {
-        asked.push(open.kind);
-        await deliver(
-          {
-            type: "AgentSessionEvent",
-            action: "prompted",
-            createdAt: new Date().toISOString(),
-            agentSession: session,
-            agentActivity: {
-              id: `answer-${asked.length}`,
-              content: {
-                type: "prompt",
-                body: "Yes, end it with a newline.",
+    await waitFor(
+      async () => {
+        while ((await outbox.tick()).length > 0) await outbox.idle();
+        const open = await findOpenQuestion(db, "session");
+        if (open !== null && open.kind === "link" && !asked.includes("visual-review")) {
+          // The screens are approved on the item page; a Linear reply never approves them.
+          asked.push("visual-review");
+          const workspaceId = (
+            await db.run((q) => q.all(q.orm.select({ id: q.t.workspace.id }).from(q.t.workspace)))
+          )[0]!.id;
+          const userId = await putWorkspaceUser(db, {
+            id: "user-pascal",
+            linearUserId: "pascal",
+            name: "Pascal",
+            email: "pascal@example.invalid",
+          });
+          expect(
+            await orchestrator.decideLinkAsk({
+              questionId: open.id,
+              decision: "approve",
+              note: null,
+              answeredBy: "pascal",
+              actor: { workspaceId, userId, name: "Pascal" },
+            }),
+          ).toBe("answered");
+        } else if (open !== null && !asked.includes(open.kind)) {
+          asked.push(open.kind);
+          await deliver(
+            {
+              type: "AgentSessionEvent",
+              action: "prompted",
+              createdAt: new Date().toISOString(),
+              agentSession: session,
+              agentActivity: {
+                id: `answer-${asked.length}`,
+                content: {
+                  type: "prompt",
+                  body: "Yes, end it with a newline.",
+                },
+                userId: "pascal",
+                createdAt: new Date(clock.now() + 1_000).toISOString(),
               },
-              userId: "pascal",
-              createdAt: new Date(clock.now() + 1_000).toISOString(),
             },
-          },
-          `prompted-${asked.length}`,
-        );
-      }
-      if (!mainMoved && input.mainMovesAtPoll !== undefined && polls >= input.mainMovesAtPoll) {
-        mainMoved = true;
-        await commitOnMain(layout.bare, "side.txt", "side\n");
-      }
-      await orchestrator.reconcileExecution();
-      if ((await jobs.tick()) === null) {
-        clock.advance(60_000);
-        await Bun.sleep(5);
-      }
-    }
+            `prompted-${asked.length}`,
+          );
+        }
+        if (!mainMoved && input.mainMovesAtPoll !== undefined && polls >= input.mainMovesAtPoll) {
+          mainMoved = true;
+          await commitOnMain(layout.bare, "side.txt", "side\n");
+        }
+        await orchestrator.reconcileExecution();
+        if ((await jobs.tick()) === null) {
+          clock.advance(60_000);
+          await Bun.sleep(5);
+        }
+        return ["merged", "failed"].includes((await state()) ?? "");
+      },
+      { timeoutMs: 55_000, what: "the task to merge or fail", observe: state },
+    );
     while ((await outbox.tick()).length > 0) await outbox.idle();
     const perCaller: Record<string, number> = {};
     for (const [key, count] of server.counts) {
