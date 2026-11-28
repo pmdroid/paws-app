@@ -1202,6 +1202,7 @@ test("browser App setup encrypts all five fields and continues without restartin
   try {
     for (const name of Object.keys(f.env)) delete (f.env as Record<string, string>)[name];
     (f.env as Record<string, string>).GITHUB_WEBHOOK_SECRET = "env-webhook-marker";
+    (f.env as Record<string, string>).GITHUB_APP_ID = "99";
     const handler = f.handler();
     const url = "https://paws.example/api/workspaces/github-app";
     const payload = {
@@ -1244,7 +1245,7 @@ test("browser App setup encrypts all five fields and continues without restartin
     expect(partial!.status).toBe(409);
     expect(await partial!.json()).toEqual({
       error:
-        "Set by environment variable GITHUB_WEBHOOK_SECRET; remove it from the service environment to edit here",
+        "Set by environment variable GITHUB_APP_ID; remove it from the service environment to edit here",
     });
     expect(f.calls.some((call) => call.path === "/app")).toBe(true);
     const saved = await f.db.run(secretRowsSteps);
@@ -1252,7 +1253,7 @@ test("browser App setup encrypts all five fields and continues without restartin
     for (const value of Object.values(payload).filter((entry) => entry.length > 5))
       expect(saved[0]!.ciphertext).not.toContain(value);
     expect(existsSync(join(dir, "github-browser-app.json"))).toBe(false);
-    const { webhookSecret: _, ...stored } = payload;
+    const { webhookSecret: _, appId: __, ...stored } = payload;
     const file = JSON.parse(readSecretFile(join(dir, "github-browser-app.json"))!);
     expect(file).toMatchObject(stored);
     expect(file.webhookSecret).toBeUndefined();
@@ -1261,7 +1262,8 @@ test("browser App setup encrypts all five fields and continues without restartin
       sources: Record<string, unknown>;
     };
     expect(read.sources).toMatchObject({
-      appId: { source: "settings" },
+      appId: { source: "environment", variable: "GITHUB_APP_ID" },
+      clientId: { source: "settings" },
       webhookSecret: { source: "environment", variable: "GITHUB_WEBHOOK_SECRET" },
     });
     expect(JSON.stringify(read)).not.toMatch(/oauth-secret|webhook-marker|PRIVATE KEY/);

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { constants, closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { ENV_SETTINGS, envSettingRefusal, settingSources } from "../config";
+import { ENV_SETTINGS, envSetting, envSettingRefusal, settingSources } from "../config";
 import {
   decodeSecretEnvelope,
   openSecretAt,
@@ -65,7 +65,7 @@ const FIELDS = Object.keys(ENV_SETTINGS.storage) as (keyof typeof ENV_SETTINGS.s
 const environmentConfig = (): Record<string, string> =>
   Object.fromEntries(
     FIELDS.flatMap((key) => {
-      const value = process.env[ENV_SETTINGS.storage[key]];
+      const value = envSetting(process.env, "storage", key);
       return value === undefined ? [] : [[key, value]];
     }),
   );
@@ -189,15 +189,20 @@ export async function saveRunnerStorageSettings(home: string, input: unknown): P
   const changed = FIELDS.filter(
     (key) =>
       submitted.kind === "local" ||
-      (submitted[key] !== undefined && submitted[key] !== process.env[ENV_SETTINGS.storage[key]]),
+      (submitted[key] !== undefined && submitted[key] !== envSetting(process.env, "storage", key)),
   );
   const refusal = envSettingRefusal(process.env, "storage", changed);
   if (refusal !== null && submitted.kind === "local")
     throw new RunnerStorageEnvironmentError(refusal);
   const text = submittedText(home, input);
   const environment = environmentConfig();
+  const previous = savedFields(home) as Record<string, unknown>;
   const kept = Object.entries(JSON.parse(text)).filter(([key]) => !(key in environment));
-  const saved = JSON.stringify(Object.fromEntries(kept));
+  const held = Object.keys(environment).filter((key) => previous[key] !== undefined);
+  const saved = JSON.stringify({
+    ...Object.fromEntries(kept),
+    ...Object.fromEntries(held.map((key) => [key, previous[key]])),
+  });
   if (saved !== storedText(home)) await saveStorage(home, saved);
   if (refusal !== null) throw new RunnerStorageEnvironmentError(refusal);
   return startedWith !== undefined && storageKey(text) !== startedWith;

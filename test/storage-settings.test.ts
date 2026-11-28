@@ -124,6 +124,7 @@ describePglite((connect) => {
 });
 
 test("with PAWS_S3_* set GET reports the environment and PUT gets 409", async () => {
+  expect((await call(send("PUT", { ...s3, secretAccessKey: "saved-secret" }))).status).toBe(200);
   process.env.PAWS_S3_BUCKET = "env-bucket";
   process.env.PAWS_S3_SECRET_ACCESS_KEY = "env-secret";
   const get = await call(send("GET"));
@@ -135,7 +136,7 @@ test("with PAWS_S3_* set GET reports the environment and PUT gets 409", async ()
     sources: {
       bucket: { source: "environment", variable: "PAWS_S3_BUCKET" },
       secretAccessKey: { source: "environment", variable: "PAWS_S3_SECRET_ACCESS_KEY" },
-      region: { source: "unset" },
+      region: { source: "settings" },
     },
   });
   expect(JSON.stringify(get.body)).not.toContain("env-secret");
@@ -162,6 +163,13 @@ test("with PAWS_S3_* set GET reports the environment and PUT gets 409", async ()
   expect(JSON.stringify([put.body, after.body])).not.toContain("env-secret");
   expect(loadRunnerTranscriptS3(home)?.bucket).toBe("env-bucket");
   expect((await call(send("PUT", { ...s3, bucket: "env-bucket" }))).status).toBe(200);
+  delete process.env.PAWS_S3_BUCKET;
+  delete process.env.PAWS_S3_SECRET_ACCESS_KEY;
+  expect((await call(send("GET"))).body).toMatchObject({
+    bucket: "paws-objects",
+    hasSecretAccessKey: true,
+  });
+  expect(loadRunnerTranscriptS3(home)?.bucket).toBe("paws-objects");
 });
 
 test("the check writes, reads and deletes one object and reports an S3 failure", async () => {

@@ -144,8 +144,7 @@ export function createHostedGitHubConnect(options: {
       return denied();
     if (url.pathname !== CALLBACK && !(await administrator())) return denied();
     if (url.pathname === APP) {
-      const configured = () =>
-        Boolean(options.env.GITHUB_APP_ID || loadGitHubAppCredentials(options.home, options.env));
+      const configured = () => loadGitHubAppCredentials(options.home, options.env) !== null;
       const reply = (body: unknown, status = 200) =>
         Response.json(body, { status, headers: { "cache-control": "no-store" } });
       if (request.method === "GET")

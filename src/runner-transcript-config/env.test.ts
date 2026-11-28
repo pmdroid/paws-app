@@ -86,9 +86,6 @@ test("a partial or invalid PAWS_S3_* set fails closed", () => {
     setEnv();
     delete process.env[name];
     expect(() => loadRunnerTranscriptS3(home)).toThrow(FAILURE);
-  }
-  configureRunnerTranscriptStorage(home, JSON.stringify(stored));
-  for (const name of NAMES.slice(0, 5)) {
     setEnv();
     process.env[name] = "";
     expect(() => loadRunnerTranscriptS3(home)).toThrow(FAILURE);
@@ -96,9 +93,10 @@ test("a partial or invalid PAWS_S3_* set fails closed", () => {
   setEnv();
   process.env.PAWS_S3_ENDPOINT = "http://s3.example.invalid";
   expect(() => loadRunnerTranscriptS3(home)).toThrow(FAILURE);
+  configureRunnerTranscriptStorage(home, JSON.stringify(stored));
   setEnv();
-  process.env.PAWS_S3_SESSION_TOKEN = "";
-  expect(() => loadRunnerTranscriptS3(home)).toThrow(FAILURE);
+  process.env.PAWS_S3_BUCKET = "";
+  expect(loadRunnerTranscriptS3(home)?.bucket).toBe("stored-transcripts");
 });
 
 test("without PAWS_S3_* variables the stored configuration decides", () => {
