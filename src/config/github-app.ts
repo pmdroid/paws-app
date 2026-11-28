@@ -91,6 +91,13 @@ export function loadGitHubAppCredentials(
   };
 }
 
+export async function saveGitHubWebhookSecret(home: string, webhookSecret: string) {
+  await saveSecret(
+    join(pawsPaths(home).secretsDir, APP_RECORD),
+    JSON.stringify({ ...readSavedGitHubApp(home), webhookSecret }),
+  );
+}
+
 export async function importLegacyGitHubApp(home: string, env: EnvSource): Promise<void> {
   const dir = pawsPaths(home).secretsDir;
   if (secretFileExists(join(dir, APP_RECORD))) return;

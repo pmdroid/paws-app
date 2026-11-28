@@ -44,6 +44,7 @@ import {
   envSettingRefusal,
   gitHubAppSources,
   loadGitHubAppCredentials,
+  saveGitHubWebhookSecret,
 } from "../config";
 import { saveSecret, storedSecrets } from "../credentials";
 import {
@@ -56,6 +57,7 @@ import { GITHUB_APP_EVENTS } from "../doctor";
 import { readWorkspaceJson } from "../workspace";
 import { dashboardUrl } from "../dashboard-links";
 
+let rotations: Promise<unknown> = Promise.resolve();
 const START = "/api/workspaces/github-connect";
 const APP = "/api/workspaces/github-app";
 const CALLBACK = "/auth/github-app/callback";
@@ -157,12 +159,73 @@ export function createHostedGitHubConnect(options: {
           sources: gitHubAppSources(options.home, options.env),
         });
       if (
-        request.method !== "POST" ||
+        !["POST", "PATCH"].includes(request.method) ||
         request.headers.get("origin") !== origin ||
         !validWorkspaceCsrf(request, access!.session) ||
         !(await permitted())
       )
         return denied();
+      const client = createFetchGitHubClient((target, init) =>
+        (options.fetch ?? fetch)(String(target), {
+          ...init,
+          signal: AbortSignal.any([request.signal, AbortSignal.timeout(30000)]),
+        }),
+      );
+      if (request.method === "PATCH") {
+        const app = loadGitHubAppCredentials(options.home, options.env);
+        if (app === null) return reply({ error: "Configure the GitHub App first." }, 409);
+        if (gitHubAppSources(options.home, options.env).webhookSecret.source !== "settings")
+          return reply(
+            {
+              error:
+                envSettingRefusal(options.env, "github", ["webhookSecret"]) ??
+                "The webhook secret is not saved in Settings.",
+            },
+            409,
+          );
+        const body = (await readWorkspaceJson(request).catch(() => null)) as {
+          webhookSecret?: unknown;
+        } | null;
+        const secret = body?.webhookSecret;
+        if (
+          typeof secret !== "string" ||
+          !secret.trim() ||
+          secret.length > 4096 ||
+          Object.keys(body!).length !== 1
+        )
+          return reply({ error: "Enter a new webhook secret." }, 400);
+        let accepted = false;
+        const rotation = rotations.then(async () => {
+          const response = await client.request({
+            method: "PATCH",
+            path: "/app/hook/config",
+            token: signAppJwt(app.appId, app.privateKeyPem ?? ""),
+            body: { secret },
+          });
+          if (response.status !== 200) throw new GitHubHttpError(response);
+          accepted = true;
+          await saveGitHubWebhookSecret(options.home, secret);
+        });
+        rotations = rotation.catch(() => undefined);
+        try {
+          await rotation;
+        } catch (error) {
+          if (accepted)
+            return reply(
+              {
+                error:
+                  "GitHub took the new webhook secret but Paws could not save it. Rotate again.",
+              },
+              500,
+            );
+          return reply(
+            { error: "GitHub did not accept the new webhook secret. The old secret still works." },
+            error instanceof GitHubHttpError && error.status >= 500 ? 503 : 400,
+          );
+        }
+        await audit("github.webhook_secret_rotated");
+        return reply({ rotated: true });
+      }
       if (configured()) return reply({ error: "The GitHub App is already configured." }, 409);
       if (storedSecrets() === null)
         return reply({ error: "The database secret store is unavailable." }, 503);
@@ -214,12 +277,6 @@ export function createHostedGitHubConnect(options: {
       } catch {
         return reply({ error: "The private key must be a valid RSA PEM private key." }, 400);
       }
-      const client = createFetchGitHubClient((target, init) =>
-        (options.fetch ?? fetch)(String(target), {
-          ...init,
-          signal: AbortSignal.any([request.signal, AbortSignal.timeout(30000)]),
-        }),
-      );
       try {
         const response = await client.request({ method: "GET", path: "/app", token });
         if (response.status !== 200) throw new GitHubHttpError(response);

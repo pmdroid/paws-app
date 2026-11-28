@@ -248,6 +248,32 @@ export async function exchangeLinearCode(input: {
   return requestToken(body, input.fetch ?? fetch, input.now ?? Date.now());
 }
 
+export async function checkLinearClient(input: {
+  clientId: string;
+  clientSecret: string;
+  fetch?: FetchLike;
+}): Promise<"valid" | "invalid" | "unreachable"> {
+  try {
+    const response = await (input.fetch ?? fetch)(TOKEN_URL, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: "paws-client-check",
+        client_id: input.clientId,
+        client_secret: input.clientSecret,
+      }),
+      redirect: "error",
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (response.status >= 500) return "unreachable";
+    const body: unknown = await response.json().catch(() => null);
+    return isRecord(body) && body["error"] === "invalid_grant" ? "valid" : "invalid";
+  } catch {
+    return "unreachable";
+  }
+}
+
 export async function refreshLinearToken(input: {
   refreshToken: string;
   clientId: string | null;

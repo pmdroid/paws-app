@@ -85,6 +85,7 @@ export {
   gitHubWebhookSecret,
   importLegacyGitHubApp,
   loadGitHubAppCredentials,
+  saveGitHubWebhookSecret,
 } from "./github-app";
 export { ENV_SETTINGS, envSetting, envSettingRefusal, settingSources } from "./env-settings";
 export type { EnvSettingField, EnvSettingGroup, SettingSource } from "./env-settings";
