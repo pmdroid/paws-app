@@ -74,6 +74,7 @@ import {
   type Db,
   type Q,
   modelUnofferedReason,
+  createRunWaker,
 } from "../db";
 import {
   ArtifactRejectedError,
@@ -337,6 +338,8 @@ export function createRemoteAgentRunner(options: {
   const now = options.now ?? Date.now;
   const mono = options.mono ?? systemClock.mono;
   const interval = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const waker = createRunWaker(store, interval);
+  const runCheckMs = options.pollIntervalMs ?? waker.backstopMs;
   const silentRunMs = options.silentRunMs ?? DEFAULT_SILENT_RUN_MS;
   const hungRunMs = Math.max(silentRunMs, options.hungRunMs ?? DEFAULT_HUNG_RUN_MS);
   const instanceId = options.instanceId ?? randomUUID();
@@ -1945,6 +1948,7 @@ export function createRemoteAgentRunner(options: {
               return FENCED;
             }
           };
+          using watch = waker.watch(assigned.runId);
           while (now() < deadline) {
             signal.throwIfAborted();
             try {
@@ -2454,6 +2458,7 @@ export function createRemoteAgentRunner(options: {
                   })
                   .finally(() => {
                     question = undefined;
+                    watch.wake();
                   });
               }
               cursor = row.sequence;
@@ -2546,7 +2551,7 @@ export function createRemoteAgentRunner(options: {
                 publishedEffects,
               );
             }
-            await delay(interval, undefined, { signal });
+            await watch.wait(Math.min(runCheckMs, Math.max(0, deadline - now())), signal);
           }
           if (!complete) throw (await releasedBelowMinimum()) ?? new Error("Remote run timed out");
           // A handover can stop the agent while Paws still posts its question, whether the
