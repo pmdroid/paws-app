@@ -5,6 +5,7 @@ import {
   hostIssueVmsAwaitingEnrollmentSteps,
   liveHostIssueVmsSteps,
   markIssueVmTokenMintedSteps,
+  recordVmHostDisksSteps,
   reportHostIssueVmUnitsSteps,
   vmHostMachineSteps,
   type Db,
@@ -43,6 +44,7 @@ const UnitReportSchema = z.strictObject({
     .max(254)
     .optional(),
   sleepCheck: z.literal(true).optional(),
+  disks: z.array(VmId).max(500).optional(),
 });
 
 type UnitReport = z.infer<typeof UnitReportSchema>;
@@ -66,6 +68,8 @@ function* viewSteps(q: Q, runnerId: string, report: UnitReport, now: number, dis
     refused: report.refused,
     now,
   });
+  if (report.disks)
+    yield* recordVmHostDisksSteps(q, { runnerId, disks: report.disks, reportedAt: now });
   const vms = (yield* liveHostIssueVmsSteps(q, runnerId)).map(({ id, state, want }) =>
     want === "asleep" && report.sleepCheck !== true ? { id, state } : { id, state, want },
   );

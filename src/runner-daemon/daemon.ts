@@ -1097,19 +1097,26 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     async issueVmHost(
       running: string[],
       refused: IssueVmSleepRefusal[] = [],
+      disks?: string[],
     ): Promise<IssueVmHostView> {
-      const post = async (body: object) =>
-        IssueVmHostViewSchema.parse(
-          await authenticated(`/v1/issue-vms?${ISSUE_VM_DISKS_QUERY}`, "POST", body),
-        );
       const checked = { running, sleepCheck: true, ...(refused.length > 0 ? { refused } : {}) };
-      try {
-        return await post(checked);
-      } catch (error) {
-        // An older Paws refuses the extra fields with a 400; it then gets the bare report.
-        if (!(error instanceof RunnerRequestError) || error.status !== 400) throw error;
-        return post({ running });
+      const bodies: object[] = [
+        ...(disks === undefined ? [] : [{ ...checked, disks }]),
+        checked,
+        { running },
+      ];
+      for (const [index, body] of bodies.entries()) {
+        try {
+          return IssueVmHostViewSchema.parse(
+            await authenticated(`/v1/issue-vms?${ISSUE_VM_DISKS_QUERY}`, "POST", body),
+          );
+        } catch (error) {
+          const refusedBody = error instanceof RunnerRequestError && error.status === 400;
+          if (!refusedBody || index === bodies.length - 1) throw error;
+          if ("disks" in body) journal(`issue_vm_disks_refused count=${disks?.length ?? 0}`);
+        }
       }
+      throw new Error("The unit report was not sent.");
     },
     async postStorageCleanup(result: RunnerStorageCleanupResult) {
       const body = RunnerStorageCleanupResultSchema.parse(result);

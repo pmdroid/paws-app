@@ -11,6 +11,7 @@ type Paws = {
   workspace: typeof import("../src/workspace");
   pglite: typeof import("../test/pglite");
   fixtures: typeof import("../test/pglite-fixtures");
+  vmHosts: typeof import("../src/vm-hosts");
 };
 type Runner = {
   daemon: typeof import("../src/runner-daemon");
@@ -23,6 +24,8 @@ export type CompatibilityReport = {
   delivered: boolean;
   rejected: string[];
   credentialDelivered: boolean;
+  issueVmError: string | null;
+  issueVmBodies: string[][];
 };
 
 const REPOSITORY = resolve(import.meta.dir, "..");
@@ -65,6 +68,7 @@ async function loadPaws(tree: string): Promise<Paws> {
     workspace: await import(join(tree, "src/workspace/index.ts")),
     pglite: await import(join(tree, "test/pglite.ts")),
     fixtures: await import(join(tree, "test/pglite-fixtures.ts")),
+    vmHosts: await import(join(tree, "src/vm-hosts/index.ts")),
   };
 }
 
@@ -125,6 +129,7 @@ export async function checkRunnerCompatibility(options: {
   runnerTree: string;
   root: string;
   unknownHostField?: string;
+  refusedIssueVmField?: string;
 }): Promise<CompatibilityReport> {
   const paws = await loadPaws(options.pawsTree);
   const runner = await loadRunner(options.runnerTree);
@@ -161,6 +166,15 @@ export async function checkRunnerCompatibility(options: {
   const logged: string[] = [];
   const warn = console.warn;
   console.warn = (...parts: unknown[]) => logged.push(parts.map(String).join(" "));
+  const issueVmBodies: string[][] = [];
+  const issueVms = async (request: Request, runnerId: string) => {
+    if (new URL(request.url).pathname !== "/v1/issue-vms") return null;
+    const keys = Object.keys((await request.clone().json()) as object);
+    issueVmBodies.push(keys);
+    if (options.refusedIssueVmField && keys.includes(options.refusedIssueVmField))
+      return Response.json({ error: "The unit report is not valid." }, { status: 400 });
+    return paws.vmHosts.handleVmHostRunnerRequest(request, runnerId, db);
+  };
   const coordinator = await paws.coordinator
     .openRunnerCoordinator({
       eventKey: Buffer.alloc(32, 7),
@@ -171,6 +185,7 @@ export async function checkRunnerCompatibility(options: {
       db,
       secretsDir,
       onError: () => {},
+      issueVms,
     })
     .finally(() => {
       console.warn = warn;
@@ -243,18 +258,26 @@ export async function checkRunnerCompatibility(options: {
         delivered: false,
         rejected: [],
         credentialDelivered: false,
+        issueVmError: null,
+        issueVmBodies,
       };
     const command = await coordinator.health.request(principal, paired.runnerId, {
       type: "login_check",
       agent: "codex",
     });
     const polled = await daemon.pollCommands();
+    const issueVmError = await daemon.issueVmHost([], [], ["01JVM00000000000000000000A"]).then(
+      () => null,
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
     return {
       refusals,
       heartbeatError,
       delivered: polled.commands.some((entry) => entry.id === command.commandId),
       rejected: polled.rejected.map(String),
       credentialDelivered: received.includes(bound.bindingId),
+      issueVmError,
+      issueVmBodies,
     };
   } finally {
     daemon.close();
@@ -271,6 +294,7 @@ export function compatibilityFailures(report: CompatibilityReport): string[] {
     ...(report.delivered ? [] : ["The login_check command was not delivered."]),
     ...report.rejected.map((reason) => `The runner rejected a command: ${reason}`),
     ...(report.credentialDelivered ? [] : ["The command's sealed sign-in was not delivered."]),
+    ...(report.issueVmError ? [`The unit report failed: ${report.issueVmError}`] : []),
   ];
 }
 

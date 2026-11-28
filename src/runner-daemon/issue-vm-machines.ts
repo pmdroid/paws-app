@@ -40,6 +40,7 @@ export type IssueVmReconcile = {
   waiting: string[];
   refused: { machine: IssueVmMachine; reason: string }[];
   disksRemoved: string[];
+  disks?: string[];
 };
 
 export type IssueVmSleepRefusal = { id: string; reason: string };
@@ -132,11 +133,13 @@ export async function reconcileIssueVms(
   const diskGb = disks && host.vmHost ? host.size.diskGb : undefined;
   if (disks && (!host.vmHost || diskGb !== undefined)) {
     try {
-      const gone = (await disks.list())
-        .map((disk) => disk.id)
-        .filter((id) => !ids.has(id) && !KEPT_STATES.has(rows.get(id)?.state ?? "gone"));
+      const listed = (await disks.list()).map((disk) => disk.id);
+      const gone = listed.filter(
+        (id) => !ids.has(id) && !KEPT_STATES.has(rows.get(id)?.state ?? "gone"),
+      );
       if (gone.length > 0) result.disksRemoved = await disks.remove(gone);
       for (const id of result.disksRemoved) journal(`issue_vm_disk_deleted vm=${id}`);
+      result.disks = listed.filter((id) => !result.disksRemoved.includes(id));
     } catch (error) {
       journalCaught(error, "runner-daemon.reconcileIssueVms.remove", null);
     }
@@ -168,6 +171,7 @@ export async function reconcileIssueVms(
           result.waiting.push(row.id);
           continue;
         }
+        if (result.disks && !result.disks.includes(row.id)) result.disks.push(row.id);
       }
       if (row.token !== undefined) stage?.(row.id, row.token);
       await units.start(started.unit);
