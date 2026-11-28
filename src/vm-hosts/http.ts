@@ -1,6 +1,8 @@
 import {
   auditWorkspaceAccessSteps,
   deleteVmHostSteps,
+  liveHostIssueVmsSteps,
+  runnerHasOpenWorkSteps,
   saveVmHostSteps,
   vmHostMachineSteps,
   type Db,
@@ -103,7 +105,20 @@ export async function handleVmHostRequest(
   if (request.method === "GET") return Response.json(view(machine));
   const now = (options.now ?? Date.now)();
   const audit = { workspaceId: principal.workspaceId, userId: principal.userId, now };
+  const refuse = async (error: string) => {
+    await db.transaction(function* (q) {
+      yield* auditWorkspaceAccessSteps(q, {
+        ...audit,
+        action: "settings.vm_host",
+        subject: `Refused VM host ${runnerId}: ${error}`,
+      });
+    });
+    return Response.json({ error }, { status: 409 });
+  };
   if (request.method === "DELETE") {
+    const live = await db.run((q) => liveHostIssueVmsSteps(q, runnerId));
+    if (machine.host !== null && live.length > 0)
+      return refuse("Delete this host's issue VMs before it stops hosting.");
     await db.transaction(function* (q) {
       if (!(yield* deleteVmHostSteps(q, runnerId))) return;
       yield* auditWorkspaceAccessSteps(q, {
@@ -123,6 +138,12 @@ export async function handleVmHostRequest(
       { error: error instanceof Error ? error.message : "Invalid VM host settings" },
       { status: 400 },
     );
+  }
+  if (machine.host === null) {
+    if (machine.ownerUserId !== principal.userId)
+      return refuse("Only your own idle runner can become a VM host");
+    if (await db.run((q) => runnerHasOpenWorkSteps(q, runnerId, now)))
+      return refuse("Wait for this runner's work to finish, or drain it first");
   }
   await db.transaction(function* (q) {
     yield* saveVmHostSteps(q, {
