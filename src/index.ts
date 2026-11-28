@@ -214,7 +214,14 @@ import {
   setGauge,
 } from "./metrics";
 import { doctorChecks, realProbe } from "./doctor";
-import { createDeployLagCheck, deployLagUnavailable } from "./alerts";
+import {
+  ALERTS_EXPORT_EVERY_MS,
+  ALERTS_EXPORT_JOB,
+  createDeployLagCheck,
+  deployLagUnavailable,
+  exportAlerts,
+  runningDeployIncludes,
+} from "./alerts";
 import { runInstallCli } from "./installer";
 import {
   createGitHubTokenProvider,
@@ -227,6 +234,7 @@ import {
   checkRepositoryWriteAccess,
   checkRepositoryReadAccess,
   createFetchGitHubClient,
+  createRunnerReleaseLookup,
   repositoriesWithMergeQueue,
   repositoriesRequiringUpToDate,
   listAppRepositories,
@@ -309,6 +317,7 @@ import {
   repositoryGrant,
   recordMissingProjectTeams,
   createRepositoryGit,
+  convertLinearUploadManifests,
 } from "./loop";
 import {
   PROBE_COLLECT_JOB,
@@ -371,7 +380,10 @@ import {
 } from "./retros";
 import { createStorageUsage } from "./storage-usage";
 import {
+  TRACES_EXPORT_EVERY_MS,
+  TRACES_EXPORT_JOB,
   createTelemetry,
+  exportItemTraces,
   itemTransitionLogs,
   readTelemetrySettings,
   telemetryHeader,
@@ -600,6 +612,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const store = observeDb(database.store, (ms) => recordDuration("db.transaction", {}, ms));
   const transcriptStorage = earlyTranscripts ?? loadTranscripts();
   const transcriptObjects = transcriptStorage?.objects;
+  await convertLinearUploadManifests(paths.secretsDir);
   await importLinearTokenFile(store, paths.secretsDir, runtime.linearTokenFile);
   await importCredentialFile(
     store,
@@ -1734,10 +1747,15 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       linearWebhookSecret: env.linearWebhookSecret,
       githubWebhookSecret: env.githubWebhookSecret,
       githubWebhook: {
-        accept: (delivery) =>
-          acceptGitHubDelivery(store, delivery, Date.now(), commentFilter, (itemId, body) =>
+        accept: (delivery) => {
+          if (delivery.event === "release")
+            void reconciler
+              ?.recheckBlocked(abort.signal)
+              .catch((error) => journalCaught(error, "index.githubWebhook.release", null));
+          return acceptGitHubDelivery(store, delivery, Date.now(), commentFilter, (itemId, body) =>
             orchestrator ? orchestrator.followUpRunningAgent(itemId, body) : false,
-          ),
+          );
+        },
       },
       slackSigningSecret: () => slackSigningSecret(paths.home, envSource),
       linearWebhook: linear?.webhook ?? (webhooks ? { store: inbox } : undefined),
@@ -2461,6 +2479,13 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           store,
           tracker: linear.tracker,
           lifecycle: linear.issueLifecycle,
+          releases: createRunnerReleaseLookup((name) => {
+            const binding = repositoryBinding(name);
+            const github =
+              binding && githubBinding(authProvider(runtime, binding, "read", resolveApp));
+            return binding && github ? { ...binding, ...github } : null;
+          }),
+          deployed: (mergeSha) => runningDeployIncludes(deployLag, mergeSha),
           ...(parents ? { scopeSnapshot: parents.scopeSnapshot } : {}),
           onChanges: function* (q, changes) {
             for (const { itemId, issue } of changes.issues)
@@ -2474,6 +2499,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           },
           afterChanges: (changes) => attached.finishDelegationChanges(changes),
         });
+        void reconciler
+          .recheckBlocked(abort.signal)
+          .catch((error) => journalCaught(error, "index.reconciler.startupRecheck", null));
         publication = createPublicationReadiness({
           store,
           reconciler,
@@ -2605,6 +2633,22 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         queue: METRICS_FLUSH_JOB,
         jobKey: METRICS_FLUSH_JOB,
         recurringEveryMs: METRICS_FLUSH_EVERY_MS,
+        now: Date.now(),
+      });
+      created.jobs.register(TRACES_EXPORT_JOB, async () => {
+        await exportItemTraces(store, telemetry);
+      });
+      await enqueueJobOnce(store, {
+        queue: TRACES_EXPORT_JOB,
+        jobKey: TRACES_EXPORT_JOB,
+        recurringEveryMs: TRACES_EXPORT_EVERY_MS,
+        now: Date.now(),
+      });
+      created.jobs.register(ALERTS_EXPORT_JOB, () => exportAlerts(store, telemetry));
+      await enqueueJobOnce(store, {
+        queue: ALERTS_EXPORT_JOB,
+        jobKey: ALERTS_EXPORT_JOB,
+        recurringEveryMs: ALERTS_EXPORT_EVERY_MS,
         now: Date.now(),
       });
       created.jobs.register(QUEUE_DEPTH_JOB, () => recordQueueDepths(store));

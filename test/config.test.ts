@@ -103,7 +103,6 @@ describe("config", () => {
   test("layout paths and secret directory mode", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
-    expect(paths.db).toBe(join(home, "paws.db"));
     expect(paths.secretsDir).toBe(join(home, "secrets"));
     expect(paths.worktreesDir).toBe(join(home, "worktrees"));
     ensureLayout(paths);
@@ -132,7 +131,6 @@ describe("config", () => {
     expect(runtime.repos).toEqual([]);
     expect(runtime.publicUrl).toBeNull();
     expect(runtime.webhooks).toBe(false);
-    expect(runtime.githubAuth).toBe("app");
     expect(runtime.maxAwakeMs).toBe(DEFAULT_MAX_AWAKE_MS);
 
     const set = loadRuntime({

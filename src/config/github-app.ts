@@ -1,6 +1,7 @@
-import { readSecretFile, saveSecret, secretFileExists } from "../credentials";
+import { readSecretFile, secretFileExists } from "../credentials";
 import { join } from "node:path";
 import type { EnvSource } from "./env";
+import { envSetting, settingSources } from "./env-settings";
 import { pawsPaths } from "./paths";
 
 export type GitHubAppCredentials = {
@@ -13,10 +14,7 @@ export type GitHubAppCredentials = {
   webhookSecret?: string;
 };
 
-export function loadGitHubAppCredentials(
-  home: string,
-  env: EnvSource,
-): GitHubAppCredentials | null {
+function readSavedGitHubApp(home: string): Partial<GitHubAppCredentials> {
   const dir = pawsPaths(home).secretsDir;
   const browser = join(dir, "github-browser-app.json");
   const path = secretFileExists(browser) ? browser : join(dir, "github-app.json");
@@ -32,10 +30,22 @@ export function loadGitHubAppCredentials(
       );
     }
   }
-  const appId = env.GITHUB_APP_ID ?? saved.appId;
-  const clientId = env.PAWS_GITHUB_CLIENT_ID ?? saved.clientId;
-  const clientSecret = env.PAWS_GITHUB_CLIENT_SECRET ?? saved.clientSecret;
-  const privateKeyPath = env.GITHUB_APP_PRIVATE_KEY_PATH ?? saved.privateKeyPath;
+  return saved;
+}
+
+export function gitHubAppSources(home: string, env: EnvSource) {
+  return settingSources(env, "github", readSavedGitHubApp(home));
+}
+
+export function loadGitHubAppCredentials(
+  home: string,
+  env: EnvSource,
+): GitHubAppCredentials | null {
+  const saved = readSavedGitHubApp(home);
+  const appId = envSetting(env, "github", "appId") ?? saved.appId;
+  const clientId = envSetting(env, "github", "clientId") ?? saved.clientId;
+  const clientSecret = envSetting(env, "github", "clientSecret") ?? saved.clientSecret;
+  const privateKeyPath = envSetting(env, "github", "privateKeyPath") ?? saved.privateKeyPath;
   if (
     typeof appId !== "string" ||
     !appId.trim() ||
@@ -48,22 +58,12 @@ export function loadGitHubAppCredentials(
   )
     return null;
   return {
-    ...(env.GITHUB_APP_PRIVATE_KEY_PATH ? {} : { privateKeyPem: saved.privateKeyPem }),
-    webhookSecret: env.GITHUB_WEBHOOK_SECRET ?? saved.webhookSecret,
+    ...(envSetting(env, "github", "privateKeyPath") ? {} : { privateKeyPem: saved.privateKeyPem }),
+    webhookSecret: envSetting(env, "github", "webhookSecret") ?? saved.webhookSecret,
     appId,
     clientId,
     clientSecret,
     privateKeyPath,
     installationId: env.GITHUB_APP_INSTALLATION_ID ?? saved.installationId ?? null,
   };
-}
-
-export async function saveGitHubAppCredentials(
-  home: string,
-  app: GitHubAppCredentials,
-): Promise<void> {
-  const dir = pawsPaths(home).secretsDir;
-  const privateKeyPath = join(dir, "github-app.pem");
-  await saveSecret(privateKeyPath, readSecretFile(app.privateKeyPath, false)!);
-  await saveSecret(join(dir, "github-app.json"), `${JSON.stringify({ ...app, privateKeyPath })}\n`);
 }

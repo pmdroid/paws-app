@@ -1,5 +1,5 @@
 {
-  "id": "6a2c83db-3f64-4fb9-882a-7806a95a5734",
+  "id": "79daf85d-43d2-4f14-8ca3-59286a943174",
   "prevId": "17883762-cae6-482c-9a44-105cf2982a40",
   "version": "7",
   "dialect": "postgresql",
@@ -21324,18 +21324,6 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": false
-        },
-        "disk_present": {
-          "name": "disk_present",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "disk_seen_at": {
-          "name": "disk_seen_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -22047,6 +22035,47 @@
         }
       },
       "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.trace_export": {
+      "name": "trace_export",
+      "schema": "",
+      "columns": {
+        "item_id": {
+          "name": "item_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "exported_at": {
+          "name": "exported_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "trace_export_item_id_work_item_id_fk": {
+          "name": "trace_export_item_id_work_item_id_fk",
+          "tableFrom": "trace_export",
+          "tableTo": "work_item",
+          "columnsFrom": ["item_id"],
+          "columnsTo": ["id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},

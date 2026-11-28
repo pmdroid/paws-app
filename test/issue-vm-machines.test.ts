@@ -19,6 +19,7 @@ import {
   recordRunnerHostStatusSteps,
   saveVmHostSteps,
   setIssueVmWantSteps,
+  vmHostDisksSteps,
   type Db,
   type IssueVmState,
 } from "../src/db";
@@ -808,6 +809,7 @@ test("a creating VM gets its disk before its first start, waits while the pool i
   );
   // 80 GB of the pool is usable and each VM needs its 30 GB disk and 4 GB for its memory.
   expect(first.started.map((found) => found.id)).toEqual([A, B]);
+  expect(first.disks).toEqual([A, B]);
   expect([...disk.volumes.keys()].sort()).toEqual([A, B]);
   expect(disk.calls.filter((call) => call.startsWith("create-"))).toEqual([
     `create-${A}-30-4`,
@@ -874,20 +876,6 @@ test("a runner that is no VM host in Paws stops its VMs and then removes their d
   expect(fake.calls).toEqual([`stop ${issueVmUnit(A, 1, SIZE)}`]);
   expect(result.disksRemoved).toEqual([A, B]);
   expect(disk.volumes.size).toBe(0);
-});
-
-test("a disk the host failed to remove is not reported gone", async () => {
-  const fake = createFakeIssueVmUnits();
-  const disk = createFakeIssueVmDiskHelper({ poolBytes: 100 * GIB, baseBytes: 8 * GIB });
-  const disks = issueVmDisks(async (operation) => {
-    if (operation.startsWith("delete-")) throw new Error("lvremove failed");
-    return disk.helper(operation);
-  });
-  await disks.clone(A, { diskGb: 30, memoryGb: 4 });
-  const result = await reconcileIssueVms(fake.units, { vmHost: false }, undefined, disks);
-  expect(result.disksRemoved).toEqual([]);
-  expect(result.disks).toBeUndefined();
-  expect([...disk.volumes.keys()]).toEqual([A]);
 });
 
 test("Paws mints one live bootstrap token for a creating host VM whose unit isn't running, and records the runner it enrolls", async () => {
@@ -1121,4 +1109,70 @@ test("host create waits for enrollment only for a VM Paws gave a token, so older
   });
   await newer.create(B, call);
   expect(polls).toBe(3);
+});
+
+test("the host sends the disks it still holds, and Paws keeps the newest list with its report time", async () => {
+  const db = await store();
+  await host(db);
+  await db.run((q) =>
+    recordRunnerHostStatusSteps(q, HOST, { cpuCount: 20, memoryTotalBytes: 121 * 1024 ** 3 }, 1),
+  );
+  await db.run((q) =>
+    saveVmHostSteps(q, {
+      runnerId: HOST,
+      vmVcpus: 2,
+      vmMemoryGb: 4,
+      vmDiskGb: 30,
+      reserveVcpus: 4,
+      reserveMemoryGb: 8,
+      slotCap: 3,
+      updatedAt: 1,
+      updatedBy: "ada",
+    }),
+  );
+  await vm(db, A, "awake");
+  const report = (at: number, body: unknown) =>
+    handleVmHostRunnerRequest(
+      new Request("https://runner.paws.test/v1/issue-vms?disks=1", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+      HOST,
+      db,
+      () => at,
+    );
+  const held = () => db.run((q) => vmHostDisksSteps(q, HOST));
+  const sent: (string[] | undefined)[] = [];
+  const daemon = {
+    async issueVmHost(running: string[], refused?: unknown[], disks?: string[]) {
+      sent.push(disks);
+      const body = { running, sleepCheck: true, ...(disks ? { disks } : {}) };
+      return (await (await report(100 + sent.length, body))!.json()) as IssueVmHostView;
+    },
+  };
+  const fake = createFakeIssueVmUnits();
+  const disk = createFakeIssueVmDiskHelper({ poolBytes: 100 * GIB, baseBytes: 8 * GIB });
+  const disks = issueVmDisks(disk.helper);
+  await disks.clone(A, { diskGb: 30, memoryGb: 4 });
+  await disks.clone(B, { diskGb: 30, memoryGb: 4 });
+  const enroll = mkdtempSync(join(tmpdir(), "issue-vm-enroll-"));
+  cleanups.push(() => rmSync(enroll, { recursive: true, force: true }));
+  let clock = 0;
+  const tick = issueVmReconciler(daemon, fake.units, () => (clock += 30_000), enroll, disks);
+  await tick();
+  expect(sent).toEqual([undefined, [A]]);
+  expect(await held()).toEqual({ disks: [A], reportedAt: 102 });
+  await tick();
+  expect(sent).toEqual([undefined, [A], [A]]);
+  expect(await held()).toEqual({ disks: [A], reportedAt: 103 });
+
+  expect((await report(50, { running: [], disks: [B] }))!.status).toBe(200);
+  expect(await held()).toEqual({ disks: [A], reportedAt: 103 });
+  expect((await report(200, { running: [] }))!.status).toBe(200);
+  expect(await held()).toEqual({ disks: [A], reportedAt: 103 });
+  expect((await report(201, { running: [], disks: ["nope"] }))!.status).toBe(400);
+  const many = Array.from({ length: 501 }, (_, n) => `01JVM${String(n).padStart(21, "0")}`);
+  expect((await report(202, { running: [], disks: many }))!.status).toBe(400);
+  expect((await report(203, { running: [], disks: many.slice(0, 500) }))!.status).toBe(200);
+  expect((await held())?.reportedAt).toBe(203);
 });

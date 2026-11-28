@@ -63,7 +63,7 @@ import {
   acceptRetroResult,
   authorizeRetroInput,
   authorizeRetroTranscript,
-  RETRO_TRANSCRIPT_TOOLS_RUNNER_VERSION,
+  MINIMUM_RUNNER_VERSION,
   runnerReleaseAtLeast,
   RUNNER_RESULT_BODY_LIMIT,
   RUNNER_RETRO_CAPABILITY,
@@ -805,10 +805,7 @@ export function createRetroDispatcher(options: {
           sizeBytes: promptBytes.byteLength,
         },
         ...(indexed &&
-        runnerReleaseAtLeast(
-          yield* runnerHostVersionSteps(q, runnerId),
-          RETRO_TRANSCRIPT_TOOLS_RUNNER_VERSION,
-        )
+        runnerReleaseAtLeast(yield* runnerHostVersionSteps(q, runnerId), MINIMUM_RUNNER_VERSION)
           ? { transcripts: true as const }
           : {}),
       };

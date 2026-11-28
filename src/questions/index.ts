@@ -1,12 +1,5 @@
-export {
-  ANSWER_POLICY,
-  answerer,
-  canAnswer,
-  type AnswerableQuestion,
-  type Answerer,
-} from "./answerers";
+export { answerer, canAnswer, type AnswerableQuestion, type Answerer } from "./answerers";
 export type { AskTeamInput, QuestionChannel, QuestionOption, TeamAnswer } from "./channel";
-export const pawsQuestionMarker = (questionId: string): string => `<!-- paws:q:${questionId} -->`;
 export { createFakeQuestionChannel } from "./fake";
 export type { FakeQuestionChannel } from "./fake";
 export { elicitationBody, handoffNote } from "./note";
@@ -53,7 +46,6 @@ export {
 } from "./lifecycle";
 export {
   ASK_TEAM_REASON,
-  askedThroughAskTeam,
   findAskedQuestionSteps,
   findOpenQuestion,
   findOpenQuestionSteps,

@@ -79,6 +79,7 @@ export {
   createLinearArtifactPublisher,
   EVIDENCE_INLINE_LIMITS,
   createLinearArtifactReader,
+  convertLinearUploadManifests,
   type EvidenceSink,
 } from "./artifacts";
 

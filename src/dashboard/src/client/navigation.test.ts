@@ -26,7 +26,7 @@ test("sidebar exposes every page exactly once and all page links round-trip", ()
   const views = NAVIGATION.flatMap((group) => [...group.views]);
   // Settings and Workspace have their own entries, and an evidence page is opened from a run or a copied link.
   const linked = Object.keys(PAGES).filter(
-    (view) => !["settings", "workspace", "evidence", "runs", "alias"].includes(view),
+    (view) => !["settings", "workspace", "evidence", "alias"].includes(view),
   );
   expect(new Set(views).size).toBe(linked.length);
   expect(views.length).toBe(linked.length);
@@ -53,7 +53,7 @@ test("empty pages retain their own heading and empty state", () => {
     verdicts: [],
     mergeQueue: [],
   };
-  for (const view of ["overview", "issues", "runs", "questions"] as const) {
+  for (const view of ["overview", "issues", "questions"] as const) {
     const html = render({
       ...model,
       issues: issueList(snapshot),
@@ -66,11 +66,9 @@ test("empty pages retain their own heading and empty state", () => {
 });
 
 test("invalid detail routes do not silently show a different result", () => {
-  for (const view of ["issues", "runs"] as const) {
-    const html = render({ ...model, route: { view, id: "missing" } }).content;
-    expect(html).toContain("not found");
-    expect(html).toContain("data-route-picker");
-  }
+  const html = render({ ...model, route: { view: "issues", id: "missing" } }).content;
+  expect(html).toContain("not found");
+  expect(html).toContain("data-route-picker");
 });
 
 test("issues list offers state filters and a simple item list", () => {
@@ -95,7 +93,7 @@ test("path routes keep the engine base and only claim dashboard pages", () => {
   expect(routerBase("/dashboards")).toBe("");
   expect(routerBase("/status/runs/r-1")).toBe("");
   expect(routerBase("/runs/r-1")).toBe("");
-  expect(routeHref({ view: "runs", id: "r/1" })).toBe("/runs/r%2F1");
+  expect(routeHref({ view: "alias", kind: "runs", id: "r/1" })).toBe("/runs/r%2F1");
   expect(parseRoute("/runs/r%2F1")).toEqual({ view: "alias", kind: "runs", id: "r/1" });
   expect(routeHref({ view: "alias", kind: "sessions", id: "s/1" })).toBe("/sessions/s%2F1");
   expect(parseRoute("#/settings/account")).toEqual({ view: "settings", page: "account" });
@@ -125,7 +123,6 @@ test("every work page reads its own resource", () => {
   expect(routeResource({ view: "mergeQueue" })).toBe("mergeQueue");
   expect(routeResource({ view: "issues", id: null })).toBe("issues");
   expect(routeResource({ view: "issues", id: "ENG-101" })).toBe("issue");
-  expect(routeResource({ view: "runs", id: "r-1" })).toBe("issues");
   expect(routeResource({ view: "overview" })).toBe("overview");
   expect(routeResource({ view: "questions", id: null })).toBe("questions");
   expect(routeResource({ view: "questions", id: "Q-41" })).toBe("question");

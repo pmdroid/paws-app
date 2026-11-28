@@ -97,6 +97,18 @@ export async function runningRevisionContains(
   return found.every(Boolean);
 }
 
+export async function runningDeployIncludes(
+  check: DeployLagCheck,
+  commitSha: string,
+): Promise<boolean | string> {
+  const unavailable = await deployLagUnavailable(check);
+  if (unavailable !== null) return unavailable;
+  return runningRevisionContains(check, commitSha).then(
+    (found) => found ?? "the running revision can't be read",
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  );
+}
+
 const hours = (ms: number) => `${Math.floor(ms / HOUR_MS)} h`;
 
 async function deployLag(check: DeployLagCheck, now: number): Promise<Alert[]> {

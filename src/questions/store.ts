@@ -31,10 +31,6 @@ export type QuestionKind =
 
 export const ASK_TEAM_REASON = "agent_question";
 
-export function askedThroughAskTeam(question: Pick<StoredQuestion, "kind" | "reason">): boolean {
-  return question.kind === "agent" && question.reason === ASK_TEAM_REASON;
-}
-
 export type StoredQuestion = {
   id: string;
   itemId: string;

@@ -1,28 +1,26 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 import {
   copySecretRowsSteps,
-  secretRowsSteps,
-  writeSecretRowSteps,
+  readSecretSteps,
+  SecretConflictError,
+  secretVersionsSteps,
+  writeSecretSteps,
   type Db,
   type SecretRow,
 } from "../db";
-import { journal } from "../journal";
-import {
-  isStoredSecretName,
-  openSecretAt,
-  SECRET_PREFIX,
-  sealSecret,
-  storedSecrets,
-  useSecretTable,
-} from "./files";
+import { journal, journalCaught } from "../journal";
+import { openSecretAt, SECRET_PREFIX, sealSecret, storedSecrets, useSecretTable } from "./files";
+import { isOwnedSecretName, isPrunedSecretFolder } from "./names";
 
 const MAX_SECRET_BYTES = 1_048_576;
+const REFRESH_MS = 10_000;
+const unowned = new Set<string>();
 
 export async function useDatabaseSecrets(
   store: Db,
   dir: string,
-  options: { copy?: boolean } = {},
+  options: { copy?: boolean; refreshMs?: number } = {},
 ): Promise<{ close(): Promise<void> }> {
   if (options.copy !== false) {
     const copied = await store.transaction((q) =>
@@ -31,37 +29,96 @@ export async function useDatabaseSecrets(
     if (copied > 0)
       journal(`Copied ${copied} secret ${copied === 1 ? "file" : "files"} into the database.`);
   }
-  const rows = await store.run(secretRowsSteps);
-  const cached = new Map(rows.map((row) => [row.name, row.ciphertext]));
+  const rows = new Map<string, string>();
+  const versions = new Map<string, number>();
+  const remember = (name: string, read: { value: string | null; version: number } | null) => {
+    if (read === null || read.version < (versions.get(name) ?? 0)) return;
+    versions.set(name, read.version);
+    if (read.value === null) rows.delete(name);
+    else rows.set(name, read.value);
+  };
+  const reread = async (name: string) =>
+    remember(name, await store.run((q) => readSecretSteps(q, name)));
+  let refreshing: Promise<void> | null = null;
+  const refresh = () =>
+    (refreshing ??= (async () => {
+      for (const row of await store.run(secretVersionsSteps))
+        if (versions.get(row.name) !== row.version) await reread(row.name);
+    })().finally(() => {
+      refreshing = null;
+    }));
+  await refresh();
+  const put = async (name: string, ciphertext: string | null, exclusive: boolean) => {
+    try {
+      const expected = versions.get(name) ?? null;
+      const version = await store.run((q) => writeSecretSteps(q, name, ciphertext, expected));
+      remember(name, { value: ciphertext, version });
+    } catch (error) {
+      if (!(error instanceof SecretConflictError)) throw error;
+      await reread(name);
+      if (exclusive) throw new Error("Paws credential file already exists.", { cause: error });
+      throw error;
+    }
+  };
+  let writes: Promise<unknown> = Promise.resolve();
   useSecretTable({
     dir,
-    rows: cached,
-    async write(name, ciphertext, exclusive) {
-      const written = await store.run((q) =>
-        writeSecretRowSteps(q, { name, ciphertext, now: Date.now(), exclusive }),
-      );
-      if (written) return;
-      const winner = (await store.run(secretRowsSteps)).find((row) => row.name === name);
-      if (winner) cached.set(name, winner.ciphertext);
-      throw new Error("Paws credential file already exists.");
+    rows,
+    write(name, ciphertext, exclusive) {
+      const written = writes.then(() => put(name, ciphertext, exclusive));
+      writes = written.catch(() => undefined);
+      return written;
     },
   });
-  return { close: async () => useSecretTable(null) };
+  const timer = setInterval(
+    () =>
+      void refresh().catch((error: unknown) =>
+        journalCaught(error, "credentials.refreshSecrets", null),
+      ),
+    options.refreshMs ?? REFRESH_MS,
+  );
+  timer.unref();
+  return {
+    close: async () => {
+      clearInterval(timer);
+      useSecretTable(null);
+    },
+  };
 }
 
 export function secretFiles(dir: string): SecretRow[] {
   if (!existsSync(dir)) return [];
-  return readdirSync(dir, { recursive: true, withFileTypes: true }).flatMap((entry) => {
-    const path = join(entry.parentPath, entry.name);
-    if (!entry.isFile() || entry.name.startsWith(".") || entry.name.endsWith(".tmp")) return [];
-    if (!isStoredSecretName(relative(dir, path)) || statSync(path).size > MAX_SECRET_BYTES)
-      return [];
-    const text = readFileSync(path, "utf8");
-    const ciphertext = text.startsWith(SECRET_PREFIX)
-      ? text
-      : sealSecret(entry.parentPath, entry.name, text);
-    return [{ name: relative(dir, path), ciphertext }];
-  });
+  const skipped = new Set(
+    [
+      "PAWS_TLS_KEY_PATH",
+      "PAWS_TLS_CERT_PATH",
+      "PAWS_RUNNER_TLS_KEY_PATH",
+      "PAWS_RUNNER_TLS_CERT_PATH",
+    ]
+      .map((name) => process.env[name]?.trim())
+      .filter((path): path is string => !!path)
+      .map((path) => resolve(path)),
+  );
+  const walk = (folder: string): SecretRow[] =>
+    readdirSync(folder, { withFileTypes: true }).flatMap((entry) => {
+      const path = join(folder, entry.name);
+      const name = relative(dir, path);
+      if (skipped.has(resolve(path))) return [];
+      if (entry.isDirectory()) return isPrunedSecretFolder(name) ? [] : walk(path);
+      if (!entry.isFile() || entry.name.startsWith(".") || entry.name.endsWith(".tmp")) return [];
+      if (!isOwnedSecretName(name)) {
+        if (!unowned.has(resolve(path))) journal(`not imported: ${name}`);
+        unowned.add(resolve(path));
+        return [];
+      }
+      if (statSync(path).size > MAX_SECRET_BYTES) return [];
+      const text = readFileSync(path, "utf8");
+      const ciphertext = text.startsWith(SECRET_PREFIX)
+        ? text
+        : sealSecret(folder, entry.name, text);
+      return [{ name, ciphertext }];
+    });
+  return walk(dir);
 }
 
 export function checkSecrets(dir: string) {

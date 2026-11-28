@@ -38,13 +38,24 @@ export function defaultGitExec(bin = "/usr/bin/git"): GitExec {
   };
 }
 
-export function gitEnv(token?: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  delete env.GH_TOKEN;
-  delete env.GITHUB_TOKEN;
-  delete env.GH_ENTERPRISE_TOKEN;
-  delete env.SSH_AUTH_SOCK;
-  delete env.PAWS_GITHUB_TOKEN;
+const GIT_ENV_KEYS = [
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "LANG",
+  "LC_ALL",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_NOSYSTEM",
+  "GIT_SSL_CAINFO",
+  "GIT_AUTHOR_NAME",
+  "GIT_AUTHOR_EMAIL",
+  "GIT_COMMITTER_NAME",
+  "GIT_COMMITTER_EMAIL",
+];
+
+export function gitEnv(token?: string, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { PATH: "/usr/bin:/bin" };
+  for (const key of GIT_ENV_KEYS) if (base[key] !== undefined) env[key] = base[key];
   env.GIT_TERMINAL_PROMPT = "0";
   if (token !== undefined) env.PAWS_GITHUB_TOKEN = token;
   return env;

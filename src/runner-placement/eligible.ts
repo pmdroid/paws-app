@@ -4,7 +4,10 @@ import {
   listAgentBindingsSteps,
   delegatedLinearUserIdSteps,
   eligibleRunnerRowsSteps,
+  getWorkItemRepositoryChoiceSteps,
   getWorkItemRepositorySteps,
+  getWorkItemSteps,
+  listRepositoryCandidatesSteps,
   itemOwnerScopeRowSteps,
   lastItemRunnerSteps,
   runnerHostVersionSteps,
@@ -248,6 +251,34 @@ export function* itemRepositoryAllowedOnSteps(
     found.runners.some((runner) => runner.id === input.runnerId) &&
     (yield* runnerRepositoryRefusalSteps(q, input.runnerId, found.repository)) === null
   );
+}
+
+function* itemReleaseRepositoriesSteps(q: Q, itemId: string): Steps<string[]> {
+  const binding =
+    (yield* getWorkItemRepositorySteps(q, itemId)) ??
+    (yield* getWorkItemRepositoryChoiceSteps(q, itemId));
+  if (binding) return [`${binding.owner}/${binding.repo}`];
+  const sessionKey = (yield* getWorkItemSteps(q, itemId))?.sessionKey ?? null;
+  return (yield* listRepositoryCandidatesSteps(q, sessionKey, [])).map(
+    (candidate) => `${candidate.owner}/${candidate.repo}`,
+  );
+}
+
+export function* itemRunnerOnReleaseSteps(q: Q, itemId: string, tag: string): Steps<boolean> {
+  const match = tag.match(/^v?(\d+)\.(\d+)\.(\d+)$/);
+  const scope = match && (yield* itemOwnerScopeSteps(q, itemId));
+  if (!match || !scope) return false;
+  const release = [Number(match[1]), Number(match[2]), Number(match[3])] as const;
+  const repositories = yield* itemReleaseRepositoriesSteps(q, itemId);
+  const runners = yield* eligibleRunnersSteps(q, { ...scope, agent: "", purpose: "prepare" });
+  for (const runner of runners) {
+    if (!runner.eligible) continue;
+    if (!runnerReleaseAtLeast(yield* runnerHostVersionSteps(q, runner.id), release)) continue;
+    if (repositories.length === 0) return true;
+    for (const repository of repositories)
+      if ((yield* runnerRepositoryRefusalSteps(q, runner.id, repository)) === null) return true;
+  }
+  return false;
 }
 
 export function* itemRepositoryRefusalsSteps(q: Q, input: { itemId: string; now?: number }) {

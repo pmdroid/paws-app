@@ -4,6 +4,7 @@ import {
   hostIssueVmUnitSteps,
   runnerStandingSteps,
   updateLiveIssueVmStateSteps,
+  vmHostDisksSteps,
   type Db,
   type HostIssueVmUnit,
 } from "../db";
@@ -50,14 +51,15 @@ export function createHostIssueVmDriver(options: HostIssueVmDriverOptions): Issu
     for (;;) {
       signal.throwIfAborted();
       const row = await unit(id);
+      const report = diskGone
+        ? await store.run((q) => vmHostDisksSteps(q, row.hostRunnerId))
+        : null;
       if (
         row.unitSeenAt !== null &&
         row.unitSeenAt >= since &&
         row.unitRunning === running &&
         (!enrolled || row.tokenMintedAt === null || row.runnerId !== null) &&
-        (!diskGone ||
-          row.diskSeenAt === null ||
-          (row.diskSeenAt >= since && row.diskPresent === false))
+        (!diskGone || (report !== null && report.reportedAt >= since && !report.disks.includes(id)))
       )
         return;
       if (sleeping && row.sleepRefusedAt !== null && row.sleepRefusedAt >= since)

@@ -11,12 +11,7 @@ import {
   listRepositoryCatalog,
   refreshRepositoryCatalog,
 } from "../src/db";
-import {
-  listAppRepositories,
-  listUserRepositories,
-  type CatalogRepository,
-  type GitHubClient,
-} from "../src/github";
+import { listAppRepositories, type CatalogRepository, type GitHubClient } from "../src/github";
 import { tempHome } from "./helpers";
 import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
@@ -119,23 +114,23 @@ test("a list token with more than metadata read is refused", async () => {
   expect(client.calls).toHaveLength(1);
 });
 
-test("a signed-in user lists only repositories they can push to", async () => {
-  const client = fakeClient(() => ({
-    status: 200,
-    body: [
-      repo("paws-app"),
-      repo("read-only", { permissions: { push: false } }),
-      repo("archived", { archived: true }),
-    ],
-  }));
-  const listed = await listUserRepositories({ client, token: "user-token" });
-  expect(client.calls.map((call) => [call.path, call.token])).toEqual([
-    [
-      "/user/repos?affiliation=owner,collaborator,organization_member&per_page=100&page=1",
-      "user-token",
-    ],
-  ]);
-  expect(listed.map((entry) => `${entry.owner}/${entry.repo}`)).toEqual(["pmdroid/paws-app"]);
+test("a list token that does not expire within the hour is refused", async () => {
+  for (const expiresAt of [NOW.getTime() + 2 * 60 * 60_000, NOW.getTime() - 60_000]) {
+    const client = fakeClient(() => ({
+      status: 201,
+      body: { ...listToken().body, expires_at: new Date(expiresAt).toISOString() },
+    }));
+    await expect(
+      listAppRepositories({
+        client,
+        appId: "1",
+        installationId: "2",
+        privateKeyPem: PEM,
+        now: NOW,
+      }),
+    ).rejects.toThrow("repository list token must expire within 1 hour");
+    expect(client.calls).toHaveLength(1);
+  }
 });
 
 test("the catalog is replaced on refresh and kept when a refresh fails", async () => {

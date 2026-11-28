@@ -51,6 +51,7 @@ export type DependencySnapshot = {
   scope: string;
   linearStates: string;
   linearIdentifiers: string;
+  externalEvidence: string;
   workspaceId: string;
 };
 
@@ -59,6 +60,7 @@ export type ManagedBlockerItem = {
   mode: TaskMode | null;
   cancelRequested: number;
   mergeSha: string | null;
+  repository?: string | null;
 };
 
 function jsonText(q: Q, value: unknown): string {
@@ -211,6 +213,7 @@ export function* readDependencySnapshotSteps(q: Q, itemId: string) {
         scope: itemDependencySnapshot.scope,
         linearStates: itemDependencySnapshot.linearStates,
         linearIdentifiers: itemDependencySnapshot.linearIdentifiers,
+        externalEvidence: itemDependencySnapshot.externalEvidence,
         workspaceId: itemDependencySnapshot.workspaceId,
       })
       .from(itemDependencySnapshot)
@@ -222,6 +225,7 @@ export function* readDependencySnapshotSteps(q: Q, itemId: string) {
     scope: storedText(row.scope),
     linearStates: storedText(row.linearStates),
     linearIdentifiers: storedText(row.linearIdentifiers),
+    externalEvidence: storedText(row.externalEvidence),
     workspaceId: row.workspaceId,
   } satisfies DependencySnapshot;
 }
@@ -350,6 +354,7 @@ type NewDependencySnapshot = {
   scope: string;
   linearStates: string;
   linearIdentifiers: string;
+  externalEvidence?: string;
 };
 
 export function* saveDependencySnapshotSteps(q: Q, snapshot: NewDependencySnapshot) {
@@ -364,7 +369,7 @@ export function* saveDependencySnapshotSteps(q: Q, snapshot: NewDependencySnapsh
         scope: jsonValue(q, snapshot.scope),
         linearStates: jsonValue(q, snapshot.linearStates),
         linearIdentifiers: jsonValue(q, snapshot.linearIdentifiers),
-        externalEvidence: jsonValue(q, "{}"),
+        externalEvidence: jsonValue(q, snapshot.externalEvidence ?? "{}"),
       })
       .onConflictDoUpdate({
         target: itemDependencySnapshot.itemId,
@@ -389,9 +394,10 @@ export async function saveDependencySnapshot(
 
 export function* listManagedBlockerItemsSteps(
   q: Q,
-  input: { workspaceId: string; issueId: string; itemId: string },
+  input: { workspaceId: string; issueId: string; itemId: string; withRepository?: true },
 ) {
-  const { linearSession, remoteMergeFact, workItem, workItemTask, workspace } = q.t;
+  const { linearSession, remoteMergeFact, workItem, workItemRepository, workItemTask, workspace } =
+    q.t;
   const rows = yield* q.all(
     q.orm
       .select({
@@ -399,12 +405,15 @@ export function* listManagedBlockerItemsSteps(
         mode: workItemTask.mode,
         cancelRequested: workItem.cancelRequested,
         mergeSha: remoteMergeFact.mergeSha,
+        owner: workItemRepository.owner,
+        repo: workItemRepository.repo,
       })
       .from(workItem)
       .innerJoin(linearSession, eq(linearSession.sessionId, workItem.sessionKey))
       .innerJoin(workspace, eq(workspace.linearOrganizationId, linearSession.organizationId))
       .leftJoin(workItemTask, eq(workItemTask.itemId, workItem.id))
       .leftJoin(remoteMergeFact, eq(remoteMergeFact.itemId, workItem.id))
+      .leftJoin(workItemRepository, eq(workItemRepository.itemId, workItem.id))
       .where(
         and(
           eq(workspace.id, input.workspaceId),
@@ -418,10 +427,11 @@ export function* listManagedBlockerItemsSteps(
       )
       .orderBy(asc(workItem.createdAt), asc(workItem.id)),
   );
-  return rows.map((row): ManagedBlockerItem => ({
+  return rows.map(({ owner, repo, ...row }): ManagedBlockerItem => ({
     ...row,
     state: row.state as WorkItemState,
     mode: row.mode as TaskMode | null,
+    ...(input.withRepository ? { repository: owner && repo ? `${owner}/${repo}` : null } : {}),
   }));
 }
 

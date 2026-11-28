@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, eq, gt, isNull, lt } from "drizzle-orm";
 import { type Q } from "./db";
 
 export type VmHostSettings = {
@@ -79,4 +79,33 @@ export function* workspaceVmHostsSteps(q: Q, workspaceId: string, now?: number) 
       .orderBy(runner.id),
   );
   return rows as (VmHostMachine & { host: VmHostRow })[];
+}
+
+export function* recordVmHostDisksSteps(
+  q: Q,
+  input: { runnerId: string; disks: string[]; reportedAt: number },
+) {
+  const { vmHostDiskReport: report } = q.t;
+  const { runnerId: _runnerId, ...set } = input;
+  yield* q.exec(
+    q.orm
+      .insert(report)
+      .values(input)
+      .onConflictDoUpdate({
+        target: report.runnerId,
+        set,
+        setWhere: lt(report.reportedAt, input.reportedAt),
+      }),
+  );
+}
+
+export function* vmHostDisksSteps(q: Q, runnerId: string) {
+  const { vmHostDiskReport: report } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ disks: report.disks, reportedAt: report.reportedAt })
+      .from(report)
+      .where(eq(report.runnerId, runnerId)),
+  );
+  return row ?? null;
 }

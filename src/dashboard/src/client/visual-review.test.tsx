@@ -94,7 +94,10 @@ function runPage(snapshot: FullStatus, runId: string): string {
     error: null,
     engineUrl: null,
     closeout: openedView(),
-    ...pageData(snapshot, { view: "runs", id: runId }),
+    ...pageData(snapshot, {
+      view: "issues",
+      id: snapshot.runs.find((run) => run.id === runId)!.itemId,
+    }),
   }).content;
 }
 

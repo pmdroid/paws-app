@@ -23,6 +23,7 @@ import { openRunnerRuntime } from "../../src/runner-runtime";
 import { runRunnerCli } from "../../src/runner-cli";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 import type { RunnerCommand } from "../../src/runner-protocol";
+import { writeRunnerFacts } from "./runner-facts";
 
 const [mode, ...args] = process.argv.slice(2);
 if (mode === "runner") process.exit(await runRunnerCli(args));
@@ -270,7 +271,7 @@ if (mode === "agent") {
   await service.stop();
   await close();
 } else if (mode === "coordinator") {
-  const { close, service } = await coordinator(config().runnerPort);
+  const { db, close, service } = await coordinator(config().runnerPort);
   const answered = new Set<string>();
   const timer = setInterval(async () => {
     for (const command of config().commands)
@@ -294,8 +295,13 @@ if (mode === "agent") {
     () =>
       void service
         .stop()
-        .then(() => {
+        .then(async () => {
           clearInterval(timer);
+          await writeRunnerFacts(
+            db,
+            join(server, "facts.json"),
+            config().commands.map((command) => command.id),
+          );
           return close();
         })
         .then(() => {

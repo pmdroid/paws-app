@@ -52,7 +52,8 @@ const assert = require("node:assert/strict");
         if (request.url().includes("/api/execution-controls") && request.method() === "POST")
           requests.push(request.postDataJSON());
       });
-      await page.goto(`${manifest.origin}/dashboard/#/runs/${manifest.runId}`);
+      await page.goto(`${manifest.origin}/dashboard/runs/${manifest.runId}`);
+      await page.waitForURL(`${manifest.origin}/dashboard/issues/controlled`);
       return page;
     }
     const page = await pageFor("member");

@@ -7,7 +7,12 @@ import type {
   LinearSubIssue,
   TrackerAdapter,
 } from "../linear";
-import { readyItemsSteps, syncItemDependencies } from "./dependencies";
+import {
+  readyItemsSteps,
+  syncItemDependencies,
+  type RunnerReleases,
+  type RunningDeploy,
+} from "./dependencies";
 import { ulid } from "./ulid";
 import { snapshotProject } from "./project";
 import {
@@ -160,6 +165,8 @@ export function createItemReconciler(input: {
     snapshot: EpicSnapshot,
     signal?: AbortSignal,
   ) => Promise<EpicSnapshot>;
+  releases?: RunnerReleases;
+  deployed?: RunningDeploy;
   now?: () => number;
 }) {
   const { store } = input;
@@ -330,6 +337,8 @@ export function createItemReconciler(input: {
           ).generation,
           tracker,
           lifecycle,
+          ...(input.releases ? { releases: input.releases } : {}),
+          ...(input.deployed ? { deployed: input.deployed } : {}),
           signal: target.signal,
         });
     }
@@ -539,6 +548,13 @@ export function createItemReconciler(input: {
     return (await relationItems("blocked")).map((item) => item.itemId);
   }
 
+  async function recheckBlocked(signal?: AbortSignal): Promise<void> {
+    const targets = new Map<string, Target>();
+    for (const item of await relationItems("blocked"))
+      targets.set(item.delegationId, { itemId: item.itemId, workspaceId: item.workspaceId });
+    await Promise.all([...targets.values()].map((target) => reconcile({ ...target, signal })));
+  }
+
   /**
    * Reads the relations of the open items in `scope` and reconciles the delegations whose
    * blockers no longer match `task_block`. One request per poll where the tracker reads relations
@@ -604,5 +620,5 @@ export function createItemReconciler(input: {
     return closing;
   }
 
-  return { reconcile, issueChanged, sweep, pollRelations, blockedItemIds, close };
+  return { reconcile, issueChanged, sweep, pollRelations, blockedItemIds, recheckBlocked, close };
 }

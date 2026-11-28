@@ -296,7 +296,6 @@ export class JobLoop {
         queues,
         mergeParallel: this.options.mergeParallel?.() ?? 1,
       };
-      // The claim is one `UPDATE … RETURNING`, so each claim is its own transaction.
       job = await trackHostOperation(
         "loop.tick",
         () => this.store.run((q) => claimNextJobSteps(q, options)),

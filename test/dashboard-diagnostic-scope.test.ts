@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   putWorkspaceUser,
   recordPushOutage,
+  revokeLinearInstallation,
   sessionRepositoriesAllowed,
   syncWorkspaceMember,
   workspaceSessionIds,
@@ -185,6 +186,14 @@ test("a member's overview, merge queue and issue list hold only their teams' dia
       now: Date.now() + 1,
     });
     expect(repositories(await read("/api/overview", member))).toEqual([]);
+    await revokeLinearInstallation(db, {
+      eventKey: "revoke",
+      organizationId: "org",
+      oauthClientId: "fixture",
+      createdAtMs: 1,
+    });
+    expect(repositories(await read("/api/overview", admin))).toEqual([]);
+    expect(await workspaceSessionIds(db, "workspace", "admin", "fixture")).toEqual([]);
   } finally {
     await server.stop(true);
     await close();

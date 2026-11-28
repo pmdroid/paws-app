@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import {
   failingIssueVmDeletesSteps,
+  recordVmHostDisksSteps,
   reportHostIssueVmUnitsSteps,
   setIssueVmRunnerSteps,
   type Db,
@@ -244,7 +245,7 @@ test("a provider 404 for the VM id Paws holds counts as deleted", async () => {
   expect((await vms(db))[0]).toMatchObject({ state: "deleted", failure: null });
 });
 
-test("a host delete succeeds only once the host reports the unit stopped and the disk gone", async () => {
+async function hostDelete(disks: { now: string[] | undefined }) {
   const { db, close } = await tempStore();
   closers.push(close);
   await withoutForeignKeys(db);
@@ -267,11 +268,6 @@ test("a host delete succeeds only once the host reports the unit stopped and the
         stateAt: clock,
       }),
   );
-  let disks = [id];
-  const report = () =>
-    db.run((q) =>
-      reportHostIssueVmUnitsSteps(q, { hostRunnerId: "host", running: [], disks, now: clock }),
-    );
   let polls = 0;
   const stuck = new AbortController();
   const driver = createHostIssueVmDriver({
@@ -280,54 +276,36 @@ test("a host delete succeeds only once the host reports the unit stopped and the
     wait: async () => {
       clock += 1;
       polls += 1;
-      if (polls === 5) stuck.abort(new Error("The disk is still there"));
-      await report();
+      if (polls === 5) stuck.abort(new Error("The disk was not reported gone"));
+      await db.transaction(function* (q) {
+        yield* reportHostIssueVmUnitsSteps(q, { hostRunnerId: "host", running: [], now: clock });
+        if (disks.now !== undefined)
+          yield* recordVmHostDisksSteps(q, {
+            runnerId: "host",
+            disks: disks.now,
+            reportedAt: clock,
+          });
+      });
     },
   });
+  const attempt = (signal = stuck.signal) => driver.delete(id, { generation: 0, signal });
+  return { db, id, attempt, polls: () => polls };
+}
 
-  await expect(driver.delete(id, { generation: 0, signal: stuck.signal })).rejects.toThrow(
-    "The disk is still there",
-  );
-  expect(polls).toBe(5);
-  disks = [];
-  await driver.delete(id, { generation: 0, signal: new AbortController().signal });
-  const [row] = await vms(db);
-  expect(row).toMatchObject({ diskPresent: false, unitRunning: false });
+test("a host delete succeeds only once the host reports the unit stopped and the disk gone", async () => {
+  const disks: { now: string[] | undefined } = { now: [] };
+  const host = await hostDelete(disks);
+  disks.now = [host.id];
+  await expect(host.attempt()).rejects.toThrow("The disk was not reported gone");
+  expect(host.polls()).toBe(5);
+  disks.now = [];
+  await host.attempt(new AbortController().signal);
+  expect((await vms(host.db))[0]).toMatchObject({ unitRunning: false });
 });
 
-test("a host that never reports its disks, a runner before disk reports, deletes on a stopped unit", async () => {
-  const { db, close } = await tempStore();
-  closers.push(close);
-  await withoutForeignKeys(db);
-  await insertWorkItem(db, "PAS-1");
-  const id = "01KOLDHOST0000000000000000";
-  let clock = Date.now();
-  await seed(
-    db,
-    runner("host", () => clock),
-    (q) =>
-      q.orm.insert(q.t.issueVm).values({
-        id,
-        workspaceId: "ws",
-        itemId: "PAS-1",
-        memberUserId: "owner",
-        provider: "host",
-        hostRunnerId: "host",
-        state: "deleting",
-        createdAt: clock,
-        stateAt: clock,
-      }),
-  );
-  const driver = createHostIssueVmDriver({
-    store: db,
-    now: () => clock,
-    wait: async () => {
-      clock += 1;
-      await db.run((q) =>
-        reportHostIssueVmUnitsSteps(q, { hostRunnerId: "host", running: [], now: clock }),
-      );
-    },
-  });
-  await driver.delete(id, { generation: 0, signal: new AbortController().signal });
-  expect((await vms(db))[0]).toMatchObject({ diskSeenAt: null, unitRunning: false });
+test("a host that reports no disks never confirms the delete, so it keeps retrying", async () => {
+  const host = await hostDelete({ now: undefined });
+  await expect(host.attempt()).rejects.toThrow("The disk was not reported gone");
+  expect(host.polls()).toBe(5);
+  expect((await vms(host.db))[0]).toMatchObject({ state: "deleting", unitRunning: false });
 });

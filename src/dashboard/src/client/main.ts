@@ -197,8 +197,7 @@ document.addEventListener("change", (event) => {
   }
   if (!(target instanceof HTMLSelectElement) || target.dataset.routePicker === undefined) return;
   const path = appPath(target.value);
-  if (path !== null && ["issues", "runs"].includes(parseRoute(path).view))
-    void router.navigate(path);
+  if (path !== null && parseRoute(path).view === "issues") void router.navigate(path);
 });
 
 void boot();

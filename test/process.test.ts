@@ -13,7 +13,7 @@ describe("process", () => {
     try {
       const health = await fetch(`http://${paws.server.hostname}:${paws.server.port}/health`);
       expect(health.status).toBe(200);
-      expect(paws.paths.db.startsWith(home)).toBe(true);
+      expect(paws.paths.pgliteDir.startsWith(home)).toBe(true);
     } finally {
       await paws.stop();
     }

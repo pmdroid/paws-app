@@ -55,7 +55,7 @@ export {
   mintInstallationToken,
   revokeInstallationToken,
 } from "./token";
-export { listAppRepositories, listUserRepositories } from "./repository-catalog";
+export { listAppRepositories } from "./repository-catalog";
 export type { CatalogRepository } from "./repository-catalog";
 export type { GitHubAppOptions, MintedToken } from "./token";
 export { createFetchGitHubClient } from "./client";
@@ -204,3 +204,5 @@ export type {
   GitHubSnapshotReader,
   RepositorySnapshot,
 } from "./snapshot";
+export { createFakeRunnerReleases, createRunnerReleaseLookup } from "./releases";
+export type { RunnerReleaseLookup } from "./releases";

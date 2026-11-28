@@ -1,8 +1,10 @@
 export {
+  certificateScratchRoot,
   createRunnerKey,
   describeRunnerCertificate,
   initializeRunnerAuthority,
   openRunnerAuthority,
+  removeStaleCertificateScratch,
   validateRunnerRequest,
 } from "./certificates";
 export type { RunnerAuthority, RunnerCertificate } from "./certificates";

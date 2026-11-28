@@ -12,6 +12,7 @@ import {
   recordAccountObservation,
   upsertCloseoutStep,
   type Db,
+  type Job,
 } from "../../../db";
 import { parseOverviewResponse, type OverviewResponse } from "../contract";
 import { render } from "../client/render";
@@ -264,6 +265,70 @@ describe("overview resource", () => {
     expect(mine.issues.map((issue) => issue.id)).toEqual(["ENG-9"]);
     expect(mine.questions).toEqual([]);
     expect(mine.mergeQueueCount).toBe(0);
+  });
+
+  test("reads only the merge jobs of the issues it shows, for every reader scope", async () => {
+    const db = await fixture();
+    await insertQueuedItem(db, { id: "ENG-8", title: "Other team", sessionKey: "s2", now: NOW });
+    await beginImplementRun(db, "ENG-8", NOW - 500);
+    await enterMergeQueue(db, "ENG-8", {
+      phase: "merge_queue",
+      baseSha: "b".repeat(40),
+      wipCommit: "d".repeat(40),
+    });
+    await enqueueJob(db, {
+      queue: "github.merge",
+      payload: { itemId: "ENG-8", summary: "Closeout: rejected\nItems: 1", head: HEAD },
+      now: NOW - 400,
+    });
+    const jobs: Job[] = [];
+    const watched = new Proxy(db, {
+      get(target, key, receiver) {
+        if (key !== "run") return Reflect.get(target, key, receiver);
+        return async (...args: Parameters<Db["run"]>) => {
+          const result: unknown = await target.run(...args);
+          if (Array.isArray(result))
+            for (const row of result)
+              if (row && typeof row === "object" && "queue" in row && "attempts" in row)
+                jobs.push(row as Job);
+          return result;
+        };
+      },
+    });
+    const scopes = [undefined, ["s1"], ["s2"], ["s1", "s2"], []];
+    const read = (store: Db, sessionIds: string[] | undefined) =>
+      createLiveStatusProvider(store, { now: () => new Date(NOW), env: {}, sessionIds }).overview();
+    const before = await Promise.all(scopes.map((scope) => read(db, scope)));
+    const queues = ["github.merge", "github.merge.ready", "run.start", "run.reverify"];
+    for (let start = 0; start < 50_000; start += 5_000)
+      await seed(db, (q) =>
+        q.orm.insert(q.t.job).values(
+          Array.from({ length: 5_000 }, (_, index) => ({
+            queue: queues[(start + index) % queues.length]!,
+            payload: { itemId: `GHOST-${start + index}`, summary: "Closeout: accepted" },
+            runAt: NOW - 100,
+            status: "done",
+            createdAt: NOW - 50,
+            finishedAt: NOW - 50,
+          })),
+        ),
+      );
+    for (const [index, scope] of scopes.entries()) {
+      jobs.length = 0;
+      const after = await read(watched, scope);
+      expect(after).toEqual(before[index]!);
+      const shown = new Set(after.issues.map((issue) => issue.id));
+      expect(
+        jobs.filter((job) => !shown.has(String((job.payload as { itemId?: unknown }).itemId))),
+      ).toEqual([]);
+      expect(jobs.every((job) => job.queue.startsWith("github.merge"))).toBe(true);
+      expect(jobs.length).toBeLessThanOrEqual(shown.size * 2);
+    }
+    expect(before[2]!.issues.find((issue) => issue.id === "ENG-8")?.verdict?.decision).toBe(
+      "rejected",
+    );
+    expect(before[1]!.issues.some((issue) => issue.id === "ENG-8")).toBe(false);
+    expect(before[4]!.issues).toEqual([]);
   });
 
   test("setup reads which first-run steps are done", async () => {

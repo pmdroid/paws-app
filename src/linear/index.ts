@@ -73,6 +73,7 @@ export { createInboxStore } from "./inbox";
 export type { CommitResult, InboxClaim, InboxStore, QueuedLinearEvent } from "./inbox";
 export {
   INTAKE_CONCURRENCY,
+  INTAKE_DEADLINE_MS,
   INTAKE_LEASE_MS,
   INTAKE_POLL_MS,
   INTAKE_RETRY_MS,

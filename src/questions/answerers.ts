@@ -19,13 +19,6 @@ export type AnswerableQuestion =
   | { kind: "push-outage" }
   | { kind: "policy-outage" };
 
-type Policy = {
-  [K in AnswerableQuestion["kind"]]: (
-    question: Extract<AnswerableQuestion, { kind: K }>,
-    user: Answerer,
-  ) => boolean;
-};
-
 export const answerer = (id: string): Answerer | null =>
   canAct({ id }, { kind: "answer" }).allowed ? { id } : null;
 
@@ -40,22 +33,3 @@ export const canAnswer = (question: AnswerableQuestion, user: Answerer): boolean
           ? { allowedIds: [...question.allowedIds] }
           : {}),
   }).allowed;
-
-/** Kept for policy consumers; every entry uses the same actor and answer checks. */
-export const ANSWER_POLICY: Policy = {
-  agent: canAnswer,
-  clarification: canAnswer,
-  repository: canAnswer,
-  "runner-wait": canAnswer,
-  "runner-repository": canAnswer,
-  "time-limit": canAnswer,
-  "closeout-help": canAnswer,
-  "ci-help": canAnswer,
-  "visual-review": canAnswer,
-  "github-auth": canAnswer,
-  "plan-approval": canAnswer,
-  split: canAnswer,
-  link: canAnswer,
-  "push-outage": canAnswer,
-  "policy-outage": canAnswer,
-};

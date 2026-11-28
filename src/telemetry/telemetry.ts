@@ -2,15 +2,22 @@ import {
   createNoopLogger,
   createNoopMeter,
   trace,
+  type LogRecord,
   type Logger,
   type Meter,
+  type Span,
+  type SpanOptions,
   type Tracer,
 } from "@opentelemetry/api";
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
 import { resourceFromAttributes } from "@opentelemetry/resources";
-import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs";
+import {
+  BatchLogRecordProcessor,
+  LoggerProvider,
+  type ReadableLogRecord,
+} from "@opentelemetry/sdk-logs";
 import { MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
-import { BatchSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
+import { BatchSpanProcessor, RandomIdGenerator, TracerProvider } from "@opentelemetry/sdk-trace";
 import type { MetricMinuteRow } from "../db";
 import { journal, journalCaught } from "../journal";
 import { incrementCounter } from "../metrics";
@@ -36,10 +43,12 @@ export type Telemetry = {
   readonly traces: Tracer;
   settings(): TelemetrySettings;
   exportMetricMinutes(rows: readonly MetricMinuteRow[]): void;
+  startTrace(name: string, traceId: string, options: SpanOptions): Span;
   apply(settings: TelemetrySettings, headerValue: string | null): Promise<void>;
   check(settings: TelemetrySettings, headerValue: string | null): Promise<TelemetryCheck>;
   status(): TelemetryStatus;
-  flush(): Promise<void>;
+  flush(signal?: TelemetrySignal): Promise<boolean>;
+  sendAlerts(records: readonly LogRecord[]): Promise<boolean>;
   shutdown(): Promise<void>;
 };
 
@@ -88,7 +97,8 @@ type Active = {
   logger: Logger;
   tracer: Tracer;
   minutes(rows: readonly MetricMinuteRow[]): void;
-  flush(): Promise<void>;
+  flush(signal?: TelemetrySignal): Promise<boolean>;
+  sendAlerts(records: readonly LogRecord[]): Promise<boolean>;
   close(): void;
 };
 
@@ -108,6 +118,12 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
   const minuteTotals: MinuteTotals = new Map();
   let loadError: string | null = null;
   let generation = 0;
+  let pinnedTraceId: string | null = null;
+  const randomIds = new RandomIdGenerator();
+  const idGenerator = {
+    generateTraceId: () => pinnedTraceId ?? randomIds.generateTraceId(),
+    generateSpanId: () => randomIds.generateSpanId(),
+  };
 
   const off = (settings: TelemetrySettings): Active => ({
     settings,
@@ -115,7 +131,8 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
     logger: createNoopLogger(),
     tracer: trace.getTracer("paws"),
     minutes() {},
-    flush: async () => {},
+    flush: async () => false,
+    sendAlerts: async () => false,
     close() {},
   });
   let active = off(DEFAULT_TELEMETRY_SETTINGS);
@@ -168,7 +185,10 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
     const exporterConfig = config(settings, headerValue);
     const res = resource(settings);
     const next = off(settings);
-    const providers: { forceFlush(): Promise<void>; shutdown(): Promise<void> }[] = [];
+    const providers: {
+      signal: TelemetrySignal;
+      provider: { forceFlush(): Promise<void>; shutdown(): Promise<void> };
+    }[] = [];
     if (settings.metrics.enabled) {
       const minutes = createMinuteProducer(
         settings.metrics,
@@ -183,7 +203,7 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
         exportTimeoutMillis: EXPORT_TIMEOUT_MS,
       });
       const provider = new MeterProvider({ resource: res, readers: [reader] });
-      providers.push(provider);
+      providers.push({ signal: "metrics", provider });
       next.meter = provider.getMeter("paws", options.version);
       next.minutes = (rows) => (closed ? undefined : minutes.add(rows));
     }
@@ -199,13 +219,39 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
           }),
         ],
       });
-      providers.push(provider);
+      providers.push({ signal: "logs", provider });
       next.logger = provider.getLogger("paws", options.version);
+    }
+    if (settings.alerts.enabled) {
+      const exporter = tracked(set.logs(exporterConfig), record("logs"), shut);
+      const captured: ReadableLogRecord[] = [];
+      const logger = new LoggerProvider({
+        resource: res,
+        processors: [
+          {
+            onEmit: (logRecord) => captured.push(logRecord as unknown as ReadableLogRecord),
+            forceFlush: async () => {},
+            shutdown: async () => {},
+          },
+        ],
+      }).getLogger("paws", options.version);
+      next.sendAlerts = (records) => {
+        for (const logRecord of records) logger.emit(logRecord);
+        const batch = captured.splice(0);
+        return new Promise((resolve) => {
+          const timer = setTimeout(() => resolve(false), EXPORT_TIMEOUT_MS);
+          exporter.export(batch, (result) => {
+            clearTimeout(timer);
+            resolve(result.code === ExportResultCode.SUCCESS);
+          });
+        });
+      };
     }
     if (settings.traces.enabled) {
       const exporter = tracked(set.traces(exporterConfig), record("traces"), shut);
       const provider = new TracerProvider({
         resource: res,
+        idGenerator,
         spanProcessors: [
           new BatchSpanProcessor({
             exporter,
@@ -214,16 +260,19 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
           }),
         ],
       });
-      providers.push(provider);
+      providers.push({ signal: "traces", provider });
       next.tracer = provider.getTracer("paws", options.version);
     }
-    next.flush = async () => {
-      for (const result of await Promise.allSettled(providers.map((p) => p.forceFlush())))
+    next.flush = async (signal) => {
+      const flushing = providers.filter((p) => signal === undefined || p.signal === signal);
+      const results = await Promise.allSettled(flushing.map((p) => p.provider.forceFlush()));
+      for (const result of results)
         if (result.status === "rejected") journalCaught(result.reason, "telemetry.flush", null);
+      return flushing.length > 0 && results.every((result) => result.status === "fulfilled");
     };
     next.close = () => {
       closed = true;
-      for (const provider of providers)
+      for (const { provider } of providers)
         provider.shutdown().catch((error) => journalCaught(error, "telemetry.close", null));
     };
     return next;
@@ -245,6 +294,14 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
         active.minutes(rows);
       } catch (error) {
         journalCaught(error, "telemetry.metrics", null);
+      }
+    },
+    startTrace(name, traceId, spanOptions) {
+      pinnedTraceId = traceId;
+      try {
+        return active.tracer.startSpan(name, { ...spanOptions, root: true });
+      } finally {
+        pinnedTraceId = null;
       }
     },
     async apply(settings, headerValue) {
@@ -304,7 +361,8 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
       });
       return { error: loadError, ...Object.fromEntries(signals) } as TelemetryStatus;
     },
-    flush: () => active.flush(),
+    flush: (signal) => active.flush(signal),
+    sendAlerts: (records) => active.sendAlerts(records),
     async shutdown() {
       generation++;
       active.close();

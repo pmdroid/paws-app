@@ -1,6 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadGitHubAppCredentials } from "../src/config";
@@ -8,15 +16,24 @@ import {
   readSecretFile,
   removeSecret,
   saveSecret,
+  storedSecrets,
   storeSecretKeys,
   useDatabaseSecrets,
   writeSecretFile,
 } from "../src/credentials";
-import { secretRowsSteps, writeSecretRowSteps, type Db } from "../src/db";
+import {
+  readSecretSteps,
+  SecretConflictError,
+  secretRowsSteps,
+  writeSecretSteps,
+  type Db,
+} from "../src/db";
 import { realProbe } from "../src/doctor";
 import { configureRunnerTranscriptStorage } from "../src/runner-transcript-config";
 import { setJournalSink } from "../src/journal";
 import { describePglite, type PgliteTestDb } from "./pglite-fixtures";
+import { tempStore } from "./pglite";
+import { waitFor } from "./wait-for";
 
 const open: PgliteTestDb[] = [];
 const cleanup: (() => unknown)[] = [];
@@ -66,7 +83,9 @@ test("doctor reports undecryptable secret files before it loads the runtime", as
   withSecretKey(randomBytes(32).toString("base64"));
   writeSecretFile(join(home, "secrets", "github-webhook"), "whsec");
   withSecretKey(randomBytes(32).toString("base64"));
-  await expect(realProbe({ PAWS_HOME: home })).rejects.toThrow(
+  const store = await tempStore();
+  cleanup.push(() => store.close());
+  await expect(realProbe({ PAWS_HOME: home }, store.db)).rejects.toThrow(
     `missing secrets: PAWS_SECRET_KEY does not decrypt github-webhook in files in ${join(home, "secrets")}`,
   );
 });
@@ -209,6 +228,57 @@ describePglite((connect) => {
     await store.close();
   });
 
+  test("the import copies only owned names, prunes retired and scratch folders and follows no symlinks", async () => {
+    const { db, dir } = await setup(connect);
+    const identity = join(dir, "runner-identity");
+    for (const folder of [
+      identity,
+      join(dir, ".retired-20261127"),
+      join(identity, ".certificate-x"),
+    ])
+      mkdirSync(folder, { recursive: true, mode: 0o700 });
+    const marker = "synthetic-marker";
+    writeFileSync(join(identity, "runner-command-key.pem"), marker, { mode: 0o600 });
+    writeFileSync(join(dir, `github-user-grant-${"a".repeat(64)}.grant`), marker);
+    writeFileSync(join(dir, "github-connect-01M8FK62JP"), marker);
+    writeFileSync(join(dir, "agent-auth-device-01M8FK62JP"), marker);
+    writeFileSync(join(dir, ".retired-20261127", "linear-webhook"), marker);
+    writeFileSync(join(identity, ".certificate-x", "key.pem"), marker);
+    writeFileSync(join(dir, "linear-oauth.json.pre-postgres-20261113T0107"), marker);
+    writeFileSync(join(dir, "public-tls.key"), marker);
+    mkdirSync(join(dir, "elsewhere"), { mode: 0o700 });
+    writeFileSync(join(dir, "elsewhere", "github-webhook"), marker);
+    symlinkSync(join(dir, "elsewhere", "github-webhook"), join(dir, "github-webhook"));
+    symlinkSync(join(dir, ".retired-20261127"), join(dir, "linear-inputs-link"));
+    const previous = process.env.PAWS_TLS_KEY_PATH;
+    process.env.PAWS_TLS_KEY_PATH = join(dir, "public-tls.key");
+    cleanup.push(() => {
+      if (previous === undefined) delete process.env.PAWS_TLS_KEY_PATH;
+      else process.env.PAWS_TLS_KEY_PATH = previous;
+    });
+    const lines: string[] = [];
+    cleanup.push(setJournalSink((line) => lines.push(line)));
+
+    const first = await install(db, dir);
+    expect((await db.run(secretRowsSteps)).map((row) => row.name).sort()).toEqual([
+      "agent-auth-device-01M8FK62JP",
+      "github-connect-01M8FK62JP",
+      `github-user-grant-${"a".repeat(64)}.grant`,
+      "runner-identity/runner-command-key.pem",
+    ]);
+    expect(readSecretFile(join(identity, "runner-command-key.pem"))).toBe(marker);
+    expect(lines.filter((line) => line.startsWith("not imported: ")).sort()).toEqual([
+      "not imported: elsewhere/github-webhook",
+      "not imported: linear-oauth.json.pre-postgres-20261113T0107",
+    ]);
+    expect(lines.join("\n")).not.toContain(marker);
+    await first.close();
+    lines.length = 0;
+    await install(db, dir);
+    expect(lines).toEqual([]);
+    expect(existsSync(join(dir, "linear-oauth.json.pre-postgres-20261113T0107"))).toBe(true);
+  });
+
   test("a plaintext secret file is imported encrypted, and a key another instance stored wins", async () => {
     const { db, dir } = await setup(connect);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -225,15 +295,70 @@ describePglite((connect) => {
     const winner = (await db.run(secretRowsSteps)).find(
       (entry) => entry.name === "runner-file.key",
     )!;
-    const write = (ciphertext: string | null) =>
-      db.run((q) =>
-        writeSecretRowSteps(q, { name: "runner-file.key", ciphertext, now: 1, exclusive: false }),
-      );
+    const write = async (ciphertext: string | null) => {
+      const current = await db.run((q) => readSecretSteps(q, "runner-file.key"));
+      await db.run((q) => writeSecretSteps(q, "runner-file.key", ciphertext, current!.version));
+    };
     await write(null);
     await install(db, dir);
     expect(readSecretFile(key)).toBeNull();
     await write(winner.ciphertext);
     await storeSecretKeys([key]);
     expect(readSecretFile(key)).toBe(stored);
+  });
+
+  test("two writers race a replacement: one wins and the other gets the conflict", async () => {
+    const { db } = await setup(connect);
+    expect(await db.run((q) => writeSecretSteps(q, "linear-webhook", "marker-a", null))).toBe(1);
+    const race = await Promise.allSettled(
+      ["marker-b", "marker-c"].map((value) =>
+        db.transaction((q) => writeSecretSteps(q, "linear-webhook", value, 1)),
+      ),
+    );
+    expect(race.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const lost = race.find((result) => result.status === "rejected");
+    expect(lost?.reason).toBeInstanceOf(SecretConflictError);
+    const stored = await db.run((q) => readSecretSteps(q, "linear-webhook"));
+    expect(stored?.version).toBe(2);
+    await expect(
+      db.run((q) => writeSecretSteps(q, "linear-webhook", "marker-d", null)),
+    ).rejects.toBeInstanceOf(SecretConflictError);
+  });
+
+  test("a rolled-back write leaves no row, and a tombstone survives the import", async () => {
+    const { db, dir } = await setup(connect);
+    await expect(
+      db.transaction(function* (q) {
+        yield* writeSecretSteps(q, "github-webhook", "marker", null);
+        throw new Error("rolled back");
+      }),
+    ).rejects.toThrow("rolled back");
+    expect(await db.run((q) => readSecretSteps(q, "github-webhook"))).toBeNull();
+
+    writeSecretFile(join(dir, "tailscale-authkey"), "marker-file");
+    await install(db, dir);
+    await removeSecret(join(dir, "tailscale-authkey"));
+    const tombstone = { value: null, version: 2 };
+    expect(await db.run((q) => readSecretSteps(q, "tailscale-authkey"))).toEqual(tombstone);
+    await install(db, dir);
+    expect(await db.run((q) => readSecretSteps(q, "tailscale-authkey"))).toEqual(tombstone);
+    expect(readSecretFile(join(dir, "tailscale-authkey"))).toBeNull();
+  });
+
+  test("a rotation another process writes is read here on the next refresh", async () => {
+    const { db, dir } = await setup(connect);
+    const path = join(dir, "linear-webhook");
+    const secrets = await useDatabaseSecrets(db, dir, { refreshMs: 10 });
+    cleanup.push(() => secrets.close());
+    const sealed = () => storedSecrets()!.find((row) => row.name === "linear-webhook")!.ciphertext;
+    await saveSecret(path, "marker-first");
+    const first = sealed();
+    await saveSecret(path, "marker-second");
+    expect(readSecretFile(path)).toBe("marker-second");
+    await db.run((q) => writeSecretSteps(q, "linear-webhook", first, 2));
+    await waitFor(() => readSecretFile(path) === "marker-first", { what: "the rotated secret" });
+    await db.run((q) => writeSecretSteps(q, "linear-webhook", null, 3));
+    await waitFor(() => readSecretFile(path) === null, { what: "the removed secret" });
+    await expect(saveSecret(path, "marker-third", true)).resolves.toBe(true);
   });
 });

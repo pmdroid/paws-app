@@ -4,10 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GROK_AGENT_ARGS, GROK_LOGIN_MESSAGE } from "../src/acp";
 import type { FakeResult } from "../src/acp/testing/script";
-import { emptyConfigFile } from "../src/config";
+import { emptyConfigFile, useSettingsStore } from "../src/config";
 import {
   appEventsFact,
-  DATABASE_HELD,
   doctorChecks,
   formatDoctor,
   GITHUB_APP_EVENTS,
@@ -18,19 +17,17 @@ import {
   vmProviderKeyFacts,
 } from "../src/doctor";
 import {
-  CONFIG_SETTINGS_KEY,
   LINEAR_WEBHOOK_FIX,
   consumeWorkspaceBootstrap,
   insertMemberVmSteps,
-  openPawsStore,
   putWorkspaceUser,
-  updateSetting,
   type Db,
 } from "../src/db";
 import { grokLoginStatus } from "../src/install";
 import { slackCapabilities } from "../src/slack";
 import { issueWorkspaceBootstrap, workspaceTokenHash } from "../src/workspace";
-import { copyMigratedPglite, pgliteServer, sqlRun, tempStore } from "./pglite";
+import { tempStore } from "./pglite";
+import { sectionSettings, seedSettings } from "./saved-settings";
 
 async function seedWorkspace(store: Db): Promise<void> {
   await store.run(function* (q) {
@@ -328,108 +325,52 @@ test("doctor shows whether GitHub webhook deliveries arrive", () => {
 
 test("doctor passes Closeout without a checkout and loads configured local policies", async () => {
   const home = mkdtempSync(join(tmpdir(), "paws-doctor-policy-"));
-  await copyMigratedPglite(join(home, "pglite"));
-  const database = await openPawsStore({ url: null, pgliteDir: join(home, "pglite") });
-  await seedWorkspace(database.store);
-  await database.close();
-  const env = { HOME: home, PAWS_HOME: home, PATH: process.env.PATH ?? "" };
-  const ready = await realProbe(env);
-  expect(ready.facts.linearWebhook).toEqual({
-    reason: "missed",
-    lastVerifiedMs: 1000,
-    missedMs: 2000,
-  });
-  expect(ready.facts.repos).toEqual(["acme/api", "acme/widgets"]);
-  expect(ready.facts.closeout).toEqual({
-    ok: true,
-    detail: "policy loads from each repository's origin/main on the runner",
-    fix: null,
-  });
-
-  const localRoot = join(home, "policies");
-  mkdirSync(join(localRoot, ".agents"), { recursive: true });
-  writeFileSync(join(localRoot, ".agents/closeout.yaml"), 'specVersion: "0.1"\nitems: []\n');
-  const saved = await openPawsStore({ url: null, pgliteDir: join(home, "pglite") });
-  await updateSetting(
-    saved.store,
-    CONFIG_SETTINGS_KEY,
-    () => '[closeout.projects."acme/widgets"]\npolicy_root = "policies"\n',
-  );
-  await saved.close();
-  expect((await realProbe(env)).facts.closeout).toEqual({
-    ok: true,
-    detail: "local policy loads for acme/widgets",
-    fix: null,
-  });
-  writeFileSync(join(localRoot, ".agents/closeout.yaml"), "invalid");
-  const broken = await realProbe(env);
-  expect(broken.facts.closeout).toMatchObject({
-    ok: false,
-    detail: "configured local Closeout policy for acme/widgets is invalid",
-  });
-  expect(broken.facts.closeout.fix?.includes("\n")).toBe(false);
-  const lines = formatDoctor(doctorChecks(broken)).split("\n");
-  const index = lines.findIndex((line) => line.startsWith("missing closeout:"));
-  expect(lines[index]).toBe(
-    "missing closeout: configured local Closeout policy for acme/widgets is invalid",
-  );
-  expect(lines[index + 1]).toBe(`  fix: ${broken.facts.closeout.fix}`);
-}, 30_000);
-
-test("doctor reads the workspace from the Postgres at [database] url", async () => {
-  const server = await pgliteServer();
-  const home = mkdtempSync(join(tmpdir(), "paws-doctor-url-"));
+  const { db, close } = await tempStore();
+  const settings = await useSettingsStore(home, sectionSettings(db));
   try {
-    await seedWorkspace(server.store);
-    const env = { HOME: home, PAWS_HOME: home, PATH: "", PAWS_DATABASE_URL: server.url };
-    const facts = (await realProbe(env)).facts;
-    expect(facts.repos).toEqual(["acme/api", "acme/widgets"]);
-    expect(facts.workspace).toBe("Workspace");
-    expect(facts.databaseHeld).toBe(false);
+    await seedWorkspace(db);
+    const env = { HOME: home, PAWS_HOME: home, PATH: process.env.PATH ?? "" };
+    const ready = await realProbe(env, db);
+    expect(ready.facts.linearWebhook).toEqual({
+      reason: "missed",
+      lastVerifiedMs: 1000,
+      missedMs: 2000,
+    });
+    expect(ready.facts.repos).toEqual(["acme/api", "acme/widgets"]);
+    expect(ready.facts.workspace).toBe("Workspace");
+    expect(ready.facts.closeout).toEqual({
+      ok: true,
+      detail: "policy loads from each repository's origin/main on the runner",
+      fix: null,
+    });
+
+    const localRoot = join(home, "policies");
+    mkdirSync(join(localRoot, ".agents"), { recursive: true });
+    writeFileSync(join(localRoot, ".agents/closeout.yaml"), 'specVersion: "0.1"\nitems: []\n');
+    await seedSettings(db, '[closeout.projects."acme/widgets"]\npolicy_root = "policies"\n');
+    await settings.refresh();
+    expect((await realProbe(env, db)).facts.closeout).toEqual({
+      ok: true,
+      detail: "local policy loads for acme/widgets",
+      fix: null,
+    });
+    writeFileSync(join(localRoot, ".agents/closeout.yaml"), "invalid");
+    const broken = await realProbe(env, db);
+    expect(broken.facts.closeout).toMatchObject({
+      ok: false,
+      detail: "configured local Closeout policy for acme/widgets is invalid",
+    });
+    expect(broken.facts.closeout.fix?.includes("\n")).toBe(false);
+    const lines = formatDoctor(doctorChecks(broken)).split("\n");
+    const index = lines.findIndex((line) => line.startsWith("missing closeout:"));
+    expect(lines[index]).toBe(
+      "missing closeout: configured local Closeout policy for acme/widgets is invalid",
+    );
+    expect(lines[index + 1]).toBe(`  fix: ${broken.facts.closeout.fix}`);
   } finally {
-    await server.close();
-  }
-}, 30_000);
-
-test("while Paws holds PGlite doctor reads settings as empty, ignores config.toml and prints one note", async () => {
-  const home = mkdtempSync(join(tmpdir(), "paws-doctor-held-"));
-  await copyMigratedPglite(join(home, "pglite"));
-  writeFileSync(join(home, "pglite.lock"), String(process.ppid));
-  writeFileSync(join(home, "config.toml"), '[github]\nrepos = ["acme/from-file"]\n');
-  const held = await realProbe({ HOME: home, PAWS_HOME: home, PATH: "" });
-  expect(held.facts.databaseHeld).toBe(true);
-  expect(held.facts.workspace).toBe(null);
-  expect(held.facts.repos).toEqual([]);
-  const notes = formatDoctor(doctorChecks(held))
-    .split("\n")
-    .filter((line) => line.includes(DATABASE_HELD));
-  expect(notes).toEqual([`note database: ${DATABASE_HELD}`]);
-}, 30_000);
-
-test("doctor fails the database check on a database from an older Paws", async () => {
-  const older = "This database was created by an older Paws. Reset it to start this version.";
-  const insert =
-    "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ('unknown', 1)";
-  const home = mkdtempSync(join(tmpdir(), "paws-doctor-older-"));
-  await copyMigratedPglite(join(home, "pglite"));
-  const database = await openPawsStore({ url: null, pgliteDir: join(home, "pglite") });
-  await sqlRun(database.store, insert);
-  await database.close();
-  const refused = await realProbe({ HOME: home, PAWS_HOME: home, PATH: "" });
-  expect(refused.facts.databaseRefused).toBe(older);
-  expect(doctorChecks(refused).find((item) => item.name === "database")).toMatchObject({
-    ok: false,
-    detail: older,
-  });
-  expect(formatDoctor(doctorChecks(refused))).toContain(`missing database: ${older}`);
-
-  const server = await pgliteServer();
-  try {
-    await sqlRun(server.store, insert);
-    const env = { HOME: home, PAWS_HOME: home, PATH: "", PAWS_DATABASE_URL: server.url };
-    expect((await realProbe(env)).facts.databaseRefused).toBe(older);
-  } finally {
-    await server.close();
+    settings.release();
+    await close();
+    rmSync(home, { recursive: true, force: true });
   }
 }, 30_000);
 
@@ -616,7 +557,8 @@ test("a GitHub App without the comment and review events is reported", () => {
   });
   expect(facts).toEqual({
     ok: false,
-    detail: "not subscribed to pull_request_review, pull_request_review_comment, issue_comment",
+    detail:
+      "not subscribed to pull_request_review, pull_request_review_comment, issue_comment, release",
   });
   expect(appEventsFact(200, { events: [...GITHUB_APP_EVENTS] }).ok).toBe(true);
   expect(appEventsFact(401, {}).ok).toBe(false);
@@ -705,7 +647,6 @@ function githubReady(): GitHubDoctorFacts {
 function greenFacts(): ProbeFacts {
   return {
     configError: null,
-    trackerKind: "linear",
     githubDoctor: githubReady(),
     webhooks: false,
     workspace: "Paws Demo",
@@ -732,7 +673,6 @@ function greenFacts(): ProbeFacts {
 function redFacts(override: Partial<ProbeFacts>): ProbeFacts {
   return {
     configError: null,
-    trackerKind: "linear",
     githubDoctor: {
       appId: null,
       installationId: null,

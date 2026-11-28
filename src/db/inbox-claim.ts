@@ -1,4 +1,19 @@
-import { and, eq, inArray, isNull, lt, lte, ne, notExists, or, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  lt,
+  lte,
+  min,
+  ne,
+  notExists,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import { alias, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { type Db, type Q } from "./db";
 import type { inboxEvent } from "./schema-pg";
@@ -87,6 +102,52 @@ export async function claimNextInboxEvent(
   claim: Claim,
 ): Promise<ClaimedInboxRow | null> {
   return store.run((q) => claimNextInboxEventSteps(q, claim));
+}
+
+export function* newerDuplicatePromptSteps(q: Q, dedupeKey: string) {
+  const { inboxEvent } = q.t;
+  const later = alias(inboxEvent, "later");
+  const row = yield* q.one(
+    q.orm
+      .select({ dedupeKey: later.dedupeKey })
+      .from(later)
+      .innerJoin(inboxEvent, eq(inboxEvent.dedupeKey, dedupeKey))
+      .where(
+        and(
+          queued(later),
+          eq(inboxEvent.action, "prompted"),
+          eq(later.action, "prompted"),
+          eq(later.sessionId, inboxEvent.sessionId),
+          sql`${later.body} IS NOT DISTINCT FROM ${inboxEvent.body}`,
+          sql`${later.signal} IS NOT DISTINCT FROM ${inboxEvent.signal}`,
+          or(
+            lt(inboxEvent.receivedAt, later.receivedAt),
+            and(
+              eq(inboxEvent.receivedAt, later.receivedAt),
+              lt(inboxEvent.dedupeKey, later.dedupeKey),
+            ),
+          ),
+        ),
+      )
+      .orderBy(desc(later.receivedAt), desc(later.dedupeKey))
+      .limit(1),
+  );
+  return row?.dedupeKey ?? null;
+}
+
+export async function newerDuplicatePrompt(store: Db, dedupeKey: string): Promise<string | null> {
+  return store.run((q) => newerDuplicatePromptSteps(q, dedupeKey));
+}
+
+export function* inboxBacklogSteps(q: Q, now: number) {
+  const { inboxEvent } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ depth: count(), oldestAt: min(inboxEvent.receivedAt) })
+      .from(inboxEvent)
+      .where(queued(inboxEvent)),
+  );
+  return { depth: Number(row?.depth ?? 0), oldestAt: Number(row?.oldestAt ?? now) };
 }
 
 export function* claimInboxEventSteps(q: Q, dedupeKey: string, claim: Claim) {

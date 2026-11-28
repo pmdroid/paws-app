@@ -50,7 +50,7 @@ export function issueVmReconciler(
   disks: IssueVmDisks | null = null,
 ) {
   let at = 0;
-  let listed: string[] | undefined;
+  let held: string[] | undefined;
   const stage = (id: string, token: string) => {
     mkdirSync(enrollDir, { recursive: true, mode: 0o700 });
     const staged = join(enrollDir, `.${id}`);
@@ -62,14 +62,15 @@ export function issueVmReconciler(
     at = now() + ISSUE_VM_EVERY_MS;
     try {
       const running = async () => runningIssueVmIds(await units.active());
-      const view = await daemon.issueVmHost(await running(), [], listed);
+      const sent = held;
+      const view = await daemon.issueVmHost(await running(), [], sent);
       const result = await reconcileIssueVms(units, view, stage, disks);
-      listed = result.disks;
+      held = result.disks && result.disks.length <= 500 ? result.disks.sort() : undefined;
       const refused = result.refused.map(({ machine, reason }) => ({ id: machine.id, reason }));
       const changed =
-        result.started.length > 0 || result.stopped.length > 0 || result.disksRemoved.length > 0;
+        result.started.length > 0 || result.stopped.length > 0 || held?.join() !== sent?.join();
       if (view.vmHost && (changed || refused.length > 0))
-        await daemon.issueVmHost(await running(), refused, listed);
+        await daemon.issueVmHost(await running(), refused, held);
     } catch (error) {
       journalCaught(error, "runner-cli/daemon.issueVmReconciler", null);
     }

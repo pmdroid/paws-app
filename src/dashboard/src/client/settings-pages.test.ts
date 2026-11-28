@@ -21,6 +21,13 @@ import { initializeWorkspaceAccess } from "./workspace";
 
 const MOVED = ["brief-settings", "skill-settings", "hook-settings"];
 
+test("the Agents page sends sign-in to Agent accounts, not to each runner", () => {
+  setSettingsAdmin(true);
+  const html = renderSettingsPage("agents");
+  expect(html).toContain("Sign in to each agent in Settings › Agent accounts.");
+  expect(html).not.toContain("per runner");
+});
+
 test("Settings opens on Your account and Workspace opens on Agents", () => {
   setSettingsAdmin(true);
   expect(SETTINGS_PAGES.map((page) => page.id)).not.toContain("decisions");

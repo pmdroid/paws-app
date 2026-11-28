@@ -87,7 +87,9 @@ describe("pages outside the issue page talk about issues", () => {
     const run = snapshot.runs[0]!;
     expect(parseRoute("/runs")).toEqual({ view: "issues", id: null });
     expect(parseRoute(`/runs/${run.id}`)).toEqual({ view: "alias", kind: "runs", id: run.id });
-    expect(page({ view: "runs", id: "missing" }, snapshot)).toContain("Issue not found");
+    expect(page({ view: "alias", kind: "runs", id: "missing" }, snapshot)).toContain(
+      "Link not found.",
+    );
   });
 
   test("the issues list says why a queued issue waits, and wraps at 390 px", () => {

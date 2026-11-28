@@ -1,9 +1,17 @@
 import { migratedHome, withHomeStore } from "./helpers";
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setupLinkMain, startPaws, type PawsProcess } from "../src/index";
+import { openSecretAt } from "../src/credentials";
+
+const SETUP_OPEN = 'Setup is open: run "paws setup-link" to get the link';
+
+function liveSetupLink(paws: PawsProcess): string {
+  const path = join(paws.paths.secretsDir, "setup-token");
+  return "https://localhost:8787/setup?token=" + openSecretAt(path, readFileSync(path, "utf8"));
+}
 
 const roots: string[] = [];
 const processes: PawsProcess[] = [];
@@ -130,7 +138,9 @@ test("a fresh HTTPS instance with a Linear client from the environment requires 
     await paws.store.run((q) => q.all(q.orm.select().from(q.t.workspaceOauthRequest))),
   ).toEqual([]);
   expect(await paws.store.run((q) => q.all(q.orm.select().from(q.t.workspace)))).toEqual([]);
-  const setupUrl = messages.find((message) => message.includes("/setup?token="))!;
+  expect(messages).toContain(SETUP_OPEN);
+  expect(messages.join("\n")).not.toContain("token=");
+  const setupUrl = liveSetupLink(paws);
   const setup = await paws.server.fetch(new Request(setupUrl));
   expect(setup.status).toBe(303);
   expect(setup.headers.get("location")).toContain("client_id=fixture-client");
@@ -750,10 +760,13 @@ import { setJournalSink } from "../src/journal";
 test("a process without a Linear client starts in token-protected setup mode", async () => {
   const messages: string[] = [];
   const restore = setJournalSink((message) => messages.push(message));
+  const log = console.log;
+  console.log = (...args: unknown[]) => messages.push(args.map(String).join(" "));
   try {
     const paws = await freshInstance(undefined, true, "existing-token");
     await paws.ready;
-    const setupUrl = messages.find((message) => message.includes("/setup?token="))!;
+    expect(messages.filter((message) => message === SETUP_OPEN)).toHaveLength(2);
+    const setupUrl = liveSetupLink(paws);
     expect(setupUrl).toStartWith("https://localhost:8787/setup?token=");
     expect((await paws.server.fetch(new Request(setupUrl))).status).toBe(200);
     expect((await paws.server.fetch(new Request("https://localhost:8787/setup"))).status).toBe(403);
@@ -788,8 +801,8 @@ test("a process without a Linear client starts in token-protected setup mode", a
       PAWS_TLS_CERT_PATH: join(paws.paths.home, "server.crt"),
     });
     processes.push(restarted);
-    const resumedUrl = messages.filter((message) => message.includes("/setup?token=")).at(-1)!;
-    expect(resumedUrl).toBe(setupUrl);
+    expect(messages.filter((message) => message === SETUP_OPEN)).toHaveLength(4);
+    expect(messages.join("\n")).not.toContain(new URL(setupUrl).searchParams.get("token")!);
     expect((await restarted.server.fetch(new Request(setupUrl))).status).toBe(200);
     expect((await restarted.server.fetch(new Request("https://localhost:8787/setup"))).status).toBe(
       403,
@@ -809,6 +822,7 @@ test("a process without a Linear client starts in token-protected setup mode", a
     ).toBe(0);
     expect(printed).toEqual([setupUrl]);
   } finally {
+    console.log = log;
     restore();
   }
 });
@@ -857,8 +871,8 @@ test("an existing Linear access token still enters setup when the client is miss
   const restore = setJournalSink((message) => messages.push(message));
   try {
     const paws = await freshInstance(undefined, true, "existing-token");
-    const url = messages.find((message) => message.includes("/setup?token="))!;
-    expect((await paws.server.fetch(new Request(url))).status).toBe(200);
+    expect(messages).toContain(SETUP_OPEN);
+    expect((await paws.server.fetch(new Request(liveSetupLink(paws)))).status).toBe(200);
   } finally {
     restore();
   }

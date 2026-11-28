@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNotNull, isNull, max, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, max, or, sql } from "drizzle-orm";
 import { type Q } from "./db";
 import { jsonItemId } from "./jobs";
 import { activeRunnerIdsSteps, runnerOccupancySteps } from "./runner-capacity";
@@ -93,4 +93,66 @@ export function* admittedRunnerVersionsSteps(q: Q) {
       .where(and(eq(runner.status, "active"), isNull(runner.revokedAt)))
       .orderBy(runner.id),
   );
+}
+
+export type ExportedAlertRow = {
+  key: string;
+  severity: string;
+  title: string;
+  since: number;
+  count: number;
+};
+
+export function* exportedAlertsSteps(q: Q) {
+  return yield* q.all(q.orm.select().from(q.t.exportedAlert));
+}
+
+export function* observeAlertsSteps(
+  q: Q,
+  change: {
+    raised: readonly ExportedAlertRow[];
+    gone: readonly string[];
+    events: readonly (ExportedAlertRow & { eventId: string; event: string })[];
+    settings: { key: string; value: string | null };
+  },
+) {
+  const { exportedAlert: e, alertEvent, setting } = q.t;
+  return yield* q.transaction(function* (tx) {
+    const current = yield* tx.one(
+      tx.orm
+        .select({ value: setting.value })
+        .from(setting)
+        .where(eq(setting.key, change.settings.key))
+        .for("update"),
+    );
+    if ((current?.value ?? null) !== change.settings.value) return false;
+    if (change.gone.length > 0)
+      yield* tx.exec(tx.orm.delete(e).where(inArray(e.key, [...change.gone])));
+    if (change.raised.length > 0)
+      yield* tx.exec(
+        tx.orm
+          .insert(e)
+          .values([...change.raised])
+          .onConflictDoNothing(),
+      );
+    if (change.events.length > 0)
+      yield* tx.exec(tx.orm.insert(alertEvent).values([...change.events]));
+    return true;
+  });
+}
+
+export function* pendingAlertEventsSteps(q: Q, limit: number) {
+  const { alertEvent } = q.t;
+  return yield* q.all(q.orm.select().from(alertEvent).orderBy(asc(alertEvent.id)).limit(limit));
+}
+
+export function* deliveredAlertEventsSteps(q: Q, ids: readonly number[]) {
+  const { alertEvent } = q.t;
+  if (ids.length > 0)
+    yield* q.exec(q.orm.delete(alertEvent).where(inArray(alertEvent.id, [...ids])));
+}
+
+export function* clearExportedAlertsSteps(q: Q) {
+  yield* q.exec(q.orm.delete(q.t.exportedAlert));
+  yield* q.exec(q.orm.delete(q.t.alertEvent));
 }

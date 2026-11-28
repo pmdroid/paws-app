@@ -8,6 +8,7 @@ import {
   insertInboxEvent,
   markInboxEventFailed,
   markInboxEventHandled,
+  newerDuplicatePrompt,
   releaseInboxClaim,
   renewInboxClaim,
   setSyncCursor,
@@ -51,6 +52,7 @@ export type InboxStore = {
   countCursor(name: string): Promise<number>;
   clearCursor(name: string): Promise<void>;
   get(dedupeKey: string): Promise<AcceptedLinearEvent | null>;
+  newerDuplicatePrompt(dedupeKey: string): Promise<string | null>;
 };
 
 type InboxRow = {
@@ -107,6 +109,7 @@ export function createInboxStore(db: Db): InboxStore {
     setCursor: (name, cursorMs) => setSyncCursor(db, name, cursorMs),
     countCursor: (name) => incrementSyncCounter(db, name),
     clearCursor: (name) => clearSyncCursor(db, name),
+    newerDuplicatePrompt: (dedupeKey) => newerDuplicatePrompt(db, dedupeKey),
     async get(dedupeKey) {
       const row = (await inboxEventByKey(db, dedupeKey)) as InboxRow | null;
       return row === null ? null : mapRow(row);

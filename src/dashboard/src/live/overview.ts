@@ -5,8 +5,8 @@ import {
   listCloseoutProgressStatesSteps,
   listConfirmedMergeShasSteps,
   listItemHoldsSteps,
-  listJobsSteps,
   listLastWorkItemEventTimesSteps,
+  listMergeJobsForItemsSteps,
   listMergeQueuesSteps,
   listOpenQuestionsSteps,
   listQueuePositions,
@@ -129,7 +129,12 @@ export async function readOverview(
     facts,
     rows,
     changed,
-    jobs: await store.run(listJobsSteps),
+    jobs: await store.run((q) =>
+      listMergeJobsForItemsSteps(
+        q,
+        shown.map((record) => record.id),
+      ),
+    ),
     progress: await store.run(listCloseoutProgressStatesSteps),
     queue: new Map((await listQueuePositions(store)).map((entry) => [entry.itemId, entry])),
     places,

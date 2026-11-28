@@ -187,7 +187,7 @@ try {
           "document.documentElement.scrollWidth - document.documentElement.clientWidth",
         ),
       );
-    await page.goto(`http://127.0.0.1:${server.port}/dashboard/#/runs/r-102`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues/ENG-102`);
     const open = page.getByRole("button", { name: "Draw on screenshots" });
     await open.waitFor();
     await page.screenshot({

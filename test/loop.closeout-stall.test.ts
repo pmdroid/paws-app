@@ -979,6 +979,50 @@ for (const state of ["verifying", "merge_queue"] as const)
       }
     }, 90_000);
 
+for (const owner of ["acme-b", "acme-a"])
+  test(`a reverify ${owner === "acme-b" ? "reattaches to a recheck this instance took over" : "waits on a recheck another instance runs"}`, async () => {
+    const f = await verifyingWithHeldGate({ remote: true, instanceId: "acme-b" });
+    const mine = owner === "acme-b";
+    try {
+      f.release();
+      await f.turn;
+      await f.restart();
+      const item = (await listWorkItems(f.db))[0]!;
+      const runId = item.currentRunId!;
+      await setItem(f.db, item.id, {
+        state: "verifying",
+        checkpoint: { ...(await checkpointOf(f.db, item.id)), phase: "verifying" },
+      });
+      await setRun(f.db, runId, { status: "active", kind: "recheck", ownerInstance: owner });
+      await setRunnerWork(f.db, runId, { endedAt: null, leaseUntil: Date.now() + 60_000 });
+      await runnerEvent(f.db, runId, Date.now());
+      const jobId = await enqueueJob(f.db, {
+        queue: JOB_KIND.reverify,
+        payload: { itemId: item.id },
+        maxAttempts: 1,
+        now: Date.now(),
+      });
+      await f.tickReverify();
+
+      expect((await listJobs(f.db)).find((job) => job.id === jobId)?.status).toBe(
+        mine ? "done" : "pending",
+      );
+      expect(f.gate.runs).toHaveLength(mine ? 2 : 1);
+      expect(await getWorkItem(f.db, item.id)).toMatchObject({
+        state: mine ? "merge_queue" : "verifying",
+        currentRunId: runId,
+      });
+      expect((await getRun(f.db, runId))?.status).toBe(mine ? "ended" : "active");
+      expect(
+        f.lines().filter((line) => line === `run ${runId} reattached item=${item.id}`),
+      ).toHaveLength(mine ? 1 : 0);
+    } finally {
+      f.release();
+      await f.turn;
+      await f.close();
+    }
+  }, 90_000);
+
 /** Review attempts ran out at `head`: the independent review is exhausted, the rest passed. */
 function reviewExhausted(head: string): CloseoutVerdict {
   const verdict = fixFailed(head);
@@ -1232,7 +1276,9 @@ async function deliverRunnerResult(db: Db, runId: string): Promise<void> {
 }
 
 /** One item whose turn ended and whose Closeout run is held open by the fake gate. */
-async function verifyingWithHeldGate(options: { publicUrl?: string; remote?: boolean } = {}) {
+async function verifyingWithHeldGate(
+  options: { publicUrl?: string; remote?: boolean; instanceId?: string } = {},
+) {
   const layout = await repoLayout();
   const tracker = createFakeTracker([
     {
@@ -1303,6 +1349,7 @@ async function verifyingWithHeldGate(options: { publicUrl?: string; remote?: boo
       closeoutGate: () => gate,
       journal: (line) => lines.push(line),
       ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}),
+      ...(options.instanceId ? { instanceId: options.instanceId } : {}),
     });
   let orchestrator = attach();
   await orchestrator.onLinearEvent(created());
@@ -1354,6 +1401,7 @@ async function verifyingWithHeldGate(options: { publicUrl?: string; remote?: boo
     },
     flush,
     stalls: () => lines.filter((line) => line.includes("in verifying:")),
+    lines: () => lines,
     async restart() {
       await orchestrator.shutdown();
       orchestrator = attach();
