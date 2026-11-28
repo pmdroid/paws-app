@@ -778,6 +778,25 @@ test("a code from another user, expired, from another installation or typed in a
   expect(f.posts("chat.postMessage")).toEqual([]);
 });
 
+test("a link code DM stores only its digest, links across a restart and is refused when reused", async () => {
+  const f = await fixture();
+  const kept = (await f.code("ua", "SADMIN")).code!;
+  await f.deliver(f.dm("SADMIN", `link ${kept.toLowerCase()}`));
+  const stored = async () => {
+    const tables = ["inbox_event", "job", "outbox"];
+    const rows = await Promise.all(tables.map((table) => sqlRows(f.db, `SELECT * FROM ${table}`)));
+    return JSON.stringify(rows).toUpperCase();
+  };
+  expect(await stored()).not.toContain(kept);
+  f.restart();
+  await f.settle();
+  expect(String(f.dms().at(-1)!.body.text)).toContain("Linked");
+  await f.pair("SADMIN", `link ${kept}`);
+  expect(String(f.dms().at(-1)!.body.text)).toContain("expired");
+  expect(await stored()).not.toContain(kept);
+  expect(await f.audit("slack.member_linked")).toHaveLength(1);
+});
+
 test("a direct message Slack refuses falls back to the ephemeral notice, and other direct messages get no answer", async () => {
   const f = await fixture();
   f.failNext["conversations.open"] = "scope";
