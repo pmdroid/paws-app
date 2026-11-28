@@ -212,7 +212,10 @@ export function createHostedGitHubConnect(options: {
         } catch (error) {
           if (accepted)
             return reply(
-              { error: "GitHub took the new webhook secret but Paws could not save it. Rotate again." },
+              {
+                error:
+                  "GitHub took the new webhook secret but Paws could not save it. Rotate again.",
+              },
               500,
             );
           return reply(

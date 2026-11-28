@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadRuntime } from "../src/config";
+import { resolveLinearClient } from "../src/onboarding";
 import { readSecretFile, saveSecret, useDatabaseSecrets } from "../src/credentials";
 import { handleLinearClientSettingsRequest } from "../src/settings";
 import { tempHome } from "./helpers";
@@ -60,7 +60,7 @@ async function instance() {
     checks,
     env,
     refuse: () => (accept = false),
-    runtime: () => loadRuntime(env),
+    runtime: () => resolveLinearClient(db, dir, env),
     webhook: () => readSecretFile(join(dir, "linear-webhook")),
   };
 }
@@ -78,8 +78,8 @@ test("an admin rotates the Linear client after Linear accepts it", async () => {
   expect(f.checks.map((body) => [body.get("client_id"), body.get("client_secret")])).toEqual([
     ["new-client-marker", "new-secret-marker"],
   ]);
-  expect(f.runtime().linearClientId).toBe("new-client-marker");
-  expect(f.runtime().linearClientSecret).toBe("new-secret-marker");
+  expect((await f.runtime()).clientId).toBe("new-client-marker");
+  expect((await f.runtime()).clientSecret).toBe("new-secret-marker");
   expect(f.webhook()).toBe("new-webhook-marker");
 });
 
@@ -93,7 +93,7 @@ test("a refused check keeps the old Linear client", async () => {
   expect(response!.status).toBe(400);
   expect(JSON.stringify(await response!.json())).not.toContain("marker");
   expect(f.checks[0]!.get("client_id")).toBe("old-client-marker");
-  expect(f.runtime().linearClientSecret).toBe("old-secret-marker");
+  expect((await f.runtime()).clientSecret).toBe("old-secret-marker");
   expect(f.webhook()).toBe("old-webhook-marker");
 });
 
@@ -110,7 +110,8 @@ test("environment-set Linear fields are read-only", async () => {
   const refused = await f.send("PUT", { clientSecret: "new-secret-marker" });
   expect(refused!.status).toBe(409);
   expect(f.checks).toEqual([]);
-  expect((await f.send("PUT", { clientId: "next-client-marker" }))!.status).toBe(200);
-  expect(f.checks[0]!.get("client_secret")).toBe("env-secret-marker");
-  expect(f.runtime().linearClientId).toBe("next-client-marker");
+  expect((await f.send("PUT", { clientId: "next-client-marker" }))!.status).toBe(409);
+  expect(f.checks).toEqual([]);
+  expect((await f.send("PUT", { webhookSecret: "next-webhook-marker" }))!.status).toBe(200);
+  expect(f.webhook()).toBe("next-webhook-marker");
 });

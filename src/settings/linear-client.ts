@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { envSetting, envSettingRefusal, settingSources } from "../config";
+import { envSettingRefusal, settingSources } from "../config";
 import { readSecretFile, saveSecret } from "../credentials";
 import { checkLinearClient, type FetchLike } from "../linear";
 import { isWorkspaceAdmin } from "../workspace";
@@ -8,6 +8,7 @@ import { json, localRequest, readJson, sameToken } from "./handler";
 export const LINEAR_CLIENT_SETTINGS_PATH = "/api/settings/linear-client";
 const FIELDS = ["clientId", "clientSecret", "webhookSecret"] as const;
 type Field = (typeof FIELDS)[number];
+const CLIENT_ROWS = ["linear-browser-client.json", "linear-client.json"];
 
 function savedClient(dir: string): Partial<Record<Field, string>> {
   const parse = (name: string): Record<string, unknown> | null => {
@@ -18,7 +19,7 @@ function savedClient(dir: string): Partial<Record<Field, string>> {
       return null;
     }
   };
-  const client = parse("linear-client.json") ?? parse("linear-browser-client.json") ?? {};
+  const client = CLIENT_ROWS.map(parse).find((row) => row !== null) ?? {};
   const text = (value: unknown) => (typeof value === "string" && value ? value : undefined);
   return {
     clientId: text(client["clientId"]),
@@ -66,13 +67,17 @@ export async function handleLinearClientSettingsRequest(
     return json({ error: "Enter the new values to rotate." }, 400);
   const next = Object.fromEntries(entries) as Partial<Record<Field, string>>;
   const fields = Object.keys(next) as Field[];
-  const refusal = envSettingRefusal(options.env, "linear", fields);
+  const client = next.clientId !== undefined || next.clientSecret !== undefined;
+  const refusal = envSettingRefusal(
+    options.env,
+    "linear",
+    client ? [...new Set<Field>([...fields, "clientId", "clientSecret"])] : fields,
+  );
   if (refusal !== null) return json({ error: refusal }, 409);
   if (fields.some((field) => sources[field].source !== "settings"))
     return json({ error: "Only values saved in Settings can be rotated here." }, 409);
-  const value = (field: Field) =>
-    next[field] ?? envSetting(options.env, "linear", field) ?? saved[field];
-  if (next.clientId !== undefined || next.clientSecret !== undefined) {
+  const value = (field: Field) => next[field] ?? saved[field];
+  if (client) {
     const check = await checkLinearClient({
       clientId: value("clientId")!,
       clientSecret: value("clientSecret")!,
@@ -89,7 +94,11 @@ export async function handleLinearClientSettingsRequest(
         check === "invalid" ? 400 : 503,
       );
     await saveSecret(
-      join(dir, "linear-client.json"),
+      join(
+        dir,
+        CLIENT_ROWS.find((name) => readSecretFile(join(dir, name), false) !== null) ??
+          "linear-client.json",
+      ),
       JSON.stringify({
         clientId: next.clientId ?? saved.clientId,
         clientSecret: next.clientSecret ?? saved.clientSecret,
