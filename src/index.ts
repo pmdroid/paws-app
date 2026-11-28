@@ -60,6 +60,7 @@ import {
   readSecretFile,
   storeSecretKeys,
   useDatabaseSecrets,
+  migrateAgentCredentials,
   readAgentCredentialSteps,
 } from "./credentials";
 import { ArtifactRejectedError, commitCheckpointSync, git, mirrorFiles, worktreePath } from "./acp";
@@ -3262,6 +3263,7 @@ async function withDatabaseSecrets(
     const secrets = await useDatabaseSecrets(opened.store, secretsDir, {
       files: url === null ? [SETUP_TOKEN_FILE] : [],
     });
+    await migrateAgentCredentials(opened.store, secretsDir);
     return {
       store: opened.store,
       close: async () => {

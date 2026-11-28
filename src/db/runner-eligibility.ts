@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, isNull, ne, sql } from "drizzle-orm";
+import { agentCredentialSecretJoin } from "./agent-account-credentials";
 import type { Q } from "./db";
 import { jsonText } from "./json-text";
 
@@ -144,14 +145,14 @@ export function* runnerUsageListSteps(
 
 export function* bindingReadinessRowSteps(q: Q, bindingId: string) {
   const { agentAccountBinding: b, agentAccount: a, agentAccountCredential: c, runner: r } = q.t;
-  const { runnerAccountCapability: k } = q.t;
+  const { runnerAccountCapability: k, secret: s } = q.t;
   return yield* q.one(
     q.orm
       .select({
         runnerId: b.runnerId,
         accountId: b.accountId,
         agent: a.agent,
-        credential: c.ciphertext,
+        credential: s.ciphertext,
         bindingRemoved: b.removedAt,
         accountRemoved: a.removedAt,
         enabled: a.enabled,
@@ -166,6 +167,7 @@ export function* bindingReadinessRowSteps(q: Q, bindingId: string) {
       .innerJoin(a, eq(a.id, b.accountId))
       .innerJoin(r, eq(r.id, b.runnerId))
       .leftJoin(c, eq(c.accountId, b.accountId))
+      .leftJoin(s, agentCredentialSecretJoin(q))
       .leftJoin(k, eq(k.runnerId, b.runnerId))
       .where(eq(b.id, bindingId)),
   );

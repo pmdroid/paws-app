@@ -39,7 +39,7 @@ import {
   type RunnerResult,
 } from "../src/runner-protocol";
 import { copyMigratedPglite, tempStore } from "./pglite";
-import { currentRunnerHost } from "./pglite-fixtures";
+import { currentRunnerHost, sealedCredentialSecret } from "./pglite-fixtures";
 
 const NOW = 1_800_000_000_000;
 const bindingReadiness = (db: Db, input: Parameters<typeof bindingReadinessSteps>[1]) =>
@@ -118,11 +118,11 @@ async function seed(db: Db) {
       q.orm.insert(q.t.agentAccountCredential).values({
         accountId: account.id,
         agent: account.agent,
-        ciphertext: "sealed",
+        ciphertext: "",
         version: 1,
         updatedAt: NOW,
       }),
-    );
+    ).then(() => write(db, sealedCredentialSecret(account.id, NOW)));
   const bind = async (accountId: string, runnerId: string) =>
     (await bindAgentAccount(db, { userId: "U1", workspaceId: "W1", accountId, runnerId, now: NOW }))
       .id;

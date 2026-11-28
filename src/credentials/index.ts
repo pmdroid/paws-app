@@ -24,6 +24,7 @@ export {
   type CredentialKind,
 } from "./store";
 export {
+  migrateAgentCredentials,
   readAgentCredentialSteps,
   writeAgentCredentialSteps,
   type AgentCredential,
