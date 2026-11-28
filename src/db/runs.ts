@@ -87,6 +87,19 @@ export function* listRunsSteps(q: Q, itemId?: string): Steps<StoredRun[]> {
   return rows.map((row) => mapRun(q, row));
 }
 
+export function* listRunsForItemsSteps(q: Q, itemIds: readonly string[]): Steps<StoredRun[]> {
+  if (itemIds.length === 0) return [];
+  const { run: runTable } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(runTable)
+      .where(inArray(runTable.itemId, [...itemIds]))
+      .orderBy(asc(runTable.createdAt), asc(runTable.id)),
+  );
+  return rows.map((row) => mapRun(q, row));
+}
+
 /** Every run, oldest first. Pass `itemId` to keep one work item. */
 export async function listRuns(store: Db, itemId?: string): Promise<StoredRun[]> {
   return store.run((q) => listRunsSteps(q, itemId));

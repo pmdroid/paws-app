@@ -5,6 +5,7 @@ import {
   applyWorkItemEvent,
   beginImplementRun,
   enqueueJob,
+  enqueueOutbox,
   enterMergeQueue,
   insertLinkAsk,
   insertQueuedItem,
@@ -13,6 +14,8 @@ import {
   upsertCloseoutStep,
   type Db,
   type Job,
+  type Q,
+  type Steps,
 } from "../../../db";
 import { parseOverviewResponse, type OverviewResponse } from "../contract";
 import { render } from "../client/render";
@@ -329,6 +332,67 @@ describe("overview resource", () => {
     );
     expect(before[1]!.issues.some((issue) => issue.id === "ENG-8")).toBe(false);
     expect(before[4]!.issues).toEqual([]);
+  });
+
+  test("reads rows keyed by the reader's visible items, not unrelated ones", async () => {
+    const db = await fixture();
+    let rows = 0;
+    const counted: Db = {
+      ...db,
+      run: <T>(body: (q: Q) => Steps<T>) =>
+        db.run(function* (q): Steps<T> {
+          const steps = body(q);
+          let next = steps.next();
+          while (!next.done) {
+            const value: unknown = yield next.value;
+            if (next.value.kind === "all" && Array.isArray(value)) rows += value.length;
+            next = steps.next(value);
+          }
+          return next.value;
+        }),
+    };
+    const cost = async (sessionIds: string[]) => {
+      rows = 0;
+      let body = "";
+      const sql = await queriesDuring(db, async () => {
+        body = JSON.stringify(
+          await createLiveStatusProvider(counted, {
+            now: () => new Date(NOW),
+            env: {},
+            sessionIds,
+          }).overview(),
+        );
+      });
+      return { body, cost: { sql: sql.length, rows, bytes: body.length } };
+    };
+    const scopes = [["s1"], ["s1", "s3"], []];
+    const before = [];
+    for (const scope of scopes) before.push(await cost(scope));
+    for (let index = 0; index < 40; index++) {
+      const id = `OTHER-${index}`;
+      await insertQueuedItem(db, { id, title: id, sessionKey: "s2", now: NOW - 100 });
+      await beginImplementRun(db, id, NOW - 90);
+      await enqueueOutbox(db, {
+        target: "linear",
+        op: "activity",
+        orderingKey: "s2",
+        idempotencyKey: `${id}:pr:${index + 1}`,
+        payload: { body: `https://github.com/acme/app/pull/${index + 1}` },
+        now: NOW - 80,
+      });
+    }
+    for (const [index, scope] of scopes.entries()) {
+      const after = await cost(scope);
+      expect(after.body).toBe(before[index]!.body);
+      expect(after.cost).toEqual(before[index]!.cost);
+    }
+    expect(before[0]!.cost.rows).toBeGreaterThan(0);
+    const all = await createLiveStatusProvider(db, {
+      now: () => new Date(NOW),
+      env: {},
+    }).overview();
+    expect(all.issues.filter((issue) => issue.id.startsWith("OTHER-")).length).toBe(40);
+    expect(all.issues.find((issue) => issue.id === "OTHER-3")?.pr?.number).toBe(4);
   });
 
   test("setup reads which first-run steps are done", async () => {
