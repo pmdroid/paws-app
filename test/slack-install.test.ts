@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import { readFileSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   authorizeSlack,
