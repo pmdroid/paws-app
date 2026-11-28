@@ -2520,6 +2520,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         created.jobs.register("linear.redelegation", async (job) => {
           const lifecycle = linear?.issueLifecycle;
           const onEvent = linear?.webhook.onEvent;
+          const startSession = linear?.startSession;
           if (!lifecycle || !onEvent) return;
           await linearCaller("redelegation", () =>
             checkRedelegation(
@@ -2529,6 +2530,16 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                 appUserId: runtime.linearViewerId,
                 inspect: (issueId) => lifecycle.inspect(issueId, { signal: abort.signal }),
                 onEvent,
+                ...(startSession
+                  ? {
+                      startSession: (issueId: string) =>
+                        startSession(
+                          { kind: "issue", id: issueId },
+                          dashboardUrl(runtime.publicUrl ?? "http://127.0.0.1:8787"),
+                          abort.signal,
+                        ),
+                    }
+                  : {}),
               },
               job.payload as { issueId: string; delegatedAtMs: number },
             ),
