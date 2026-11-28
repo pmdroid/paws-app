@@ -1,7 +1,7 @@
 import { journalCaught } from "../journal";
 import { accessSync, constants, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { checkSecrets, storedSecrets } from "../credentials";
+import { checkSecrets, secretFilesOnDisk, storedSecrets } from "../credentials";
 import { GROK_LOGIN_MESSAGE } from "../acp";
 import {
   LINEAR_WORKSPACE_REQUIRED,
@@ -130,7 +130,7 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
   );
   if (context.deployLagUnavailable)
     checks.push(note("deploy-lag", `deploy lag can't be checked: ${context.deployLagUnavailable}`));
-  if (facts.secrets) checks.push(secretsCheck(facts.secrets));
+  if (facts.secrets) checks.push(secretsCheck(facts.secrets), ...secretFileChecks(facts.secrets));
   if (facts.exeDevToken !== undefined)
     checks.push(providerKeyCheck("exe-dev", "exe.dev", facts.exeDevToken, FIX.exeDev));
   if (facts.boatToken !== undefined)
@@ -192,7 +192,7 @@ export function formatDoctor(checks: readonly DoctorCheck[]): string {
 export async function realProbe(env: EnvSource, store: Db): Promise<DoctorProbe> {
   const secretsDir = pawsPaths(loadEnv(env).home).secretsDir;
   const stored = storedSecrets()?.map((row) => resolve(secretsDir, row.name)) ?? null;
-  const secrets = { ...checkSecrets(secretsDir), stored };
+  const secrets = { ...checkSecrets(secretsDir), stored, files: secretFilesOnDisk(secretsDir) };
   let facts: ProbeFacts;
   try {
     facts = { ...(await realProbeFacts(env, store)), secrets };
@@ -466,6 +466,28 @@ function secretsCheck(secrets: NonNullable<ProbeFacts["secrets"]>): DoctorCheck 
       : `${key} does not decrypt ${secrets.failed.join(", ")} in ${secrets.where}`,
     "Set PAWS_SECRET_KEY to the base64 of the .envelope-key these secrets were written with.",
   );
+}
+
+function secretFileChecks({ files }: NonNullable<ProbeFacts["secrets"]>): DoctorCheck[] {
+  if (files === undefined) return [];
+  const checks: DoctorCheck[] = [];
+  if (files.kept > 0)
+    checks.push(
+      check(
+        "secret-files",
+        false,
+        `${files.kept} secret ${files.kept === 1 ? "file" : "files"} still on disk besides the table`,
+        "Paws journals at startup why it kept each file. Save the right value through Paws, then restart it.",
+      ),
+    );
+  if (files.retired.length > 0)
+    checks.push(
+      note(
+        "secret-files-retired",
+        `retired copies in ${files.retired.join(", ")} are still usable secrets on this host; delete them after you check a restore from the database`,
+      ),
+    );
+  return checks;
 }
 
 function check(name: string, ok: boolean, detail: string, fix?: string): DoctorCheck {
