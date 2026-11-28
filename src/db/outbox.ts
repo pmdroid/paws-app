@@ -207,7 +207,7 @@ export async function claimOutboxHeads(
   store: Db,
   options: OutboxClaimOptions = {},
 ): Promise<OutboxRow[]> {
-  return store.run((q) => claimOutboxHeadsSteps(q, options));
+  return store.transaction((q) => claimOutboxHeadsSteps(q, options));
 }
 
 export function* claimOutboxHeadsSteps(q: Q, options: OutboxClaimOptions) {
@@ -275,6 +275,11 @@ export function* claimOutboxHeadsSteps(q: Q, options: OutboxClaimOptions) {
      )
      SELECT o.id FROM eligible o ORDER BY o.priority, o.id LIMIT ${limit}`;
   const { outbox } = q.t;
+  yield* q.exec(
+    q.orm
+      .select({ lock: sql`pg_advisory_xact_lock(hashtextextended(${"outbox-claim"}, 0))` })
+      .from(sql`(SELECT 1) AS lock_scope`),
+  );
   const rows = yield* q.all(
     q.orm
       .update(outbox)
@@ -283,7 +288,14 @@ export function* claimOutboxHeadsSteps(q: Q, options: OutboxClaimOptions) {
         lockedUntil: now + leaseMs,
         attempts: sql`${outbox.attempts} + 1`,
       })
-      .where(sql`${outbox.id} IN (${heads})`)
+      .where(
+        sql`${outbox.id} IN (${heads}) AND outbox.status='pending'
+          AND (outbox.locked_until IS NULL OR outbox.locked_until<=${now})
+          AND NOT EXISTS (
+            SELECT 1 FROM outbox busy WHERE busy.target=outbox.target
+              AND busy.ordering_key=outbox.ordering_key AND busy.locked_until>${now}
+          )`,
+      )
       .returning(),
   );
   return rows.map((row) => mapOutbox(q, row));

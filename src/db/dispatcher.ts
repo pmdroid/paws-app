@@ -94,8 +94,7 @@ export class OutboxDispatcher {
       limit: this.options.batchSize ?? 32,
       progressIntervalMs: this.options.progressIntervalMs,
     };
-    // The claim is one `UPDATE … RETURNING`, so each claim is its own transaction.
-    const claimed = await this.store.run((q) => claimOutboxHeadsSteps(q, options));
+    const claimed = await this.store.transaction((q) => claimOutboxHeadsSteps(q, options));
     for (const message of claimed) {
       const waitedMs = options.now - Math.max(message.createdAt, message.notBefore);
       this.options.observe?.("outbox.wait", { kind: kindOf(message) }, waitedMs);
