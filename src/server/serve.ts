@@ -154,7 +154,12 @@ import {
 } from "../issue-vm";
 import type { WorkspaceSession } from "../db";
 import { isDashboardPage, isDashboardPath } from "../dashboard-links";
-import { handleVmHostRequest, isVmHostPath } from "../vm-hosts";
+import {
+  handleVmHostRequest,
+  handleVmHostsListRequest,
+  isVmHostPath,
+  VM_HOSTS_PATH,
+} from "../vm-hosts";
 
 export type ServerOptions = {
   metrics?: RequestMetrics;
@@ -674,6 +679,11 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       }
       if (isVmHostPath(path))
         return (await handleVmHostRequest(request, { db: store, principal: access.principal }))!;
+      if (path === VM_HOSTS_PATH)
+        return (await handleVmHostsListRequest(request, {
+          db: store,
+          principal: access.principal,
+        }))!;
       if (path.startsWith("/api/runners") && secrets.runnerControl !== undefined) {
         const response = await secrets.runnerControl(request, access.principal, sessionIds);
         if (response !== null) return response;
