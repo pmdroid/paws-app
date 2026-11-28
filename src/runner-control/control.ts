@@ -24,8 +24,11 @@ import {
   setRunnerConcurrencySteps,
   updateRunnerStatusSteps,
   workspaceMemberSteps,
+  type RunnerEnrollmentKind,
   type RunnerRecord,
+  type VmHostSettings,
 } from "../db";
+import { parseVmHostSettings } from "../vm-hosts";
 import {
   isWorkspaceAdmin,
   workspaceId,
@@ -61,6 +64,7 @@ export function createRunnerControl(options: {
     const member = yield* workspaceMemberSteps(q, workspace, userId);
     if (!workspaceMemberUsable(member))
       throw new Error("Active workspace membership is required to own a runner.");
+    return member;
   }
   async function authorized(peer: RunnerPeer, at = now()): Promise<RunnerRecord> {
     const runner = await store.run((q) => runnerForCertificateSteps(q, peer.fingerprint, at));
@@ -74,15 +78,40 @@ export function createRunnerControl(options: {
      */
     async createEnrollment(
       principal: WorkspacePrincipal,
-      input: { name: string; adminRepositories?: readonly string[] },
+      input: {
+        name: string;
+        adminRepositories?: readonly string[];
+        kind?: RunnerEnrollmentKind;
+        vmHost?: unknown;
+      },
     ) {
       const name = runnerName(input.name);
       const at = now();
       const id = workspaceId(at);
       const token = workspaceSecret();
       const expiresAt = at + 10 * 60_000;
-      await store.transaction(function* (q) {
-        yield* enrollingMemberSteps(q, principal.workspaceId, principal.userId);
+      const kind = input.kind ?? "personal";
+      const denied = await store.transaction(function* (q) {
+        const member = yield* enrollingMemberSteps(q, principal.workspaceId, principal.userId);
+        if (kind === "vm_host" && !isWorkspaceAdmin(member.role)) {
+          yield* auditWorkspaceAccessSteps(q, {
+            workspaceId: principal.workspaceId,
+            userId: principal.userId,
+            action: "runner.enrollment_denied",
+            subject: "vm_host",
+            now: at,
+          });
+          return true;
+        }
+        let vmHostSettings: VmHostSettings | undefined;
+        if (kind === "vm_host")
+          try {
+            vmHostSettings = parseVmHostSettings(input.vmHost ?? {});
+          } catch (error) {
+            throw new RunnerEnrollmentInvalid(
+              error instanceof Error ? error.message : "Invalid VM host settings",
+            );
+          }
         yield* createRunnerEnrollmentSteps(q, {
           id,
           tokenHash: workspaceTokenHash(token),
@@ -92,6 +121,7 @@ export function createRunnerControl(options: {
           expiresAt,
           now: at,
           ...(input.adminRepositories ? { adminRepositories: input.adminRepositories } : {}),
+          ...(vmHostSettings ? { kind, vmHostSettings } : {}),
         });
         yield* auditWorkspaceAccessSteps(q, {
           workspaceId: principal.workspaceId,
@@ -100,7 +130,9 @@ export function createRunnerControl(options: {
           subject: id,
           now: at,
         });
+        return false;
       });
+      if (denied) throw new VmHostEnrollmentForbidden();
       return { token, expiresAt, name };
     },
     /**
@@ -306,6 +338,14 @@ export function createRunnerControl(options: {
 export type RunnerControl = ReturnType<typeof createRunnerControl>;
 
 /** A used, expired or unknown enrollment token, or one whose member may no longer own a runner. */
+export class VmHostEnrollmentForbidden extends Error {
+  constructor() {
+    super("Only workspace admins can add a workspace VM host");
+  }
+}
+
+export class RunnerEnrollmentInvalid extends Error {}
+
 export class RunnerEnrollmentDenied extends Error {
   constructor() {
     super("Runner enrollment is invalid or expired.");

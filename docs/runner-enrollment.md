@@ -189,6 +189,10 @@ sudo /opt/paws-runner/bin/paws-runner runner enroll \
 
 The command starts as root to read the token, then continues as `paws-runner`. The token never appears on the command line.
 
+### Add a workspace VM host
+
+A workspace admin can enroll a machine directly as a workspace VM host. `POST /api/runners/enrollments` takes `"kind": "vm_host"` and an optional `vmHost` object with the issue VM size and reserve that **Settings › Issue VMs** accepts (`vmVcpus`, `vmMemoryGb`, `vmDiskGb`, `reserveVcpus`, `reserveMemoryGb`, `slotCap`). Fields you leave out take the defaults: 2 vCPUs, 4 GB memory, 30 GB disk, a reserve of 4 vCPUs and 8 GB, and no slot cap. A size out of range is refused with the field's limits. Run the command it gives on the host as for any runner. When the host enrolls, Paws creates the runner, owned by you and paused, together with its VM host settings. Paws doesn't bind your agent accounts to it when you resume it. Members can enroll only personal runners: a member who asks for a VM host gets 403 "Only workspace admins can add a workspace VM host", and Paws records the attempt in the workspace audit log.
+
 ## Start the daemon and check health
 
 On the VM:

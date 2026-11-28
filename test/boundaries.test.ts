@@ -339,6 +339,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-identity",
     "runner-protocol",
     "agent-catalog",
+    "vm-hosts",
   ],
   "runner-daemon": [
     "runner-journal",

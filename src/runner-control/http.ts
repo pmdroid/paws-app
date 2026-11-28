@@ -5,7 +5,12 @@ import { RunnerAgentUpdateError, RunnerConcurrencyError } from "../db";
 import { RUNNER_CODING_AGENTS, RunnerAgentVersionSchema } from "../runner-protocol";
 import type { RunnerPeer } from "../runner-identity";
 import type { WorkspacePrincipal } from "../workspace";
-import { RunnerEnrollmentDenied, type RunnerControl } from "./control";
+import {
+  RunnerEnrollmentDenied,
+  RunnerEnrollmentInvalid,
+  VmHostEnrollmentForbidden,
+  type RunnerControl,
+} from "./control";
 
 const hostEnrollment = z
   .object({
@@ -18,7 +23,13 @@ const hostEnrollment = z
     csr: z.string().max(16_384),
   })
   .strict();
-const enrollmentRequest = z.object({ name: z.string().max(80) }).strict();
+const enrollmentRequest = z
+  .object({
+    name: z.string().max(80),
+    kind: z.enum(["personal", "vm_host"]).optional(),
+    vmHost: z.unknown().optional(),
+  })
+  .strict();
 const certificate = z.object({ csr: z.string().max(16_384) }).strict();
 const runnerStatus = z
   .object({ status: z.enum(["active", "paused", "draining", "revoked"]) })
@@ -146,8 +157,13 @@ export function createRunnerHttp(
         return null;
       } catch (error) {
         journalCaught(error, "http.browser.json", null);
-        if (error instanceof RunnerConcurrencyError || error instanceof RunnerAgentUpdateError)
+        if (
+          error instanceof RunnerConcurrencyError ||
+          error instanceof RunnerAgentUpdateError ||
+          error instanceof RunnerEnrollmentInvalid
+        )
           return json({ error: error.message }, 400);
+        if (error instanceof VmHostEnrollmentForbidden) return json({ error: error.message }, 403);
         return json({ error: "Runner access denied or request is invalid." }, 403);
       }
     },
