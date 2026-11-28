@@ -49,7 +49,7 @@ const UPLOAD_MUTATION = `mutation FileUpload($contentType: String!, $filename: S
 
 export function createLinearFileTransfer(options: {
   client: LinearClient;
-  auth: Pick<LinearAuth, "ensureFresh">;
+  auth: Pick<LinearAuth, "ensureFresh" | "assertAuthorized">;
   fetch?: FetchLike;
   maxBytes?: number;
   timeoutMs?: number;
@@ -162,6 +162,7 @@ export function createLinearFileTransfer(options: {
       validateFilename(filename);
       return transfer(input.signal, timeoutMs, async (signal) => {
         const token = await abortable(options.auth.ensureFresh(), signal);
+        await abortable(options.auth.assertAuthorized?.() ?? Promise.resolve(), signal);
         signal.throwIfAborted();
         const response = await fetchFile(
           fetchImpl,

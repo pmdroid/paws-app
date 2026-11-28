@@ -130,6 +130,9 @@ export async function createLinearAuth(options: {
       throw new Error("Linear app access was revoked. Reconnect Linear in Paws.");
   };
   let pending: Promise<string> | null = null;
+  let held: StoredLinearToken | null = null;
+  const fresh = (token: StoredLinearToken | null) =>
+    token !== null && token.expiresAtMs - REFRESH_SKEW_MS > now();
 
   async function refresh(): Promise<string> {
     await assertAuthorized();
@@ -174,6 +177,7 @@ export async function createLinearAuth(options: {
       });
     });
     await assertAuthorized();
+    held = saved;
     return saved.accessToken;
   }
 
@@ -183,10 +187,14 @@ export async function createLinearAuth(options: {
       return (await readToken()) !== null;
     },
     async ensureFresh() {
+      if (fresh(held)) return held!.accessToken;
       await assertAuthorized();
       const current = await readToken();
       if (current === null) throw new Error("Linear OAuth token is not configured");
-      if (current.expiresAtMs - REFRESH_SKEW_MS > now()) return current.accessToken;
+      if (fresh(current)) {
+        held = current;
+        return current.accessToken;
+      }
       if (current.refreshToken === null) {
         if (current.expiresAtMs > now()) return current.accessToken;
         throw new LinearReconnectError(
@@ -195,7 +203,14 @@ export async function createLinearAuth(options: {
       }
       return refresh();
     },
-    forceRefresh() {
+    async forceRefresh() {
+      const stale = held;
+      held = null;
+      const current = await readToken();
+      if (stale !== null && fresh(current) && current!.accessToken !== stale.accessToken) {
+        held = current;
+        return current!.accessToken;
+      }
       return refresh();
     },
   };
