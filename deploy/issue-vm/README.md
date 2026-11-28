@@ -30,7 +30,7 @@ While the build VM runs, the script gives it the tap device `pawsimg0` with `10.
 ## Check
 
 ```sh
-sudo deploy/issue-vm/base-disk.sh check /var/lib/paws-issue-vm/paws-issue-vm-20261017-runner-0.1.106-arm64.raw
+sudo deploy/issue-vm/base-disk.sh check /var/lib/paws-issue-vm/paws-issue-vm-20261017-runner-0.1.110-arm64.raw
 ```
 
 `check` verifies the image against `SHA256SUMS` beside it, inspects a copy the same way the build does, boots that copy with a throwaway `paws` user and SSH key, and waits for SSH. Over SSH it checks that the VM made its own machine id and SSH host keys, has no runner enrollment, runs a container on Docker, reaches the agents' rootless Docker daemon, starts and deletes a kind cluster, and has `vm.overcommit_memory=1`. Then it copies the paws-app checkout the script sits in (its committed `HEAD`) into the VM and runs `bun install --frozen-lockfile` and `bun run knip` there with the runner's Bun, on the default 4 GB VM.
@@ -43,7 +43,7 @@ Each issue VM gets its own thin snapshot of the base disk, named by its issue VM
 install -m 0755 deploy/issue-vm/disk.sh /usr/local/sbin/paws-issue-vm-disk
 install -m 0644 deploy/issue-vm/paws-issue-vm-pool.service 'deploy/issue-vm/paws-issue-vm-disk@.service' /etc/systemd/system/
 install -m 0644 deploy/issue-vm/paws-issue-vm-disk.polkit /etc/polkit-1/rules.d/60-paws-issue-vm-disk.rules
-paws-issue-vm-disk init 400 /var/lib/paws-issue-vm/paws-issue-vm-20261017-runner-0.1.106-arm64.raw
+paws-issue-vm-disk init 400 /var/lib/paws-issue-vm/paws-issue-vm-20261017-runner-0.1.110-arm64.raw
 systemctl daemon-reload
 systemctl enable paws-issue-vm-pool.service
 ```
