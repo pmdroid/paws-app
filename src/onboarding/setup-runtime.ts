@@ -90,6 +90,7 @@ export async function browserSetupRuntime(
   const resolved = await resolveLinearClient(db, join(runtime.env.home, "secrets"), source);
   return {
     pending: resolved.pending,
+    error: resolved.error,
     runtime: {
       ...runtime,
       linearClientId: resolved.clientId,

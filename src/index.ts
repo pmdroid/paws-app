@@ -588,6 +588,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     },
   );
   const browserSetup = await browserSetupRuntime(database.store, runtime, envSource);
+  if (browserSetup.error !== null) {
+    await database.close();
+    throw new Error(browserSetup.error);
+  }
   runtime = browserSetup.runtime;
   if (runnerConfig !== null) {
     const ensured = await ensureRunnerCoordinator(runnerConfig.root).catch(

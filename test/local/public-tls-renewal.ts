@@ -143,6 +143,7 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
     PAWS_HOST: "127.0.0.1",
     LINEAR_MODE: "agent-session",
     LINEAR_CLIENT_ID: "client",
+    LINEAR_CLIENT_SECRET: "client-secret-marker",
     LINEAR_ACCESS_TOKEN: "fixture-access",
     LINEAR_APP_USER_ID: "app",
     LINEAR_WEBHOOKS: "false",

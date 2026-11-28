@@ -960,3 +960,17 @@ test("the Linear client pair and webhook secret come from the environment or Set
     await scene.close();
   }
 });
+
+test("startup refuses a Linear client secret from the environment without its client id", async () => {
+  const home = await migratedHome(mkdtempSync(join(tmpdir(), "paws-linear-half-pair-")));
+  roots.push(home);
+  const started = startPaws({
+    PAWS_HOME: home,
+    PAWS_HOST: "127.0.0.1",
+    PAWS_PORT: "0",
+    LINEAR_CLIENT_SECRET: "env-marker",
+  });
+  await expect(started).rejects.toThrow(
+    "LINEAR_CLIENT_SECRET is set in the environment, but the client id is not set",
+  );
+});
