@@ -60,6 +60,7 @@ import {
   readSecretFile,
   storeSecretKeys,
   useDatabaseSecrets,
+  completeSecretStart,
   migrateAgentCredentials,
   readAgentCredentialSteps,
 } from "./credentials";
@@ -585,6 +586,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     await openPawsStore({ url: databaseUrl, pgliteDir: paths.pgliteDir }),
     databaseUrl,
     paths.secretsDir,
+    true,
   );
   let runtime = await importLegacyGitHubApp(paths.home, envSource)
     .then(() => loadSecretRuntime(envSource, paths))
@@ -1625,18 +1627,20 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   ]).then(() => {
     if (runnerStopping) throw new Error("Paws is stopping.");
   });
-  void ready.catch((caughtError6) => {
-    journalCaught(
-      caughtError6,
-      "index.startPaws.ready",
-      null,
-      runnerStopping &&
-        caughtError6 instanceof Error &&
-        caughtError6.message === "Paws is stopping."
-        ? "shutdown interrupted startup"
-        : undefined,
-    );
-  });
+  void ready
+    .then(() => completeSecretStart(paths.secretsDir))
+    .catch((caughtError6) => {
+      journalCaught(
+        caughtError6,
+        "index.startPaws.ready",
+        null,
+        runnerStopping &&
+          caughtError6 instanceof Error &&
+          caughtError6.message === "Paws is stopping."
+          ? "shutdown interrupted startup"
+          : undefined,
+      );
+    });
   let jobLoop: JobLoop | null = null;
   let server: Bun.Server<undefined>;
   try {
@@ -3258,10 +3262,12 @@ async function withDatabaseSecrets(
   opened: PawsStore,
   url: string | null,
   secretsDir: string,
+  service = false,
 ): Promise<PawsStore> {
   try {
     const secrets = await useDatabaseSecrets(opened.store, secretsDir, {
       files: url === null ? [SETUP_TOKEN_FILE] : [],
+      ...(service ? { deleteRetired: { now: Date.now() } } : {}),
     });
     await migrateAgentCredentials(opened.store, secretsDir);
     return {
