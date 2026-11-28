@@ -1,0 +1,1 @@
+ALTER TABLE "inbox_event" ADD COLUMN "merged_into" text;

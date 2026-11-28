@@ -1,4 +1,4 @@
-import { and, asc, eq, exists, gte, inArray, lt, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, exists, gte, inArray, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { type Db, type Q, type Steps } from "./db";
 import { jsonField, jsonFromText, jsonText } from "./json-text";
@@ -128,7 +128,7 @@ function* inboxDuplicateSteps(
     q.orm
       .select({ dedupeKey: other.dedupeKey, handled: other.handled })
       .from(other)
-      .where(and(match, ne(other.dedupeKey, event.dedupeKey), earlier))
+      .where(and(match, ne(other.dedupeKey, event.dedupeKey), isNull(other.mergedInto), earlier))
       .orderBy(asc(other.receivedAt), asc(other.dedupeKey))
       .limit(1),
   );
@@ -152,24 +152,52 @@ export function* commitInboxEventSteps(
   const inserted = yield* q.all(
     q.orm
       .insert(e)
-      .values({ ...row, payload: jsonFromText(q, row.payload), handled: survivor ? 1 : 0 })
+      .values({
+        ...row,
+        payload: jsonFromText(q, row.payload),
+        handled: survivor ? 1 : 0,
+        mergedInto: survivor?.dedupeKey ?? null,
+      })
       .onConflictDoNothing()
       .returning({ dedupeKey: e.dedupeKey }),
   );
-  if (inserted.length === 0) return { inserted: false, mergedInto: null };
+  if (inserted.length === 0) {
+    const delivered =
+      row.deliveryId !== null && (yield* inboxEventByDeliverySteps(q, row.deliveryId)) !== null;
+    if (row.source === "webhook" && !delivered)
+      yield* q.exec(
+        q.orm
+          .update(e)
+          .set({
+            ...foldColumns(q, row),
+            payload: jsonFromText(q, row.payload),
+            source: row.source,
+            deliveryId: row.deliveryId,
+          })
+          .where(and(eq(e.dedupeKey, row.dedupeKey), eq(e.handled, 0), eq(e.source, "poll"))),
+      );
+    return { inserted: false, mergedInto: null };
+  }
   if (survivor?.handled === 0 && row.action === "created")
     yield* q.exec(
       q.orm
         .update(e)
         .set({
+          ...foldColumns(q, row),
           payload: sql`${e.payload} || ${jsonFromText(q, row.payload)}`,
-          body: sql`COALESCE(${row.body}, ${e.body})`,
-          activityId: sql`COALESCE(${row.activityId}, ${e.activityId})`,
-          updatedAtMs: sql`GREATEST(${e.updatedAtMs}, ${row.updatedAtMs})`,
         })
         .where(eq(e.dedupeKey, survivor.dedupeKey)),
     );
   return { inserted: survivor === null, mergedInto: survivor?.dedupeKey ?? null };
+}
+
+function foldColumns(q: Q, row: NewInboxEvent) {
+  const e = q.t.inboxEvent;
+  return {
+    body: sql`COALESCE(${row.body}, ${e.body})`,
+    activityId: sql`COALESCE(${row.activityId}, ${e.activityId})`,
+    updatedAtMs: sql`GREATEST(${e.updatedAtMs}, ${row.updatedAtMs})`,
+  };
 }
 
 export async function commitInboxEvent(store: Db, row: NewInboxEvent) {
@@ -181,7 +209,11 @@ export async function queuedDuplicateOf(store: Db, dedupeKey: string): Promise<s
     const e = q.t.inboxEvent;
     const row = yield* q.one(q.orm.select().from(e).where(eq(e.dedupeKey, dedupeKey)));
     if (row === undefined) return null;
-    return (yield* inboxDuplicateSteps(q, row, row.receivedAt))?.dedupeKey ?? null;
+    const survivor =
+      row.mergedInto ?? (yield* inboxDuplicateSteps(q, row, row.receivedAt))?.dedupeKey;
+    if (survivor === undefined) return null;
+    yield* q.exec(q.orm.update(e).set({ mergedInto: survivor }).where(eq(e.dedupeKey, dedupeKey)));
+    return survivor;
   });
 }
 

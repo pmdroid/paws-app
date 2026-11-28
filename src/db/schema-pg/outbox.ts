@@ -82,6 +82,7 @@ export const inboxEvent = pgTable(
     lastError: text("last_error"),
     lockedBy: text("locked_by"),
     lockedUntil: bigint("locked_until", { mode: "number" }),
+    mergedInto: text("merged_into"),
   },
   (table) => [
     uniqueIndex("inbox_event_delivery")

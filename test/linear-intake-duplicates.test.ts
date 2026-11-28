@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { count, eq } from "drizzle-orm";
-import { insertInboxEvent, type Db } from "../src/db";
+import { commitInboxEvent, insertInboxEvent, type Db } from "../src/db";
 import { setJournalSink } from "../src/journal";
 import {
   createFakeTracker,
@@ -270,4 +270,31 @@ test("a polled session created merges into its issue intake, but a stale re-inta
   const h = await fixture();
   await h.store.commit({ ...pollIntake, sessionId: null });
   expect(await h.store.commit(polled)).toEqual({ inserted: true, handled: false });
+});
+
+test("an alias recorded in the same millisecond as its survivor does not suppress it", async () => {
+  const f = await fixture();
+  const alias = { ...webhookCreated(), dedupeKey: "issue:issue-1:intake", source: "poll" };
+  await commitInboxEvent(f.db, { ...webhookCreated(), receivedAt: 5 });
+  await commitInboxEvent(f.db, { ...alias, deliveryId: null, receivedAt: 5 });
+  expect(await f.store.duplicateOf("session:s1:created")).toBeNull();
+});
+
+test("a webhook with the same key as a queued poll sighting replaces its payload and provenance", async () => {
+  const f = await fixture(() => Date.now());
+  const polled: AcceptedLinearEvent = {
+    ...webhookCreated(),
+    issueId: null,
+    source: "poll",
+    deliveryId: null,
+    activityId: null,
+    body: null,
+    payload: JSON.stringify({ kind: "session" }),
+  };
+  await f.store.commit(polled);
+  expect(await f.store.commit(webhookCreated())).toEqual({ inserted: false, handled: false });
+  const row = (await f.store.get("session:s1:created"))!;
+  expect(row).toMatchObject({ source: "webhook", activityId: "a1", body: "Work on PAS-1" });
+  expect(JSON.parse(row.payload)).toMatchObject({ agentActivity: { id: "a1" } });
+  expect(await f.store.sessionWebhookSince("s1", Date.now() - 60_000)).toBe(true);
 });
