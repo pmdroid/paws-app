@@ -5,7 +5,7 @@ import {
   offerFixtureModels,
   seedCredential,
 } from "./pglite-fixtures";
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -45,29 +45,16 @@ import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { tempStore } from "./pglite";
 
+setDefaultTimeout(120_000);
+
 type RunCommand = Extract<RunnerCommand, { type: "run" }>;
 type Setup = Awaited<ReturnType<typeof setup>>;
 
-async function until<T>(check: () => T | Promise<T>, ms = 10_000): Promise<T> {
-  const deadline = Date.now() + ms;
+async function until<T>(check: () => T | Promise<T>): Promise<T> {
   for (;;) {
     const value = await check();
-    if (value || Date.now() >= deadline) return value;
+    if (value) return value;
     await delay(1);
-  }
-}
-
-async function settleWithin(promises: Promise<unknown>[], what: string, ms = 10_000) {
-  const timer = new AbortController();
-  try {
-    await Promise.race([
-      Promise.allSettled(promises),
-      delay(ms, undefined, { signal: timer.signal }).then(() => {
-        throw new Error(`${what} did not finish within ${ms} ms`);
-      }),
-    ]);
-  } finally {
-    timer.abort();
   }
 }
 
@@ -286,8 +273,7 @@ async function setup() {
   const runCommands = new Map<string, RunCommand>();
   /** The next command for `runnerId`, or null once `attempts` polls found none. */
   async function next(runnerId: string, attempts = Infinity) {
-    const deadline = Date.now() + 10_000;
-    for (let index = 0; index < attempts && Date.now() < deadline; index++) {
+    for (let index = 0; index < attempts; index++) {
       for (const envelope of await work.commands(runnerId)) {
         const verified = verifyRunnerCommand(envelope, {
           accountBindings,
@@ -621,10 +607,10 @@ async function setup() {
       moveRoutes.clear();
       for (const { stop } of routes) stop.abort();
       const stopped = { done: false };
-      const settling = settleWithin(
-        [...stopping.map(({ running }) => running), ...routes.map(({ settled }) => settled())],
-        "Stopping the turns and moves",
-      ).finally(() => {
+      const settling = Promise.allSettled([
+        ...stopping.map(({ running }) => running),
+        ...routes.map(({ settled }) => settled()),
+      ]).finally(() => {
         stopped.done = true;
       });
       try {

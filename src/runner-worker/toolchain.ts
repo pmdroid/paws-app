@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { formatToolchainQuestion } from "../runner-protocol";
 
 type PackageJson = { packageManager?: unknown; engines?: Record<string, unknown> };
 
@@ -49,17 +50,11 @@ export function missingToolchainQuestion(worktree: string, path: string): string
     existsSync(join(worktree, ".tool-versions")) &&
     !existsSync(join(worktree, "mise.toml")) &&
     !existsSync(join(worktree, ".mise.toml"));
-  if (toolVersions)
-    return `${descriptions.join("\n")} Add these lines to .tool-versions at the repository root (replace a line that already names the tool). Commit the change to main, then answer to retry:\n\n${[
-      ...entries,
-    ]
-      .map(([name, version]) => `${name} ${version}`)
-      .join("\n")}`;
-  return `${descriptions.join("\n")} Add these entries to the existing [tools] table in mise.toml at the repository root, or create that table if absent. Commit the configuration to main, then answer to retry (do not add a second [tools] header):\n\n[tools]\n${[
-    ...entries,
-  ]
-    .map(([name, version]) => `${name} = "${version}"`)
-    .join("\n")}`;
+  return formatToolchainQuestion({
+    descriptions,
+    file: toolVersions ? ".tool-versions" : "mise.toml",
+    entries: [...entries].map(([name, version]) => ({ name, version })),
+  });
 }
 
 function readPackageJson(file: string): PackageJson {
