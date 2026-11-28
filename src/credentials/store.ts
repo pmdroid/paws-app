@@ -21,16 +21,32 @@ const INSTALLATION = "installation";
 const prefix = (kind: CredentialKind) => `oauth-${kind}-`;
 const secretName = (key: CredentialKey) => prefix(key.kind) + key.workspace.replace(":", "-");
 
-export function* readScopedCredentialSteps(
-  q: Q,
-  secretsDir: string,
-  key: CredentialKey,
-): Steps<ScopedCredential | null> {
+function* secretGrantSteps(q: Q, secretsDir: string, key: CredentialKey) {
   const name = secretName(key);
   const row = yield* readSecretSteps(q, name);
   if (row?.value == null) return null;
   const value = openSecret(secretsDir, name, row.value);
   return { workspace: key.workspace, value, version: row.version, updatedAt: row.updatedAt };
+}
+
+function* legacyGrantsSteps(q: Q, secretsDir: string, kind: CredentialKind) {
+  return (yield* legacyCredentialRowsSteps(q, kind)).map((row) => ({
+    workspace: row.workspace,
+    value: openSecret(secretsDir, `credential:${kind}:${row.workspace}`, row.ciphertext),
+    version: 0,
+    updatedAt: row.updatedAt,
+  }));
+}
+
+export function* readScopedCredentialSteps(
+  q: Q,
+  secretsDir: string,
+  key: CredentialKey,
+): Steps<ScopedCredential | null> {
+  const stored = yield* secretGrantSteps(q, secretsDir, key);
+  if (stored !== null) return stored;
+  const legacy = yield* legacyGrantsSteps(q, secretsDir, key.kind);
+  return legacy.find((row) => row.workspace === key.workspace) ?? null;
 }
 
 export function* readCredentialSteps(
@@ -50,7 +66,7 @@ export function* scopedCredentialsSteps(
   kind: CredentialKind,
 ): Steps<ScopedCredential[]> {
   const rows = yield* secretsNamedSteps(q, prefix(kind));
-  return rows.map((row) => {
+  const stored = rows.map((row) => {
     const scope = row.name.slice(prefix(kind).length);
     return {
       workspace: scope.startsWith("team-") ? `team:${scope.slice(5)}` : scope,
@@ -59,6 +75,9 @@ export function* scopedCredentialsSteps(
       updatedAt: row.updatedAt,
     };
   });
+  const names = new Set(stored.map((row) => row.workspace));
+  const legacy = yield* legacyGrantsSteps(q, secretsDir, kind);
+  return [...stored, ...legacy.filter((row) => !names.has(row.workspace))];
 }
 
 export function* replaceScopedCredentialSteps(
@@ -69,7 +88,9 @@ export function* replaceScopedCredentialSteps(
   expected: number,
 ): Steps<number | null> {
   const name = secretName(key);
-  return yield* replaceSecretSteps(q, name, sealSecret(secretsDir, name, value), expected);
+  const version = yield* replaceSecretSteps(q, name, sealSecret(secretsDir, name, value), expected);
+  if (version !== null) yield* clearCredentialCiphertextSteps(q, key);
+  return version;
 }
 
 export function* removeScopedCredentialSteps(
@@ -77,6 +98,7 @@ export function* removeScopedCredentialSteps(
   key: CredentialKey,
   version: number,
 ): Steps<boolean> {
+  if (version === 0) return yield* clearCredentialCiphertextSteps(q, key);
   return (yield* replaceSecretSteps(q, secretName(key), null, version)) !== null;
 }
 
@@ -98,7 +120,9 @@ export function* writeCredentialSteps(
   const key = { kind, workspace: INSTALLATION };
   const current = yield* readSecretSteps(q, secretName(key));
   const expected = current?.value == null ? 0 : current.version;
-  if (options.onlyIfMissing && expected !== 0) return false;
+  const legacy = yield* legacyCredentialRowsSteps(q, kind);
+  const held = expected !== 0 || legacy.some((row) => row.workspace === INSTALLATION);
+  if (options.onlyIfMissing && held) return false;
   const written = yield* replaceScopedCredentialSteps(q, secretsDir, key, value, expected);
   if (written === null && !options.onlyIfMissing)
     throw new Error(`The ${kind} grant changed while Paws saved it.`);
@@ -137,10 +161,10 @@ export async function moveCredentialGrants(store: Db, secretsDir: string): Promi
       .transaction(function* (q) {
         const legacy = `credential:${key.kind}:${key.workspace}`;
         const value = openSecret(secretsDir, legacy, row.ciphertext);
-        if ((yield* readScopedCredentialSteps(q, secretsDir, key)) === null) {
+        if ((yield* secretGrantSteps(q, secretsDir, key)) === null) {
           const name = secretName(key);
           yield* replaceSecretSteps(q, name, sealSecret(secretsDir, name, value), 0, row.updatedAt);
-          if ((yield* readScopedCredentialSteps(q, secretsDir, key))?.value !== value)
+          if ((yield* secretGrantSteps(q, secretsDir, key))?.value !== value)
             throw new Error(`The moved ${key.kind} grant did not read back.`);
         }
         if (!(yield* clearCredentialCiphertextSteps(q, key, row.ciphertext)))

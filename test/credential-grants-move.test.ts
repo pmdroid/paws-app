@@ -5,10 +5,11 @@ import { join } from "node:path";
 import {
   moveCredentialGrants,
   readScopedCredentialSteps,
+  removeScopedCredentialSteps,
   scopedCredentialsSteps,
   writeSecretFile,
 } from "../src/credentials";
-import { readStoredToken } from "../src/linear";
+import { readStoredToken, writeStoredToken } from "../src/linear";
 import { tempStore } from "./pglite";
 
 const cleanup: (() => unknown)[] = [];
@@ -41,7 +42,10 @@ async function setup() {
   return { db: handle.db, dir, legacy, rows };
 }
 
-const linear = { accessToken: "marker-linear", refreshToken: "marker-refresh", expiresAtMs: 9 };
+const linear = {
+  ...{ accessToken: "marker-linear", refreshToken: "marker-refresh", expiresAtMs: 9 },
+  ...{ scope: null, actor: "app" as const },
+};
 
 test("grants move from credential into secret under their own names", async () => {
   const { db, dir, legacy, rows } = await setup();
@@ -76,15 +80,27 @@ test("grants move from credential into secret under their own names", async () =
   expect(await moveCredentialGrants(db, dir)).toBe(0);
 });
 
-test("a grant that cannot be moved stays in credential and the others still move", async () => {
+test("a grant whose move fails stays in credential and is still read, written and removed", async () => {
   const { db, dir, legacy, rows } = await setup();
-  await legacy("linear", "installation", JSON.stringify(linear), "credential:slack:installation");
-  await legacy("slack", "installation", JSON.stringify({ accessToken: "marker-slack" }));
+  await legacy("linear", "installation", JSON.stringify(linear));
+  await legacy("slack", "W1", JSON.stringify({ accessToken: "marker-slack", teamId: "T1" }));
+  const failing = new Proxy(db, {
+    get: (target, key) =>
+      key === "transaction"
+        ? () => Promise.reject(new Error("synthetic"))
+        : Reflect.get(target, key),
+  });
 
-  expect(await moveCredentialGrants(db, dir)).toBe(1);
-  expect(await readStoredToken(db, dir)).toBeNull();
-  const kept = (await rows()).find((row) => row.kind === "linear")!;
-  expect(kept.ciphertext).toStartWith("paws-envelope-v1\n");
-  expect(await moveCredentialGrants(db, dir)).toBe(0);
-  expect((await rows()).find((row) => row.kind === "linear")!.ciphertext).toBe(kept.ciphertext);
+  expect(await moveCredentialGrants(failing, dir)).toBe(0);
+  expect(await readStoredToken(db, dir)).toMatchObject(linear);
+  const slack = { kind: "slack" as const, workspace: "W1" };
+  const held = await db.run((q) => readScopedCredentialSteps(q, dir, slack));
+  expect(held).toMatchObject({ version: 0, updatedAt: 1234 });
+  expect(await db.run((q) => scopedCredentialsSteps(q, dir, "slack"))).toEqual([held!]);
+
+  expect(await writeStoredToken(db, dir, { ...linear, accessToken: "marker-next" })).toBe(true);
+  expect(await readStoredToken(db, dir)).toMatchObject({ accessToken: "marker-next" });
+  expect(await db.run((q) => removeScopedCredentialSteps(q, slack, 0))).toBe(true);
+  expect(await db.run((q) => readScopedCredentialSteps(q, dir, slack))).toBeNull();
+  expect((await rows()).map((row) => row.ciphertext)).toEqual(["", ""]);
 });

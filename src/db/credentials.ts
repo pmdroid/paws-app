@@ -129,12 +129,18 @@ export function* replaceSecretSteps(
   return rows[0]?.version ?? null;
 }
 
-export function* legacyCredentialRowsSteps(q: Q) {
+export function* legacyCredentialRowsSteps(q: Q, kind?: CredentialKey["kind"]) {
   const { credential } = q.t;
-  return yield* q.all(q.orm.select().from(credential).where(ne(credential.ciphertext, "")));
+  const live = ne(credential.ciphertext, "");
+  return yield* q.all(
+    q.orm
+      .select()
+      .from(credential)
+      .where(kind === undefined ? live : and(live, eq(credential.kind, kind))),
+  );
 }
 
-export function* clearCredentialCiphertextSteps(q: Q, key: CredentialKey, ciphertext: string) {
+export function* clearCredentialCiphertextSteps(q: Q, key: CredentialKey, ciphertext?: string) {
   const { credential } = q.t;
   const rows = yield* q.all(
     q.orm
@@ -144,7 +150,9 @@ export function* clearCredentialCiphertextSteps(q: Q, key: CredentialKey, cipher
         and(
           eq(credential.kind, key.kind),
           eq(credential.workspace, key.workspace),
-          eq(credential.ciphertext, ciphertext),
+          ciphertext === undefined
+            ? ne(credential.ciphertext, "")
+            : eq(credential.ciphertext, ciphertext),
         ),
       )
       .returning({ kind: credential.kind }),
