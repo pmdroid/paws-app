@@ -219,6 +219,46 @@ describePglite((connect) => {
     );
   });
 
+  test("generated keys kept in files are copied, and an uncopied key file is never replaced", async () => {
+    const { db, dir } = await setup(connect);
+    const names = [
+      "runner-file.key",
+      "runner-event.key",
+      "runner-transcript.key",
+      "agent-session.key",
+    ];
+    const paths = names.map((name) => join(dir, name));
+    await storeSecretKeys(paths);
+    const values = paths.map((path) => readSecretFile(path));
+    const files = paths.map((path) => readFileSync(path, "utf8"));
+    await install(db, dir);
+    await storeSecretKeys(paths);
+    expect(paths.map((path) => readSecretFile(path))).toEqual(values);
+    const rows = await db.run(secretRowsSteps);
+    expect(names.map((name) => rows.find((row) => row.name === name)?.ciphertext)).toEqual(files);
+    await removeSecret(paths[0]!);
+    await install(db, dir);
+    await expect(storeSecretKeys(paths)).rejects.toThrow("will not replace it with a new key");
+    expect(readFileSync(paths[0]!, "utf8")).toBe(files[0]!);
+  });
+
+  test("a nested folder's own envelope key still opens its imported rows", async () => {
+    const { db, dir } = await setup(connect);
+    writeSecretFile(join(dir, "linear-webhook"), "top");
+    const nested = join(dir, "runner-identity");
+    mkdirSync(nested, { mode: 0o700 });
+    writeFileSync(join(nested, ".envelope-key"), randomBytes(32), { mode: 0o600 });
+    writeSecretFile(join(nested, "agent-read-tokens.json"), "sealed-nested");
+    writeFileSync(join(nested, "runner-command-key.pem"), "plain-nested", { mode: 0o600 });
+    expect(readFileSync(join(nested, ".envelope-key"))).not.toEqual(
+      readFileSync(join(dir, ".envelope-key")),
+    );
+    await install(db, dir);
+    expect(readSecretFile(join(dir, "linear-webhook"))).toBe("top");
+    expect(readSecretFile(join(nested, "agent-read-tokens.json"))).toBe("sealed-nested");
+    expect(readSecretFile(join(nested, "runner-command-key.pem"))).toBe("plain-nested");
+  });
+
   test("the import skips run-data stores and large files, and they stay files", async () => {
     const { db, dir } = await setup(connect);
     writeSecretFile(join(dir, "linear-webhook"), "linear-secret");

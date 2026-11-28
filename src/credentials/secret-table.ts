@@ -20,15 +20,13 @@ const unowned = new Set<string>();
 export async function useDatabaseSecrets(
   store: Db,
   dir: string,
-  options: { copy?: boolean; refreshMs?: number } = {},
+  options: { files?: readonly string[]; refreshMs?: number } = {},
 ): Promise<{ close(): Promise<void> }> {
-  if (options.copy !== false) {
-    const copied = await store.transaction((q) =>
-      copySecretRowsSteps(q, secretFiles(dir), Date.now()),
-    );
-    if (copied > 0)
-      journal(`Copied ${copied} secret ${copied === 1 ? "file" : "files"} into the database.`);
-  }
+  const kept = new Set(options.files);
+  const copy = secretFiles(dir).filter((row) => !kept.has(row.name));
+  const copied = await store.transaction((q) => copySecretRowsSteps(q, copy, Date.now()));
+  if (copied > 0)
+    journal(`Copied ${copied} secret ${copied === 1 ? "file" : "files"} into the database.`);
   const rows = new Map<string, string>();
   const versions = new Map<string, number>();
   const remember = (name: string, read: { value: string | null; version: number } | null) => {
@@ -64,6 +62,7 @@ export async function useDatabaseSecrets(
   useSecretTable({
     dir,
     rows,
+    files: kept,
     write(name, ciphertext, exclusive) {
       const written = writes.then(() => put(name, ciphertext, exclusive));
       writes = written.catch(() => undefined);

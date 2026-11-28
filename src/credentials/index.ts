@@ -4,6 +4,7 @@ export {
   saveSecret,
   removeSecret,
   secretFileExists,
+  uncopiedSecretFile,
   storedSecrets,
   openSecretAt,
   decodeSecretEnvelope,

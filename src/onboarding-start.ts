@@ -2,7 +2,6 @@ import { journal, journalCaught } from "./journal";
 import { ensureRunnerCoordinator } from "./runner-coordinator";
 import type { PawsProcess } from "./index";
 import { ensureLayout, loadRunnerControl, pawsPaths, type RuntimeConfig } from "./config";
-import { useDatabaseSecrets } from "./credentials";
 import { workspaceOrganizationIds, type PawsStore } from "./db";
 import { publicTlsProxy, type PublicTls } from "./deployment";
 import { createBrowserOnboarding, setupToken as savedSetupToken } from "./onboarding";
@@ -23,7 +22,6 @@ export async function startBrowserOnboarding(
   const paths = pawsPaths(runtime.env.home);
   ensureLayout(paths);
   const db = database.store;
-  let setupSecrets: Awaited<ReturnType<typeof useDatabaseSecrets>> | undefined;
   let active: PawsProcess | undefined;
   let stopping = false;
   let switching: Promise<void> | undefined;
@@ -33,7 +31,6 @@ export async function startBrowserOnboarding(
   async function closeDatabase() {
     if (closed) return;
     closed = true;
-    await setupSecrets?.close();
     await database.close();
   }
   const environmentClient = runtime.linearClientId !== null && !setupPending;
@@ -42,8 +39,6 @@ export async function startBrowserOnboarding(
       ? await savedSetupToken(paths.secretsDir)
       : undefined;
   if (setupToken) {
-    if (runtime.databaseUrl === null)
-      setupSecrets = await useDatabaseSecrets(db, paths.secretsDir, { copy: false });
     journal(SETUP_OPEN);
     console.log(SETUP_OPEN);
   }

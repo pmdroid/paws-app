@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { S3Client } from "bun";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { pawsPaths } from "../../src/config";
+import { openPawsStore, secretRowsSteps } from "../../src/db";
 import { startPaws } from "../../src/index";
 import { createFakeRunnerTranscriptObjects } from "../../src/runner-transcripts";
 import { probeRunnerTranscripts } from "./runner-transcripts";
@@ -64,6 +66,13 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
   assert.equal(created.code, 0, created.error);
   assert.equal(created.output.trim(), "Runner transcript storage configured.");
   const path = join(home, "secrets", "runner-transcript-storage.json");
+  assert(!existsSync(path));
+  const database = await openPawsStore({ url: null, pgliteDir: pawsPaths(home).pgliteDir });
+  const rows = await database.store.run(secretRowsSteps).finally(() => database.close());
+  const row = rows.find((entry) => entry.name === "runner-transcript-storage.json");
+  assert(row?.ciphertext.startsWith("paws-envelope-v1\n"));
+  assert(!row!.ciphertext.includes(config.secretAccessKey));
+  configureRunnerTranscriptStorage(home, JSON.stringify(config));
   const bytes = readFileSync(path, "utf8");
   assert(bytes.startsWith("paws-envelope-v1\n"));
   assert(!bytes.includes(config.secretAccessKey));
@@ -74,7 +83,7 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
   // Agent session snapshots use the same bucket.
   assert.equal(loadRunnerTranscriptS3(home)?.bucket, "fixture-transcripts");
   assert.equal(loadRunnerTranscriptS3(join(root, "unconfigured")), null);
-  assert.equal((await cli(root, JSON.stringify(config))).code, 0);
+  configureRunnerTranscriptStorage(home, JSON.stringify(config));
   assert.equal(readFileSync(path, "utf8"), bytes);
   observe(
     "normal CLI saves idempotent encrypted transcript configuration without credential output",

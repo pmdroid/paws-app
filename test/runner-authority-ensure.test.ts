@@ -1,8 +1,17 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { saveSecret, secretFileExists, useDatabaseSecrets } from "../src/credentials";
+import { removeSecret, saveSecret, secretFileExists, useDatabaseSecrets } from "../src/credentials";
+import { secretRowsSteps } from "../src/db";
 import { ensureRunnerCoordinator } from "../src/runner-coordinator";
 import { tempStore } from "./pglite";
 
@@ -59,6 +68,28 @@ test("reuses an authority kept in the database secret table", async () => {
   const reused = await ensureRunnerCoordinator(root);
   expect(reused.created).toBe(false);
   expect(reused.signingKeys[0].keyId).toBe(created.signingKeys[0].keyId);
+});
+
+test("copies an authority kept in files and never replaces an uncopied one", async () => {
+  const { dir, root } = secretsDir();
+  const { db, close } = await tempStore();
+  cleanup.push(close);
+  const created = await ensureRunnerCoordinator(root);
+  const authority = readFileSync(join(root, "runner-authority.json"), "utf8");
+  const first = await useDatabaseSecrets(db, dir);
+  const reused = await ensureRunnerCoordinator(root);
+  expect(reused.created).toBe(false);
+  expect(reused.signingKeys[0].keyId).toBe(created.signingKeys[0].keyId);
+  const rows = await db.run(secretRowsSteps);
+  expect(rows.find((row) => row.name === "runner-identity/runner-authority.json")?.ciphertext).toBe(
+    authority,
+  );
+  for (const name of ["runner-authority.json", "runner-command-key.pem"])
+    await removeSecret(join(root, name));
+  await first.close();
+  const second = await useDatabaseSecrets(db, dir);
+  cleanup.push(() => second.close());
+  await expect(ensureRunnerCoordinator(root)).rejects.toThrow("will not replace them");
 });
 
 test("refuses a partial identity and writes nothing", async () => {

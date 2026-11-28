@@ -2,7 +2,15 @@ import type { RunFileObjects } from "../run-files";
 import { journalCaught } from "../journal";
 import { S3Client } from "bun";
 import { createHash, randomUUID } from "node:crypto";
-import { constants, closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
+import {
+  constants,
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readSync,
+} from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { ENV_SETTINGS, envSetting, envSettingRefusal, settingSources } from "../config";
@@ -93,6 +101,11 @@ export function loadRunnerTranscriptS3(home: string): { client: S3Client; bucket
   } catch {
     throw new Error(FAILURE);
   }
+}
+
+export function checkLegacyRunnerTranscriptStorage(home: string): void {
+  if (fromEnvironment() || !existsSync(join(home, "secrets", FILE))) return;
+  loadRunnerTranscriptS3(home);
 }
 
 function savedFields(home: string): Partial<z.infer<typeof s3Schema>> {
