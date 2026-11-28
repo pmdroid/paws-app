@@ -9065,6 +9065,7 @@ export class Orchestrator {
       profileLabels,
       defaultRoles,
       settingsSwitch,
+      basis: this.agentSettingsKey(),
     });
     await this.store.run((q) => setCurrentRunSteps(q, item.id, run.id));
     return run;
@@ -11703,17 +11704,20 @@ export class Orchestrator {
 
   private async reconcileWaitingProfiles(): Promise<number> {
     const key = this.agentSettingsKey();
-    if (key !== null && key === this.settingsBaseline) return 0;
-    return this.applyAgentSettingsToWaiting();
+    return this.applyAgentSettingsToWaiting(
+      key !== null && key === this.settingsBaseline ? key : undefined,
+    );
   }
 
-  async applyAgentSettingsToWaiting(): Promise<number> {
+  async applyAgentSettingsToWaiting(onlyBasis?: string): Promise<number> {
     const config = loadSettings(this.options.pawsRoot);
+    const basis = this.agentSettingsKey();
     let changedRuns = 0;
     const now = this.now();
     for (const run of await this.store.run((q) => listWaitingProfileRunsSteps(q, now))) {
       const saved = await this.readProfileSnapshot(run.id);
       if (!saved) continue;
+      if (onlyBasis !== undefined && saved.basis != null && saved.basis !== onlyBasis) continue;
       const profiles = withoutLabelProblems(resolveAgentProfiles(config, saved.profileLabels));
       if (sameJson(saved.profiles, profiles)) continue;
       // Keep the original agent through repeated saves before the next turn.
@@ -11722,7 +11726,7 @@ export class Orchestrator {
         previousAgent !== profiles.implementer.agent
           ? { id: randomUUID(), previousAgent }
           : undefined;
-      await this.writeProfileSnapshot(run.id, { ...saved, profiles, settingsSwitch });
+      await this.writeProfileSnapshot(run.id, { ...saved, profiles, settingsSwitch, basis });
       changedRuns += 1;
       const reviewers = (entry: AgentProfiles) => [entry.reviewer, entry.reviewerFallback];
       if (!sameJson(reviewers(saved.profiles), reviewers(profiles)))
@@ -11775,7 +11779,12 @@ export class Orchestrator {
     if (saved) return saved.profiles;
     const profiles = resolveAgentProfiles(loadSettings(this.options.pawsRoot));
     const kept = await this.store.transaction((q) =>
-      keepRunProfileSteps<ProfileSnapshot>(q, runId, { profiles }, this.now()),
+      keepRunProfileSteps<ProfileSnapshot>(
+        q,
+        runId,
+        { profiles, basis: this.agentSettingsKey() },
+        this.now(),
+      ),
     );
     return kept?.profiles ?? profiles;
   }
@@ -12936,6 +12945,7 @@ type ProfileSnapshot = {
   defaultRoles?: ProfileRole[];
   candidate?: AgentIdentity;
   settingsSwitch?: { id: string; previousAgent: AgentProfile["agent"] };
+  basis?: string | null;
 };
 
 type Deferred<T> = T | ((q: Q) => Steps<T>);

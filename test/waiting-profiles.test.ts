@@ -30,9 +30,12 @@ type Snapshot = {
   profileLabels?: unknown;
   settingsSwitch?: unknown;
   candidate?: unknown;
+  basis?: unknown;
 };
 
 const profileOf = (db: Db, runId: string) => db.run((q) => getRunProfileSteps<Snapshot>(q, runId));
+
+const basis = expect.any(String);
 
 const oldProfiles = {
   implementer: { agent: "claude", model: "old" },
@@ -235,7 +238,7 @@ test("a retry resolves profiles from Settings, not the previous run's snapshot",
   const next = await internals.ensureRun((await getWorkItem(f.db, failed.item.id))!);
   expect(next.id).not.toBe(failed.run.id);
   expect((await getWorkItem(f.db, failed.item.id))!.currentRunId).toBe(next.id);
-  expect(await internals.readProfileSnapshot(next.id)).toEqual({ profiles });
+  expect(await internals.readProfileSnapshot(next.id)).toEqual({ profiles, basis });
   expect(await profileOf(f.db, failed.run.id)).toEqual({
     profiles: oldProfiles,
     candidate: failed.candidate,
@@ -248,7 +251,9 @@ test("a pending agent switch announcement carries to a retry's new run", async (
   await f.save(true);
   const internals = f.orchestrator as unknown as {
     ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
-    readProfileSnapshot(id: string): { profiles?: unknown; settingsSwitch?: unknown } | null;
+    readProfileSnapshot(
+      id: string,
+    ): { profiles?: unknown; settingsSwitch?: unknown; basis?: unknown } | null;
   };
   const pending = (await internals.readProfileSnapshot(waiting.run.id))!.settingsSwitch;
   expect(pending).toMatchObject({ previousAgent: "claude" });
@@ -258,12 +263,13 @@ test("a pending agent switch announcement carries to a retry's new run", async (
   expect(await internals.readProfileSnapshot(next.id)).toEqual({
     profiles,
     settingsSwitch: pending,
+    basis,
   });
   // Settings moved back to the original agent: there is no switch left to announce.
   await writeAgentSettings(f.root, { defaults: oldProfiles });
   await setRun(f.db, next.id, "lost");
   const back = await internals.ensureRun((await getWorkItem(f.db, waiting.item.id))!);
-  expect(await internals.readProfileSnapshot(back.id)).toEqual({ profiles: oldProfiles });
+  expect(await internals.readProfileSnapshot(back.id)).toEqual({ profiles: oldProfiles, basis });
 });
 
 test("model-only changes preserve candidate and do not announce an agent switch", async () => {
@@ -276,6 +282,7 @@ test("model-only changes preserve candidate and do not announce an agent switch"
   expect(await profileOf(f.db, waiting.run.id)).toEqual({
     profiles: { ...oldProfiles, implementer: { agent: "claude", model: "new" } },
     candidate: waiting.candidate,
+    basis,
   });
 });
 
