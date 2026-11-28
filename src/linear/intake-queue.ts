@@ -87,6 +87,11 @@ export function createIntakeQueue(options: {
   const deadline = options.deadline ?? ((ms: number) => AbortSignal.timeout(ms));
   const metrics = options.metrics ?? defaultRecorder;
   const arrivals = new Set<Promise<void>>();
+  const finishing = new Set<string>();
+  const finish = (dedupeKey: string) => {
+    finishing.add(dedupeKey);
+    return store;
+  };
   const intakes = new Set<Promise<void>>();
   let pausedUntil = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -109,15 +114,18 @@ export function createIntakeQueue(options: {
   };
 
   const held = (dedupeKey: string, work: () => Promise<void>, into: Set<Promise<void>>) => {
+    let released = false;
     const renewal = setInterval(() => {
       void guarded("intake-queue.createIntakeQueue.renew", async () => {
-        if (!(await store.renew(dedupeKey, lease())))
+        if (!(await store.renew(dedupeKey, lease())) && !released && !finishing.has(dedupeKey))
           log(`linear intake ${dedupeKey} lost its lease to another instance`);
       });
     }, leaseMs / 4);
     renewal.unref?.();
     const release = async () => {
+      released = true;
       clearInterval(renewal);
+      finishing.delete(dedupeKey);
       into.delete(running);
       await guarded("intake-queue.createIntakeQueue.release", async () => {
         await store.release(dedupeKey, owner);
@@ -177,7 +185,7 @@ export function createIntakeQueue(options: {
           if (newer !== null) {
             outcome = "coalesced";
             journal(`linear intake ${event.dedupeKey} coalesced into ${newer}`);
-            await store.markHandled(event.dedupeKey);
+            await finish(event.dedupeKey).markHandled(event.dedupeKey);
             return;
           }
           const signal = deadline(INTAKE_DEADLINE_MS);
@@ -185,28 +193,28 @@ export function createIntakeQueue(options: {
             signal,
             options.deliver((await store.get(event.dedupeKey)) ?? event, queued.attempts, signal),
           );
-          await store.markHandled(event.dedupeKey);
+          await finish(event.dedupeKey).markHandled(event.dedupeKey);
         } catch (error) {
           outcome = "failed";
           journalCaught(error, "intake-queue.createIntakeQueue.deliver", null);
           if (stopped) return;
           if (error instanceof LinearEntityNotFoundError && error.entity === "AgentSession") {
             log(`linear session ${event.sessionId ?? "unknown"} no longer exists; skipped`);
-            await store.markHandled(event.dedupeKey);
+            await finish(event.dedupeKey).markHandled(event.dedupeKey);
             return;
           }
           if (error instanceof LinearForeignInstallationError) {
             log(
               `linear session ${event.sessionId ?? "unknown"} belongs to another installation; skipped`,
             );
-            await store.markHandled(event.dedupeKey);
+            await finish(event.dedupeKey).markHandled(event.dedupeKey);
             return;
           }
           const at = now();
           const message = error instanceof Error ? error.message : "intake failed";
           if (error instanceof LinearRateLimitError) {
             pausedUntil = Math.max(pausedUntil, at + error.retryAfterMs);
-            await store.markFailed(event.dedupeKey, {
+            await finish(event.dedupeKey).markFailed(event.dedupeKey, {
               error: message,
               nextAttemptAt: at + Math.max(error.retryAfterMs, INTAKE_RETRY_MS[0]),
               counted: false,
@@ -215,7 +223,7 @@ export function createIntakeQueue(options: {
           }
           const attempts = queued.attempts + 1;
           const waitMs = intakeRetryMs(attempts);
-          await store.markFailed(event.dedupeKey, {
+          await finish(event.dedupeKey).markFailed(event.dedupeKey, {
             error: message,
             nextAttemptAt: at + waitMs,
             counted: true,
@@ -251,7 +259,7 @@ export function createIntakeQueue(options: {
             options
               .arrive(event)
               .then(async (accepted) => {
-                if (accepted === false) await store.markHandled(event.dedupeKey);
+                if (accepted === false) await finish(event.dedupeKey).markHandled(event.dedupeKey);
               })
               .catch((error: unknown) => {
                 journalCaught(error, "intake-queue.arrive.then", null);

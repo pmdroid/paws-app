@@ -285,7 +285,7 @@ test("refresh failures keep the prior token and persist only a sanitized retry e
   }
 });
 
-test("after one process refreshes, another process's next call uses the new token", async () => {
+test("after one process refreshes, another process's next refresh uses the new token", async () => {
   const home = tempHome();
   const server = await pgliteServer();
   const db = server.store;
@@ -325,6 +325,8 @@ test("after one process refreshes, another process's next call uses the new toke
     expect(await auth.ensureFresh()).toBe("acme-access-old");
     const other = spawnRefresh(home, server.url, provider.port!, "recover");
     expect(await other.exited).toBe(0);
+    expect(await auth.ensureFresh()).toBe("acme-access-old");
+    expect(await auth.forceRefresh()).toBe("acme-access-new");
     expect(await auth.ensureFresh()).toBe("acme-access-new");
     expect((await readStoredToken(db, replicaSecrets))?.refreshToken).toBe("acme-refresh-new");
     expect(requests).toBe(0);

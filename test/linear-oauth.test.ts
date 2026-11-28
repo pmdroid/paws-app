@@ -15,6 +15,7 @@ import {
 } from "../src/linear";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
+import { waitFor } from "./wait-for";
 
 describe("linear oauth", () => {
   test("authorize url installs the app actor with agent scopes", () => {
@@ -171,5 +172,47 @@ describe("linear oauth", () => {
         fetch: async () => new Response("refresh-1 access-1", { status: 400 }),
       }),
     ).rejects.toThrow("HTTP 400");
+  });
+});
+
+describe("linear token freshness", () => {
+  test("calls holding a valid token proceed while a refresh takes 30 s", async () => {
+    const db = (await tempStore()).db;
+    const secretsDir = join(tempHome(), "secrets");
+    const clock = 1_000_000;
+    await writeStoredToken(db, secretsDir, {
+      accessToken: "access-1",
+      refreshToken: "refresh-1",
+      expiresAtMs: clock + 600_000,
+      scope: LINEAR_APP_SCOPES,
+      actor: LINEAR_ACTOR,
+    });
+    let answer: (response: Response) => void = () => {};
+    let refreshes = 0;
+    const auth = await createLinearAuth({
+      db,
+      secretsDir,
+      clientId: "client-1",
+      clientSecret: "secret-1",
+      fetch: () => {
+        refreshes += 1;
+        return new Promise<Response>((resolve) => (answer = resolve));
+      },
+      now: () => clock,
+    });
+    expect(await auth.ensureFresh()).toBe("access-1");
+    const refreshing = auth.forceRefresh();
+    const second = auth.forceRefresh();
+    expect(await auth.ensureFresh()).toBe("access-1");
+    expect(await auth.ensureFresh()).toBe("access-1");
+    await waitFor(() => refreshes === 1);
+    expect(await auth.ensureFresh()).toBe("access-1");
+    answer(
+      Response.json({ access_token: "access-2", refresh_token: "refresh-2", expires_in: 3600 }),
+    );
+    expect(await refreshing).toBe("access-2");
+    expect(await second).toBe("access-2");
+    expect(refreshes).toBe(1);
+    expect(await auth.ensureFresh()).toBe("access-2");
   });
 });
