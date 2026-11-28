@@ -18,6 +18,7 @@
     "build:dashboard": "bun src/dashboard/build.ts",
     "verify:local": "bun --no-env-file scripts/verify-local.ts",
     "verify:proof": "bun --no-env-file scripts/verify-proof.ts",
+    "verify:capacity": "bun --no-env-file scripts/capacity-load.ts",
     "verify:ui": "bun run build:dashboard && bun --no-env-file scripts/verify-dashboard-ui.ts",
     "verify:improvements-ui": "bun run build:dashboard && bun --no-env-file scripts/verify-improvements-ui.ts",
     "verify:retro-settings-ui": "bun run build:dashboard && bun --no-env-file scripts/verify-retro-settings-ui.ts"
