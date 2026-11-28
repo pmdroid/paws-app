@@ -54,7 +54,6 @@ export async function startBrowserOnboarding(
     origin: runtime.publicUrl!,
     clientId: runtime.linearClientId,
     clientSecret: runtime.linearClientSecret,
-    clientSecretOverride: source.LINEAR_CLIENT_SECRET?.trim() || undefined,
     environmentClient,
     expectedOrganizationId: runtime.linearOrganizationId,
     reconnect,

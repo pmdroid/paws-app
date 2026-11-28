@@ -1,6 +1,6 @@
 import { journalCaught } from "../journal";
 import { accessSync, constants, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { checkSecrets, storedSecrets } from "../credentials";
 import { GROK_LOGIN_MESSAGE } from "../acp";
 import {
@@ -53,6 +53,8 @@ const FIX = {
   bun: "Install Bun 1.4 or newer and run this process with bun.",
   home: "Create ~/.paws and make sure this user can write it.",
   linear: "Open Paws in your browser and connect Linear.",
+  linearClient:
+    "Set LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET together in the service environment, or remove both and enter the client through the setup link.",
   mode: "Connect your Linear workspace in the Paws website.",
   team: "Choose the Linear teams in workspace settings.",
   workspace: LINEAR_WORKSPACE_REQUIRED,
@@ -108,6 +110,7 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
     ),
   ];
   {
+    if (facts.linearClient) checks.push(linearClientCheck(facts.linearClient));
     checks.push(linearCheck(facts), workspaceCheck(probe.env, facts), teamCheck(facts));
   }
   checks.push(...githubAppChecks(probe, facts.githubDoctor));
@@ -138,14 +141,13 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
     checks.push(tailscaleAuthKeyCheck(facts.tailscaleAuthKey, isTailnetUrl(facts.publicUrl)));
   for (const slack of facts.slack ?? []) checks.push(...slackChecks(slack));
   if (facts.webhooks) {
-    const linearSecret =
-      env.linearWebhookSecret !== null ||
-      probe.stat(join(paths.secretsDir, "linear-webhook")) !== null;
+    const webhook =
+      facts.linearClient?.webhook ?? (env.linearWebhookSecret !== null ? "environment" : "unset");
     checks.push(
       check(
         "linear-webhook",
-        linearSecret,
-        linearSecret ? "secret configured" : "LINEAR_WEBHOOK_SECRET is empty",
+        webhook !== "unset",
+        webhook !== "unset" ? `secret configured (${webhook})` : "LINEAR_WEBHOOK_SECRET is empty",
         FIX.webhook,
       ),
       ...(facts.linearWebhook === undefined ? [] : [webhookDeliveryCheck(facts.linearWebhook)]),
@@ -245,6 +247,13 @@ function githubAppChecks(probe: DoctorProbe, github: GitHubDoctorFacts): DoctorC
     check("github-rate", github.rate.ok, github.rate.detail, FIX.githubRate),
     check("github-app-events", github.events.ok, github.events.detail, FIX.githubEvents),
   ];
+}
+
+function linearClientCheck(client: NonNullable<ProbeFacts["linearClient"]>): DoctorCheck {
+  if (client.error !== null) return check("linear-client", false, client.error, FIX.linearClient);
+  if (client.client === "unset")
+    return check("linear-client", false, "no Linear OAuth client", FIX.linearClient);
+  return check("linear-client", true, `OAuth client from ${client.client}`);
 }
 
 function linearCheck(facts: ProbeFacts): DoctorCheck {

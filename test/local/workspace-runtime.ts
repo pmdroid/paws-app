@@ -70,6 +70,7 @@ export async function probeWorkspaceRuntime(root: string, observe: Observe) {
                 ...(mode === "no-tls" ? {} : { PAWS_TLS_KEY_PATH: key, PAWS_TLS_CERT_PATH: cert }),
                 LINEAR_MODE: "agent-session",
                 LINEAR_CLIENT_ID: "client",
+                LINEAR_CLIENT_SECRET: "client-secret-marker",
                 LINEAR_ACCESS_TOKEN: "fixture-access",
                 LINEAR_APP_USER_ID: "app",
                 LINEAR_WEBHOOKS: "true",
