@@ -239,7 +239,7 @@ function repositoryTable(repositories: Repository[]): string {
     maybeMs(row.medianTotalMs),
     maybeMs(row.medianStagesMs.verifying),
     `<span class="mono">${row.avgCloseoutRounds === null ? "—" : row.avgCloseoutRounds.toFixed(1)}</span>`,
-    `<span class="mono">${row.checkFailures} of ${row.checkRuns} runs</span>`,
+    `<span class="mono whitespace-nowrap">${row.checkFailures} of ${row.checkRuns} runs</span>`,
     maybeMs(row.medianWaitingForPersonMs),
     row.slowestCheck
       ? `<span class="mono">${esc(row.slowestCheck.checkId)} ${formatMs(row.slowestCheck.medianMs)}</span>`
@@ -360,7 +360,7 @@ export function renderPerformance(view: {
     .map((check) => [
       `<span class="mono">${esc(check.checkId)}</span>`,
       `<span class="mono">${check.runs}</span>`,
-      `<span class="mono">${check.failures ?? 0} of ${check.runs}</span>`,
+      `<span class="mono whitespace-nowrap">${check.failures ?? 0} of ${check.runs}</span>`,
       `<span class="mono">${formatMs(check.medianMs)}</span>`,
       bar(check.medianMs, data.checks[0]!.medianMs, null),
       `<span class="mono">${formatMs(check.p95Ms)}</span>`,
