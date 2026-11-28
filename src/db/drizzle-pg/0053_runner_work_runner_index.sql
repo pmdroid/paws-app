@@ -1,0 +1,1 @@
+CREATE INDEX "runner_work_runner" ON "runner_work" USING btree ("runner_id");
