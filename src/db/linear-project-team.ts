@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull, notInArray } from "drizzle-orm";
 import type { Q, Steps } from "./db";
 
 export type LinearProjectTeams = {
@@ -10,20 +10,29 @@ export type LinearProjectTeams = {
 
 export function* replaceLinearProjectTeamsSteps(q: Q, input: LinearProjectTeams): Steps<void> {
   const table = q.t.linearProjectTeam;
+  const { workspaceId, projectId, now } = input;
+  const teamIds = [...new Set(input.teamIds)];
   yield* q.exec(
     q.orm
       .delete(table)
-      .where(and(eq(table.workspaceId, input.workspaceId), eq(table.projectId, input.projectId))),
+      .where(
+        and(
+          eq(table.workspaceId, workspaceId),
+          eq(table.projectId, projectId),
+          notInArray(table.teamId, teamIds),
+        ),
+      ),
   );
-  for (const teamId of new Set(input.teamIds))
-    yield* q.exec(
-      q.orm.insert(table).values({
-        workspaceId: input.workspaceId,
-        projectId: input.projectId,
-        teamId,
-        seenAt: input.now,
+  if (teamIds.length === 0) return;
+  yield* q.exec(
+    q.orm
+      .insert(table)
+      .values(teamIds.map((teamId) => ({ workspaceId, projectId, teamId, seenAt: now })))
+      .onConflictDoUpdate({
+        target: [table.workspaceId, table.projectId, table.teamId],
+        set: { seenAt: now },
       }),
-    );
+  );
 }
 
 export function* linearProjectTeamsSteps(
