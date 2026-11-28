@@ -197,3 +197,40 @@ test("a fully granted Slack card shows no missing-scopes alert and revokes a lin
     },
   );
 });
+
+test("a Slack field set by the environment is read-only and the save leaves it out", async () => {
+  const puts: string[] = [];
+  await withSlackCard(
+    (method, url, body) => {
+      if (method === "PUT") return (puts.push(body), { ok: true });
+      if (url === "/api/settings/slack-app")
+        return {
+          sources: {
+            clientId: { source: "environment", variable: "SLACK_CLIENT_ID" },
+            clientSecret: { source: "settings" },
+            signingSecret: { source: "unset" },
+          },
+        };
+      return { configured: false, environment: true, connection: null, capabilities: null };
+    },
+    async (root, window) => {
+      const form = root.querySelector<HTMLFormElement>("[data-slack-app]")!;
+      const input = (name: string) => form.querySelector<HTMLInputElement>(`[name="${name}"]`)!;
+      expect(input("clientId").readOnly).toBe(true);
+      expect(input("clientId").required).toBe(false);
+      expect(input("clientId").closest("label")?.textContent).toContain(
+        "Set by SLACK_CLIENT_ID in the service environment",
+      );
+      expect(input("clientSecret").readOnly).toBe(false);
+      expect(input("signingSecret").required).toBe(true);
+      expect(root.querySelectorAll("[data-env-source]").length).toBe(1);
+      input("clientSecret").value = "synthetic-cs";
+      input("signingSecret").value = "synthetic-ss";
+      form.dispatchEvent(new window.Event("submit", { cancelable: true }) as never);
+      const notice = () => root.querySelector("[data-slack-notice]")?.textContent;
+      for (let turn = 0; turn < 200 && notice() !== "Saved"; turn++)
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(puts).toEqual(['{"clientSecret":"synthetic-cs","signingSecret":"synthetic-ss"}']);
+    },
+  );
+});
