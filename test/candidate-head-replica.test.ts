@@ -237,6 +237,35 @@ test.each(["missing", "stale"])(
         ),
       ).toBe(recorded.sha);
       expect((await getWorkItem(b.db, item.id))?.state).toBe("merge_queue");
+      expect(b.github.opened).toEqual([]);
+
+      const [candidate] = (
+        await git(
+          "--git-dir",
+          mirrorB,
+          "for-each-ref",
+          "--format=%(refname)",
+          "refs/paws/candidates",
+        )
+      ).split("\n");
+      if (cache === "missing") await git("--git-dir", mirrorB, "update-ref", "-d", candidate!);
+      else
+        await git(
+          "--git-dir",
+          mirrorB,
+          "update-ref",
+          candidate!,
+          await git("--git-dir", mirrorB, "rev-parse", "main"),
+        );
+      const atOpen: string[][] = [];
+      const open = b.github.open.bind(b.github);
+      b.github.open = async (input) => {
+        atOpen.push([
+          await git("--git-dir", mirrorB, "rev-parse", candidate!),
+          await git("--git-dir", bare, "rev-parse", `refs/heads/${input.head}`),
+        ]);
+        return open(input);
+      };
 
       for (
         let tick = 0;
@@ -247,6 +276,7 @@ test.each(["missing", "stale"])(
         await b.flush();
       }
       expect((await getWorkItem(b.db, item.id))?.state).toBe("merged");
+      expect(atOpen).toEqual([[recorded.sha, recorded.sha]]);
       expect(b.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([recorded.sha]);
       expect(a.github.merged).toEqual([]);
     } finally {
