@@ -23,6 +23,32 @@ docker run -d --name grafana-lgtm --restart unless-stopped \
 
 The OTLP ports listen only on the local machine. Publish port 3000 only on an address you trust, such as a Tailscale address.
 
+## Scrape runner machine metrics
+
+Install the node exporter on each runner and let it listen only on the runner's Tailscale address, never on all interfaces:
+
+```sh
+ip=$(tailscale ip -4 | head -1)
+echo "ARGS=\"--web.listen-address=$ip:9100\"" | sudo tee /etc/default/prometheus-node-exporter
+sudo apt-get install -y -o Dpkg::Options::=--force-confold prometheus-node-exporter
+sudo systemctl restart prometheus-node-exporter
+```
+
+Writing `/etc/default/prometheus-node-exporter` before installing keeps the package from starting on `0.0.0.0`.
+
+Add the runners to a copy of the stack's Prometheus configuration (`docker exec grafana-lgtm cat /otel-lgtm/prometheus.yaml > prometheus.yaml`), appending:
+
+```yaml
+scrape_configs:
+  - job_name: runner-node
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["<runner Tailscale IP>:9100"]
+        labels: { runner: <runner name> }
+```
+
+Then start the stack with `-v "$PWD/prometheus.yaml:/otel-lgtm/prometheus.yaml:ro"` added to the `docker run` command. Import the community "Node Exporter Full" dashboard (grafana.com ID 1860) for per-runner CPU, memory, disk and network.
+
 ## Connect Paws
 
 In the dashboard, open Workspace › Telemetry, set the endpoint to `http://127.0.0.1:4318`, choose OTLP/HTTP protobuf, leave the header empty, turn export on and send a test.
