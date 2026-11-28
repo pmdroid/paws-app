@@ -37,6 +37,14 @@ export function* vmHostMachineSteps(q: Q, workspaceId: string, runnerId: string)
   return { ...row, host: (host ?? null) as VmHostRow | null } as VmHostMachine;
 }
 
+export function* runnerIsVmHostSteps(q: Q, runnerId: string) {
+  const { vmHost } = q.t;
+  const row = yield* q.one(
+    q.orm.select({ runnerId: vmHost.runnerId }).from(vmHost).where(eq(vmHost.runnerId, runnerId)),
+  );
+  return Boolean(row);
+}
+
 export function* saveVmHostSteps(
   q: Q,
   input: VmHostSettings & { runnerId: string; updatedAt: number; updatedBy: string },

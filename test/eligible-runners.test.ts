@@ -33,6 +33,7 @@ type Runner = {
   seenAgoMs?: number;
   ready?: number;
   authExpired?: number;
+  vmHost?: boolean;
 };
 
 const MEMBERS: Record<string, Member> = {
@@ -101,6 +102,20 @@ async function workspace(runners: Record<string, Runner>) {
         reportedAt: now,
       }),
     );
+    if (runner.vmHost)
+      await seed(db, (q) =>
+        q.orm.insert(q.t.vmHost).values({
+          runnerId: id,
+          vmVcpus: 4,
+          vmMemoryGb: 8,
+          vmDiskGb: 40,
+          reserveVcpus: 2,
+          reserveMemoryGb: 4,
+          slotCap: null,
+          updatedAt: now,
+          updatedBy: users[runner.owner]!,
+        }),
+      );
     if (runner.ready !== 0 && runner.status !== "revoked") {
       const account = await createAgentAccount(db, {
         ownerUserId: users[runner.owner]!,
@@ -186,6 +201,16 @@ const CASES: {
     reason: "offline",
   },
   { name: "the delegator's own runner", runner: { owner: "me" }, reason: "own" },
+  {
+    name: "the delegator's own runner that hosts issue VMs",
+    runner: { owner: "me", vmHost: true },
+    reason: "vm-host",
+  },
+  {
+    name: "another member's runner that hosts issue VMs",
+    runner: { owner: "colleague", vmHost: true },
+    reason: "vm-host",
+  },
   {
     name: "a project lead's runner without isolation",
     runner: { owner: "lead", isolation: "none" },

@@ -11,6 +11,7 @@ import {
   itemOwnerScopeRowSteps,
   lastItemRunnerSteps,
   runnerHostVersionSteps,
+  runnerIsVmHostSteps,
   runnerNameSteps,
   runnerRepositoryRefusalSteps,
   workspaceMemberSteps,
@@ -45,6 +46,7 @@ export function* eligibleRunnersSteps(q: Q, input: EligibleRunnersInput): Steps<
     runners.push({ ...runner, eligible: reason === "own" || reason === "issue-vm", reason });
     function* reasonSteps(): Steps<EligibleRunnerReason> {
       if (revokedAt !== null || status === "revoked") return "revoked";
+      if (yield* runnerIsVmHostSteps(q, runner.id)) return "vm-host";
       const own = input.ownerUserId !== null && runner.ownerId === input.ownerUserId;
       if (!own && runner.isolation !== "issue_vm") return "not-yours";
       const member = yield* workspaceMemberSteps(q, input.workspaceId, runner.ownerId);
@@ -83,9 +85,8 @@ export function* eligibleRunnersSteps(q: Q, input: EligibleRunnersInput): Steps<
 
 /** A rejection reason as placement reports it: an outdated runner names the release it needs. */
 export function eligibleReasonText(reason: EligibleRunnerReason): string {
-  return reason === "outdated"
-    ? `Upgrade this runner to ${MINIMUM_RUNNER_VERSION.join(".")}`
-    : reason;
+  if (reason === "outdated") return `Upgrade this runner to ${MINIMUM_RUNNER_VERSION.join(".")}`;
+  return reason === "vm-host" ? "hosts issue VMs only" : reason;
 }
 
 function* runnerNameOrIdSteps(q: Q, runnerId: string) {
