@@ -4,12 +4,18 @@ export {
   saveSecret,
   removeSecret,
   secretFileExists,
+  uncopiedSecretFile,
   storedSecrets,
   openSecretAt,
   decodeSecretEnvelope,
   envelopeSubkey,
 } from "./files";
-export { checkSecrets, useDatabaseSecrets } from "./secret-table";
+export {
+  checkSecrets,
+  completeSecretStart,
+  secretFilesOnDisk,
+  useDatabaseSecrets,
+} from "./secret-table";
 export { clearCredentialRefreshSteps, refreshCredential } from "./refresh";
 export { loadSecretKey, storeSecretKeys } from "./key";
 export {
@@ -23,6 +29,7 @@ export {
   type CredentialKind,
 } from "./store";
 export {
+  migrateAgentCredentials,
   readAgentCredentialSteps,
   writeAgentCredentialSteps,
   type AgentCredential,

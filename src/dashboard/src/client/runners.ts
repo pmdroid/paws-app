@@ -693,6 +693,71 @@ export function runnerTilesMarkup(runners: readonly Runner[], view: RunnerListVi
   return `<div class="grid min-w-0 grid-cols-3 gap-3" aria-label="Runner summary" role="group">${tile("online", "Online", `${online}/${runners.length}`)}${tile("slots", "Slots in use", `${used}/${total}`)}${tile("attention", "Needs attention", String(attention), attention > 0 ? "text-state-awaiting" : "")}</div>`;
 }
 
+export type VmHost = {
+  id: string;
+  name: string;
+  status: RunnerStatus;
+  online: boolean;
+  slots: { used: number; total: number };
+  vm: { vcpus: number; memoryGb: number; diskGb: number };
+  addedBy: string | null;
+};
+
+function hostState(host: VmHost): RowTag {
+  if (host.status === "revoked") return ["bad", "Revoked"];
+  if (!host.online) return ["bad", "Offline"];
+  if (host.status === "draining") return ["warn", "Draining"];
+  if (host.status === "paused") return ["paused", "Paused"];
+  return ["ok", "Online"];
+}
+
+export function vmHostCardMarkup(host: VmHost, state: { manages: boolean; busy: boolean }): string {
+  const id = esc(host.id);
+  const { used, total } = host.slots;
+  const strip = Array.from(
+    { length: Math.min(total, 24) },
+    (_, index) =>
+      `<span class="h-2 w-4 rounded-full ${index < used ? "bg-foreground" : "bg-border"}"></span>`,
+  ).join("");
+  const size = `Each VM: ${host.vm.vcpus} vCPUs · ${host.vm.memoryGb} GB memory · ${host.vm.diskGb} GB disk`;
+  const admin = state.manages
+    ? `<div class="flex min-w-0 flex-wrap items-center gap-2"><a class="btn" href="${esc(routeHref({ view: "workspace", page: "issue-vms" }))}" data-focus="vm-host-size:${id}">VM size</a>${runnerActionsMarkup(host, state)}</div>`
+    : "";
+  return `<li class="flex min-w-0 flex-col gap-2 rounded-base border border-border bg-background p-4" data-vm-host="${id}"><div class="between"><span class="font-mono text-sm">${esc(host.name)}</span>${tagsMarkup([hostState(host)])}</div><p>${used} of ${total} VMs in use</p><span class="flex flex-wrap gap-1" aria-hidden="true">${strip}</span><p class="muted">${esc(size)}</p><p class="muted">Added by ${esc(host.addedBy ?? "a former member")}</p>${admin}</li>`;
+}
+
+export function vmHostsMarkup(
+  hosts: readonly VmHost[],
+  view: { manages: boolean; busy: boolean; allowance: number | null },
+): string {
+  const allowance =
+    view.allowance === null
+      ? ""
+      : `<p data-vm-allowance>You can run ${view.allowance} ${view.allowance === 1 ? "issue" : "issues"} at once in issue VMs.</p>`;
+  const list = hosts.length
+    ? `<ul class="grid min-w-0 gap-3 sm:grid-cols-2" role="list" aria-label="Workspace VM hosts">${hosts.map((host) => vmHostCardMarkup(host, view)).join("")}</ul>`
+    : '<p class="muted">No machine hosts issue VMs yet.</p>';
+  return `<section class="flex min-w-0 flex-col gap-3" aria-labelledby="vm-hosts-heading" data-runners-section="hosts"><div class="flex items-center gap-2"><h2 id="vm-hosts-heading">Workspace VM hosts</h2><span class="tag">Shared</span></div><p class="muted">Machines an admin shares with the workspace. Each issue VM runs one issue.</p>${allowance}${list}</section>`;
+}
+
+export function membersRunnersMarkup(runners: readonly Runner[], view: RunnerListView): string {
+  const groups = new Map<string, Runner[]>();
+  for (const runner of runners) {
+    const owner = runner.ownerName ?? runner.ownerUserId;
+    groups.set(owner, [...(groups.get(owner) ?? []), runner]);
+  }
+  const body = groups.size
+    ? [...groups]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(
+          ([owner, owned]) =>
+            `<div class="flex min-w-0 flex-col gap-2" data-runner-owner="${esc(owner)}"><h3>${esc(owner)}</h3>${runnerTableMarkup(owned, view)}</div>`,
+        )
+        .join("")
+    : '<p class="muted">No member has a runner of their own.</p>';
+  return `<section class="flex min-w-0 flex-col gap-3" data-runners-section="members"><details data-details="members-runners"><summary class="btn" data-focus="members-runners">Members' runners (${runners.length})</summary><div class="mt-3 flex min-w-0 flex-col gap-4">${body}</div></details></section>`;
+}
+
 /** The runner table: one row per runner with status, slots, agents and version. */
 export function runnerTableMarkup(runners: readonly Runner[], view: RunnerListView): string {
   const head = ["Runner", "Status", "Slots", "Agents", "Version"]
@@ -1327,6 +1392,8 @@ export function createRunners() {
   let dockerAccess = true;
   let enrollment: HostEnrollment | null = null;
   let memberVm: MemberVmState = { available: false };
+  let vmHosts: VmHost[] = [];
+  let allowance: number | null = null;
   let pools: PoolList = { state: "loading" };
   let poolChoice = "";
   let adoptDenied: string | null = null;
@@ -1364,6 +1431,8 @@ export function createRunners() {
     addingHost = false;
     enrollment = null;
     memberVm = { available: false };
+    vmHosts = [];
+    allowance = null;
     pools = { state: "loading" };
     poolChoice = "";
     adoptDenied = null;
@@ -1383,9 +1452,8 @@ export function createRunners() {
     const vm = deletableVms().find((entry) => entry.id === confirmingDelete);
     return vm && !vm.deleting ? memberVmDeleteDialogMarkup(vm, { busy }) : "";
   }
-  /** Any active member may add a host, and owns it. */
   function addsHosts() {
-    return session !== null;
+    return manages();
   }
   async function api<T>(
     path: string,
@@ -1442,7 +1510,7 @@ export function createRunners() {
         reset();
         return;
       }
-      const [identity, activity, hosts, accountListing] = await Promise.all([
+      const [identity, activity, hosts, accountListing, hostListing, limits] = await Promise.all([
         api<Session>("/api/auth/session"),
         target === null
           ? { usage: [] }
@@ -1464,9 +1532,21 @@ export function createRunners() {
           journalCaught(caught, "runners.load.accounts", null);
           return undefined;
         }),
+        api<{ hosts?: VmHost[]; grant?: { limit: number } | null }>("/api/vm-hosts").catch(
+          (caught) => {
+            journalCaught(caught, "runners.load.hosts", null);
+            return null;
+          },
+        ),
+        api<{ defaultLimit?: number }>("/api/settings/issue-vm/members").catch((caught) => {
+          journalCaught(caught, "runners.load.allowance", null);
+          return null;
+        }),
       ]);
       if (current !== generation) return;
       accounts = accountListing?.accounts;
+      if (hostListing?.hosts) vmHosts = hostListing.hosts;
+      allowance = hostListing?.grant?.limit ?? limits?.defaultLimit ?? allowance;
       if (identity.role === "admin")
         workspaceRepositories = await api<{ repositories: { repository: string }[] }>(
           "/api/workspaces/repositories",
@@ -1592,24 +1672,38 @@ export function createRunners() {
     const behind = codingAgentsBehind(runners, agentCatalog);
     const agents = agentCatalog.length ? codingAgentsButtonMarkup(behind) : "";
     const actions =
-      agents || (addsHosts() && (listed || busy || error))
-        ? `<div class="settings-actions">${agents}${addsHosts() && (listed || busy || error) ? createVm + add : ""}</div>`
+      agents || (addsHosts() && (listed || vmHosts.length || busy || error))
+        ? `<div class="settings-actions">${agents}${addsHosts() && (listed || vmHosts.length || busy || error) ? createVm + add : ""}</div>`
         : "";
     const empty = addsHosts()
       ? `<section class="flex min-w-0 flex-col items-start gap-3 rounded-base border border-dashed border-border p-6" aria-labelledby="runners-empty-heading"><h2 id="runners-empty-heading">No runners are enrolled</h2><p class="muted">A runner is a Linux machine that runs the coding agents. Paws starts no work until one is enrolled and an agent is signed in on it.</p><ol class="m-0 list-decimal pl-5 text-sm [&>li]:py-0.5"><li>Select <b>Add a runner</b> and copy the command.</li><li>Run it on the Linux machine. The runner appears here within a minute.</li><li>Open it and sign in to a coding agent, such as Claude or Codex.</li></ol><div class="settings-actions">${add}${createVm}</div></section>`
-      : "<p>No runners are enrolled. A workspace member adds a Linux runner with <b>Add a runner</b>.</p>";
-    const vmSection = addsHosts()
-      ? deletableVms()
-          .map((vm) =>
-            memberVmMarkup(vm, {
-              busy,
-              runner: runners.find((entry) => entry.id === vm.runnerId) ?? null,
-              own: ownsVm(vm),
-            }),
-          )
-          .join("")
       : "";
-    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding || showingAgents ? "" : alert + status}${vmSection}${listed ? runnerTilesMarkup(runners, { now, serverVersion, minimumRunnerVersion, accounts }) + runnerTableMarkup(runners, { now, serverVersion, minimumRunnerVersion, accounts }) : ""}${!busy && !listed && !error ? empty : ""}${showingAgents && agentCatalog.length ? agentCatalogMarkup(agentCatalog, runners, now, { manages: manages(), busy, behind, notice: alert + status }) : ""}${dialog}${createDialog}${deleteDialog()}`;
+    const vmSection =
+      session !== null
+        ? deletableVms()
+            .map((vm) =>
+              memberVmMarkup(vm, {
+                busy,
+                runner: runners.find((entry) => entry.id === vm.runnerId) ?? null,
+                own: ownsVm(vm),
+              }),
+            )
+            .join("")
+        : "";
+    const rows = { now, serverVersion, minimumRunnerVersion, accounts };
+    const hostIds = new Set(vmHosts.map((host) => host.id));
+    const own = runners.filter(
+      (runner) => runner.ownerUserId === session?.userId && !hostIds.has(runner.id),
+    );
+    const others = runners.filter(
+      (runner) => runner.ownerUserId !== session?.userId && !hostIds.has(runner.id),
+    );
+    const yours = `<section class="flex min-w-0 flex-col gap-3" aria-labelledby="your-runners-heading" data-runners-section="yours"><h2 id="your-runners-heading">Your runners</h2><p class="muted">Only you use these, with your own agent accounts. An admin adds them.</p>${own.length ? runnerTilesMarkup(own, rows) + runnerTableMarkup(own, rows) : "<p data-runners-empty>You have no runner of your own. Your issues run in issue VMs.</p>"}</section>`;
+    const sections =
+      !loaded || (!listed && !vmHosts.length && empty)
+        ? ""
+        : `${yours}${vmHostsMarkup(vmHosts, { manages: manages(), busy, allowance })}${manages() ? membersRunnersMarkup(others, rows) : ""}`;
+    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding || showingAgents ? "" : alert + status}${vmSection}${sections}${!busy && !listed && !vmHosts.length && !error ? empty : ""}${showingAgents && agentCatalog.length ? agentCatalogMarkup(agentCatalog, runners, now, { manages: manages(), busy, behind, notice: alert + status }) : ""}${dialog}${createDialog}${deleteDialog()}`;
   }
   function detailView(id: string, now: number, notices: string): string {
     const list = routeHref({ view: "runners", id: null });

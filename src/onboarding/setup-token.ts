@@ -2,8 +2,10 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { readSecretFile, removeSecret, saveSecret } from "../credentials";
 
+export const SETUP_TOKEN_FILE = "setup-token";
+
 function tokenFile(secretsDir: string): string {
-  return join(secretsDir, "setup-token");
+  return join(secretsDir, SETUP_TOKEN_FILE);
 }
 
 export async function setupToken(secretsDir: string): Promise<string> {

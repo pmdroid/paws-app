@@ -2,14 +2,27 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readAgentCredentialSteps, writeAgentCredentialSteps } from "../src/credentials";
+import { ne } from "drizzle-orm";
+import {
+  migrateAgentCredentials,
+  readAgentCredentialSteps,
+  writeAgentCredentialSteps,
+} from "../src/credentials";
+import { sealSecret } from "../src/credentials/files";
 import {
   agentCredentialCiphertextSteps,
   centralAgentAccountsSteps,
   createAgentAccountSteps,
+  signOutAgentAccountSteps,
   type Db,
 } from "../src/db";
-import { describePglite, seed, withoutForeignKeys, type PgliteTestDb } from "./pglite-fixtures";
+import {
+  describePglite,
+  sealedCredentialSecret,
+  seed,
+  withoutForeignKeys,
+  type PgliteTestDb,
+} from "./pglite-fixtures";
 import { seedRunner } from "./runner-rows";
 
 const NOW = 1_800_000_000_000;
@@ -48,10 +61,23 @@ async function setup(connect: () => Promise<PgliteTestDb>) {
 }
 
 const signIn = (db: Db, accountId: string, ciphertext = "sealed") =>
-  seed(db, (q) =>
-    q.orm
-      .insert(q.t.agentAccountCredential)
-      .values({ accountId, agent: "claude", ciphertext, version: 1, updatedAt: NOW }),
+  seed(
+    db,
+    (q) =>
+      q.orm
+        .insert(q.t.agentAccountCredential)
+        .values({ accountId, agent: "claude", ciphertext: "", version: 1, updatedAt: NOW }),
+    sealedCredentialSecret(accountId, NOW, ciphertext),
+  );
+
+const legacy = (db: Db) =>
+  db.run((q) =>
+    q.all(
+      q.orm
+        .select({ accountId: q.t.agentAccountCredential.accountId })
+        .from(q.t.agentAccountCredential)
+        .where(ne(q.t.agentAccountCredential.ciphertext, "")),
+    ),
   );
 
 const candidates = (db: Db) =>
@@ -83,7 +109,43 @@ describePglite((connect) => {
     expect(await write("R1", 2, "rotated")).toBe("written");
 
     expect(await write("R2", 3, "fresh")).toBe("written");
-    expect((await db.run((q) => readAgentCredentialSteps(q, secrets, first)))?.blob).toBe("fresh");
+    expect(await write("R1", 3, "stale-return")).toBe("stale_version");
+    expect(await db.run((q) => readAgentCredentialSteps(q, secrets, first))).toMatchObject({
+      blob: "fresh",
+      version: 3,
+      runnerId: "R2",
+    });
+    expect(await legacy(db)).toEqual([]);
+  });
+
+  test("a stored sign-in moves into the secret table and signs out there", async () => {
+    const { db, secrets, first, second } = await setup(connect);
+    const sealed = (accountId: string, blob: string) =>
+      sealSecret(secrets, `agent-account-credential:${accountId}`, blob);
+    const old = (accountId: string, ciphertext: string) =>
+      seed(db, (q) =>
+        q.orm
+          .insert(q.t.agentAccountCredential)
+          .values({ accountId, agent: "claude", ciphertext, version: 4, updatedAt: NOW }),
+      );
+    await old(first, sealed(first, "marker-moved"));
+    await old(second, "paws-envelope-v1\n{}");
+    expect(await migrateAgentCredentials(db, secrets)).toBe(1);
+    expect(await legacy(db)).toEqual([{ accountId: second }]);
+    expect(await db.run((q) => readAgentCredentialSteps(q, secrets, first))).toMatchObject({
+      blob: "marker-moved",
+      version: 4,
+    });
+    expect(await candidates(db)).toEqual([first]);
+    expect(await migrateAgentCredentials(db, secrets)).toBe(0);
+    await db.transaction((q) =>
+      signOutAgentAccountSteps(q, { workspaceId: "acme", accountId: first, now: NOW }),
+    );
+    expect(await db.run((q) => readAgentCredentialSteps(q, secrets, first))).toMatchObject({
+      blob: null,
+      version: 5,
+    });
+    expect(await candidates(db)).toEqual([]);
   });
 
   test("placement skips a Claude account with no stored credential or an empty one", async () => {

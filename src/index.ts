@@ -1,6 +1,6 @@
 import { assetPath, buildVersion, compiled } from "./assets";
 import { checkApiKey, checkClaudeToken, createAccountUsage, createAgentAuth } from "./agent-auth";
-import { browserSetupRuntime, setupLink } from "./onboarding";
+import { browserSetupRuntime, SETUP_TOKEN_FILE, setupLink } from "./onboarding";
 import {
   createFindingGrouping,
   registerFindingGrouping,
@@ -60,6 +60,8 @@ import {
   readSecretFile,
   storeSecretKeys,
   useDatabaseSecrets,
+  completeSecretStart,
+  migrateAgentCredentials,
   readAgentCredentialSteps,
 } from "./credentials";
 import { ArtifactRejectedError, commitCheckpointSync, git, mirrorFiles, worktreePath } from "./acp";
@@ -140,6 +142,7 @@ import {
   convertConfigSettingsSteps,
   settingSectionsStore,
   openPawsStore,
+  PgliteInUseError,
   type PawsStore,
   prepareShutdown,
   COMMAND_DELIVERY_MS,
@@ -395,6 +398,7 @@ import {
   STORAGE_CLEANUP_TICK_MS,
   createStorageCleanup,
 } from "./storage-cleanup";
+import { createRunnerHostMetrics } from "./runner-host-metrics";
 import {
   createImprovementsHttp,
   startImprovementDeliveries,
@@ -544,20 +548,15 @@ function checkStartup(envSource: EnvSource, execution: string | undefined) {
   return { settings, publicDashboard, proxy, tls, runnerConfig, runnerTls };
 }
 
-async function loadSecretRuntime(
-  envSource: EnvSource,
-  paths: PawsPaths,
-  databaseUrl: string | null,
-) {
-  if (databaseUrl !== null)
-    await storeSecretKeys(
-      [
-        "runner-file.key",
-        RUNNER_EVENT_KEY_FILE,
-        RUNNER_TRANSCRIPT_KEY_FILE,
-        AGENT_SESSION_KEY_FILE,
-      ].map((name) => join(paths.secretsDir, name)),
-    );
+async function loadSecretRuntime(envSource: EnvSource, paths: PawsPaths) {
+  await storeSecretKeys(
+    [
+      "runner-file.key",
+      RUNNER_EVENT_KEY_FILE,
+      RUNNER_TRANSCRIPT_KEY_FILE,
+      AGENT_SESSION_KEY_FILE,
+    ].map((name) => join(paths.secretsDir, name)),
+  );
   const runtime = loadRuntime(envSource);
   if (runtime.configError !== null) throw new Error(runtime.configError);
   return runtime;
@@ -580,7 +579,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       : runnerConfig !== null
         ? loadRunnerTranscriptStores(paths.home)
         : undefined;
-  const earlyTranscripts = databaseUrl === null ? loadTranscripts() : undefined;
   ensureLayout(paths);
   useGitTempDirectory(paths.tmpDir);
   usePublicationRepositories(paths.publicationDir);
@@ -588,9 +586,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     await openPawsStore({ url: databaseUrl, pgliteDir: paths.pgliteDir }),
     databaseUrl,
     paths.secretsDir,
+    true,
   );
   let runtime = await importLegacyGitHubApp(paths.home, envSource)
-    .then(() => loadSecretRuntime(envSource, paths, databaseUrl))
+    .then(() => loadSecretRuntime(envSource, paths))
     .catch(async (error: unknown) => {
       await database.close().catch(() => undefined);
       throw error;
@@ -615,7 +614,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   let repositoryAccess = options?.runnerRepositoryAccess;
   const placeOnRunner = runnerConfig !== null;
   const store = observeDb(database.store, (ms) => recordDuration("db.transaction", {}, ms));
-  const transcriptStorage = earlyTranscripts ?? loadTranscripts();
+  const transcriptStorage = await Promise.try(loadTranscripts).catch(async (error: unknown) => {
+    await database.close().catch(() => undefined);
+    throw error;
+  });
   const transcriptObjects = transcriptStorage?.objects;
   await convertLinearUploadManifests(paths.secretsDir);
   await importLinearTokenFile(store, paths.secretsDir, runtime.linearTokenFile);
@@ -1282,6 +1284,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     removeCloseoutLog: (key) => removeEvidenceFile(store, closeoutLogs, key),
     runners: async () => runner?.work,
   });
+  const runnerHostMetrics = createRunnerHostMetrics({ store });
   const runnerReady =
     runnerConfig === null
       ? Promise.resolve(undefined)
@@ -1315,7 +1318,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           retros: () => retroDispatcher?.fetch,
           storageReports: async (request, runnerId) =>
             (await storageUsage.fetch(request, runnerId)) ??
-            storageCleanup.fetch(request, runnerId),
+            (await storageCleanup.fetch(request, runnerId)) ??
+            runnerHostMetrics.fetch(request, runnerId),
           issueVms: (request, runnerId) => handleVmHostRunnerRequest(request, runnerId, store),
           observeRequest: (labels, ms) => recordDuration("http.request", labels, ms),
           slackReplyAuthority: (q, input) => slackReplyAllowedSteps(q, paths.home, input),
@@ -1623,18 +1627,20 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   ]).then(() => {
     if (runnerStopping) throw new Error("Paws is stopping.");
   });
-  void ready.catch((caughtError6) => {
-    journalCaught(
-      caughtError6,
-      "index.startPaws.ready",
-      null,
-      runnerStopping &&
-        caughtError6 instanceof Error &&
-        caughtError6.message === "Paws is stopping."
-        ? "shutdown interrupted startup"
-        : undefined,
-    );
-  });
+  void ready
+    .then(() => completeSecretStart(paths.secretsDir))
+    .catch((caughtError6) => {
+      journalCaught(
+        caughtError6,
+        "index.startPaws.ready",
+        null,
+        runnerStopping &&
+          caughtError6 instanceof Error &&
+          caughtError6.message === "Paws is stopping."
+          ? "shutdown interrupted startup"
+          : undefined,
+      );
+    });
   let jobLoop: JobLoop | null = null;
   let server: Bun.Server<undefined>;
   try {
@@ -3234,8 +3240,8 @@ export async function setupLinkMain(
   }
   try {
     const paths = pawsPaths(loadEnv(source).home);
-    const publicUrl = loadRuntime(source).publicUrl;
-    print(await withSecretStore(source, async () => setupLink(paths.secretsDir, publicUrl)));
+    const publicUrl = loadEnv(source).publicUrl;
+    print(await withSecretStore(source, async () => setupLink(paths.secretsDir, publicUrl), null));
     return 0;
   } catch (error) {
     journalCaught(error, "paws setup-link failed.", null);
@@ -3256,10 +3262,14 @@ async function withDatabaseSecrets(
   opened: PawsStore,
   url: string | null,
   secretsDir: string,
+  service = false,
 ): Promise<PawsStore> {
-  if (url === null) return opened;
   try {
-    const secrets = await useDatabaseSecrets(opened.store, secretsDir);
+    const secrets = await useDatabaseSecrets(opened.store, secretsDir, {
+      files: url === null ? [SETUP_TOKEN_FILE] : [],
+      ...(service ? { deleteRetired: { now: Date.now() } } : {}),
+    });
+    await migrateAgentCredentials(opened.store, secretsDir);
     return {
       store: opened.store,
       close: async () => {
@@ -3273,20 +3283,32 @@ async function withDatabaseSecrets(
   }
 }
 
-async function openCommandStore(source: EnvSource): Promise<PawsStore | null> {
+async function openCommandStore(
+  source: EnvSource,
+  settings: string | null,
+): Promise<PawsStore | null> {
   const url = databaseUrlOf(source);
-  if (url === null) return null;
+  if (url === null && settings === null) return null;
   const paths = pawsPaths(loadEnv(source).home);
-  return withDatabaseSecrets(
-    await openPawsStore({ url, pgliteDir: paths.pgliteDir }),
-    url,
-    paths.secretsDir,
+  ensureLayout(paths);
+  const opened = await openPawsStore({ url, pgliteDir: paths.pgliteDir }).catch(
+    (error: unknown) => {
+      if (!(error instanceof PgliteInUseError)) throw error;
+      throw new Error(`Paws is running; open Settings › ${settings} or stop the service first.`, {
+        cause: error,
+      });
+    },
   );
+  return withDatabaseSecrets(opened, url, paths.secretsDir);
 }
 
-async function withSecretStore<T>(source: EnvSource, work: () => Promise<T>): Promise<T> {
+async function withSecretStore<T>(
+  source: EnvSource,
+  work: () => Promise<T>,
+  settings: string | null,
+): Promise<T> {
   if (source.PAWS_SECRET_KEY) process.env.PAWS_SECRET_KEY ??= source.PAWS_SECRET_KEY;
-  const database = await openCommandStore(source);
+  const database = await openCommandStore(source, settings);
   try {
     return await work();
   } finally {
@@ -3294,12 +3316,8 @@ async function withSecretStore<T>(source: EnvSource, work: () => Promise<T>): Pr
   }
 }
 
-async function withCommandStore<T>(command: string, work: (store: Db) => Promise<T>): Promise<T> {
-  const database = await openCommandStore(process.env);
-  if (database === null)
-    throw new Error(
-      `paws ${command} needs PAWS_DATABASE_URL: only the running Paws opens its embedded PGlite database.`,
-    );
+async function withCommandStore<T>(settings: string, work: (store: Db) => Promise<T>): Promise<T> {
+  const database = (await openCommandStore(process.env, settings))!;
   try {
     return await work(database.store);
   } finally {
@@ -3317,8 +3335,8 @@ if (import.meta.main || compiled()) {
   if (command === "runner") process.exit(await runRunnerCli(argv.slice(1)));
   if (command === "runner-storage")
     process.exit(
-      await withSecretStore(process.env, () =>
-        runRunnerTranscriptStorageCli(argv.slice(1), loadEnv(process.env).home),
+      await runRunnerTranscriptStorageCli(argv.slice(1), loadEnv(process.env).home, (work) =>
+        withSecretStore(process.env, work, "Storage"),
       ),
     );
   if (command === "--help" || command === "-h" || command === "help") {
@@ -3326,14 +3344,18 @@ if (import.meta.main || compiled()) {
     process.exit(0);
   }
   if (command === "install" && argv[1] === "secrets")
-    process.exit(await runInstallCli(argv.slice(1), process.env, withSecretStore));
+    process.exit(
+      await runInstallCli(argv.slice(1), process.env, (merged, work) =>
+        withSecretStore(merged, work, null),
+      ),
+    );
   if (command === "setup-link") process.exit(await setupLinkMain(argv.slice(1), process.env));
   if (command === "login" && argv[1] === "slack") {
     try {
       if (argv.length !== 2) throw new Error("usage: paws login slack");
       const home = loadEnv(process.env).home;
       ensureLayout(pawsPaths(home));
-      await withCommandStore("login slack", (store) =>
+      await withCommandStore("Integrations › Slack", (store) =>
         loginSlack({
           db: store,
           home,

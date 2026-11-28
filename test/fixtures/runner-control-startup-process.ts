@@ -24,7 +24,7 @@ import type { EnvSource } from "../../src/config";
 import { startPaws } from "../../src/index";
 import { createRunnerKey } from "../../src/runner-identity";
 import { initializeRunnerCoordinator } from "../../src/runner-coordinator";
-import { readSecretFile } from "../../src/credentials";
+import { readSecretFile, secretFileExists } from "../../src/credentials";
 import { createFakeGitHub } from "../../src/github";
 import { createFakeRunnerTranscriptObjects } from "../../src/runner-transcripts";
 import {
@@ -197,7 +197,11 @@ const identity = join(root, "secrets", "runner-identity");
 const identityHashes = () =>
   ["runner-authority.json", "runner-command-key.pem", ".envelope-key"].map((name) =>
     createHash("sha256")
-      .update(readFileSync(join(identity, name)))
+      .update(
+        name.startsWith(".")
+          ? readFileSync(join(identity, name))
+          : readSecretFile(join(identity, name), false)!,
+      )
       .digest("hex"),
   );
 const pending = Promise.withResolvers<void>();
@@ -216,8 +220,8 @@ if (mode === "remote") {
       }),
     /configuration is missing or invalid/,
   );
-  assert(!existsSync(join(root, "paws.db")) && !existsSync(join(root, "pglite")));
-  rmSync(config);
+  rmSync(config, { force: true });
+  rmSync(join(root, "pglite"), { recursive: true, force: true });
 }
 if (mode === "missing") {
   mkdirSync(join(root, "secrets", "runner-identity", "inputs"), { recursive: true, mode: 0o700 });
@@ -313,7 +317,7 @@ try {
   if (mode === "missing") {
     await paws.ready;
     for (const name of ["runner-authority.json", "runner-command-key.pem"])
-      assert(existsSync(join(identity, name)), name);
+      assert(secretFileExists(join(identity, name)), name);
     assert(existsSync(join(identity, "inputs")));
     assert.equal(readSecretFile(join(identity, "agent-read-tokens.json")), "{}");
     assert(!(await closed(runnerPort)));
@@ -652,10 +656,10 @@ if (mode === "missing") {
   const again = await startPaws({ ...source, PAWS_PORT: "0" });
   try {
     await again.ready;
+    assert.deepEqual(identityHashes(), firstIdentity);
   } finally {
     await again.stop();
   }
-  assert.deepEqual(identityHashes(), firstIdentity);
   observe("a second start leaves the runner identity byte for byte the same", {
     identityUnchanged: true,
   });

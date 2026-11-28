@@ -1,6 +1,6 @@
 import { migratedHome, withHomeStore } from "./helpers";
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHmac } from "node:crypto";
@@ -697,7 +697,12 @@ for (const admin of [false, true]) {
   });
 }
 
-import { useDatabaseSecrets, readSecretFile, saveSecret } from "../src/credentials";
+import {
+  useDatabaseSecrets,
+  readSecretFile,
+  saveSecret,
+  writeSecretFile,
+} from "../src/credentials";
 
 test("token protects setup and stores the client at the default path", async () => {
   const scene = await fixture(true);
@@ -773,6 +778,11 @@ test("a process without a Linear client starts in token-protected setup mode", a
     expect(messages.filter((message) => message === SETUP_OPEN)).toHaveLength(2);
     const setupUrl = liveSetupLink(paws);
     expect(setupUrl).toStartWith("https://localhost:8787/setup?token=");
+    expect(readdirSync(join(paws.paths.home, "secrets"), { recursive: true }).sort()).toEqual([
+      ".envelope-key",
+      ".last-start",
+      "setup-token",
+    ]);
     expect((await paws.server.fetch(new Request(setupUrl))).status).toBe(200);
     expect((await paws.server.fetch(new Request("https://localhost:8787/setup"))).status).toBe(403);
     expect(
@@ -793,8 +803,11 @@ test("a process without a Linear client starts in token-protected setup mode", a
         }),
       }),
     );
+    const secretsDir = join(paws.paths.home, "secrets");
+    expect(existsSync(join(secretsDir, "linear-browser-client.json"))).toBe(false);
     await paws.stop();
     processes.splice(processes.indexOf(paws), 1);
+    writeSecretFile(join(secretsDir, "tailscale-authkey"), "tskey");
     const restarted = await startPaws({
       LINEAR_ACCESS_TOKEN: "existing-token",
       PAWS_HOME: paws.paths.home,
@@ -815,8 +828,9 @@ test("a process without a Linear client starts in token-protected setup mode", a
     expect(
       (await restarted.server.fetch(new Request("https://localhost:8787/auth/linear"))).status,
     ).toBe(403);
-    await restarted.stop();
-    processes.splice(processes.indexOf(restarted), 1);
+    expect(readSecretFile(join(secretsDir, "tailscale-authkey"))).toBe("tskey");
+    await saveSecret(join(secretsDir, "github-webhook"), "whsec-plaintext");
+    expect(existsSync(join(secretsDir, "github-webhook"))).toBe(false);
     const printed: string[] = [];
     expect(
       await setupLinkMain(
@@ -826,6 +840,16 @@ test("a process without a Linear client starts in token-protected setup mode", a
       ),
     ).toBe(0);
     expect(printed).toEqual([setupUrl]);
+    await restarted.stop();
+    processes.splice(processes.indexOf(restarted), 1);
+    const secrets = await withHomeStore(paws.paths.home, (db) =>
+      db.run((q) => q.all(q.orm.select().from(q.t.secret))),
+    );
+    expect(secrets.map((row) => row.name)).toEqual(
+      expect.arrayContaining(["github-webhook", "linear-browser-client.json", "tailscale-authkey"]),
+    );
+    expect(secrets.map((row) => row.name)).not.toContain("setup-token");
+    expect(JSON.stringify(secrets)).not.toContain("whsec-plaintext");
   } finally {
     console.log = log;
     restore();
@@ -835,9 +859,12 @@ test("a process without a Linear client starts in token-protected setup mode", a
 test("paws setup-link reports a finished setup", async () => {
   const home = mkdtempSync(join(tmpdir(), "paws-setup-link-"));
   roots.push(home);
+  mkdirSync(join(home, "secrets"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(home, "secrets", "linear-webhook"), "legacy-plain", { mode: 0o600 });
   const printed: string[] = [];
   expect(await setupLinkMain([], { PAWS_HOME: home }, (text) => printed.push(text))).toBe(0);
   expect(printed).toEqual(["Setup is complete."]);
+  expect(readFileSync(join(home, "secrets", "linear-webhook"), "utf8")).toBe("legacy-plain");
 });
 
 test("setup rejects oversized and stalled bodies and releases its save lock", async () => {

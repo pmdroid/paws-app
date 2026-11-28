@@ -47,6 +47,7 @@ import {
   RunnerArtifactChunkSchema,
   RunnerHealthResultSchema,
   RunnerHelperResultSchema,
+  RunnerHostMetricsSchema,
   RunnerStorageCleanupResultSchema,
   RunnerStorageReportSchema,
   RunnerRepositoryCommandResultSchema,
@@ -63,6 +64,7 @@ import {
   type RunnerCommandVerification,
   type RunnerHealthResult,
   type RunnerHelperResult,
+  type RunnerHostMetrics,
   type RunnerStorageCleanupResult,
   type RunnerStorageReport,
   type RunnerAgentUser,
@@ -1093,6 +1095,12 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       return z
         .strictObject({ duplicate: z.boolean() })
         .parse(await authenticated("/v1/storage-report", "POST", body));
+    },
+    async postHostMetrics(report: RunnerHostMetrics) {
+      const body = RunnerHostMetricsSchema.parse(report);
+      return z
+        .object({ intervalMs: z.number().int().min(5_000).max(3_600_000) })
+        .parse(await authenticated("/v1/host-metrics", "POST", body, undefined, 10_000));
     },
     async issueVmHost(
       running: string[],
