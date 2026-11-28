@@ -1,7 +1,7 @@
 import type { RunFileObjects } from "../run-files";
 import { journalCaught } from "../journal";
 import { S3Client } from "bun";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants, closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
@@ -61,15 +61,30 @@ const localSchema = z.strictObject({ kind: z.literal("local") });
 const schema = z.union([localSchema, s3Schema]);
 const storedSchema = z.union([localSchema, s3Schema.partial()]);
 
-const FIELDS = Object.keys(ENV_SETTINGS.storage) as (keyof typeof ENV_SETTINGS.storage)[];
+type Field = keyof typeof ENV_SETTINGS.storage;
+const FIELDS = Object.keys(ENV_SETTINGS.storage) as Field[];
+const CREDENTIALS: readonly Field[] = ["accessKeyId", "secretAccessKey", "sessionToken"];
+const fromEnv = (key: Field) => envSetting(process.env, "storage", key);
+const leadCredential = () => CREDENTIALS.find((key) => fromEnv(key) !== undefined);
+const envHeld = (): Field[] =>
+  FIELDS.filter(
+    (key) =>
+      fromEnv(key) !== undefined || (CREDENTIALS.includes(key) && leadCredential() !== undefined),
+  );
 const environmentConfig = (): Record<string, string> =>
   Object.fromEntries(
     FIELDS.flatMap((key) => {
-      const value = envSetting(process.env, "storage", key);
+      const value = fromEnv(key);
       return value === undefined ? [] : [[key, value]];
     }),
   );
-const fromEnvironment = () => Object.keys(environmentConfig()).length > 0;
+const fromEnvironment = () => envHeld().length > 0;
+const withEnvironment = (config: Record<string, unknown>) => ({
+  ...Object.fromEntries(
+    Object.entries(config).filter(([key]) => !envHeld().includes(key as Field)),
+  ),
+  ...environmentConfig(),
+});
 
 /** The transcript S3 bucket from `PAWS_S3_*` or the stored configuration, or null when transcripts are stored locally. */
 export function loadRunnerTranscriptS3(home: string): { client: S3Client; bucket: string } | null {
@@ -88,7 +103,7 @@ function savedFields(home: string): Partial<z.infer<typeof s3Schema>> {
 
 function currentText(home: string): string | null {
   if (!fromEnvironment()) return storedText(home);
-  return JSON.stringify({ ...savedFields(home), ...environmentConfig() });
+  return JSON.stringify(withEnvironment(savedFields(home)));
 }
 
 function storedText(home: string): string | null {
@@ -134,13 +149,21 @@ export function runnerStorageSettings(home: string) {
     accessKeyId: config?.accessKeyId ?? null,
     hasSecretAccessKey: config?.secretAccessKey !== undefined,
     hasSessionToken: config?.sessionToken !== undefined,
-    sources: settingSources(process.env, "storage", savedFields(home)),
+    sources: storageSources(home),
     source: environment
       ? ("environment" as const)
       : text === null
         ? ("default" as const)
         : ("settings" as const),
   };
+}
+
+function storageSources(home: string) {
+  const sources = settingSources(process.env, "storage", savedFields(home));
+  const lead = leadCredential();
+  for (const key of CREDENTIALS)
+    if (lead !== undefined && fromEnv(key) === undefined) sources[key] = sources[lead];
+  return sources;
 }
 
 const inputSchema = z.strictObject({
@@ -159,15 +182,27 @@ function submittedText(home: string, input: unknown): string {
   const { kind, secretAccessKey, sessionToken, ...fields } = parsed.data;
   const previous = currentText(home);
   const stored = previous === null ? {} : (JSON.parse(previous) as Record<string, unknown>);
+  const target = withEnvironment(fields);
+  const moved = target.bucket !== stored.bucket || target.endpoint !== stored.endpoint;
+  if (
+    kind === "s3" &&
+    moved &&
+    stored.secretAccessKey !== undefined &&
+    secretAccessKey === undefined &&
+    !envHeld().includes("secretAccessKey")
+  )
+    throw new RunnerStorageSettingsError(
+      "Enter the secret access key again to use a new endpoint or bucket.",
+    );
+  const reused = moved ? {} : stored;
   const config =
     kind === "local"
       ? { kind }
-      : {
+      : withEnvironment({
           ...fields,
-          secretAccessKey: secretAccessKey ?? stored.secretAccessKey,
-          sessionToken: sessionToken === null ? undefined : (sessionToken ?? stored.sessionToken),
-          ...environmentConfig(),
-        };
+          secretAccessKey: secretAccessKey ?? reused.secretAccessKey,
+          sessionToken: sessionToken === null ? undefined : (sessionToken ?? reused.sessionToken),
+        });
   const result = (kind === "local" ? schema : s3Schema).safeParse(config);
   if (!result.success) throw invalid(result.error);
   const text = JSON.stringify(result.data);
@@ -186,32 +221,49 @@ function invalid(error: z.ZodError) {
 
 export async function saveRunnerStorageSettings(home: string, input: unknown): Promise<boolean> {
   const submitted = (input ?? {}) as Record<string, unknown>;
-  const changed = FIELDS.filter(
-    (key) =>
-      submitted.kind === "local" ||
-      (submitted[key] !== undefined && submitted[key] !== envSetting(process.env, "storage", key)),
-  );
+  const changed = envHeld()
+    .filter(
+      (key) =>
+        submitted.kind === "local" ||
+        (submitted[key] !== undefined && submitted[key] !== fromEnv(key)),
+    )
+    .map((key) => (fromEnv(key) === undefined ? leadCredential()! : key));
   const refusal = envSettingRefusal(process.env, "storage", changed);
   if (refusal !== null && submitted.kind === "local")
     throw new RunnerStorageEnvironmentError(refusal);
-  const text = submittedText(home, input);
-  const environment = environmentConfig();
+  let text: string;
+  try {
+    text = submittedText(home, input);
+  } catch (error) {
+    if (refusal !== null && error instanceof RunnerStorageSettingsError)
+      throw new RunnerStorageEnvironmentError(refusal);
+    throw error;
+  }
+  const environment = envHeld() as string[];
   const previous = savedFields(home) as Record<string, unknown>;
-  const kept = Object.entries(JSON.parse(text)).filter(([key]) => !(key in environment));
-  const held = Object.keys(environment).filter((key) => previous[key] !== undefined);
-  const saved = JSON.stringify({
+  const kept = Object.entries(JSON.parse(text)).filter(([key]) => !environment.includes(key));
+  const held = environment.filter((key) => previous[key] !== undefined);
+  const next: Record<string, unknown> = {
     ...Object.fromEntries(kept),
     ...Object.fromEntries(held.map((key) => [key, previous[key]])),
-  });
+  };
+  if (next.bucket !== previous.bucket || next.endpoint !== previous.endpoint)
+    for (const key of CREDENTIALS) if (environment.includes(key)) delete next[key];
+  const saved = JSON.stringify(next);
   if (saved !== storedText(home)) await saveStorage(home, saved);
   if (refusal !== null) throw new RunnerStorageEnvironmentError(refusal);
-  return startedWith !== undefined && storageKey(text) !== startedWith;
+  return startedWith !== undefined && fingerprint(text) !== startedWith;
 }
 
 let startedWith: string | undefined;
 
-function storageKey(text: string | null): string {
-  return text === null || "kind" in parseStorage(text) ? "local" : text;
+const sha256 = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+function fingerprint(text: string | null): string {
+  const config = text === null ? { kind: "local" } : parseStorage(text);
+  if ("kind" in config) return "local";
+  const version = sha256([config.accessKeyId, config.secretAccessKey, config.sessionToken]);
+  return sha256([config.bucket, config.endpoint, config.region, version]);
 }
 
 async function saveStorage(home: string, text: string): Promise<void> {
@@ -257,7 +309,7 @@ export async function checkRunnerStorageSettings(
 export function loadRunnerTranscriptStores(home: string) {
   const local = createLocalRunnerTranscriptObjects(join(home, "runner-transcripts"));
   const s3 = loadRunnerTranscriptS3(home);
-  startedWith ??= storageKey(currentText(home));
+  startedWith ??= fingerprint(currentText(home));
   if (s3 === null) return { objects: local, stores: [local] };
   const remote = createS3RunnerTranscriptObjects(s3);
   return { objects: remote, stores: [local, remote] };
