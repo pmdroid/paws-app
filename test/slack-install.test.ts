@@ -11,7 +11,7 @@ import {
   readSlackToken,
   SLACK_BOT_SCOPES,
 } from "../src/slack";
-import { writeCredential } from "../src/credentials";
+import { saveSecret, writeCredential } from "../src/credentials";
 import { startServer } from "../src/server";
 import { listJobs } from "../src/db";
 import { tempHome } from "./helpers";
@@ -106,19 +106,10 @@ test("Slack OAuth uses bot scopes, exact HTTPS redirect and single-use state, th
     refreshToken: null,
   });
   expect(await readSlackToken(db, dir)).toEqual(token);
-  expect(readSlackApp(dir)).toEqual({
-    clientId: env.SLACK_CLIENT_ID,
-    clientSecret: env.SLACK_CLIENT_SECRET,
-    signingSecret: env.SLACK_SIGNING_SECRET,
-  });
-  const sealed = [
-    readFileSync(join(dir, "secrets", "slack-app.json"), "utf8"),
-    JSON.stringify(await db.run((q) => q.all(q.orm.select().from(q.t.credential)))),
-  ];
-  for (const bytes of sealed) {
-    for (const secret of [grant.access_token, env.SLACK_CLIENT_SECRET, env.SLACK_SIGNING_SECRET])
-      expect(bytes).not.toContain(secret);
-  }
+  expect(readSlackApp(dir)).toBeNull();
+  const sealed = JSON.stringify(await db.run((q) => q.all(q.orm.select().from(q.t.credential))));
+  for (const secret of [grant.access_token, env.SLACK_CLIENT_SECRET, env.SLACK_SIGNING_SECRET])
+    expect(sealed).not.toContain(secret);
   await expect(fetch(`http://127.0.0.1:${port}/oauth/slack/callback`)).rejects.toThrow();
 });
 
@@ -154,6 +145,33 @@ test("Slack rejects denial and provider errors without saving or reflecting cred
     expect(await readSlackToken(db, dir)).toBeNull();
     expect(readSlackApp(dir)).toBeNull();
   }
+});
+
+test("paws login slack uses the Settings app and asks for one when neither path is set", async () => {
+  const dir = home();
+  const db = await database();
+  const onAuthorize = approve;
+  const publicUrl = { PAWS_PUBLIC_URL: env.PAWS_PUBLIC_URL };
+  await expect(loginSlack({ db, home: dir, env: publicUrl, onAuthorize })).rejects.toThrow(
+    "in Settings or SLACK_CLIENT_ID",
+  );
+  const app = { clientId: "saved-client", clientSecret: "saved-secret", signingSecret: "saved-s" };
+  await saveSecret(join(dir, "secrets", "slack-app.json"), JSON.stringify(app));
+  let basic: string | null = null;
+  await loginSlack({
+    db,
+    home: dir,
+    env: publicUrl,
+    port: 0,
+    timeoutMs: 2_000,
+    fetch: async (_url, init) => {
+      basic = new Headers(init?.headers).get("authorization");
+      return Response.json(grant);
+    },
+    onAuthorize,
+  });
+  expect(basic!).toBe(`Basic ${Buffer.from("saved-client:saved-secret").toString("base64")}`);
+  expect(readSlackApp(dir)).toEqual(app);
 });
 
 test("Slack OAuth requires HTTPS and aborts an outstanding exchange on timeout", async () => {
@@ -213,6 +231,7 @@ test("rotating Slack bot tokens use one durable refresh job and retain installat
   const options = {
     home: dir,
     db,
+    env,
     fetch: async (_url: string, init?: RequestInit) => {
       expect(new URLSearchParams(String(init?.body)).get("refresh_token")).toBe(
         "synthetic-slack-refresh-old",

@@ -127,6 +127,7 @@ test("with PAWS_S3_* set GET reports the environment and PUT gets 409", async ()
   expect((await call(send("PUT", { ...s3, secretAccessKey: "saved-secret" }))).status).toBe(200);
   process.env.PAWS_S3_BUCKET = "env-bucket";
   process.env.PAWS_S3_SECRET_ACCESS_KEY = "env-secret";
+  process.env.PAWS_S3_ACCESS_KEY_ID = "env-key-id";
   const get = await call(send("GET"));
   expect(get.body).toMatchObject({
     kind: "s3",
@@ -162,14 +163,82 @@ test("with PAWS_S3_* set GET reports the environment and PUT gets 409", async ()
   });
   expect(JSON.stringify([put.body, after.body])).not.toContain("env-secret");
   expect(loadRunnerTranscriptS3(home)?.bucket).toBe("env-bucket");
-  expect((await call(send("PUT", { ...s3, bucket: "env-bucket" }))).status).toBe(200);
+  const { accessKeyId: _, ...fields } = s3;
+  expect((await call(send("PUT", { ...fields, bucket: "env-bucket" }))).status).toBe(200);
   delete process.env.PAWS_S3_BUCKET;
   delete process.env.PAWS_S3_SECRET_ACCESS_KEY;
+  delete process.env.PAWS_S3_ACCESS_KEY_ID;
   expect((await call(send("GET"))).body).toMatchObject({
     bucket: "paws-objects",
     hasSecretAccessKey: true,
   });
   expect(loadRunnerTranscriptS3(home)?.bucket).toBe("paws-objects");
+});
+
+test("one PAWS_S3_* credential makes all three credentials read-only", async () => {
+  const body = { ...s3, secretAccessKey: "saved-secret-marker", sessionToken: "saved-token" };
+  expect((await call(send("PUT", body))).status).toBe(200);
+  process.env.PAWS_S3_ACCESS_KEY_ID = "env-key-id";
+  const lead = { source: "environment", variable: "PAWS_S3_ACCESS_KEY_ID" };
+  const get = await call(send("GET"));
+  expect(get.body).toMatchObject({
+    accessKeyId: "env-key-id",
+    hasSecretAccessKey: false,
+    hasSessionToken: false,
+    sources: { accessKeyId: lead, secretAccessKey: lead, sessionToken: lead },
+  });
+  expect(() => loadRunnerTranscriptS3(home)).toThrow();
+  const { accessKeyId: _, ...fields } = s3;
+  const put = await call(send("PUT", { ...fields, secretAccessKey: "new-secret-marker" }));
+  expect(put.status).toBe(409);
+  expect(put.body.error).toContain("PAWS_S3_ACCESS_KEY_ID");
+  delete process.env.PAWS_S3_ACCESS_KEY_ID;
+  expect((await call(send("GET"))).body).toMatchObject({
+    accessKeyId: s3.accessKeyId,
+    hasSecretAccessKey: true,
+    hasSessionToken: true,
+  });
+  expect(JSON.stringify([get.body, put.body])).not.toMatch(/secret-marker|saved-token/);
+});
+
+test("a new endpoint or bucket needs the secret access key again", async () => {
+  const body = { ...s3, secretAccessKey: "saved-secret-marker", sessionToken: "saved-token" };
+  expect((await call(send("PUT", body))).status).toBe(200);
+  for (const moved of [
+    { endpoint: "https://elsewhere.example.invalid" },
+    { bucket: "other-objects" },
+  ]) {
+    const put = await call(send("PUT", { ...s3, ...moved }));
+    expect(put).toEqual({
+      status: 400,
+      body: { error: "Enter the secret access key again to use a new endpoint or bucket." },
+    });
+    expect((await call(send("POST", { ...s3, ...moved }, "/check"))).status).toBe(400);
+  }
+  expect((await call(send("GET"))).body).toMatchObject({
+    bucket: s3.bucket,
+    hasSessionToken: true,
+  });
+  const moved = { ...s3, bucket: "other-objects", secretAccessKey: "new-secret-marker" };
+  expect((await call(send("PUT", moved))).body).toMatchObject({
+    bucket: "other-objects",
+    hasSecretAccessKey: true,
+    hasSessionToken: false,
+  });
+});
+
+test("objects written before a storage change still read back", async () => {
+  const before = loadRunnerTranscriptStores(home);
+  const bytes = new TextEncoder().encode("earlier transcript");
+  await before.objects.write("runs/earlier", bytes);
+  const body = { ...s3, secretAccessKey: "saved-secret-marker" };
+  expect((await call(send("PUT", body))).body.restartRequired).toBe(true);
+  const after = loadRunnerTranscriptStores(home);
+  expect(after.stores).toHaveLength(2);
+  expect(Buffer.from(await after.stores[0]!.read("runs/earlier")).toString()).toBe(
+    "earlier transcript",
+  );
+  expect((await call(send("PUT", { kind: "local" }))).body.restartRequired).toBe(false);
 });
 
 test("the check writes, reads and deletes one object and reports an S3 failure", async () => {
