@@ -4,14 +4,20 @@ import {
   insertQueuedItem,
   listItemHolds,
   listOverlapHoldAges,
+  putWorkspaceUser,
   recordConfirmedRemoteMerge,
   recordRebaseReturn,
+  setJournalSink,
+  syncSteps,
   type Db,
+  type ItemRunnerVerdicts,
+  type Q,
 } from "../src/db";
 import { sql, type SQL } from "drizzle-orm";
 import { workspaceDispatchPg } from "./fake-workspace";
 import { saveChangedPaths } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
+import { workspaceWithRunners } from "./runner-slot-fixture";
 
 const NOW = 30 * 24 * 60 * 60 * 1000;
 const PROVIDER = "src/dashboard/src/live/provider.ts";
@@ -534,6 +540,108 @@ test("an item without a candidate is never held, even behind an older held item"
     expect(await workspaceDispatch(db, { now: NOW + 1 })).toEqual(["unknown"]);
     expect((await listItemHolds(db)).map((hold) => hold.itemId)).toEqual(["a"]);
     expect((await listOverlapHoldAges(db)).has("unknown")).toBe(false);
+  } finally {
+    await close();
+  }
+});
+
+async function heldBehindHolder(db: Db): Promise<void> {
+  await conflicted(db, [PROVIDER]);
+  await item(db, "holder", [PROVIDER]);
+  await setState(db, "holder", "running");
+  await item(db, "a", [PROVIDER], 3);
+  expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
+  await item(db, "b", [PROVIDER], 4);
+  expect(await workspaceDispatch(db, { now: NOW + 1 })).toEqual([]);
+  expect((await listItemHolds(db)).map((hold) => [hold.itemId, hold.blockers])).toEqual([
+    ["a", ["holder"]],
+    ["b", ["holder"]],
+  ]);
+}
+
+test("an older waiter blocked by a dependency does not hold a newer item on the same hot file", async () => {
+  const { db, close } = await tempStore();
+  try {
+    await heldBehindHolder(db);
+    await item(db, "dependency", null);
+    await setState(db, "dependency", "running");
+    await blocks(db, "dependency", "a");
+    await setState(db, "holder", "merged");
+    expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["b"]);
+    expect((await listItemHolds(db)).map((hold) => [hold.itemId, hold.reason])).toEqual([
+      ["a", "blocked"],
+    ]);
+  } finally {
+    await close();
+  }
+});
+
+test("an older waiter whose last runner slot goes to earlier work does not hold a newer item that has a slot", async () => {
+  const { db, close } = await tempStore();
+  try {
+    const { pair } = await workspaceWithRunners(db);
+    const full = await pair("full", 1, null);
+    const open = await pair("open", 1, null);
+    await heldBehindHolder(db);
+    await item(db, "other", ["src/other.ts"]);
+    await setState(db, "holder", "merged");
+    const runners = (itemId: string): ItemRunnerVerdicts => ({
+      repository: "owner/repo",
+      agent: "claude",
+      runners: [
+        itemId === "b"
+          ? { id: open, name: "open", rejection: null, hostConfig: null }
+          : { id: full, name: "full", rejection: null, hostConfig: null },
+      ],
+    });
+    const journaled: string[] = [];
+    const restore = setJournalSink((line) => journaled.push(line));
+    try {
+      const pass = (now: number) =>
+        workspaceDispatch(db, {
+          now,
+          itemRunners: (_q: Q, itemId: string) => syncSteps(() => runners(itemId)),
+        });
+      expect(await pass(NOW + 2)).toEqual(["other", "b"]);
+      expect(await pass(NOW + 3)).toEqual([]);
+    } finally {
+      restore();
+    }
+    expect(journaled.filter((line) => line.startsWith("overlap_waiter_skipped"))).toEqual([
+      "overlap_waiter_skipped item=b waiter=a waiter_reason=slot",
+    ]);
+    expect((await listItemHolds(db)).map((hold) => [hold.itemId, hold.blockers])).toEqual([
+      ["a", ["b"]],
+    ]);
+  } finally {
+    await close();
+  }
+});
+
+test("an older waiter whose owner is at its cap does not hold a newer item from another owner", async () => {
+  const { db, close } = await tempStore();
+  try {
+    await heldBehindHolder(db);
+    await setState(db, "holder", "merged");
+    await item(db, "busy", ["src/other.ts"]);
+    await setState(db, "busy", "running");
+    for (const id of ["x", "y"])
+      await putWorkspaceUser(db, {
+        id,
+        linearUserId: `linear-${id}`,
+        name: id,
+        email: `${id}@example.invalid`,
+      });
+    for (const [id, owner] of [
+      ["busy", "x"],
+      ["a", "x"],
+      ["b", "y"],
+    ])
+      await exec(db, sql`UPDATE work_item SET owner_user_id=${owner} WHERE id=${id}`);
+    expect(await workspaceDispatch(db, { now: NOW + 2, ownerCap: 1 })).toEqual(["b"]);
+    expect((await listItemHolds(db)).map((hold) => [hold.itemId, hold.reason])).toEqual([
+      ["a", "cap"],
+    ]);
   } finally {
     await close();
   }

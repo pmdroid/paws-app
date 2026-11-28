@@ -57,6 +57,7 @@ import {
   type Q,
   type Steps,
   repositoryKey,
+  syncSteps,
 } from "../db";
 import { blockingIssuesSteps, readyItemsSteps } from "../intake";
 import { createAdmission, type Admission as StartAdmission, type ItemAdmission } from "./admission";
@@ -71,6 +72,8 @@ import {
 const TICK = JOB_KIND.schedulerTick;
 const RUNNER_SEEN_MS = 60_000;
 const CLOSEOUT_SLOT_WAIT_MS = 30 * 60_000;
+const SKIP_JOURNAL_MS = 60 * 60_000;
+const skipJournaled = new WeakMap<Db, Map<string, number>>();
 type Item = SchedulerItem;
 type Admission = {
   itemId: string;
@@ -148,7 +151,9 @@ function* overlapGate(
   now: number,
   waiters: readonly Item[],
   conflictProne: ConflictProneRule,
-  parallelFiles?: SchedulerOptions["parallelFiles"],
+  parallelFiles: SchedulerOptions["parallelFiles"],
+  waiterReason: (waiter: Item, occupants: readonly Item[]) => Steps<string | null>,
+  skipped: (item: Item, waiter: Item, reason: string) => void,
 ) {
   const hot = new Map<string, Set<string>>();
   for (const file of yield* hotFilesSteps(q, now, conflictProne)) {
@@ -193,7 +198,7 @@ function* overlapGate(
         }
     return found;
   };
-  return (item: Item, occupants: readonly Item[]): Overlap | null => {
+  return function* (item: Item, occupants: readonly Item[]): Steps<Overlap | null> {
     if (!item.owner || !item.repo) return null;
     const key = repositoryKey(item.owner, item.repo);
     const files = hot.get(key);
@@ -211,15 +216,20 @@ function* overlapGate(
       const shared = sharedWith(other);
       if (shared.length) return { blocker: other.identifier ?? other.id, files: shared };
     }
-    let oldest: { other: Item; files: string[] } | null = null;
-    for (const other of waiters) {
-      if (!waitedLonger(other, item) || (oldest && !waitedLonger(other, oldest.other))) continue;
+    const older = waiters
+      .filter((other) => waitedLonger(other, item))
+      .sort((a, b) => (waitedLonger(a, b) ? -1 : 1));
+    for (const other of older) {
       const shared = sharedWith(other);
-      if (shared.length) oldest = { other, files: shared };
+      if (!shared.length) continue;
+      const reason = yield* waiterReason(other, occupants);
+      if (reason) {
+        skipped(item, other, reason);
+        continue;
+      }
+      return { blocker: other.identifier ?? other.id, files: shared, start: true as const };
     }
-    return oldest
-      ? { blocker: oldest.other.identifier ?? oldest.other.id, files: oldest.files, start: true }
-      : null;
+    return null;
   };
 }
 
@@ -817,10 +827,51 @@ async function admit(
       )
         waiters.push(item);
     }
+    const vms = new Map<string, IssueVmPlacement | null>();
+    function* vmFor(itemId: string): Steps<IssueVmPlacement | null> {
+      if (!options.issueVm) return null;
+      if (!vms.has(itemId)) vms.set(itemId, yield* options.issueVm(q, itemId));
+      return vms.get(itemId)!;
+    }
+    const admitted: string[] = [];
+    const outcomes = new Map<string, string>();
+    const startable = new Map<string, string | null>();
+    let memo = { key: "", reasons: new Map<string, string | null>() };
+    function* waiterReason(waiter: Item, occupants: readonly Item[]): Steps<string | null> {
+      if (admitted.includes(waiter.id)) return null;
+      const outcome = outcomes.get(waiter.id);
+      if (outcome) return outcome;
+      const key = `${occupants.length}:${admitted.length}:${outcomes.size}`;
+      if (memo.key !== key) memo = { key, reasons: new Map() };
+      if (memo.reasons.has(waiter.id)) return memo.reasons.get(waiter.id)!;
+      let reason: string | null = (yield* overlapping(waiter, occupants)) ? "overlap" : null;
+      if (!reason && !startable.has(waiter.id)) {
+        const vm = yield* vmFor(waiter.id);
+        const open = vm ? !("wait" in vm) : (yield* openRunner(waiter.id)) !== null;
+        const pin = !open && !vm && (yield* verdictsFor(waiter.id))?.pinnedRunnerId;
+        startable.set(waiter.id, open ? null : pin ? "pin" : "slot");
+      }
+      reason ??= startable.get(waiter.id) ?? null;
+      memo.reasons.set(waiter.id, reason);
+      return reason;
+    }
+    const skips = new Map<string, string>();
     const overlapping =
       options.overlapHold === false || !options.conflictProne
-        ? () => null
-        : yield* overlapGate(q, now, waiters, options.conflictProne, options.parallelFiles);
+        ? (_item: Item, _occupants: readonly Item[]) => syncSteps((): Overlap | null => null)
+        : yield* overlapGate(
+            q,
+            now,
+            waiters,
+            options.conflictProne,
+            options.parallelFiles,
+            waiterReason,
+            (item, waiter, reason) =>
+              skips.set(
+                `item=${item.identifier ?? item.id} waiter=${waiter.identifier ?? waiter.id}`,
+                reason,
+              ),
+          );
     const occupants = items.filter(
       (item) =>
         holdsExecution(item) ||
@@ -828,21 +879,18 @@ async function admit(
         (item.state === "queued" && held.some((entry) => entry.itemId === item.id)),
     );
     const overlaps = new Map<string, Overlap>();
-    const unheld = candidates.filter((item) => {
-      if (held.some((entry) => entry.itemId === item.id)) return false;
-      const overlap = overlapping(item, occupants);
+    const unheld: Item[] = [];
+    const deferred: Item[] = [];
+    for (const item of candidates) {
+      if (held.some((entry) => entry.itemId === item.id)) continue;
+      const overlap = yield* overlapping(item, occupants);
       if (overlap) overlaps.set(item.id, overlap);
-      return overlap === null;
-    });
-    const order = fairOrder(unheld, running, cap);
+      if (!overlap || overlap.start) (overlap ? deferred : unheld).push(item);
+    }
+    skips.clear();
+    const order = fairOrder([...unheld, ...deferred], running, cap);
     // Only checked while runners exist, so a workspace without runners behaves as before.
     const ownerHasRunner = slots === null ? undefined : options.ownerHasRunner;
-    const vms = new Map<string, IssueVmPlacement | null>();
-    function* vmFor(itemId: string): Steps<IssueVmPlacement | null> {
-      if (!options.issueVm) return null;
-      if (!vms.has(itemId)) vms.set(itemId, yield* options.issueVm(q, itemId));
-      return vms.get(itemId)!;
-    }
     const setup = new Set<string>();
     if (ownerHasRunner)
       for (const { item, capped } of order)
@@ -860,28 +908,45 @@ async function admit(
       const pin = (yield* verdictsFor(item.id))?.pinnedRunnerId;
       if (pin) pinnedQueue.set(pin, (pinnedQueue.get(pin) ?? 0) + 1);
     }
-    const admitted: string[] = [];
-    for (const { item, capped } of order) {
+    for (const { item, capped } of order)
+      if (capped || setup.has(item.id)) outcomes.set(item.id, capped ? "cap" : "setup");
+    const retried = new Set<string>();
+    const attempts = [...order];
+    for (const attempt of attempts) {
+      const { item, capped } = attempt;
       if (capped || setup.has(item.id)) continue;
       yield* claimPinned(item);
       const vm = yield* vmFor(item.id);
       if (vm && "wait" in vm) {
         vmWaits.set(item.id, vm.wait);
+        outcomes.set(item.id, "slot");
         continue;
       }
       const runnerId = vm ? vm.runnerId : yield* openRunner(item.id);
       const reused = runnerId && !vm ? credit(item.id, runnerId) : 0;
-      if (!vm && free + reused <= 0) continue;
-      const next = footprint(item, options);
-      if (held.some((entry) => byId.get(entry.itemId)?.issueId === item.issueId)) continue;
-      // Work admitted earlier in this tick runs too.
-      const overlap = overlapping(item, occupants);
-      if (overlap) {
-        overlaps.set(item.id, overlap);
+      if (!vm && free + reused <= 0) {
+        outcomes.set(item.id, "slot");
         continue;
       }
+      const next = footprint(item, options);
+      if (held.some((entry) => byId.get(entry.itemId)?.issueId === item.issueId)) {
+        outcomes.set(item.id, "issue");
+        continue;
+      }
+      // Work admitted earlier in this tick runs too.
+      const overlap = yield* overlapping(item, occupants);
+      if (overlap) {
+        if (overlap.start || !overlaps.get(item.id)?.start) overlaps.set(item.id, overlap);
+        if (overlap.start && !retried.has(item.id)) attempts.push(attempt);
+        retried.add(item.id);
+        continue;
+      }
+      overlaps.delete(item.id);
       if (vm) choices.set(item.id, vm.runnerId);
-      else if (!(yield* takeSlot(item.id))) continue;
+      else if (!(yield* takeSlot(item.id))) {
+        outcomes.set(item.id, "slot");
+        continue;
+      }
       const pin = answers.get(item.id)?.pinnedRunnerId;
       if (pin) pinnedQueue.set(pin, pinnedQueue.get(pin)! - 1);
       yield* cancelPendingItemJobsSteps(q, JOB_KIND.start, item.id, now);
@@ -1024,8 +1089,17 @@ async function admit(
       setup: [...setup],
       changes,
       hostRefusals: hostRefusals(verdicts),
+      skips,
     };
   });
+  const journaled = skipJournaled.get(store) ?? new Map<string, number>();
+  skipJournaled.set(store, journaled);
+  for (const [pair, reason] of result.skips) {
+    if ((journaled.get(pair) ?? -Infinity) > now - SKIP_JOURNAL_MS) continue;
+    journaled.set(pair, now);
+    journal(`overlap_waiter_skipped ${pair} waiter_reason=${reason}`);
+  }
+  for (const [pair, at] of journaled) if (at <= now - SKIP_JOURNAL_MS) journaled.delete(pair);
   if (result.armed) emitJobReady(store);
   if (options.log) for (const line of result.changes) options.log(line);
   await options.onWaiting?.(result.waiting);
