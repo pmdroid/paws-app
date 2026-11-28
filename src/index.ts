@@ -458,7 +458,6 @@ import {
 } from "./agent-sessions";
 import {
   loadRunnerTranscriptStores,
-  checkLegacyRunnerTranscriptStorage,
   loadRunnerTranscriptS3,
   runRunnerTranscriptStorageCli,
 } from "./runner-transcript-config";
@@ -578,8 +577,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       : runnerConfig !== null
         ? loadRunnerTranscriptStores(paths.home)
         : undefined;
-  if (databaseUrl === null && runnerConfig !== null && !options?.runnerTranscriptObjects)
-    checkLegacyRunnerTranscriptStorage(paths.home);
   ensureLayout(paths);
   useGitTempDirectory(paths.tmpDir);
   usePublicationRepositories(paths.publicationDir);
@@ -614,7 +611,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   let repositoryAccess = options?.runnerRepositoryAccess;
   const placeOnRunner = runnerConfig !== null;
   const store = observeDb(database.store, (ms) => recordDuration("db.transaction", {}, ms));
-  const transcriptStorage = loadTranscripts();
+  const transcriptStorage = await Promise.try(loadTranscripts).catch(async (error: unknown) => {
+    await database.close().catch(() => undefined);
+    throw error;
+  });
   const transcriptObjects = transcriptStorage?.objects;
   await convertLinearUploadManifests(paths.secretsDir);
   await importLinearTokenFile(store, paths.secretsDir, runtime.linearTokenFile);

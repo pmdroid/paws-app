@@ -29,7 +29,10 @@ import {
   type Db,
 } from "../src/db";
 import { realProbe } from "../src/doctor";
-import { configureRunnerTranscriptStorage } from "../src/runner-transcript-config";
+import {
+  configureRunnerTranscriptStorage,
+  loadRunnerTranscriptS3,
+} from "../src/runner-transcript-config";
 import { setJournalSink } from "../src/journal";
 import { describePglite, type PgliteTestDb } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
@@ -257,6 +260,16 @@ describePglite((connect) => {
     expect(readSecretFile(join(dir, "linear-webhook"))).toBe("top");
     expect(readSecretFile(join(nested, "agent-read-tokens.json"))).toBe("sealed-nested");
     expect(readSecretFile(join(nested, "runner-command-key.pem"))).toBe("plain-nested");
+  });
+
+  test("a stale transcript storage file never overrides the settings in the table", async () => {
+    const { db, home, dir } = await setup(connect);
+    const first = await install(db, dir);
+    await saveSecret(join(dir, "runner-transcript-storage.json"), '{"kind":"local"}');
+    await first.close();
+    writeFileSync(join(dir, "runner-transcript-storage.json"), "invalid", { mode: 0o600 });
+    await install(db, dir);
+    expect(loadRunnerTranscriptS3(home)).toBeNull();
   });
 
   test("the import skips run-data stores and large files, and they stay files", async () => {

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,10 +7,6 @@ import {
   probeRunnerTranscriptStartup,
   probeRunnerTranscriptStorage,
 } from "./local/runner-transcript-config";
-import {
-  checkLegacyRunnerTranscriptStorage,
-  loadRunnerTranscriptS3,
-} from "../src/runner-transcript-config";
 
 async function observe(probe: typeof probeRunnerTranscriptStorage, expected: number) {
   const root = mkdtempSync(join(tmpdir(), "paws-transcript-config-test-"));
@@ -58,24 +54,4 @@ test("transcript configuration stdin failures retain fixed guidance without cred
   expect(stderr.trim().split("\n")).toHaveLength(1);
   expect(stderr).toContain("Runner transcript storage configuration is missing or invalid.");
   expect(stderr).not.toContain(secret);
-});
-
-test("the startup check reads only a legacy file, and leaves PAWS_S3_* settings to the table", () => {
-  const home = mkdtempSync(join(tmpdir(), "paws-transcript-legacy-"));
-  const previous = process.env.PAWS_S3_BUCKET;
-  try {
-    const file = join(home, "secrets", "runner-transcript-storage.json");
-    checkLegacyRunnerTranscriptStorage(home);
-    mkdirSync(join(home, "secrets"), { mode: 0o700 });
-    writeFileSync(file, "invalid", { mode: 0o600 });
-    expect(() => checkLegacyRunnerTranscriptStorage(home)).toThrow(/missing or invalid/);
-    rmSync(file);
-    process.env.PAWS_S3_BUCKET = "fixture-bucket";
-    expect(() => loadRunnerTranscriptS3(home)).toThrow(/missing or invalid/);
-    checkLegacyRunnerTranscriptStorage(home);
-  } finally {
-    if (previous === undefined) delete process.env.PAWS_S3_BUCKET;
-    else process.env.PAWS_S3_BUCKET = previous;
-    rmSync(home, { recursive: true, force: true });
-  }
 });

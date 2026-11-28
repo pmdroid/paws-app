@@ -220,8 +220,8 @@ if (mode === "remote") {
       }),
     /configuration is missing or invalid/,
   );
-  assert(!existsSync(join(root, "paws.db")) && !existsSync(join(root, "pglite")));
   rmSync(config);
+  rmSync(join(root, "pglite"), { recursive: true, force: true });
 }
 if (mode === "missing") {
   mkdirSync(join(root, "secrets", "runner-identity", "inputs"), { recursive: true, mode: 0o700 });
