@@ -772,6 +772,7 @@ export function createRunnerWork(options: {
       liveAfter?: number,
       accounts?: RunnerAccountCapability,
       conversations?: number,
+      metricsUrl: string | null = null,
     ) {
       const running =
         reported && new Set(reported.map(({ runId, generation }) => `${runId}:${generation}`));
@@ -795,7 +796,7 @@ export function createRunnerWork(options: {
         );
         const concurrency = capacityRecorded.concurrency;
         woke = capacityRecorded.woke;
-        yield* noteRunnerSeenSteps(q, runnerId, at);
+        yield* noteRunnerSeenSteps(q, runnerId, at, metricsUrl);
         const versionChanged =
           Object.values(host).some((value) => value !== undefined) &&
           (yield* recordRunnerHostStatusSteps(q, runnerId, host, at));
