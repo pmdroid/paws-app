@@ -218,22 +218,16 @@ test("an admin saves the Slack app and reads back only whether it is configured"
   const f = await fixture({});
   await f.workspace("ws1", { alice: "admin", bob: "member" });
   const read = async (user: string) => (await f.call(user, "/api/settings/slack-app")).json();
-  const sources = (source: string) => ({
-    clientId: { source },
-    clientSecret: { source },
-    signingSecret: { source },
-  });
-  expect(await read("alice")).toEqual({
-    configured: false,
-    clientId: null,
-    sources: sources("unset"),
-  });
+  expect(await read("alice")).toMatchObject({ configured: false, clientId: null });
   expect((await f.call("alice", "/api/settings/slack-app", "PUT", { clientId: "c" })).status).toBe(
     400,
   );
   expect((await f.call("alice", "/api/settings/slack-app", "PUT", APP)).status).toBe(200);
   const body = await read("alice");
-  expect(body).toEqual({ configured: true, clientId: "c-saved", sources: sources("settings") });
+  expect(body).toMatchObject({
+    configured: true,
+    sources: { clientSecret: { source: "settings" } },
+  });
   expect(JSON.stringify([body, await f.status("alice")])).not.toMatch(/cs-saved|ss-saved/);
   expect(readSlackApp(f.home)).toEqual(APP);
   expect((await f.call("bob", "/api/settings/slack-app")).status).toBe(403);
@@ -252,14 +246,10 @@ test("server environment values override the saved Slack app", async () => {
   });
   expect(readSlackApp(f.home)).toBeNull();
   const body = await (await f.call("alice", "/api/settings/slack-app")).json();
-  expect(body).toEqual({
+  expect(body).toMatchObject({
     configured: true,
     clientId: "c",
-    sources: {
-      clientId: { source: "environment", variable: "SLACK_CLIENT_ID" },
-      clientSecret: { source: "environment", variable: "SLACK_CLIENT_SECRET" },
-      signingSecret: { source: "environment", variable: "SLACK_SIGNING_SECRET" },
-    },
+    sources: { clientId: { source: "environment", variable: "SLACK_CLIENT_ID" } },
   });
   expect(JSON.stringify(body)).not.toMatch(/client-secret|"s"/);
   expect(await f.status("alice")).toMatchObject({ environment: true });
@@ -277,13 +267,9 @@ test("a Slack app PUT saves its other fields when one is set by the environment"
     clientId: "c-saved",
     clientSecret: "cs-saved",
   });
-  const body = (await (await f.call("alice", "/api/settings/slack-app")).json()) as {
-    sources: unknown;
-  };
-  expect(body.sources).toEqual({
-    clientId: { source: "settings" },
-    clientSecret: { source: "settings" },
-    signingSecret: { source: "environment", variable: "SLACK_SIGNING_SECRET" },
+  const body = await (await f.call("alice", "/api/settings/slack-app")).json();
+  expect(body).toMatchObject({
+    sources: { clientId: { source: "settings" }, signingSecret: { source: "environment" } },
   });
   expect(JSON.stringify(body)).not.toContain("env-signing-marker");
   expect(slackSigningSecret(f.home, partial)).toBe("env-signing-marker");

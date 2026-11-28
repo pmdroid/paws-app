@@ -57,13 +57,19 @@ const s3Schema = z
     sessionToken: secret(16_384).optional(),
   })
   .strict();
-const schema = z.union([z.strictObject({ kind: z.literal("local") }), s3Schema]);
+const localSchema = z.strictObject({ kind: z.literal("local") });
+const schema = z.union([localSchema, s3Schema]);
+const storedSchema = z.union([localSchema, s3Schema.partial()]);
 
 const FIELDS = Object.keys(ENV_SETTINGS.storage) as (keyof typeof ENV_SETTINGS.storage)[];
-const environmentRefusal = () => envSettingRefusal(process.env, "storage");
-const fromEnvironment = () => environmentRefusal() !== null;
-const environmentConfig = () =>
-  Object.fromEntries(FIELDS.map((key) => [key, process.env[ENV_SETTINGS.storage[key]]]));
+const environmentConfig = (): Record<string, string> =>
+  Object.fromEntries(
+    FIELDS.flatMap((key) => {
+      const value = process.env[ENV_SETTINGS.storage[key]];
+      return value === undefined ? [] : [[key, value]];
+    }),
+  );
+const fromEnvironment = () => Object.keys(environmentConfig()).length > 0;
 
 /** The transcript S3 bucket from `PAWS_S3_*` or the stored configuration, or null when transcripts are stored locally. */
 export function loadRunnerTranscriptS3(home: string): { client: S3Client; bucket: string } | null {
@@ -74,8 +80,15 @@ export function loadRunnerTranscriptS3(home: string): { client: S3Client; bucket
   }
 }
 
+function savedFields(home: string): Partial<z.infer<typeof s3Schema>> {
+  const text = storedText(home);
+  const stored = text === null ? {} : parseStorage(text);
+  return "kind" in stored ? {} : stored;
+}
+
 function currentText(home: string): string | null {
-  return fromEnvironment() ? JSON.stringify(environmentConfig()) : storedText(home);
+  if (!fromEnvironment()) return storedText(home);
+  return JSON.stringify({ ...savedFields(home), ...environmentConfig() });
 }
 
 function storedText(home: string): string | null {
@@ -104,16 +117,15 @@ function s3From(plain: string | null) {
 }
 
 export class RunnerStorageSettingsError extends Error {}
+export class RunnerStorageEnvironmentError extends RunnerStorageSettingsError {}
 
 export function runnerStorageSettings(home: string) {
   const environment = fromEnvironment();
-  const text = environment ? null : storedText(home);
-  const parsed = text === null ? null : parseStorage(text);
-  const config: Partial<z.infer<typeof s3Schema>> | null = environment
-    ? environmentConfig()
-    : parsed === null || "kind" in parsed
-      ? null
-      : parsed;
+  const text = storedText(home);
+  const current = currentText(home);
+  const parsed = current === null ? null : (JSON.parse(current) as Record<string, string>);
+  const config: Partial<z.infer<typeof s3Schema>> | null =
+    parsed === null || "kind" in parsed ? null : parsed;
   return {
     kind: config === null ? ("local" as const) : ("s3" as const),
     bucket: config?.bucket ?? null,
@@ -122,7 +134,7 @@ export function runnerStorageSettings(home: string) {
     accessKeyId: config?.accessKeyId ?? null,
     hasSecretAccessKey: config?.secretAccessKey !== undefined,
     hasSessionToken: config?.sessionToken !== undefined,
-    sources: settingSources(process.env, "storage", environment ? {} : (config ?? {})),
+    sources: settingSources(process.env, "storage", savedFields(home)),
     source: environment
       ? ("environment" as const)
       : text === null
@@ -154,6 +166,7 @@ function submittedText(home: string, input: unknown): string {
           ...fields,
           secretAccessKey: secretAccessKey ?? stored.secretAccessKey,
           sessionToken: sessionToken === null ? undefined : (sessionToken ?? stored.sessionToken),
+          ...environmentConfig(),
         };
   const result = (kind === "local" ? schema : s3Schema).safeParse(config);
   if (!result.success) throw invalid(result.error);
@@ -172,10 +185,21 @@ function invalid(error: z.ZodError) {
 }
 
 export async function saveRunnerStorageSettings(home: string, input: unknown): Promise<boolean> {
-  const refusal = environmentRefusal();
-  if (refusal !== null) throw new RunnerStorageSettingsError(refusal);
+  const submitted = (input ?? {}) as Record<string, unknown>;
+  const changed = FIELDS.filter(
+    (key) =>
+      submitted.kind === "local" ||
+      (submitted[key] !== undefined && submitted[key] !== process.env[ENV_SETTINGS.storage[key]]),
+  );
+  const refusal = envSettingRefusal(process.env, "storage", changed);
+  if (refusal !== null && submitted.kind === "local")
+    throw new RunnerStorageEnvironmentError(refusal);
   const text = submittedText(home, input);
-  if (text !== storedText(home)) await saveStorage(home, text);
+  const environment = environmentConfig();
+  const kept = Object.entries(JSON.parse(text)).filter(([key]) => !(key in environment));
+  const saved = JSON.stringify(Object.fromEntries(kept));
+  if (saved !== storedText(home)) await saveStorage(home, saved);
+  if (refusal !== null) throw new RunnerStorageEnvironmentError(refusal);
   return startedWith !== undefined && storageKey(text) !== startedWith;
 }
 
@@ -240,7 +264,7 @@ export function loadRunnerTranscriptObjects(home: string) {
 
 function parseStorage(text: string) {
   if (Buffer.byteLength(text) > MAX_BYTES) throw new Error();
-  return schema.parse(JSON.parse(text));
+  return storedSchema.parse(JSON.parse(text));
 }
 
 export function configureRunnerTranscriptStorage(home: string, text: string): void {

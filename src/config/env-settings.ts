@@ -52,20 +52,12 @@ export function settingSources<G extends EnvSettingGroup>(
   group: G,
   stored: Partial<Record<EnvSettingField<G>, unknown>>,
 ): Record<EnvSettingField<G>, SettingSource> {
+  const source = (field: EnvSettingField<G>): SettingSource =>
+    envSetting(env, group, field) !== undefined
+      ? { source: "environment", variable: variableOf(group, field) }
+      : { source: typeof stored[field] === "string" && stored[field] ? "settings" : "unset" };
   const fields = Object.keys(ENV_SETTINGS[group]) as EnvSettingField<G>[];
-  return Object.fromEntries(
-    fields.map((field) => [
-      field,
-      envSetting(env, group, field) !== undefined
-        ? { source: "environment", variable: variableOf(group, field) }
-        : {
-            source:
-              typeof stored[field] === "string" && (stored[field] as string).length > 0
-                ? "settings"
-                : "unset",
-          },
-    ]),
-  ) as Record<EnvSettingField<G>, SettingSource>;
+  return Object.fromEntries(fields.map((field) => [field, source(field)])) as never;
 }
 
 export function envSettingRefusal<G extends EnvSettingGroup>(

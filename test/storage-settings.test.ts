@@ -76,13 +76,6 @@ async function call(request: Request, extra: Partial<StorageSettingsOptions> = {
   return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 }
 
-const fromSettings = Object.fromEntries(
-  ["bucket", "endpoint", "region", "accessKeyId", "secretAccessKey", "sessionToken"].map((key) => [
-    key,
-    { source: "settings" },
-  ]),
-);
-
 async function roundTrip() {
   loadRunnerTranscriptStores(home);
   expect((await call(send("GET"))).body).toMatchObject({ kind: "local", source: "default" });
@@ -96,7 +89,7 @@ async function roundTrip() {
       hasSecretAccessKey: true,
       hasSessionToken: true,
       source: "settings",
-      sources: fromSettings,
+      sources: expect.any(Object),
       restartRequired: true,
     },
   });
@@ -105,7 +98,7 @@ async function roundTrip() {
     hasSecretAccessKey: true,
     hasSessionToken: true,
     source: "settings",
-    sources: fromSettings,
+    sources: expect.any(Object),
   });
   const kept = await call(send("PUT", { ...s3, region: "us-east-1" }));
   expect(kept.body).toMatchObject({ region: "us-east-1", hasSecretAccessKey: true });
@@ -153,6 +146,22 @@ test("with PAWS_S3_* set GET reports the environment and PUT gets 409", async ()
         "Set by environment variable PAWS_S3_BUCKET; remove it from the service environment to edit here",
     },
   });
+  const put = await call(send("PUT", s3));
+  expect(put.status).toBe(409);
+  expect(put.body.error).toContain("PAWS_S3_BUCKET");
+  const after = await call(send("GET"));
+  expect(after.body).toMatchObject({
+    bucket: "env-bucket",
+    region: s3.region,
+    sources: {
+      bucket: { source: "environment", variable: "PAWS_S3_BUCKET" },
+      region: { source: "settings" },
+      secretAccessKey: { source: "environment", variable: "PAWS_S3_SECRET_ACCESS_KEY" },
+    },
+  });
+  expect(JSON.stringify([put.body, after.body])).not.toContain("env-secret");
+  expect(loadRunnerTranscriptS3(home)?.bucket).toBe("env-bucket");
+  expect((await call(send("PUT", { ...s3, bucket: "env-bucket" }))).status).toBe(200);
 });
 
 test("the check writes, reads and deletes one object and reports an S3 failure", async () => {

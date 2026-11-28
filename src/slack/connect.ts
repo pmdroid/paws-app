@@ -287,11 +287,7 @@ export function createSlackConnect(options: {
     const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
     const value = (name: string) => (typeof body?.[name] === "string" ? body[name].trim() : "");
     const editable = APP_FIELDS.filter((name) => envSetting(env, "slack", name) === undefined);
-    const refusal = envSettingRefusal(
-      env,
-      "slack",
-      APP_FIELDS.filter((name) => value(name)),
-    );
+    const refusal = envSettingRefusal(env, "slack", APP_FIELDS.filter(value));
     if (refusal !== null && !editable.some((name) => value(name)))
       return json({ error: refusal }, 409);
     const app = Object.fromEntries(editable.map((name) => [name, value(name)]));

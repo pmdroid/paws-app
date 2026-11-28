@@ -1201,6 +1201,7 @@ test("browser App setup encrypts all five fields and continues without restartin
   const secrets = await useDatabaseSecrets(f.db, dir);
   try {
     for (const name of Object.keys(f.env)) delete (f.env as Record<string, string>)[name];
+    (f.env as Record<string, string>).GITHUB_WEBHOOK_SECRET = "env-webhook-marker";
     const handler = f.handler();
     const url = "https://paws.example/api/workspaces/github-app";
     const payload = {
@@ -1239,21 +1240,31 @@ test("browser App setup encrypts all five fields and continues without restartin
     });
     expect(await f.db.run(secretRowsSteps)).toEqual([]);
     f.setAppStatus(200);
-    expect((await post("admin"))!.status).toBe(200);
+    const partial = await post("admin");
+    expect(partial!.status).toBe(409);
+    expect(await partial!.json()).toEqual({
+      error:
+        "Set by environment variable GITHUB_WEBHOOK_SECRET; remove it from the service environment to edit here",
+    });
     expect(f.calls.some((call) => call.path === "/app")).toBe(true);
     const saved = await f.db.run(secretRowsSteps);
     expect(saved).toHaveLength(1);
     for (const value of Object.values(payload).filter((entry) => entry.length > 5))
       expect(saved[0]!.ciphertext).not.toContain(value);
     expect(existsSync(join(dir, "github-browser-app.json"))).toBe(false);
-    expect(JSON.parse(readSecretFile(join(dir, "github-browser-app.json"))!)).toMatchObject(
-      payload,
-    );
+    const { webhookSecret: _, ...stored } = payload;
+    const file = JSON.parse(readSecretFile(join(dir, "github-browser-app.json"))!);
+    expect(file).toMatchObject(stored);
+    expect(file.webhookSecret).toBeUndefined();
+    expect(loadGitHubAppCredentials(f.home, f.env)!.webhookSecret).toBe("env-webhook-marker");
     const read = (await (await handler(f.request("admin", url)))!.json()) as {
       sources: Record<string, unknown>;
     };
-    expect(Object.values(read.sources)).toEqual(Array(5).fill({ source: "settings" }));
-    expect(JSON.stringify(read)).not.toMatch(/oauth-secret|webhook-secret|PRIVATE KEY/);
+    expect(read.sources).toMatchObject({
+      appId: { source: "settings" },
+      webhookSecret: { source: "environment", variable: "GITHUB_WEBHOOK_SECRET" },
+    });
+    expect(JSON.stringify(read)).not.toMatch(/oauth-secret|webhook-marker|PRIVATE KEY/);
     expect(createWorkspaceGitHubActivation(f.db, f.home, f.env).template().privateKeyPem).toBe(key);
     expect(loadGitHubAppCredentials(f.home, { ...f.env, GITHUB_APP_ID: "123" })!.appId).toBe("123");
     f.setInstallationStatus(404);
@@ -1271,7 +1282,7 @@ test("browser App setup encrypts all five fields and continues without restartin
   }
 });
 
-test("environment App ID skips browser App setup and reports where each field comes from", async () => {
+test("environment App ID skips browser App setup", async () => {
   const f = await fixture();
   try {
     const response = await f.handler()(
@@ -1287,22 +1298,6 @@ test("environment App ID skips browser App setup and reports where each field co
       },
     });
     expect(JSON.stringify(body)).not.toContain("scripted-client-secret");
-    const post = await f.handler()(
-      f.request("admin", "https://paws.example/api/workspaces/github-app", {
-        method: "POST",
-        headers: {
-          origin: "https://paws.example",
-          "content-type": "application/json",
-          "x-paws-csrf": f.sessions.admin!.session.csrfToken,
-        },
-        body: "{}",
-      }),
-    );
-    expect(post!.status).toBe(409);
-    expect(await post!.json()).toEqual({
-      error:
-        "Set by environment variable GITHUB_APP_ID; remove it from the service environment to edit here",
-    });
     expect(loadGitHubAppCredentials(f.home, f.env)!.clientSecret).toBe("scripted-client-secret");
   } finally {
     await f.close();
