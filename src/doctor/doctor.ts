@@ -67,7 +67,7 @@ const FIX = {
     "Set LINEAR_WEBHOOK_SECRET to the Linear webhook signing secret, or enter it through the setup link.",
   publicUrl: "Set PAWS_PUBLIC_URL to the public https origin.",
   githubApp:
-    "Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH (mode 0600), or save them in ~/.paws/secrets/github-app.json (docs/github-app.md).",
+    "Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH (mode 0600), or save the GitHub App in Settings > Integrations (docs/github-app.md).",
   githubInstallation:
     "Install the GitHub App on the repository and connect it in Settings > Integrations (docs/github-app.md).",
   githubPush:
@@ -159,7 +159,11 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
       ),
     );
   }
-  if (facts.webhooks || env.githubWebhookSecret !== null || facts.githubDelivery) {
+  if (
+    facts.webhooks ||
+    (facts.githubWebhookSecret ?? env.githubWebhookSecret !== null) ||
+    facts.githubDelivery
+  ) {
     const delivery = facts.githubDelivery ?? null;
     checks.push(
       check(
@@ -233,7 +237,7 @@ export async function realProbe(env: EnvSource, store: Db): Promise<DoctorProbe>
 
 /** `github-app` credentials, then the installation and push access on the repository. */
 function githubAppChecks(probe: DoctorProbe, github: GitHubDoctorFacts): DoctorCheck[] {
-  const credentials = githubAppCheck(probe, github.appId, github.privateKeyPath);
+  const credentials = githubAppCheck(probe, github);
   if (!credentials.ok) return [credentials];
   return [
     credentials,
@@ -302,13 +306,16 @@ function closeoutCheck(facts: ProbeFacts): DoctorCheck {
   return check("closeout", false, facts.closeout.detail, facts.closeout.fix ?? FIX.closeout);
 }
 
-function githubAppCheck(
-  probe: DoctorProbe,
-  appId: string | null,
-  keyPath: string | null,
-): DoctorCheck {
+function githubAppCheck(probe: DoctorProbe, github: GitHubDoctorFacts): DoctorCheck {
+  const { appId, privateKeyPath: keyPath, privateKeyReadable: readable } = github;
+  if (keyPath === null && appId !== null)
+    return readable
+      ? check("github-app", true, `app ${appId} configured (key saved in Settings)`)
+      : check("github-app", false, "GitHub App private key is missing", FIX.githubApp);
   const keyStat = keyPath === null ? null : probe.stat(keyPath);
   const mode = keyStat === null ? null : keyStat.mode & 0o777;
+  if (appId !== null && keyStat !== null && readable === false)
+    return check("github-app", false, "GitHub App private key is not a usable key", FIX.githubApp);
   const ok = appId !== null && keyStat !== null && (mode === 0o600 || mode === 0o400);
   return check("github-app", ok, githubDetail(appId, keyStat !== null, mode), FIX.githubApp);
 }

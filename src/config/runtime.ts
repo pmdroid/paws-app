@@ -1,12 +1,10 @@
 import { journalCaught } from "../journal";
-import { readSecretFile } from "../credentials";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_MAX_AWAKE_MS } from "../core";
 import { loadEnv, type EnvSource, type PawsEnv } from "./env";
 import { emptyConfigFile, loadSettings, type PawsConfigFile } from "./file";
-import { pawsPaths } from "./paths";
-import { loadGitHubAppCredentials } from "./github-app";
+import { gitHubWebhookSecret, loadGitHubAppCredentials } from "./github-app";
 import { checkDatabaseUrl } from "./database";
 import { parseRepositoryList } from "./repositories";
 
@@ -63,14 +61,11 @@ export function databaseUrlOf(source: EnvSource = process.env): string | null {
 
 export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
   const env = loadEnv(source);
-  env.githubWebhookSecret ??= readSecretFile(
-    join(pawsPaths(env.home).secretsDir, "github-webhook"),
-  );
   const app = loadGitHubAppCredentials(env.home, source);
+  env.githubWebhookSecret = gitHubWebhookSecret(env.home, source);
   if (app !== null) {
     env.githubAppId = app.appId;
     env.githubAppInstallationId = app.installationId;
-    env.githubAppPrivateKeyPath = app.privateKeyPath;
   }
   let file = emptyConfigFile();
   let configError: string | null = null;

@@ -90,6 +90,7 @@ import {
   ignoredCommentMarkers,
   LINEAR_WORKSPACE_REQUIRED,
   databaseUrlOf,
+  importLegacyGitHubApp,
   loadRuntime,
   startupSettings,
   resolveAgentProfiles,
@@ -588,12 +589,12 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     databaseUrl,
     paths.secretsDir,
   );
-  let runtime = await loadSecretRuntime(envSource, paths, databaseUrl).catch(
-    async (error: unknown) => {
+  let runtime = await importLegacyGitHubApp(paths.home, envSource)
+    .then(() => loadSecretRuntime(envSource, paths, databaseUrl))
+    .catch(async (error: unknown) => {
       await database.close().catch(() => undefined);
       throw error;
-    },
-  );
+    });
   const browserSetup = await browserSetupRuntime(database.store, runtime, envSource);
   if (browserSetup.error !== null) {
     await database.close();
@@ -1749,7 +1750,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           }),
       port: env.port,
       linearWebhookSecret: env.linearWebhookSecret,
-      githubWebhookSecret: env.githubWebhookSecret,
       githubWebhook: {
         accept: (delivery) => {
           if (delivery.event === "release")

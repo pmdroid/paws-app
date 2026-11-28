@@ -4,6 +4,8 @@ import { existsSync } from "node:fs";
 import { resolveAdapter } from "../acp";
 import {
   closeoutPolicyRoot,
+  gitHubWebhookSecret,
+  loadGitHubAppCredentials,
   loadSettings,
   loadRuntime,
   memberVmProvider,
@@ -55,11 +57,12 @@ export const GITHUB_APP_EVENTS = [
 
 /** GitHub App checks against the first chosen repository. */
 export type GitHubDoctorFacts = {
-  /** GitHub App id from the environment or `secrets/github-app.json`. */
+  /** GitHub App id from the environment or the App saved in Settings. */
   appId: string | null;
   /** Configured installation id. Doctor also finds it from the repository. */
   installationId: string | null;
   privateKeyPath: string | null;
+  privateKeyReadable?: boolean;
   installation: { ok: boolean; detail: string };
   push: { ok: boolean; detail: string };
   rate: { ok: boolean; detail: string };
@@ -97,6 +100,7 @@ export type ProbeFacts = {
     /** One next step when the policy did not load. */
     fix: string | null;
   };
+  githubWebhookSecret?: boolean;
   linearClient?: Pick<LinearClientResolution, "client" | "webhook" | "error"> | null;
   linear: {
     attempted: boolean;
@@ -124,7 +128,7 @@ export async function realProbeFacts(env: EnvSource, store: Db): Promise<ProbeFa
     agents.has("codex") ? loginFact("codex", env) : unused,
     agents.has("grok") ? grokLoginStatus({ env, timeoutMs: LOGIN_TIMEOUT_MS }) : null,
     linearFact(runtime, store),
-    githubDoctorFact(runtime, repo),
+    githubDoctorFact(runtime, repo, env),
   ]);
   return {
     configError: runtime.configError,
@@ -132,6 +136,7 @@ export async function realProbeFacts(env: EnvSource, store: Db): Promise<ProbeFa
     grokLogin,
     githubDoctor,
     webhooks: runtime.webhooks,
+    githubWebhookSecret: gitHubWebhookSecret(runtime.env.home, env) !== null,
     linearWebhook: await readPawsDb(store, (db) =>
       db.run((q) => linearWebhookWarningSteps(q, Date.now())),
     ),
@@ -372,31 +377,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 async function githubDoctorFact(
   runtime: RuntimeConfig,
   repo: { owner: string; repo: string } | null,
+  source: EnvSource,
 ): Promise<GitHubDoctorFacts> {
   const env = runtime.env;
+  const saved = loadGitHubAppCredentials(env.home, source);
   const name = repo === null ? null : `${repo.owner}/${repo.repo}`;
   const facts: GitHubDoctorFacts = {
     appId: env.githubAppId,
     installationId: env.githubAppInstallationId,
     privateKeyPath: env.githubAppPrivateKeyPath,
+    privateKeyReadable: Boolean(saved?.privateKeyPem),
     installation: { ok: false, detail: "GitHub App credentials are missing" },
     push: { ok: false, detail: "GitHub App installation was not checked" },
     rate: { ok: false, detail: "rate limit was not read" },
     events: { ok: false, detail: "GitHub App events were not read" },
   };
   const appId = env.githubAppId;
-  if (appId === null || env.githubAppPrivateKeyPath === null) return facts;
+  if (appId === null || saved === null) return facts;
   if (repo === null || name === null) {
     facts.installation = { ok: false, detail: "no repository is chosen" };
     return facts;
   }
-  let privateKeyPem: string | null = null;
-  try {
-    privateKeyPem = readSecretFile(env.githubAppPrivateKeyPath, false);
-  } catch (caughtError2) {
-    journalCaught(caughtError2, "probe.githubDoctorFact.readSecretFile", null);
-    privateKeyPem = null;
-  }
+  const privateKeyPem = saved.privateKeyPem;
   if (!privateKeyPem) {
     facts.installation = { ok: false, detail: "GitHub App private key could not be read" };
     return facts;
