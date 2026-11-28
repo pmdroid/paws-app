@@ -20,6 +20,7 @@ import {
 } from "../src/workspace";
 import { currentRunnerHost, seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
+import { seedSettings } from "./saved-settings";
 
 const NOW = 1_800_000_000_000;
 const stores: (() => Promise<void>)[] = [];
@@ -57,6 +58,7 @@ async function workspace() {
       teamIds: ["team"],
       now: NOW,
     });
+  await seedSettings(db, "[issue_vm]\nper_member = 0\n");
   const read = createOnboardingReadiness(db);
   return {
     db,
@@ -183,6 +185,37 @@ test("a member whose only runner is another member's issue VM runner still needs
   });
 });
 
+test("a member with no runner is ready with an issue VM allowance from the limit or a grant", async () => {
+  const w = await workspace();
+  const issueVm: OnboardingReadiness = {
+    runner: { state: "issue-vm" },
+    agents: WAITING,
+    memberVm: false,
+  };
+  await seedSettings(w.db, "[issue_vm]\nper_member = 2\n");
+  expect(await w.read()).toEqual(issueVm);
+  await seedSettings(w.db, "[issue_vm]\nper_member = 0\n");
+  expect(await w.read()).toEqual(NEEDED);
+  await seed(w.db, (q) =>
+    q.orm.insert(q.t.issueVmGrant).values({
+      id: "grant",
+      workspaceId: "ws",
+      memberUserId: "me",
+      limit: 1,
+      endsAt: NOW + 60_000,
+      grantedBy: "owner",
+      createdAt: NOW,
+    }),
+  );
+  expect(await w.read()).toEqual(issueVm);
+  await runner(w.db, "mine");
+  expect(await w.read()).toEqual({
+    runner: { state: "ready", id: "mine", name: "mine-host" },
+    agents: WAITING,
+    memberVm: false,
+  });
+});
+
 test("the agent step counts only the member's own connected account on their runner", async () => {
   const w = await workspace();
   await runner(w.db, "mine", {
@@ -293,7 +326,6 @@ const base: OnboardingPageInput = {
   memberOfTeam: true,
   readiness: { runner: { state: "needed" }, agents: WAITING, memberVm: false },
   github: null,
-  createVm: true,
   csrfToken: "csrf",
 };
 
@@ -324,21 +356,21 @@ test("the page lists Linear, membership, runner, coding agents, then the optiona
   ]);
 });
 
-test("with no usable runner the step offers Create VM and Add a host on the page", async () => {
+test("with no usable runner and no allowance the step asks an admin and has no Create VM", async () => {
   const [needed] = onboardingSteps(base).slice(2);
   expect(needed).toMatchObject({
     state: "needed",
-    actions: [
-      { button: "create-vm", label: "Create VM" },
-      { button: "add-host", label: "Add a host" },
-    ],
+    detail: "Ask a workspace admin for a runner or an issue VM allowance.",
+    actions: [{ button: "add-host", label: "Add a host" }],
   });
-  const [hostOnly] = onboardingSteps({ ...base, createVm: false }).slice(2);
-  expect(hostOnly?.actions).toEqual([{ button: "add-host", label: "Add a host" }]);
+  const [issueVm] = onboardingSteps({
+    ...base,
+    readiness: { ...base.readiness, runner: { state: "issue-vm" } },
+  }).slice(2);
+  expect(issueVm).toMatchObject({ state: "done", label: "Ready" });
   const html = await onboardingPage(base).text();
-  expect(html).toContain(
-    '<button type="button" class="action" data-action="create-vm">Create VM</button>',
-  );
+  expect(html).not.toContain("Create VM");
+  expect(html).not.toContain("create-vm");
   expect(html).toContain('<section class="host" id="host" hidden');
   const outside = onboardingSteps({ ...base, memberOfTeam: false });
   expect(outside[1]?.detail).toBe(

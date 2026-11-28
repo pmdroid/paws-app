@@ -47,8 +47,6 @@ export type WorkspaceAccessOptions = {
   assignments?: WorkspaceAssignments;
   /** Runner and coding-agent state for the onboarding page. */
   onboardingReadiness?: OnboardingReadinessReader;
-  /** Whether Paws can create a VM for a member, so onboarding offers Create VM. */
-  createVmAvailable?: () => Promise<boolean>;
   publicUrl: string;
   clientId: string;
   installedOrganization: { id: string; name: string };
@@ -195,15 +193,6 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     await refresh(current.principal.workspaceId, current.principal.userId);
     return requestWorkspaceSession(store, request, now());
   }
-  /** A failing check offers only Add a host. */
-  async function createVmAvailable(): Promise<boolean> {
-    try {
-      return (await options.createVmAvailable?.()) === true;
-    } catch (caughtError2) {
-      journalCaught(caughtError2, "access.createVmAvailable", null);
-      return false;
-    }
-  }
   async function handle(request: Request, client: WorkspaceClient = {}): Promise<Response | null> {
     const url = new URL(request.url);
     const ip = client.ip || "unknown";
@@ -282,7 +271,6 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
             memberVm: false,
           },
           github: credit,
-          createVm: await createVmAvailable(),
           // Without App client metadata there is nothing to start.
           githubLink:
             credit === null && attribution.configured

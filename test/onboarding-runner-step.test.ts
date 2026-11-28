@@ -41,6 +41,7 @@ import {
 } from "../src/workspace";
 import { currentRunnerHost, seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
+import { seedSettings } from "./saved-settings";
 import { requestTracker } from "./wait-for";
 import { hostEnrollmentCommand } from "../src/dashboard/src/client/host-command";
 
@@ -203,6 +204,7 @@ async function fixture({
     available: () => available,
     now: () => clock.now(),
   });
+  await seedSettings(db, "[issue_vm]\nper_member = 0\n");
   const read = createOnboardingReadiness(db);
   const page = async () =>
     onboardingPage({
@@ -218,7 +220,6 @@ async function fixture({
         now: clock.now(),
       }),
       github: null,
-      createVm: available,
       csrfToken: CSRF,
     });
   const requests: string[] = [];
@@ -292,7 +293,6 @@ const base: OnboardingPageInput = {
   memberOfTeam: true,
   readiness: { runner: { state: "needed" }, agents: WAITING, memberVm: false },
   github: null,
-  createVm: true,
   csrfToken: CSRF,
 };
 const render = async (input: Partial<OnboardingPageInput>, readiness?: OnboardingReadiness) => {
@@ -316,17 +316,8 @@ test("the member's own runner and none render the runner step", async () => {
   expect(own.buttons()).toEqual([]);
 
   const none = await render({});
-  expect(none.detail()).toBe(
-    "You need a runner of your own. Create a VM, or add a host with an enrollment token. This step completes when the runner is ready.",
-  );
-  expect(none.buttons()).toEqual(["create-vm", "add-host"]);
-
-  const hostOnly = await render({ createVm: false });
-  expect(hostOnly.detail()).toBe(
-    "You need a runner of your own. Add a host with an enrollment token. This step completes when it pairs.",
-  );
-  // Create VM is shown only when exe.dev is available.
-  expect(hostOnly.buttons()).toEqual(["add-host"]);
+  expect(none.detail()).toBe("Ask a workspace admin for a runner or an issue VM allowance.");
+  expect(none.buttons()).toEqual(["add-host"]);
 
   const mineOffline = await render(
     {},
@@ -339,7 +330,6 @@ test("the member's own runner and none render the runner step", async () => {
   expect(mineOffline.detail()).toBe(
     "mia-box is offline. Start it so Paws can use it, or set up a runner of your own.",
   );
-  // A member who already has a VM is not offered a second one.
   expect(mineOffline.buttons()).toEqual(["add-host"]);
 });
 
@@ -361,14 +351,12 @@ test("a missing account links to Agent accounts", async () => {
   expect(link?.textContent).toBe("Open Agent accounts");
 });
 
-test("Create VM creates the member's VM, its steps update without a reload, and readiness lets the held item start", async () => {
+test("a member VM's steps update without a reload, and readiness lets the held item start", async () => {
   const f = await fixture();
   const ready = await f.heldItem();
   expect(await ready()).toBe(false);
+  await f.fetch("/api/runners/vm", { method: "POST", headers: { "x-paws-csrf": CSRF } });
   const page = await f.open();
-  expect(page.buttons()).toEqual(["create-vm", "add-host"]);
-  await page.click("create-vm");
-  expect(f.requests).toContain("POST /api/runners/vm");
   expect((await findMemberVm(f.db, f.member))?.step).toBe("create");
   // The same document now shows the VM's steps; the page polls faster while it sets up.
   expect(page.runner()?.getAttribute("data-runner")).toBe("setting-up");

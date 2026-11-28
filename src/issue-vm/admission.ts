@@ -40,6 +40,15 @@ export function* issueVmAdmissionSteps(
   return (yield* issueVmSpendCheckSteps(q, input)) as IssueVmAdmission;
 }
 
+export function* issueVmAllowanceSteps(
+  q: Q,
+  input: { workspaceId: string; memberUserId: string; at: number },
+) {
+  const sections = yield* readSettingSectionsSteps(q, ["issue_vm"]);
+  const granted = yield* activeIssueVmGrantLimitSteps(q, input);
+  return granted ?? issueVmSettings(configFromSections(sections).issueVm).perMember;
+}
+
 export function* issueVmWakeAdmissionSteps(
   q: Q,
   input: { workspaceId: string; provider: IssueVmProvider; at: number },

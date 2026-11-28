@@ -52,6 +52,7 @@ import {
 } from "../src/workspace";
 import { createOnboardingReadiness } from "../src/onboarding-readiness";
 import { copyMigratedPglite } from "./pglite";
+import { seedSettings } from "./saved-settings";
 
 function rows<R>(db: Db, query: (q: Q) => PromiseLike<R[]>): Promise<R[]> {
   return db.run((q) => q.all(query(q)));
@@ -117,12 +118,10 @@ type AgentFixture = {
 async function fixture({
   installed = true,
   projectLeadId,
-  createVm,
   agent,
 }: {
   installed?: boolean;
   projectLeadId?: string;
-  createVm?: boolean;
   agent?: AgentFixture;
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "paws-assignment-"));
@@ -130,6 +129,7 @@ async function fixture({
   await copyMigratedPglite(pgliteDir);
   let database = await openPawsStore({ url: null, pgliteDir });
   let db = database.store;
+  await seedSettings(db, "[issue_vm]\nper_member = 0\n");
   const clock = new FakeClock(Date.now());
   const origin = "https://paws.example.invalid";
   const ownerId = await putWorkspaceUser(db, {
@@ -355,7 +355,6 @@ async function fixture({
       installedOrganization: { id: "org", name: "Workspace" },
       memberships,
       onboardingReadiness: createOnboardingReadiness(db),
-      ...(createVm === undefined ? {} : { createVmAvailable: async () => createVm }),
       githubAttributionClient: { clientId: "github-client", clientSecret: "github-secret" },
       now: () => clock.now(),
       log: (line) => logs.push(line),
@@ -1323,11 +1322,11 @@ test("the runner step counts only the member's own runner, not a lead's or colle
       ).text();
     const needed = await open();
     expect(needed).toMatch(
-      /<h2>Runner<\/h2><p class="detail">You need a runner of your own\. Add a host with an enrollment token\. This step completes when it pairs\.<\/p><div class="actions"><button type="button" class="action" data-action="add-host">Add a host<\/button><\/div><\/div><span class="label">Needed<\/span>/,
+      /<h2>Runner<\/h2><p class="detail">Ask a workspace admin for a runner or an issue VM allowance\.<\/p><div class="actions"><button type="button" class="action" data-action="add-host">Add a host<\/button><\/div><\/div><span class="label">Needed<\/span>/,
     );
     expect(needed).not.toContain("colleague-box");
     await addRunner("lead-box", "lead", "issue_vm");
-    expect(await open()).toContain("You need a runner of your own.");
+    expect(await open()).toContain("Ask a workspace admin for a runner or an issue VM allowance.");
     const outbox = (await listOutbox(f.db)).length;
     const [me] = await f.db.run((q) =>
       q.all(
@@ -1347,8 +1346,8 @@ test("the runner step counts only the member's own runner, not a lead's or colle
   }
 });
 
-test("the runner step offers Create VM when Paws can create one", async () => {
-  const f = await fixture({ createVm: true });
+test("the runner step never offers Create VM", async () => {
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     const link = await f.link();
@@ -1359,17 +1358,15 @@ test("the runner step offers Create VM when Paws can create one", async () => {
         headers: { cookie: sessionCookie(done) },
       })
     ).text();
-    expect(html).toContain(
-      '<button type="button" class="action" data-action="create-vm">Create VM</button>',
-    );
-    expect(html).toContain('<button type="button" class="action" data-action="add-host">');
+    expect(html).not.toContain("Create VM");
+    expect(html).not.toContain('data-action="create-vm"');
   } finally {
     await f.close();
   }
 });
 
 test("the onboarding page reads no Linear data and is gone once the member loses access", async () => {
-  const f = await fixture({ createVm: true });
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     const link = await f.link();
@@ -1388,7 +1385,7 @@ test("the onboarding page reads no Linear data and is gone once the member loses
       return page.text();
     };
     const member = await open();
-    expect(member).toContain('data-action="create-vm"');
+    expect(member).toContain("<h2>Runner</h2>");
     expect(member).toMatch(/<meta name="paws-csrf" content="[^"]+">/);
     await open();
     await deactivate(f.db, (q) =>

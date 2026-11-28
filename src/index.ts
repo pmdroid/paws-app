@@ -1146,7 +1146,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         },
         assignments,
         onboardingReadiness: createOnboardingReadiness(store),
-        createVmAvailable,
         secretsDir: paths.secretsDir,
         githubAttributionClient: (() => {
           try {

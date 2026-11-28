@@ -1,4 +1,8 @@
-export { issueVmAdmissionSteps, issueVmWakeAdmissionSteps } from "./admission";
+export {
+  issueVmAdmissionSteps,
+  issueVmAllowanceSteps,
+  issueVmWakeAdmissionSteps,
+} from "./admission";
 export type { IssueVmAdmission } from "./admission";
 export {
   markIssueVmAsleepSteps,

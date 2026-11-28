@@ -15,7 +15,9 @@ export type OnboardingRunner =
   | { state: "offline" | "paused"; id: string; name: string }
   | { state: "setting-up"; name: string; steps: OnboardingVmStep[] }
   | { state: "failed"; name: string; failure: string; steps: OnboardingVmStep[] }
-  /** The member has no runner of their own. */
+  /** No usable runner of their own, but an issue VM allowance above 0. */
+  | { state: "issue-vm" }
+  /** Neither a usable runner of their own nor an issue VM allowance. */
   | { state: "needed" };
 
 export type OnboardingAgent = "connected" | "expired" | "waiting";
@@ -24,7 +26,7 @@ export type OnboardingAgent = "connected" | "expired" | "waiting";
 export type OnboardingReadiness = {
   runner: OnboardingRunner;
   agents: { claude: OnboardingAgent; codex: OnboardingAgent };
-  /** The member already has an exe.dev VM, so the page does not offer Create VM again. */
+  /** The member already has an exe.dev VM. */
   memberVm: boolean;
 };
 
@@ -46,9 +48,7 @@ export type OnboardingPageInput = {
   memberOfTeam: boolean;
   readiness: OnboardingReadiness;
   github: { login: string } | null;
-  /** Paws can create a VM for the member, so the runner step offers Create VM. */
-  createVm: boolean;
-  /** The CSRF token of the viewer's Paws session, for the Create VM and Add a host requests. */
+  /** The CSRF token of the viewer's Paws session, for the Retry and Add a host requests. */
   csrfToken: string;
   /**
    * The form that starts the consented GitHub credit link, or null when it cannot be offered
@@ -61,9 +61,7 @@ export type OnboardingPageInput = {
 type StepState = "done" | "needed" | "running" | "failed" | "later" | "optional";
 
 /** A link, or a button the page script handles with an existing dashboard route. */
-type Action =
-  | { href: string; label: string }
-  | { button: "create-vm" | "retry-vm" | "add-host"; label: string };
+type Action = { href: string; label: string } | { button: "retry-vm" | "add-host"; label: string };
 
 type Step = {
   title: string;
@@ -76,7 +74,7 @@ type Step = {
   form?: string;
 };
 
-/** The dashboard page that also has Create VM and Add a host. */
+/** The dashboard page that also has Add a host. */
 const RUNNERS_PAGE = dashboardPath("/runners");
 /** How often the page re-reads itself while a VM is being set up, and otherwise. */
 const VM_POLL_MS = 3_000;
@@ -144,7 +142,7 @@ const MERGE_CONFIG =
   'import json,sys; p="/etc/paws-runner/config.json"; c=json.load(open(p)); c.update(json.loads(sys.argv[1])); open(p,"w").write(json.dumps(c,indent=2)+"\\n")';
 
 /**
- * Runs on the page. Create VM and Retry post to the existing member VM routes, and Add a host to
+ * Runs on the page. Retry posts to the existing member VM route, and Add a host to
  * the existing enrollment route, with the session's CSRF token. The page then re-reads itself,
  * which reads SQLite only, and swaps in the new steps, so VM progress shows without a reload and
  * a shown enrollment command stays on screen. The token is only ever in this page's memory: a
@@ -273,7 +271,7 @@ const SCRIPT = String.raw`(() => {
     button.disabled = true;
     say("");
     try {
-      const value = await post(action === "retry-vm" ? "/api/runners/vm/retry" : "/api/runners/vm", {});
+      const value = await post("/api/runners/vm/retry", {});
       if (value.available === false) say("Paws cannot create a VM right now. Add a host instead.");
     } catch (error) {
       journalCaught(error, "submit");
@@ -353,21 +351,7 @@ function escape(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
-/** Create VM, when Paws can make one and the member has none, and Add a host. */
-function setupActions(input: OnboardingPageInput): Action[] {
-  const actions: Action[] = [];
-  if (input.createVm && !input.readiness.memberVm)
-    actions.push({ button: "create-vm", label: "Create VM" });
-  actions.push({ button: "add-host", label: "Add a host" });
-  return actions;
-}
-
-/** What the member can do when no runner is eligible. */
-function setupHint(input: OnboardingPageInput): string {
-  return input.createVm && !input.readiness.memberVm
-    ? "Create a VM, or add a host with an enrollment token. This step completes when the runner is ready."
-    : "Add a host with an enrollment token. This step completes when it pairs.";
-}
+const ADD_HOST: Action = { button: "add-host", label: "Add a host" };
 
 function runnerStep(input: OnboardingPageInput): Step {
   const { runner } = input.readiness;
@@ -396,7 +380,7 @@ function runnerStep(input: OnboardingPageInput): Step {
         state: "needed",
         label: "Offline",
         detail: `${runner.name} is offline. Start it so Paws can use it, or set up a runner of your own.`,
-        actions: [...setupActions(input), { href: RUNNERS_PAGE, label: "Open Runners" }],
+        actions: [ADD_HOST, { href: RUNNERS_PAGE, label: "Open Runners" }],
       };
     }
     case "setting-up":
@@ -416,13 +400,20 @@ function runnerStep(input: OnboardingPageInput): Step {
         vmSteps: runner.steps,
         actions: [{ button: "retry-vm", label: "Retry" }],
       };
+    case "issue-vm":
+      return {
+        title,
+        state: "done",
+        label: "Ready",
+        detail: "Paws runs this task in an issue VM from your allowance.",
+      };
     case "needed":
       return {
         title,
         state: "needed",
         label: "Needed",
-        detail: `You need a runner of your own. ${setupHint(input)}`,
-        actions: setupActions(input),
+        detail: "Ask a workspace admin for a runner or an issue VM allowance.",
+        actions: [ADD_HOST],
       };
   }
 }

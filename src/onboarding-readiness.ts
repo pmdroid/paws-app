@@ -4,6 +4,7 @@ import {
   runnerNameAndOwnerSteps,
   type Db,
 } from "./db";
+import { issueVmAllowanceSteps } from "./issue-vm";
 import { memberVmView } from "./member-vm";
 import { eligibleRunnersSteps } from "./runner-placement";
 import type { OnboardingAgent, OnboardingReadinessReader } from "./workspace";
@@ -46,6 +47,10 @@ export function createOnboardingReadiness(store: Db): OnboardingReadinessReader 
       };
     }
     const waiting = { claude: "waiting", codex: "waiting" } as const;
+    const allowance = await store.run((q) =>
+      issueVmAllowanceSteps(q, { workspaceId, memberUserId: userId, at: now }),
+    );
+    if (allowance > 0) return { runner: { state: "issue-vm" }, agents: waiting, memberVm };
     if (vm && (vm.failure !== null || vm.step !== "ready")) {
       const steps = memberVmView(vm, now).steps.map(({ step, state }) => ({ step, state }));
       return {
