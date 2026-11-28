@@ -143,7 +143,21 @@ export function secretFiles(dir: string): SecretRow[] {
 }
 
 function retireSecretFiles(dir: string, rows: ReadonlyMap<string, string>): void {
-  const folder = join(dir, `.retired-${new Date().toISOString().replace(/[-:]|\.\d+/g, "")}`);
+  const stamp = `.retired-${new Date().toISOString().replace(/[-:]|\.\d+/g, "")}`;
+  let folder: string | null = null;
+  const retiredFolder = (): string => {
+    for (let n = 0; folder === null; n += 1) {
+      const path = join(dir, n === 0 ? stamp : `${stamp}-${n}`);
+      try {
+        mkdirSync(path, { mode: 0o700 });
+        chmodSync(path, 0o700);
+        folder = path;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+    }
+    return folder;
+  };
   let moved = 0;
   for (const { name, path } of ownedSecretFiles(dir)) {
     if (!isTableSecretFile(path)) continue;
@@ -159,9 +173,8 @@ function retireSecretFiles(dir: string, rows: ReadonlyMap<string, string>): void
         journal(`secret file kept, it differs from the secret table: ${name}`);
         continue;
       }
-      const target = join(folder, name);
+      const target = join(retiredFolder(), name);
       mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-      chmodSync(folder, 0o700);
       chmodSync(dirname(target), 0o700);
       renameSync(path, target);
       moved += 1;
@@ -169,7 +182,7 @@ function retireSecretFiles(dir: string, rows: ReadonlyMap<string, string>): void
       journalCaught(error, "credentials.retireSecretFiles", null, `secret file kept: ${name}`);
     }
   }
-  if (moved > 0)
+  if (moved > 0 && folder !== null)
     journal(
       `Moved ${moved} secret ${moved === 1 ? "file" : "files"} held in the database to ${relative(dir, folder)}.`,
     );

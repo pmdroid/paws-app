@@ -220,7 +220,7 @@ if (mode === "remote") {
       }),
     /configuration is missing or invalid/,
   );
-  rmSync(config);
+  rmSync(config, { force: true });
   rmSync(join(root, "pglite"), { recursive: true, force: true });
 }
 if (mode === "missing") {

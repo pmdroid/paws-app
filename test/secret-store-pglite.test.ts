@@ -275,6 +275,13 @@ describePglite((connect) => {
     await db.run((q) => writeSecretSteps(q, "github-webhook", newer, null));
     await db.run((q) => writeSecretSteps(q, "tailscale-authkey", "sealed", null));
     await db.run((q) => writeSecretSteps(q, "tailscale-authkey", null, 1));
+    const earlier = [0, 1000].map(
+      (ms) => `.retired-${new Date(Date.now() + ms).toISOString().replace(/[-:]|\.\d+/g, "")}`,
+    );
+    for (const name of earlier) {
+      mkdirSync(join(dir, name), { mode: 0o700 });
+      writeFileSync(join(dir, name, "linear-webhook"), "earlier", { mode: 0o600 });
+    }
     const lines: string[] = [];
     cleanup.push(setJournalSink((line) => lines.push(line)));
 
@@ -287,10 +294,14 @@ describePglite((connect) => {
       expect(existsSync(join(dir, name))).toBe(true);
     expect(existsSync(join(dir, "linear-oauth.json.pre-postgres-1"))).toBe(true);
     expect(existsSync(join(dir, "linear-webhook"))).toBe(false);
-    const [retired] = readdirSync(dir).filter((name) => name.startsWith(".retired-"));
+    const [retired] = readdirSync(dir).filter(
+      (name) => name.startsWith(".retired-") && !earlier.includes(name),
+    );
     expect(readdirSync(join(dir, retired!))).toEqual(["linear-webhook"]);
+    for (const name of earlier)
+      expect(readFileSync(join(dir, name, "linear-webhook"), "utf8")).toBe("earlier");
     expect(readSecretFile(join(dir, "linear-webhook"))).toBe("marker-same");
-    expect(secretFilesOnDisk(dir)).toEqual({ kept: 2, retired: [retired!] });
+    expect(secretFilesOnDisk(dir)).toEqual({ kept: 2, retired: [...earlier, retired!].sort() });
   });
 
   test("a nested folder's own envelope key still opens its imported rows", async () => {
