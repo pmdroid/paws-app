@@ -1,3 +1,4 @@
+import { initializeCredentialRotation } from "./credential-rotation";
 import { journalCaught } from "../journal";
 import { setSettingsAdmin, type SettingsPage } from "./settings-pages";
 import { renderMarkup } from "./theme";
@@ -208,6 +209,7 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
   if (session.role === "admin") {
     initializeWorkspaceGitHub(root, session.csrfToken, true);
     initializeWorkspaceSlack(root, session.csrfToken);
+    initializeCredentialRotation(root, session.csrfToken);
     initializeWorkspaceAudit(root);
   }
   showWorkspaceSettingsPage(page());

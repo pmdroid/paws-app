@@ -200,6 +200,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "worktree-checkout",
     "runner-transcript-config",
     "telemetry",
+    "linear",
   ],
   skills: ["journal", "core", "db", "runner-protocol"],
   runtimes: ["journal"],

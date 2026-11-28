@@ -31,6 +31,7 @@ export {
   handleLinearCommentSettingsRequest,
 } from "./linear-comments";
 export type { LinearCommentSettingsOptions } from "./linear-comments";
+export { LINEAR_CLIENT_SETTINGS_PATH, handleLinearClientSettingsRequest } from "./linear-client";
 export { GITHUB_ACCESS_SETTINGS_PATH, handleGitHubAccessSettingsRequest } from "./github-access";
 export type { GitHubAccessSettingsOptions } from "./github-access";
 export { CLOSEOUT_SETTINGS_PATH, handleCloseoutSettingsRequest } from "./closeout";

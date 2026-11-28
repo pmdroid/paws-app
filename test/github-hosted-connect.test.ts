@@ -218,6 +218,8 @@ async function fixture() {
           { message: "A JSON web token could not be decoded" },
           { status: appStatus },
         );
+      if (url.pathname === "/app/hook/config")
+        return Response.json({ content_type: "json" }, { status: appStatus });
       if (url.pathname === "/app")
         return Response.json({
           id: 99,
@@ -1302,6 +1304,63 @@ test("environment App ID skips browser App setup", async () => {
     expect(JSON.stringify(body)).not.toContain("scripted-client-secret");
     expect(loadGitHubAppCredentials(f.home, f.env)!.clientSecret).toBe("scripted-client-secret");
   } finally {
+    await f.close();
+  }
+});
+
+test("an admin rotates a Settings webhook secret only after GitHub accepts it", async () => {
+  const f = await fixture();
+  const dir = join(f.home, "secrets");
+  mkdirSync(dir);
+  writeFileSync(join(dir, ".envelope-key"), randomBytes(32), { mode: 0o600 });
+  const secrets = await useDatabaseSecrets(f.db, dir);
+  try {
+    for (const name of Object.keys(f.env)) delete (f.env as Record<string, string>)[name];
+    const handler = f.handler();
+    const url = "https://paws.example/api/workspaces/github-app";
+    const send = (role: string, method: string, body: unknown) =>
+      handler(
+        f.request(role, url, {
+          method,
+          headers: {
+            origin: "https://paws.example",
+            "content-type": "application/json",
+            "x-paws-csrf": f.sessions[role]!.session.csrfToken,
+          },
+          body: JSON.stringify(body),
+        }),
+      );
+    const webhook = () => loadGitHubAppCredentials(f.home, f.env)!.webhookSecret;
+    const setup = {
+      appId: "99",
+      clientId: "Iv1.fake",
+      clientSecret: "oauth-secret",
+      privateKeyPem: key,
+      webhookSecret: "old-webhook-marker",
+    };
+    expect((await send("admin", "POST", setup))!.status).toBe(200);
+    expect((await send("member", "PATCH", { webhookSecret: "member-marker" }))!.status).toBe(403);
+    f.setAppStatus(422);
+    const refused = await send("admin", "PATCH", { webhookSecret: "refused-marker" });
+    expect(refused!.status).toBe(400);
+    expect(JSON.stringify(await refused!.json())).not.toContain("marker");
+    expect(webhook()).toBe("old-webhook-marker");
+    f.setAppStatus(200);
+    expect((await send("admin", "PATCH", { webhookSecret: "new-webhook-marker" }))!.status).toBe(
+      200,
+    );
+    expect(f.calls.at(-1)).toEqual({
+      path: "/app/hook/config",
+      body: JSON.stringify({ secret: "new-webhook-marker" }),
+    });
+    expect(webhook()).toBe("new-webhook-marker");
+    expect(loadGitHubAppCredentials(f.home, f.env)!.clientSecret).toBe("oauth-secret");
+    (f.env as Record<string, string>).GITHUB_WEBHOOK_SECRET = "env-webhook-marker";
+    const pinned = await send("admin", "PATCH", { webhookSecret: "pinned-marker" });
+    expect(pinned!.status).toBe(409);
+    expect(f.calls.filter((call) => call.path === "/app/hook/config")).toHaveLength(2);
+  } finally {
+    await secrets.close();
     await f.close();
   }
 });

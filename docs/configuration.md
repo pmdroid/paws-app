@@ -32,6 +32,8 @@ The Closeout policy of each repository, `.agents/closeout.yaml` on `origin/main`
 | `GITHUB_APP_PRIVATE_KEY_PATH`                 | Path to the App private key, mode `0600`.                                                                                                                                        | The key saved in Settings              |
 | `GITHUB_WEBHOOK_SECRET`                       | The GitHub webhook secret.                                                                                                                                                       | The secret saved in Settings           |
 
+A workspace admin rotates a Linear client value or the GitHub webhook secret saved in Settings with **Rotate** on Settings › Linear or Settings › Integrations. Paws saves only after the provider accepts the new values: Linear checks the client ID and secret, and GitHub takes the new webhook secret for the App. A refused check keeps the old values. New Linear values take effect when Paws restarts. A value set by one of these variables can't be rotated there.
+
 [Workspace access](workspace-access.md), [runner enrollment](runner-enrollment.md) and [Slack](slack.md) describe the variables for a public dashboard, the runner listener and Slack.
 
 ### `paws install secrets`
