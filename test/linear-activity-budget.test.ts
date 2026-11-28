@@ -8,9 +8,7 @@ async function observeCase(kind: "history" | "backoff") {
   const root = mkdtempSync(join(tmpdir(), "paws-activity-budget-"));
   const observations: boolean[] = [];
   try {
-    await probeLinearActivityBudget(root, (_name, passed) => observations.push(passed), 300, [
-      kind,
-    ]);
+    await probeLinearActivityBudget(root, (_name, passed) => observations.push(passed), 64, [kind]);
     return observations;
   } finally {
     rmSync(root, { recursive: true, force: true });
