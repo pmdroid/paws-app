@@ -22,6 +22,8 @@ Asynchronous lifecycle tests wait for a completion signal (a promise the code re
 
 `bun run verify:proof [--changed <base>] [name…]` runs the end-to-end proof scenarios in `test/proofs/` (all, the named ones, or those whose `covers` globs match files changed since `<base>`). Each runs in a fresh throwaway home with fake Linear, fake GitHub and the scripted ACP agent, and writes `proof-<name>.md` and `proof-<name>.json` to `PAWS_EVIDENCE_DIR` (default `./proof-evidence`). A scenario exports `covers`, `summary`, the agent's steps and `run(proof)`, which scripts the person's actions and asserts on the fakes; `test/proofs/harness.ts` is the shared setup.
 
+`bun run verify:capacity [--steps 10,50,100] [--viewers 1000] [--out <dir>] [--inject-duplicate]` is the mixed-workload capacity test; CI does not run it. It seeds 1,000 signed-in viewers across 50 teams, 1,000 historical sessions and 10,000 completed jobs, then starts two Paws worker processes with scripted agents and the fake Linear tracker. Each viewer polls the dashboard every 5 s. Each step delegates its active runs, restarts one worker and revokes one viewer, then writes `capacity.json` and `capacity.md` to `--out` (default `PAWS_EVIDENCE_DIR`, else `./capacity-report`) and exits 1 if a step fails: dashboard p95 of 1 s or more, any timeout or error, a runnable job older than 30 s, or a duplicate claim. The default is the 10-run step. It uses a PGlite socket server unless `PAWS_TEST_DATABASE_URL` names a PostgreSQL server, which is the setting that gives meaningful numbers. `--inject-duplicate` sends a second start for a running item and must fail.
+
 ## Layout
 
 | Path                                                     | Owns                                                                  |
@@ -36,7 +38,7 @@ Asynchronous lifecycle tests wait for a completion signal (a promise the code re
 | `src/auth`                                               | GitHub App credentials and hosted workspace authentication            |
 | `src/closeout`                                           | Verification gate, fix loop, reports and independent review           |
 | `src/closeout-spec`                                      | Closeout policy schema, sessions, retries and evidence approval       |
-| `src/config`                                             | Home paths, environment, config.toml, agent and merge settings        |
+| `src/config`                                             | Home paths, environment, saved settings, agent and merge settings     |
 | `src/core`                                               | Domain types, states, pure transition() and execution policies        |
 | `src/credentials`                                        | Secret file access and credential refresh                             |
 | `src/dashboard`                                          | Dashboard client, server contract and build                           |
@@ -51,9 +53,9 @@ Asynchronous lifecycle tests wait for a completion signal (a promise the code re
 | `src/github`                                             | GitHub App API, repository access, pull requests and Git operations   |
 | `src/host`                                               | Sleep, wake and process supervision                                   |
 | `src/host-operation`                                     | Tracking which host operation runs, for the event-loop lag watchdog   |
-| `src/improvements`                                       | Improvement inbox sources: daily findings and legacy actions          |
+| `src/improvements`                                       | Improvement inbox: daily findings, retros, review and delivery        |
 | `src/install`                                            | Agent adapter installation, login and usage probes                    |
-| `src/installer`                                          | `paws install secrets`: prompts, env file and the secrets step        |
+| `src/installer`                                          | `paws install secrets`: env file reading and the secrets step         |
 | `src/intake`                                             | Delegation intake, dependencies, ordering and repository readiness    |
 | `src/issue-vm`                                           | Issue VMs: records, budget and admission                              |
 | `src/journal`                                            | Durable journal lines for process and workflow events                 |

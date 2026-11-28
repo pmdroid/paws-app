@@ -1,5 +1,5 @@
 {
-  "id": "af744cd6-cb3c-4f8d-8a52-2f1b9a6213e2",
+  "id": "79daf85d-43d2-4f14-8ca3-59286a943174",
   "prevId": "17883762-cae6-482c-9a44-105cf2982a40",
   "version": "7",
   "dialect": "postgresql",
@@ -15158,87 +15158,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.runner_test_permit": {
-      "name": "runner_test_permit",
-      "schema": "",
-      "columns": {
-        "run_id": {
-          "name": "run_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "runner_id": {
-          "name": "runner_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "requested_at": {
-          "name": "requested_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "granted_at": {
-          "name": "granted_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "runner_test_permit_queue": {
-          "name": "runner_test_permit_queue",
-          "columns": [
-            {
-              "expression": "runner_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "requested_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "runner_test_permit_holder": {
-          "name": "runner_test_permit_holder",
-          "columns": [
-            {
-              "expression": "runner_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "granted_at IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.runner_transcript": {
       "name": "runner_transcript",
       "schema": "",
@@ -22116,6 +22035,47 @@
         }
       },
       "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.trace_export": {
+      "name": "trace_export",
+      "schema": "",
+      "columns": {
+        "item_id": {
+          "name": "item_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "exported_at": {
+          "name": "exported_at",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "trace_export_item_id_work_item_id_fk": {
+          "name": "trace_export_item_id_work_item_id_fk",
+          "tableFrom": "trace_export",
+          "tableTo": "work_item",
+          "columnsFrom": ["item_id"],
+          "columnsTo": ["id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},

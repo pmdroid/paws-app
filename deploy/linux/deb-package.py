@@ -124,7 +124,7 @@ def build(arguments):
         # For preinst under dpkg-reconfigure, which runs the installed deb-control.py.
         write(payload / "admission.json", admission)
         size = sum(path.stat().st_size for path in payload.iterdir())
-        write(package / "DEBIAN/control", f"Package: paws-runner\nVersion: {manifest['version']}\nArchitecture: {architecture}\nMaintainer: pmdroid <pmdroid@users.noreply.github.com>\nSection: devel\nPriority: optional\nDepends: git, openssl (>= 3), python3, util-linux, coreutils (>= 8.28), systemd\nInstalled-Size: {(size + 1023) // 1024}\nHomepage: https://github.com/pmdroid/paws-app\nDescription: Paws remote Linux runner\n Runs paired coding agents and isolated verification for Paws.\n")
+        write(package / "DEBIAN/control", f"Package: paws-runner\nVersion: {manifest['version']}\nArchitecture: {architecture}\nMaintainer: pmdroid <pmdroid@users.noreply.github.com>\nSection: devel\nPriority: optional\nDepends: git, openssl (>= 3), python3, util-linux, coreutils (>= 8.28), systemd\nRecommends: prometheus-node-exporter\nInstalled-Size: {(size + 1023) // 1024}\nHomepage: https://github.com/pmdroid/paws-app\nDescription: Paws remote Linux runner\n Runs paired coding agents and isolated verification for Paws.\n")
         # dpkg keeps no control file with a dot in its name once the package is unpacked: these exist for preinst only.
         for name in ("install.py", "release.py", "deb-control.py"):
             write(package / "DEBIAN" / name, (ROOT / name).read_text())

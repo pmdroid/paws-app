@@ -27,6 +27,7 @@ import type { RunnerCommand } from "../src/runner-protocol";
 import {
   describePglite,
   json,
+  sealedCredentialSecret,
   seed,
   withoutForeignKeys,
   type PgliteTestDb,
@@ -385,15 +386,18 @@ describePglite((connect) => {
       db.run((q) => runnerAccountUnsupportedSteps(q, "R1", bindingId, "codex"));
     expect(await unsupported(centralBinding.id)).toBeNull();
     const pasted = await account("Pasted");
-    await seed(db, (q) =>
-      q.orm.insert(q.t.agentAccountCredential).values({
-        accountId: pasted.id,
-        agent: "codex",
-        ciphertext: "sealed",
-        version: 1,
-        updatedAt: NOW,
-        runnerId: null,
-      }),
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.agentAccountCredential).values({
+          accountId: pasted.id,
+          agent: "codex",
+          ciphertext: "",
+          version: 1,
+          updatedAt: NOW,
+          runnerId: null,
+        }),
+      sealedCredentialSecret(pasted.id, NOW),
     );
     expect(await unsupported((await bind(pasted.id)).id)).toBeNull();
     expect(await unsupported(localBinding.id)).toBe(

@@ -567,10 +567,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
   const bare = join(dir, "origin.git");
   const seed = join(dir, "seed");
   mkdirSync(pawsRoot, { recursive: true });
-  useMemorySettings(
-    join(pawsRoot, "config.toml"),
-    `[agents]\nimplementer = "claude"\n${proof.config ?? ""}`,
-  );
+  useMemorySettings(pawsRoot, `[agents]\nimplementer = "claude"\n${proof.config ?? ""}`);
   const repos = join(pawsRoot, "repos");
   const reposEvents: string[] = [];
   const reposWatch = proof.forbidRepos

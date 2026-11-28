@@ -45,3 +45,30 @@ export const mergeWaitMark = pgTable(
     check("merge_wait_mark_kind", sql`kind IN ('review_started','review_ended','enqueued')`),
   ],
 );
+
+export const traceExport = pgTable("trace_export", {
+  itemId: text("item_id")
+    .primaryKey()
+    .references(() => workItem.id),
+  endedAt: bigint("ended_at", { mode: "number" }).notNull(),
+  exportedAt: bigint("exported_at", { mode: "number" }).notNull(),
+});
+
+export const exportedAlert = pgTable("exported_alert", {
+  key: text().primaryKey(),
+  severity: text().notNull(),
+  title: text().notNull(),
+  since: bigint({ mode: "number" }).notNull(),
+  count: doublePrecision().notNull(),
+});
+
+export const alertEvent = pgTable("alert_event", {
+  id: bigint({ mode: "number" }).primaryKey().generatedByDefaultAsIdentity(),
+  eventId: text("event_id").notNull(),
+  event: text().notNull(),
+  key: text().notNull(),
+  severity: text().notNull(),
+  title: text().notNull(),
+  since: bigint({ mode: "number" }).notNull(),
+  count: doublePrecision().notNull(),
+});

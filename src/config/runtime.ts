@@ -1,16 +1,10 @@
 import { journalCaught } from "../journal";
-import { readSecretFile, secretFileExists } from "../credentials";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_MAX_AWAKE_MS } from "../core";
 import { loadEnv, type EnvSource, type PawsEnv } from "./env";
-import {
-  emptyConfigFile,
-  loadConfigFile,
-  type GitHubConfigAuth,
-  type PawsConfigFile,
-} from "./file";
-import { pawsPaths } from "./paths";
-import { loadGitHubAppCredentials } from "./github-app";
+import { emptyConfigFile, loadSettings, type PawsConfigFile } from "./file";
+import { gitHubWebhookSecret, loadGitHubAppCredentials } from "./github-app";
 import { checkDatabaseUrl } from "./database";
 import { parseRepositoryList } from "./repositories";
 
@@ -37,8 +31,6 @@ export type RuntimeConfig = {
   linearClientId: string | null;
   linearClientSecret: string | null;
   linearOrganizationId: string | null;
-  githubAuth: GitHubConfigAuth;
-  trackerKind: "linear";
   /** `PAWS_GITHUB_REPOS`. Workspaces choose theirs in the dashboard. */
   repos: string[];
   publicUrl: string | null;
@@ -47,9 +39,15 @@ export type RuntimeConfig = {
   databaseUrl: string | null;
 };
 
+const RETIRED_CONFIG_FILE = "config.toml";
+
+export const CONFIG_FILE_RETIRED = `Set PAWS_DATABASE_URL in the service environment; ${RETIRED_CONFIG_FILE} is no longer read`;
+
 export function startupSettings(source: EnvSource = process.env) {
   const env = loadEnv(source);
   const url = optional(source, "PAWS_DATABASE_URL");
+  if (url === null && existsSync(join(env.home, RETIRED_CONFIG_FILE)))
+    throw new Error(CONFIG_FILE_RETIRED);
   return {
     env,
     publicUrl: env.publicUrl ?? null,
@@ -63,25 +61,18 @@ export function databaseUrlOf(source: EnvSource = process.env): string | null {
 
 export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
   const env = loadEnv(source);
-  env.linearWebhookSecret ??= readSecretFile(
-    join(pawsPaths(env.home).secretsDir, "linear-webhook"),
-  );
-  env.githubWebhookSecret ??= readSecretFile(
-    join(pawsPaths(env.home).secretsDir, "github-webhook"),
-  );
   const app = loadGitHubAppCredentials(env.home, source);
+  env.githubWebhookSecret = gitHubWebhookSecret(env.home, source);
   if (app !== null) {
     env.githubAppId = app.appId;
     env.githubAppInstallationId = app.installationId;
-    env.githubAppPrivateKeyPath = app.privateKeyPath;
   }
-  const configPath = pawsPaths(env.home).configFile;
   let file = emptyConfigFile();
   let configError: string | null = null;
   try {
-    file = loadConfigFile(configPath);
+    file = loadSettings(env.home);
   } catch (error) {
-    journalCaught(error, "runtime.loadRuntime.loadConfigFile", null);
+    journalCaught(error, "runtime.loadRuntime.loadSettings", null);
     configError = error instanceof Error ? error.message : "Saved settings could not be parsed";
   }
 
@@ -103,8 +94,6 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
       configError ??= `PAWS_GITHUB_REPOS: ${(error as Error).message}`;
     }
   }
-  const secrets = readLinearClient(env.home);
-  const githubAuth: GitHubConfigAuth = "app";
 
   return {
     env,
@@ -117,11 +106,9 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     linearAccessToken: optional(source, "LINEAR_ACCESS_TOKEN"),
     linearRefreshToken: optional(source, "LINEAR_REFRESH_TOKEN"),
     linearTokenFile: join(env.home, "secrets/linear-oauth.json"),
-    linearClientId: optional(source, "LINEAR_CLIENT_ID") ?? secrets.clientId,
-    linearClientSecret: optional(source, "LINEAR_CLIENT_SECRET") ?? secrets.clientSecret,
+    linearClientId: optional(source, "LINEAR_CLIENT_ID"),
+    linearClientSecret: optional(source, "LINEAR_CLIENT_SECRET"),
     linearOrganizationId: optional(source, "LINEAR_ORGANIZATION_ID"),
-    githubAuth,
-    trackerKind: "linear",
     repos,
     publicUrl: optional(source, "PAWS_PUBLIC_URL"),
     maxAwakeMs: maxAwakeMsFrom(source),
@@ -145,39 +132,6 @@ function readRole(value: string | null): PawsRole {
 function resolveWebhooks(source: EnvSource): boolean {
   const flagged = optional(source, "LINEAR_WEBHOOKS");
   return flagged === "1" || flagged === "true";
-}
-
-function readLinearClient(home: string): { clientId: string | null; clientSecret: string | null } {
-  const client = readJson(join(home, "secrets/linear-client.json"));
-  return {
-    clientId: jsonString(client, "clientId"),
-    clientSecret: jsonString(client, "clientSecret"),
-  };
-}
-
-function readText(path: string): string | null {
-  if (!secretFileExists(path)) return null;
-  const text = readSecretFile(path)!.trim();
-  return text.length > 0 ? text : null;
-}
-
-function readJson(path: string): Record<string, unknown> | null {
-  const text = readText(path);
-  if (text === null) return null;
-  try {
-    const parsed: unknown = JSON.parse(text);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
-    return parsed as Record<string, unknown>;
-  } catch (caughtError1) {
-    journalCaught(caughtError1, "runtime.readJson.parse", null);
-    return null;
-  }
-}
-
-function jsonString(record: Record<string, unknown> | null, key: string): string | null {
-  if (record === null) return null;
-  const value = record[key];
-  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function optional(source: EnvSource, key: string): string | null {

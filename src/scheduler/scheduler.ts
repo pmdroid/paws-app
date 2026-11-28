@@ -28,8 +28,7 @@ import {
   releaseIdleSessionItemSteps,
   runnerTaskSlotsSteps,
   runPendingJobNowSteps,
-  runnerOccupancySteps,
-  runnerSlotsHeldBetweenCommandsSteps,
+  runnerFleetOccupancySteps,
   unassignedRunnerReservationsSteps,
   schedulerRunnerSlotsSteps,
   saveItemSchedulingSteps,
@@ -51,6 +50,7 @@ import {
   type ItemHold,
   type ItemRunnerVerdicts,
   type QueueWaitingFor,
+  type ReadinessInputs,
   type RunnerHostRefusal,
   type PinnedSlot,
   type JobLoop,
@@ -77,8 +77,10 @@ type Admission = {
   repositoryKey: string;
   sessionId: string | null;
 };
+export type IssueVmPlacement = { runnerId: string } | { wait: string };
 export type SchedulerOptions = {
   now?: number;
+  issueVm?: (q: Q, itemId: string) => Steps<IssueVmPlacement | null>;
   admission?: ItemAdmission;
   defaultRepository?: RepositoryBinding | null;
   handoffForItem?: (q: Q, itemId: string) => Steps<string | undefined>;
@@ -293,39 +295,43 @@ export function hintedPaths(brief: string | null): string[] {
   }
 }
 
-function* taskSlots(
-  q: Q,
-  now: number,
-  excludeRunId = "",
-): Steps<{
+type TaskSlots = {
   total: number;
   busy: number;
   open: Map<string, number>;
   fix: Map<string, number>;
-} | null> {
+  openExcluding: (runId: string) => Map<string, number>;
+};
+
+function* taskSlots(q: Q, now: number): Steps<TaskSlots | null> {
   const runners = yield* runnerTaskSlotsSteps(q, now, now - RUNNER_SEEN_MS);
   if (!runners.length) return null;
   const reservations = yield* unassignedRunnerReservationsSteps(q, now, "");
-  const occupancy = [];
-  for (const runner of runners) {
-    const { capacity, occupied } = yield* runnerOccupancySteps(q, runner.id, now, excludeRunId);
-    const between = yield* runnerSlotsHeldBetweenCommandsSteps(q, runner.id, now, excludeRunId);
-    occupancy.push({
-      id: runner.id,
-      capacity,
-      used: occupied + between + (reservations.get(runner.id) ?? 0),
-    });
-  }
+  const fleet = yield* runnerFleetOccupancySteps(
+    q,
+    runners.map((runner) => runner.id),
+    now,
+  );
+  const openExcluding = (runId: string) =>
+    new Map(
+      runners.map(({ id }) => {
+        const runner = fleet.get(id)!;
+        const used =
+          runner.occupied -
+          runner.leasedRunIds.filter((leased) => leased === runId).length +
+          (runner.holderRunIds.includes(runId) ? 0 : runner.holderRunIds.length) +
+          (reservations.get(id) ?? 0);
+        return [id, runner.capacity - Math.min(used, runner.capacity)];
+      }),
+    );
+  const open = openExcluding("");
+  const total = runners.reduce((sum, { id }) => sum + fleet.get(id)!.capacity, 0);
   return {
-    total: occupancy.reduce((total, runner) => total + runner.capacity, 0),
-    busy: occupancy.reduce((busy, runner) => busy + Math.min(runner.used, runner.capacity), 0),
-    open: new Map(
-      occupancy.map((runner) => [
-        runner.id,
-        runner.capacity - Math.min(runner.used, runner.capacity),
-      ]),
-    ),
+    total,
+    busy: total - [...open.values()].reduce((sum, free) => sum + free, 0),
+    open,
     fix: new Map(runners.map((runner) => [runner.id, runner.fixSlots])),
+    openExcluding,
   };
 }
 
@@ -468,12 +474,13 @@ function* yieldIdleMergeSessions(
   ready: ReadonlySet<string>,
   admission: ItemAdmission,
   now: number,
+  inputs?: ReadinessInputs,
 ): Steps<void> {
   for (const item of items) {
     if (
       item.state !== "merge_queue" ||
       item.absent ||
-      !(yield* admission.steps.canDispatchDelegation(q, item.delegationId)) ||
+      !(yield* admission.steps.canDispatchDelegation(q, item.delegationId, inputs)) ||
       !items.some(
         (other) =>
           other.id !== item.id && other.delegationId === item.delegationId && ready.has(other.id),
@@ -490,25 +497,31 @@ function* reportDependencyCycles(
   admission: ItemAdmission,
   sessionFor: (q: Q, itemId: string) => Steps<string | null>,
   now: number,
+  inputs?: ReadinessInputs,
 ): Steps<void> {
   const delegations = new Map<string, Item[]>();
   for (const item of items)
     if (!item.absent)
       delegations.set(item.delegationId, [...(delegations.get(item.delegationId) ?? []), item]);
   for (const [delegationId, members] of delegations) {
+    const issueIds = members.map((member) => member.issueId);
+    const blocks = inputs?.blocks;
     if (
-      !(yield* listBlocksOfSteps(
-        q,
-        members.map((member) => member.issueId),
-      )).length
+      !(blocks && issueIds.every((id) => blocks.has(id))
+        ? issueIds.some((id) => blocks.get(id)!.length)
+        : (yield* listBlocksOfSteps(q, issueIds)).length)
     )
       continue;
     const workspaceId = members.find((member) => member.workspaceId)?.workspaceId;
-    if (!workspaceId || !(yield* admission.steps.canDispatchDelegation(q, delegationId))) continue;
+    if (!workspaceId || !(yield* admission.steps.canDispatchDelegation(q, delegationId, inputs)))
+      continue;
     const held: Item[] = [];
     try {
       for (const member of members.sort((left, right) => left.position - right.position))
-        if ((yield* readyItemsSteps(q, { itemId: member.id, workspaceId })).cycleHeldItemIds.length)
+        if (
+          (yield* readyItemsSteps(q, { itemId: member.id, workspaceId, inputs })).cycleHeldItemIds
+            .length
+        )
           held.push(member);
     } catch (caughtError2) {
       journalCaught(caughtError2, "scheduler.reportDependencyCycles.filter", null);
@@ -539,8 +552,32 @@ function* reportDependencyCycles(
   }
 }
 
+type PassQueue = {
+  tail: Promise<unknown>;
+  next: { options: SchedulerOptions; result: Promise<string[]> } | null;
+};
+
+const passes = new WeakMap<Db, PassQueue>();
+
 export function dispatch(db: Db, options: SchedulerOptions = {}): Promise<string[]> {
-  return admit(db, options.admission ?? createAdmission({ db }), options);
+  let queue = passes.get(db);
+  if (!queue) {
+    queue = { tail: Promise.resolve(), next: null };
+    passes.set(db, queue);
+  }
+  if (queue.next) {
+    queue.next.options = options;
+    return queue.next.result;
+  }
+  const pending = queue;
+  const next = { options, result: Promise.resolve<string[]>([]) };
+  next.result = pending.tail.then(() => {
+    pending.next = null;
+    return admit(db, next.options.admission ?? createAdmission({ db }), next.options);
+  });
+  pending.next = next;
+  pending.tail = next.result.catch(() => undefined);
+  return next.result;
 }
 
 async function admit(
@@ -554,17 +591,23 @@ async function admit(
     armed = (yield* requeueOrphanedWorkSteps(q, now)).armed || armed;
     const items = yield* schedulerItemsSteps(q, now);
     const byId = new Map(items.map((item) => [item.id, item]));
+    const inputs = admission.steps.readiness
+      ? yield* admission.steps.readiness(
+          q,
+          items.filter((item) => !item.absent).map((item) => item.id),
+        )
+      : undefined;
     const starts: { item: Item; start: StartAdmission }[] = [];
     // A runner-setup hold waits for the delegator, not for a slot: it is neither started nor
     // counted as waiting, so no queue notice or start timeout reaches it. Only the
     // `runner_setup.check` job ends it, after a runner write, never this tick.
     for (const item of items)
       if (item.state === "queued" && !item.cancelRequested && !item.absent && !item.setupHeld)
-        starts.push({ item, start: yield* admission.steps.canStart(q, item.id) });
+        starts.push({ item, start: yield* admission.steps.canStart(q, item.id, inputs) });
     const ready = new Set(starts.filter(({ start }) => start.ok).map(({ item }) => item.id));
-    yield* yieldIdleMergeSessions(q, items, ready, admission, now);
+    yield* yieldIdleMergeSessions(q, items, ready, admission, now, inputs);
     if (options.sessionFor)
-      yield* reportDependencyCycles(q, items, admission, options.sessionFor, now);
+      yield* reportDependencyCycles(q, items, admission, options.sessionFor, now, inputs);
     const saved = yield* listSchedulerAdmissionsSteps(q);
     const held: Admission[] = [];
     for (const row of saved) {
@@ -632,17 +675,16 @@ async function admit(
     if (slots)
       for (const item of candidates) {
         if (!item.currentRunId) continue;
-        const excluding = yield* taskSlots(q, now, item.currentRunId);
-        if (excluding)
-          credits.set(
-            item.id,
-            new Map(
-              [...slots.open].map(([id, open]) => [
-                id,
-                Math.min(1, Math.max(0, (excluding.open.get(id) ?? 0) - open)),
-              ]),
-            ),
-          );
+        const excluding = slots.openExcluding(item.currentRunId);
+        credits.set(
+          item.id,
+          new Map(
+            [...slots.open].map(([id, open]) => [
+              id,
+              Math.min(1, Math.max(0, (excluding.get(id) ?? 0) - open)),
+            ]),
+          ),
+        );
       }
     const credit = (itemId: string, runnerId: string) => credits.get(itemId)?.get(runnerId) ?? 0;
     const answers = new Map<string, ItemRunnerVerdicts | null>();
@@ -795,12 +837,26 @@ async function admit(
     const order = fairOrder(unheld, running, cap);
     // Only checked while runners exist, so a workspace without runners behaves as before.
     const ownerHasRunner = slots === null ? undefined : options.ownerHasRunner;
+    const vms = new Map<string, IssueVmPlacement | null>();
+    function* vmFor(itemId: string): Steps<IssueVmPlacement | null> {
+      if (!options.issueVm) return null;
+      if (!vms.has(itemId)) vms.set(itemId, yield* options.issueVm(q, itemId));
+      return vms.get(itemId)!;
+    }
     const setup = new Set<string>();
     if (ownerHasRunner)
-      for (const { item } of order)
-        if ((yield* ownerHasRunner(q, item.id)) === false) setup.add(item.id);
+      for (const { item, capped } of order)
+        if (
+          (yield* ownerHasRunner(q, item.id)) === false &&
+          (capped || (yield* vmFor(item.id)) === null)
+        )
+          setup.add(item.id);
+    const vmWaits = new Map<string, string>();
     for (const { item, capped } of order) {
       if (capped || setup.has(item.id)) continue;
+      const vm = yield* vmFor(item.id);
+      if (vm && "runnerId" in vm && slots?.open.has(vm.runnerId))
+        slots.open.set(vm.runnerId, slots.open.get(vm.runnerId)! - 1);
       const pin = (yield* verdictsFor(item.id))?.pinnedRunnerId;
       if (pin) pinnedQueue.set(pin, (pinnedQueue.get(pin) ?? 0) + 1);
     }
@@ -808,9 +864,14 @@ async function admit(
     for (const { item, capped } of order) {
       if (capped || setup.has(item.id)) continue;
       yield* claimPinned(item);
-      const runnerId = yield* openRunner(item.id);
-      const reused = runnerId ? credit(item.id, runnerId) : 0;
-      if (free + reused <= 0) continue;
+      const vm = yield* vmFor(item.id);
+      if (vm && "wait" in vm) {
+        vmWaits.set(item.id, vm.wait);
+        continue;
+      }
+      const runnerId = vm ? vm.runnerId : yield* openRunner(item.id);
+      const reused = runnerId && !vm ? credit(item.id, runnerId) : 0;
+      if (!vm && free + reused <= 0) continue;
       const next = footprint(item, options);
       if (held.some((entry) => byId.get(entry.itemId)?.issueId === item.issueId)) continue;
       // Work admitted earlier in this tick runs too.
@@ -819,7 +880,8 @@ async function admit(
         overlaps.set(item.id, overlap);
         continue;
       }
-      if (!(yield* takeSlot(item.id))) continue;
+      if (vm) choices.set(item.id, vm.runnerId);
+      else if (!(yield* takeSlot(item.id))) continue;
       const pin = answers.get(item.id)?.pinnedRunnerId;
       if (pin) pinnedQueue.set(pin, pinnedQueue.get(pin)! - 1);
       yield* cancelPendingItemJobsSteps(q, JOB_KIND.start, item.id, now);
@@ -846,12 +908,16 @@ async function admit(
       held.push(next);
       occupants.push(item);
       admitted.push(item.id);
-      free -= 1 - reused;
+      if (!vm) free -= 1 - reused;
     }
     yield* claimPinned();
     yield* savePinnedSlotsSteps(q, reservedSlots);
     const waiting = order.filter(
-      ({ item }) => !admitted.includes(item.id) && !setup.has(item.id) && !overlaps.has(item.id),
+      ({ item }) =>
+        !admitted.includes(item.id) &&
+        !setup.has(item.id) &&
+        !overlaps.has(item.id) &&
+        !vmWaits.has(item.id),
     );
     function* noRunnerLine(itemId: string): Steps<string | null> {
       if ((yield* openRunner(itemId)) !== null) return null;
@@ -888,23 +954,13 @@ async function admit(
           ),
         );
       }
-    yield* q.transaction((tx) =>
-      saveQueuePositionsSteps(
-        tx,
-        line,
-        busy,
-        now,
-        new Map(waiting.flatMap(({ item, capped }) => (capped && cap ? [[item.id, cap]] : []))),
-        waitingFor,
-      ),
-    );
     const holds: ItemHold[] = [];
     for (const { item, start } of starts)
       if (!start.ok && start.held !== "missing" && start.held !== "cancelled")
         holds.push({
           itemId: item.id,
           reason: start.held,
-          blockers: start.held === "blocked" ? yield* blockingIssuesSteps(q, item.id) : [],
+          blockers: start.held === "blocked" ? yield* blockingIssuesSteps(q, item.id, inputs) : [],
         });
     for (const { item, capped } of waiting) {
       const noRunner = capped ? null : yield* noRunnerLine(item.id);
@@ -914,6 +970,7 @@ async function admit(
         blockers: noRunner === null ? [] : [noRunner],
       });
     }
+    for (const [itemId, wait] of vmWaits) holds.push({ itemId, reason: "slot", blockers: [wait] });
     holds.push(
       ...[...overlaps].map(([itemId, overlap]): ItemHold => ({
         itemId,
@@ -922,6 +979,22 @@ async function admit(
         files: overlap.files,
         ...(overlap.start ? { start: overlap.start } : {}),
       })),
+    );
+    const verdicts: ItemRunnerVerdicts[] = [];
+    for (const item of items)
+      if (item.state === "queued" && !item.cancelRequested && !item.absent) {
+        const found = yield* verdictsFor(item.id);
+        if (found) verdicts.push(found);
+      }
+    yield* q.transaction((tx) =>
+      saveQueuePositionsSteps(
+        tx,
+        line,
+        busy,
+        now,
+        new Map(waiting.flatMap(({ item, capped }) => (capped && cap ? [[item.id, cap]] : []))),
+        waitingFor,
+      ),
     );
     const changes: string[] = [];
     for (const change of yield* saveItemHoldsSteps(q, holds, now)) {
@@ -943,12 +1016,6 @@ async function admit(
     );
     yield* postWaitKeepalivesSteps(q, waits, now);
     yield* postConflictHoldsSteps(q, waits, now);
-    const verdicts: ItemRunnerVerdicts[] = [];
-    for (const item of items)
-      if (item.state === "queued" && !item.cancelRequested && !item.absent) {
-        const found = yield* verdictsFor(item.id);
-        if (found) verdicts.push(found);
-      }
     return {
       armed,
       admitted,

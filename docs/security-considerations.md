@@ -14,7 +14,7 @@ Use the separate `paws-agent` account described in [runner enrollment](runner-en
 
 When enabling Docker for agent work, use the rootless daemon provided for the agent account. A container can access files that account can read or write. Consider the repositories and credentials available to the account before enabling it.
 
-Review runner access when a member leaves or a host is retired. Use the Runners page to manage enrolled hosts and their agent sign-ins.
+Review runner access when a member leaves or a host is retired. Use the Runners page to manage enrolled hosts, and Settings › Agent accounts to manage agent sign-ins ([Sign in to agent accounts](runner-enrollment.md#sign-in-to-agent-accounts)).
 
 ## Release and package publishing
 

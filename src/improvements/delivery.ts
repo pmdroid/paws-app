@@ -21,6 +21,7 @@ import {
 } from "../db";
 import { journalCaught } from "../journal";
 import { improvementFindingsSteps } from "./daily";
+import { parseRetroEvidenceRef } from "./evidence-ref";
 
 export type DeliveryFailure = {
   ok: false;
@@ -131,7 +132,9 @@ function* evidenceLines(q: Q, improvement: Improvement, content: FrozenContent):
   const counts = new Map<string, number>();
   const byRetro = new Map<string, Map<string, string>>();
   for (const ref of content.evidence) {
-    const [, retroId = "", evidenceId = ""] = ref.split(":");
+    const parsed = parseRetroEvidenceRef(ref);
+    if (!parsed) continue;
+    const { retroId, evidenceId } = parsed;
     if (!byRetro.has(retroId))
       byRetro.set(
         retroId,

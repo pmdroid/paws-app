@@ -195,6 +195,37 @@ describePglite((connect) => {
     expect(JSON.stringify(body)).not.toContain("Grace");
   });
 
+  test("admins see every failing issue VM delete and a member only their own", async () => {
+    const db = await connected(connect);
+    for (const [id, memberUserId] of [
+      ["01KVMADA00000000000000000A", "ada"],
+      ["01KVMGRACE000000000000000A", "admin"],
+    ] as const)
+      await seed(db, (q) =>
+        q.orm.insert(q.t.issueVm).values({
+          id,
+          workspaceId: "acme",
+          itemId: `item-${memberUserId}`,
+          memberUserId,
+          provider: "host",
+          state: "deleting",
+          failure: "The VM host refused",
+          createdAt: NOW,
+          stateAt: NOW,
+        }),
+      );
+    const read = async (role: WorkspaceRole) => {
+      const response = await call(db, "GET", "/api/settings/issue-vm/members", { role });
+      const body = (await response!.json()) as { failingDeletes: { id: string }[] };
+      return body.failingDeletes.map((vm) => vm.id);
+    };
+    expect(await read("admin")).toEqual([
+      "01KVMADA00000000000000000A",
+      "01KVMGRACE000000000000000A",
+    ]);
+    expect(await read("member")).toEqual(["01KVMADA00000000000000000A"]);
+  });
+
   test("members get 403 from the grant routes", async () => {
     const db = await connected(connect);
     const body = { memberUserId: "ada", limit: 4, endsAt: NOW + DAY };

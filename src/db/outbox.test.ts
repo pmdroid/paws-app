@@ -267,8 +267,8 @@ describe("transactional outbox", () => {
     });
     const db = new Proxy(real, {
       get(target, property) {
-        if (property === "run")
-          return (body: (q: Q) => Steps<unknown>) => target.run((q) => body(failing(q)));
+        if (property === "run" || property === "transaction")
+          return (body: (q: Q) => Steps<unknown>) => target[property]((q) => body(failing(q)));
         const value = Reflect.get(target, property);
         return typeof value === "function" ? value.bind(target) : value;
       },

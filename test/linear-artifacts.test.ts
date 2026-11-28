@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmod, readFile, readdir, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactSnapshot, PublishArtifactContext } from "../src/acp";
 import {
@@ -19,7 +20,11 @@ import {
   type Db,
 } from "../src/db";
 import { createLinearFileTransfer } from "../src/linear";
-import { createLinearArtifactPublisher, createLinearArtifactReader } from "../src/loop";
+import {
+  convertLinearUploadManifests,
+  createLinearArtifactPublisher,
+  createLinearArtifactReader,
+} from "../src/loop";
 import { tempHome } from "./helpers";
 import { copyMigratedPglite, tempStore } from "./pglite";
 
@@ -89,13 +94,14 @@ async function setup(
       return stored === null ? new Response(null, { status: 404 }) : new Response(stored);
     },
   });
-  const publisher = (store = db) =>
+  const publisher = (store = db, now = Date.now) =>
     createLinearArtifactPublisher({
       store,
       files,
       secretsDir,
       itemId: "item",
       sessionId: "session",
+      now,
     });
   return { db, close, publisher, secretsDir, prepares: () => prepares, uploads: () => uploads };
 }
@@ -330,5 +336,76 @@ test("an uploaded replacement still resolves a legacy failed artifact by its exa
   expect(await artifactPublicationReady(env.db, "item")).toBe(false);
   await (await env.publisher()).publish(artifact, context);
   expect(await artifactPublicationReady(env.db, "item")).toBe(true);
+  await env.close();
+});
+
+async function plaintext(dir: string): Promise<string> {
+  const names = await readdir(dir, { recursive: true });
+  return (
+    await Promise.all(names.map((name) => readFile(join(dir, name), "utf8").catch(() => "")))
+  ).join("\n");
+}
+
+test("the signed upload grant stays sealed while retrying and is removed on completion", async () => {
+  const options = { fail: true };
+  const env = await setup(options);
+  await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow("HTTP 503");
+  const row = (await listArtifacts(env.db, "item"))[0]!;
+  const grant = join(env.secretsDir, `linear-upload-${row.id}`);
+  expect(existsSync(grant)).toBe(true);
+  expect(await plaintext(env.secretsDir)).not.toContain("private-secret");
+  expect(
+    JSON.parse(
+      await readFile(join(env.secretsDir, "linear-artifacts", `${row.id}.upload`), "utf8"),
+    ),
+  ).toEqual({
+    filename: "proof.png",
+    contentType: "image/png",
+    size: bytes.length,
+    assetUrl: URL,
+    expiresAt: expect.any(Number),
+  });
+  options.fail = false;
+  expect(await (await env.publisher()).publish(artifact, context)).toMatchObject({ url: URL });
+  expect(env.prepares()).toBe(1);
+  expect(existsSync(grant)).toBe(false);
+  expect(JSON.stringify(await listOutbox(env.db, "session"))).not.toContain("private-secret");
+  await env.close();
+});
+
+test("a retry after the upload grant expired asks Linear for a fresh one", async () => {
+  const options = { fail: true };
+  const env = await setup(options);
+  await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow("HTTP 503");
+  options.fail = false;
+  const later = () => Date.now() + 60 * 60 * 1000;
+  expect(await (await env.publisher(env.db, later)).publish(artifact, context)).toMatchObject({
+    url: URL,
+  });
+  expect(env.prepares()).toBe(2);
+  await env.close();
+});
+
+test("startup converts a legacy manifest and the retry replays its grant", async () => {
+  const options = { fail: true };
+  const env = await setup(options);
+  await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow("HTTP 503");
+  const row = (await listArtifacts(env.db, "item"))[0]!;
+  const grant = join(env.secretsDir, `linear-upload-${row.id}`);
+  await unlink(grant);
+  const legacy = { filename: "proof.png", contentType: "image/png", size: bytes.length };
+  await writeFile(
+    join(env.secretsDir, "linear-artifacts", `${row.id}.upload`),
+    JSON.stringify({ ...legacy, assetUrl: URL, uploadUrl: `${SIGNED}&attempt=0`, headers: [] }),
+  );
+  expect(await convertLinearUploadManifests(env.secretsDir)).toBe(1);
+  expect(await convertLinearUploadManifests(env.secretsDir)).toBe(0);
+  expect(await plaintext(env.secretsDir)).not.toContain("private-secret");
+  expect(existsSync(grant)).toBe(true);
+  options.fail = false;
+  expect(await (await env.publisher()).publish(artifact, context)).toMatchObject({ url: URL });
+  expect(env.prepares()).toBe(1);
+  expect(env.uploads()).toBe(2);
+  expect(existsSync(grant)).toBe(false);
   await env.close();
 });

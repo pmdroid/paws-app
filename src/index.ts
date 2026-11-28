@@ -1,6 +1,6 @@
 import { assetPath, buildVersion, compiled } from "./assets";
 import { checkApiKey, checkClaudeToken, createAccountUsage, createAgentAuth } from "./agent-auth";
-import { browserSetupRuntime, setupLink } from "./onboarding";
+import { browserSetupRuntime, SETUP_TOKEN_FILE, setupLink } from "./onboarding";
 import {
   createFindingGrouping,
   registerFindingGrouping,
@@ -60,6 +60,8 @@ import {
   readSecretFile,
   storeSecretKeys,
   useDatabaseSecrets,
+  completeSecretStart,
+  migrateAgentCredentials,
   readAgentCredentialSteps,
 } from "./credentials";
 import { ArtifactRejectedError, commitCheckpointSync, git, mirrorFiles, worktreePath } from "./acp";
@@ -90,13 +92,14 @@ import {
   ignoredCommentMarkers,
   LINEAR_WORKSPACE_REQUIRED,
   databaseUrlOf,
+  importLegacyGitHubApp,
   loadRuntime,
   startupSettings,
   resolveAgentProfiles,
   loadEnv,
   githubMirrorsOn,
   useActiveGitHubMirrors,
-  loadConfigFile,
+  loadSettings,
   MEMBER_VM_PROVIDERS,
   memberVmKeyReadable,
   memberVmProvider,
@@ -139,6 +142,7 @@ import {
   convertConfigSettingsSteps,
   settingSectionsStore,
   openPawsStore,
+  PgliteInUseError,
   type PawsStore,
   prepareShutdown,
   COMMAND_DELIVERY_MS,
@@ -153,6 +157,7 @@ import {
   submitCommand,
   type JobLoop,
   type WorkItemRecord,
+  type IssueVmProvider,
   type Q,
   runnerHasCapacitySteps,
   workspaceMemberSteps,
@@ -213,6 +218,14 @@ import {
   setGauge,
 } from "./metrics";
 import { doctorChecks, realProbe } from "./doctor";
+import {
+  ALERTS_EXPORT_EVERY_MS,
+  ALERTS_EXPORT_JOB,
+  createDeployLagCheck,
+  deployLagUnavailable,
+  exportAlerts,
+  runningDeployIncludes,
+} from "./alerts";
 import { runInstallCli } from "./installer";
 import {
   createGitHubTokenProvider,
@@ -225,6 +238,7 @@ import {
   checkRepositoryWriteAccess,
   checkRepositoryReadAccess,
   createFetchGitHubClient,
+  createRunnerReleaseLookup,
   repositoriesWithMergeQueue,
   repositoriesRequiringUpToDate,
   listAppRepositories,
@@ -234,6 +248,8 @@ import {
   createGitHubGitReader,
   createGitHubSnapshotReader,
   branchContains,
+  githubSourceRepository,
+  parseGitHubRemote,
   readRef,
   readCommit,
   useGitTempDirectory,
@@ -305,6 +321,7 @@ import {
   repositoryGrant,
   recordMissingProjectTeams,
   createRepositoryGit,
+  convertLinearUploadManifests,
 } from "./loop";
 import {
   PROBE_COLLECT_JOB,
@@ -325,6 +342,14 @@ import {
   RELATIONS_POLL_MS,
 } from "./intake";
 import { createExecutionControls } from "./execution-controls";
+import {
+  createIssueVmDrivers,
+  createIssueVmSweep,
+  ISSUE_VM_SWEEP_EVERY_MS,
+  ISSUE_VM_SWEEP_JOB,
+  issueVmPlacementSteps,
+  type IssueVmDrivers,
+} from "./issue-vm";
 import { createAdmission, registerScheduler, saveSchedulingContextSteps } from "./scheduler";
 import {
   createRunnerPlacement,
@@ -335,6 +360,7 @@ import {
   itemRunnerVerdictsSteps,
   createRunnerHostRefusals,
   itemOwnerRunnerSetupNeedSteps,
+  itemOwnerScopeSteps,
   itemRepositoryAllowedOnSteps,
   itemRepositoryRefusalsSteps,
   itemRepositoryRunnerSteps,
@@ -358,7 +384,10 @@ import {
 } from "./retros";
 import { createStorageUsage } from "./storage-usage";
 import {
+  TRACES_EXPORT_EVERY_MS,
+  TRACES_EXPORT_JOB,
   createTelemetry,
+  exportItemTraces,
   itemTransitionLogs,
   readTelemetrySettings,
   telemetryHeader,
@@ -369,6 +398,7 @@ import {
   STORAGE_CLEANUP_TICK_MS,
   createStorageCleanup,
 } from "./storage-cleanup";
+import { createRunnerHostMetrics } from "./runner-host-metrics";
 import {
   createImprovementsHttp,
   startImprovementDeliveries,
@@ -479,6 +509,7 @@ export type StartOptions = {
   refreshAgentCatalog?: boolean;
   /** Replaces the exe.dev client and VM bootstrap behind Create VM. Tests pass the fakes. */
   memberVm?: { exeDev: ExeDev; bootstrap: ExeDevBootstrap; pollMs?: number };
+  issueVmDrivers?: IssueVmDrivers;
   healthStatfs?: (path: string) => { bavail: number; blocks: number; bsize: number };
 };
 
@@ -517,20 +548,15 @@ function checkStartup(envSource: EnvSource, execution: string | undefined) {
   return { settings, publicDashboard, proxy, tls, runnerConfig, runnerTls };
 }
 
-async function loadSecretRuntime(
-  envSource: EnvSource,
-  paths: PawsPaths,
-  databaseUrl: string | null,
-) {
-  if (databaseUrl !== null)
-    await storeSecretKeys(
-      [
-        "runner-file.key",
-        RUNNER_EVENT_KEY_FILE,
-        RUNNER_TRANSCRIPT_KEY_FILE,
-        AGENT_SESSION_KEY_FILE,
-      ].map((name) => join(paths.secretsDir, name)),
-    );
+async function loadSecretRuntime(envSource: EnvSource, paths: PawsPaths) {
+  await storeSecretKeys(
+    [
+      "runner-file.key",
+      RUNNER_EVENT_KEY_FILE,
+      RUNNER_TRANSCRIPT_KEY_FILE,
+      AGENT_SESSION_KEY_FILE,
+    ].map((name) => join(paths.secretsDir, name)),
+  );
   const runtime = loadRuntime(envSource);
   if (runtime.configError !== null) throw new Error(runtime.configError);
   return runtime;
@@ -553,7 +579,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       : runnerConfig !== null
         ? loadRunnerTranscriptStores(paths.home)
         : undefined;
-  const earlyTranscripts = databaseUrl === null ? loadTranscripts() : undefined;
   ensureLayout(paths);
   useGitTempDirectory(paths.tmpDir);
   usePublicationRepositories(paths.publicationDir);
@@ -561,14 +586,19 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     await openPawsStore({ url: databaseUrl, pgliteDir: paths.pgliteDir }),
     databaseUrl,
     paths.secretsDir,
+    true,
   );
-  let runtime = await loadSecretRuntime(envSource, paths, databaseUrl).catch(
-    async (error: unknown) => {
+  let runtime = await importLegacyGitHubApp(paths.home, envSource)
+    .then(() => loadSecretRuntime(envSource, paths))
+    .catch(async (error: unknown) => {
       await database.close().catch(() => undefined);
       throw error;
-    },
-  );
+    });
   const browserSetup = await browserSetupRuntime(database.store, runtime, envSource);
+  if (browserSetup.error !== null) {
+    await database.close();
+    throw new Error(browserSetup.error);
+  }
   runtime = browserSetup.runtime;
   if (runnerConfig !== null) {
     const ensured = await ensureRunnerCoordinator(runnerConfig.root).catch(
@@ -584,8 +614,12 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   let repositoryAccess = options?.runnerRepositoryAccess;
   const placeOnRunner = runnerConfig !== null;
   const store = observeDb(database.store, (ms) => recordDuration("db.transaction", {}, ms));
-  const transcriptStorage = earlyTranscripts ?? loadTranscripts();
+  const transcriptStorage = await Promise.try(loadTranscripts).catch(async (error: unknown) => {
+    await database.close().catch(() => undefined);
+    throw error;
+  });
   const transcriptObjects = transcriptStorage?.objects;
+  await convertLinearUploadManifests(paths.secretsDir);
   await importLinearTokenFile(store, paths.secretsDir, runtime.linearTokenFile);
   await importCredentialFile(
     store,
@@ -651,7 +685,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     throw error;
   }
   const savedSettings = await useSettingsStore(
-    paths.configFile,
+    paths.home,
     settingSectionsStore(store, SETTINGS_SECTIONS),
   );
   runtime = (await browserSetupRuntime(store, loadRuntime(envSource), envSource)).runtime;
@@ -666,7 +700,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     savedSettings.release();
   };
   try {
-    if (loadConfigFile(paths.configFile).ignoredMergeOverrides) journal(MERGE_OVERRIDES_IGNORED);
+    if (loadSettings(paths.home).ignoredMergeOverrides) journal(MERGE_OVERRIDES_IGNORED);
   } catch (error) {
     journalCaught(error, "index.startPaws.ignoredMergeOverrides", null);
   }
@@ -699,8 +733,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     ...repositoryAccess,
     granted: repositoryGrant({ store, reader: snapshotReader }),
   };
-  const commentFilter = pullCommentFilter(runtime, paths.configFile, resolveApp);
-  const startupMirrors = githubMirrorsOn(loadConfigFile(paths.configFile));
+  const commentFilter = pullCommentFilter(runtime, paths.home, resolveApp);
+  const startupMirrors = githubMirrorsOn(loadSettings(paths.home));
   useActiveGitHubMirrors(startupMirrors);
   useGitReader(
     !startupMirrors
@@ -758,14 +792,14 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     reader: snapshotReader,
     helpers: async () => (await runnerReady)?.helpers,
     placement: createRunnerPlacement({ store }),
-    profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
+    profile: () => resolveAgentProfiles(loadSettings(paths.home)).implementer,
   });
   const probeCollection = createProbeCollection({
     store,
     pawsRoot: paths.home,
     helpers: async () => (await runnerReady)?.helpers,
     placement: createRunnerPlacement({ store }),
-    profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
+    profile: () => resolveAgentProfiles(loadSettings(paths.home)).implementer,
     locate: (name) => {
       const binding = repositoryBinding(name);
       const provider = binding && authProvider(runtime, binding, "read", resolveApp);
@@ -826,7 +860,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
 
   const followUp = async (event: AcceptedLinearEvent): Promise<void | boolean> => {
     if (orchestrator === null) throw new Error("loop is not attached");
-    const accepted = await orchestrator.onLinearEvent(event);
+    const accepted = await orchestrator.onLinearEvent(event, { awaitAdmission: false });
     const known = event.sessionId ? orchestrator.takeIntakeReads(event.sessionId) : undefined;
     if (accepted !== false && reconciler && event.sessionId) {
       const sessionId = event.sessionId;
@@ -844,7 +878,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             signal: abort.signal,
             known: event.action === "created" ? known : undefined,
           });
-        await orchestrator.reconcileExecution();
+        orchestrator.requestExecution();
       }
     }
     return accepted;
@@ -1067,7 +1101,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     });
 
   const exeDevToken = exeDevTokenReader(paths.home);
-  const memberVmSettings = () => loadConfigFile(paths.configFile).vmSizes;
+  const memberVmSettings = () => loadSettings(paths.home).vmSizes;
   const memberVmProviderSetting = () => memberVmProvider(memberVmSettings());
   const createVmAvailable = async () =>
     options?.memberVm !== undefined || memberVmKeyReadable(paths.home, memberVmSettings());
@@ -1250,6 +1284,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     removeCloseoutLog: (key) => removeEvidenceFile(store, closeoutLogs, key),
     runners: async () => runner?.work,
   });
+  const runnerHostMetrics = createRunnerHostMetrics({ store });
   const runnerReady =
     runnerConfig === null
       ? Promise.resolve(undefined)
@@ -1283,7 +1318,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           retros: () => retroDispatcher?.fetch,
           storageReports: async (request, runnerId) =>
             (await storageUsage.fetch(request, runnerId)) ??
-            storageCleanup.fetch(request, runnerId),
+            (await storageCleanup.fetch(request, runnerId)) ??
+            runnerHostMetrics.fetch(request, runnerId),
           issueVms: (request, runnerId) => handleVmHostRunnerRequest(request, runnerId, store),
           observeRequest: (labels, ms) => recordDuration("http.request", labels, ms),
           slackReplyAuthority: (q, input) => slackReplyAllowedSteps(q, paths.home, input),
@@ -1329,6 +1365,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       instabox: instaBoxKeyCheck(memberVmInstaBox),
     },
   });
+  const issueVmDrivers = createIssueVmDrivers(store, options?.issueVmDrivers);
+  const issueVmProviders = Object.keys(issueVmDrivers) as IssueVmProvider[];
   const MEMBER_VM_STOP_WAIT_MS = 15_000;
   const provisionMemberVm = createMemberVmProvisioning({
     readToken: exeDevToken,
@@ -1458,22 +1496,23 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       }),
     exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
   });
-  const githubCommits = (repository: { owner: string; repo: string }): GitHubCommits => {
-    const read = () => {
-      const binding = githubBinding(
-        authProvider(
-          runtime,
-          { ...repository, remoteUrl: githubHttpsUrl(repository.owner, repository.repo) },
-          "read",
-          resolveApp,
-        ),
+  const githubRead = (repository: { owner: string; repo: string }) => () => {
+    const binding = githubBinding(
+      authProvider(
+        runtime,
+        { ...repository, remoteUrl: githubHttpsUrl(repository.owner, repository.repo) },
+        "read",
+        resolveApp,
+      ),
+    );
+    if (!binding)
+      throw new Error(
+        `The GitHub App installation does not cover ${repository.owner}/${repository.repo}.`,
       );
-      if (!binding)
-        throw new Error(
-          `The GitHub App installation does not cover ${repository.owner}/${repository.repo}.`,
-        );
-      return { ...binding, ...repository };
-    };
+    return { ...binding, ...repository };
+  };
+  const githubCommits = (repository: { owner: string; repo: string }): GitHubCommits => {
+    const read = githubRead(repository);
     return {
       ref: (ref, signal) => readRef({ ...read(), ref, signal }),
       contains: async (tip, sha, signal) =>
@@ -1481,6 +1520,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       commit: (sha, signal) => readCommit({ ...read(), sha, signal }),
     };
   };
+  const sourceRepository = installedSourceRepository();
+  const deployLag = createDeployLagCheck(
+    store,
+    sourceRepository && githubSourceRepository(sourceRepository, githubRead(sourceRepository)),
+  );
   const remote = placeOnRunner
     ? runnerReady.then((coordinator) => {
         if (!coordinator?.transcripts) throw new Error("Remote transcript storage is unavailable.");
@@ -1491,7 +1535,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             ...coordinator,
             fetchCandidate: fetchRunnerCandidate,
             checkpointBot: repositoryAccess?.checkpointBot,
-            ...(!githubMirrorsOn(loadConfigFile(paths.configFile))
+            ...(!githubMirrorsOn(loadSettings(paths.home))
               ? { storedCandidates: githubCommits }
               : {}),
             placement,
@@ -1515,7 +1559,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       if (!coordinator) throw new Error("A paired runner is required for finding grouping.");
       return coordinator.helpers;
     },
-    profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
+    profile: () => resolveAgentProfiles(loadSettings(paths.home)).implementer,
   });
   const findingGrouping = linear?.findingIssues
     ? await createFindingGrouping({
@@ -1583,32 +1627,39 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   ]).then(() => {
     if (runnerStopping) throw new Error("Paws is stopping.");
   });
-  void ready.catch((caughtError6) => {
-    journalCaught(
-      caughtError6,
-      "index.startPaws.ready",
-      null,
-      runnerStopping &&
-        caughtError6 instanceof Error &&
-        caughtError6.message === "Paws is stopping."
-        ? "shutdown interrupted startup"
-        : undefined,
-    );
-  });
+  void ready
+    .then(() => completeSecretStart(paths.secretsDir))
+    .catch((caughtError6) => {
+      journalCaught(
+        caughtError6,
+        "index.startPaws.ready",
+        null,
+        runnerStopping &&
+          caughtError6 instanceof Error &&
+          caughtError6.message === "Paws is stopping."
+          ? "shutdown interrupted startup"
+          : undefined,
+      );
+    });
   let jobLoop: JobLoop | null = null;
   let server: Bun.Server<undefined>;
   try {
     server = startServer({
       storageUsage,
       telemetry,
+      deployLag,
       doctor: () =>
-        realProbe(envSource, store).then(doctorChecks, (error: unknown) => [
-          {
-            name: "doctor",
-            ok: false,
-            detail: error instanceof Error ? error.message : String(error),
-          },
-        ]),
+        realProbe(envSource, store).then(
+          async (probe) =>
+            doctorChecks(probe, { deployLagUnavailable: await deployLagUnavailable(deployLag) }),
+          (error: unknown) => [
+            {
+              name: "doctor",
+              ok: false,
+              detail: error instanceof Error ? error.message : String(error),
+            },
+          ],
+        ),
       vmProviderChecks: {
         run: (name, signal) => vmProviderChecks.runVmProviderCheck(name, signal),
         nextCheckAt: () => store.run((q) => jobRunAtByKeySteps(q, VM_PROVIDER_CHECK_JOB)),
@@ -1705,12 +1756,16 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           }),
       port: env.port,
       linearWebhookSecret: env.linearWebhookSecret,
-      githubWebhookSecret: env.githubWebhookSecret,
       githubWebhook: {
-        accept: (delivery) =>
-          acceptGitHubDelivery(store, delivery, Date.now(), commentFilter, (itemId, body) =>
+        accept: (delivery) => {
+          if (delivery.event === "release")
+            void reconciler
+              ?.recheckBlocked(abort.signal)
+              .catch((error) => journalCaught(error, "index.githubWebhook.release", null));
+          return acceptGitHubDelivery(store, delivery, Date.now(), commentFilter, (itemId, body) =>
             orchestrator ? orchestrator.followUpRunningAgent(itemId, body) : false,
-          ),
+          );
+        },
       },
       slackSigningSecret: () => slackSigningSecret(paths.home, envSource),
       linearWebhook: linear?.webhook ?? (webhooks ? { store: inbox } : undefined),
@@ -1755,7 +1810,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       readLinearArtifact: createLinearArtifactReader({ store, secretsDir: paths.secretsDir }),
       ...(linear?.startSession ? { startLinearSession: linear.startSession } : {}),
       skillSettings: {
-        configPath: paths.configFile,
+        home: paths.home,
         root: paths.skillsDir,
         resolver: createSkillResolver(),
         updates: skillUpdates,
@@ -1770,7 +1825,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                 linear.tracker!.readBriefIssue!(identifier, { signal }),
             }
           : {}),
-        configPath: paths.configFile,
+        home: paths.home,
         instaBoxSizes: async () =>
           readVmProviderToken(paths.home, "instabox") === null
             ? null
@@ -1917,7 +1972,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       if (Date.now() - mergeParallel.at < 30_000) return mergeParallel.value;
       let value = mergeParallel.value;
       try {
-        value = readMergeSettings(loadConfigFile(paths.configFile)).parallel;
+        value = readMergeSettings(loadSettings(paths.home)).parallel;
       } catch (error) {
         journalCaught(error, "index.mergeParallel", null);
       }
@@ -1945,6 +2000,14 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         queue: VM_PROVIDER_CHECK_JOB,
         jobKey: VM_PROVIDER_CHECK_JOB,
         recurringEveryMs: VM_PROVIDER_CHECK_EVERY_MS,
+        now: Date.now(),
+      });
+      const issueVmSweep = createIssueVmSweep(store, { drivers: issueVmDrivers });
+      created.jobs.register(ISSUE_VM_SWEEP_JOB, () => issueVmSweep());
+      await enqueueJobOnce(store, {
+        queue: ISSUE_VM_SWEEP_JOB,
+        jobKey: ISSUE_VM_SWEEP_JOB,
+        recurringEveryMs: ISSUE_VM_SWEEP_EVERY_MS,
         now: Date.now(),
       });
       void assignments
@@ -1998,7 +2061,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             placement: createRunnerPlacement({ store }),
           });
         },
-        profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
+        profile: () => resolveAgentProfiles(loadSettings(paths.home)).implementer,
         source: createGitHubSnapshotReader({
           locate: (name) => {
             const repository = repositoryBinding(name);
@@ -2058,7 +2121,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         outbox: created.outbox,
         pawsRoot: paths.home,
         closeoutPolicyRoot: ({ owner, repo }) =>
-          closeoutPolicyRoot(loadConfigFile(paths.configFile), paths.home, `${owner}/${repo}`),
+          closeoutPolicyRoot(loadSettings(paths.home), paths.home, `${owner}/${repo}`),
         tracker,
         linearTaskModes: true,
         appLogin: (repository) => commentFilter.appLogin(repository),
@@ -2082,6 +2145,17 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                 now: number,
               ) => itemRunnerVerdictsSteps(q, store, { itemId, ...profile, now }, signInChecks),
               onRunnerHostRefusals: runnerHostRefusals.report,
+              issueVm: function* (q: Q, itemId: string, now: number) {
+                const scope = yield* itemOwnerScopeSteps(q, itemId);
+                if (scope === null) return null;
+                return yield* issueVmPlacementSteps(q, {
+                  workspaceId: scope.workspaceId,
+                  memberUserId: scope.ownerUserId,
+                  itemId,
+                  providers: issueVmProviders,
+                  now,
+                });
+              },
               runnerSetupNeed: (itemId: string, agent: string, now: number) =>
                 store.run((q) => itemOwnerRunnerSetupNeedSteps(q, { itemId, agent, now })),
               eligibleRunner: (itemId: string, agent: string, now: number) =>
@@ -2188,7 +2262,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         linearComments: {
           appUserId: runtime.linearViewerId,
           get agents() {
-            return resolveLinearCommentAgents(loadConfigFile(paths.configFile));
+            return resolveLinearCommentAgents(loadSettings(paths.home));
           },
           ...(workspace
             ? {
@@ -2208,7 +2282,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             : true,
         scheduling: async () => {
           await enqueueMissingSnapshots();
-          return { ownerCap: ownerCap(paths.configFile) };
+          return { ownerCap: ownerCap(paths.home) };
         },
         publicationReady: (
           ...args: Parameters<NonNullable<OrchestratorOptions["publicationReady"]>>
@@ -2398,10 +2472,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         },
         githubForRepository: (selected) =>
           githubBinding(authProvider(runtime, selected, "write", resolveApp)),
-        githubMirrors: githubMirrorsOn(loadConfigFile(paths.configFile)),
+        githubMirrors: githubMirrorsOn(loadSettings(paths.home)),
         caps: {
           maxAwakeMs: runtime.maxAwakeMs,
-          limits: () => resolveTimeLimits(loadConfigFile(paths.configFile), runtime.maxAwakeMs),
+          limits: () => resolveTimeLimits(loadSettings(paths.home), runtime.maxAwakeMs),
         },
       });
       orchestrator = attached;
@@ -2415,6 +2489,13 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           store,
           tracker: linear.tracker,
           lifecycle: linear.issueLifecycle,
+          releases: createRunnerReleaseLookup((name) => {
+            const binding = repositoryBinding(name);
+            const github =
+              binding && githubBinding(authProvider(runtime, binding, "read", resolveApp));
+            return binding && github ? { ...binding, ...github } : null;
+          }),
+          deployed: (mergeSha) => runningDeployIncludes(deployLag, mergeSha),
           ...(parents ? { scopeSnapshot: parents.scopeSnapshot } : {}),
           onChanges: function* (q, changes) {
             for (const { itemId, issue } of changes.issues)
@@ -2428,6 +2509,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           },
           afterChanges: (changes) => attached.finishDelegationChanges(changes),
         });
+        void reconciler
+          .recheckBlocked(abort.signal)
+          .catch((error) => journalCaught(error, "index.reconciler.startupRecheck", null));
         publication = createPublicationReadiness({
           store,
           reconciler,
@@ -2504,7 +2588,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       }
       if (findingGrouping)
         await registerFindingGrouping(created.jobs, {
-          groupingTime: () => loadConfigFile(paths.configFile).findingsGroupingTime ?? "06:00",
+          groupingTime: () => loadSettings(paths.home).findingsGroupingTime ?? "06:00",
           workspaces: () => listWorkspaceIds(store),
           run: (workspaceId, signal) =>
             findingGrouping.run(workspaceId, AbortSignal.any([signal, abort.signal])),
@@ -2559,6 +2643,22 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         queue: METRICS_FLUSH_JOB,
         jobKey: METRICS_FLUSH_JOB,
         recurringEveryMs: METRICS_FLUSH_EVERY_MS,
+        now: Date.now(),
+      });
+      created.jobs.register(TRACES_EXPORT_JOB, async () => {
+        await exportItemTraces(store, telemetry);
+      });
+      await enqueueJobOnce(store, {
+        queue: TRACES_EXPORT_JOB,
+        jobKey: TRACES_EXPORT_JOB,
+        recurringEveryMs: TRACES_EXPORT_EVERY_MS,
+        now: Date.now(),
+      });
+      created.jobs.register(ALERTS_EXPORT_JOB, () => exportAlerts(store, telemetry));
+      await enqueueJobOnce(store, {
+        queue: ALERTS_EXPORT_JOB,
+        jobKey: ALERTS_EXPORT_JOB,
+        recurringEveryMs: ALERTS_EXPORT_EVERY_MS,
         now: Date.now(),
       });
       created.jobs.register(QUEUE_DEPTH_JOB, () => recordQueueDepths(store));
@@ -2806,6 +2906,19 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   };
 }
 
+function installedSourceRepository(): { owner: string; repo: string } | null {
+  try {
+    const origin = Bun.spawnSync(["git", "-C", import.meta.dir, "remote", "get-url", "origin"], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    return origin.exitCode === 0 ? parseGitHubRemote(origin.stdout.toString().trim()) : null;
+  } catch (error) {
+    journalCaught(error, "index.installedSourceRepository", null);
+    return null;
+  }
+}
+
 function installedPawsVersion(): string | null {
   if (buildVersion) return buildVersion;
   try {
@@ -2839,7 +2952,7 @@ export function unavailableRemoteExecution(): NonNullable<OrchestratorOptions["r
  */
 function pullCommentFilter(
   runtime: RuntimeConfig,
-  configFile: string,
+  home: string,
   resolveApp: (repository: string) => Promise<ActiveGitHubApp>,
 ): PullCommentFilter {
   const logins = new Map<string, string | null>();
@@ -2866,14 +2979,14 @@ function pullCommentFilter(
     },
     ignoredBots(repository) {
       try {
-        return ignoredCommentBots(readMergeSettings(loadConfigFile(configFile)), repository);
+        return ignoredCommentBots(readMergeSettings(loadSettings(home)), repository);
       } catch {
         return DEFAULT_IGNORED_COMMENT_BOTS.map((login) => login.toLowerCase());
       }
     },
     ignoredMarkers(repository) {
       try {
-        return ignoredCommentMarkers(readMergeSettings(loadConfigFile(configFile)), repository);
+        return ignoredCommentMarkers(readMergeSettings(loadSettings(home)), repository);
       } catch (error) {
         journalCaught(error, "index.commentFilter.ignoredMarkers", null);
         return [];
@@ -2883,19 +2996,18 @@ function pullCommentFilter(
     commentWait() {
       let wait = DEFAULT_COMMENT_WAIT;
       try {
-        wait = readMergeSettings(loadConfigFile(configFile)).commentWait;
+        wait = readMergeSettings(loadSettings(home)).commentWait;
       } catch (error) {
         journalCaught(error, "index.commentFilter.commentWait", null);
-        // A config.toml that does not parse keeps the defaults.
       }
       return { quietMs: wait.quietSeconds * 1000, maxMs: wait.maxWaitSeconds * 1000 };
     },
   };
 }
 
-function ownerCap(configFile: string): number | null {
+function ownerCap(home: string): number | null {
   try {
-    return readQueueSettings(loadConfigFile(configFile)).maxRunningPerOwner;
+    return readQueueSettings(loadSettings(home)).maxRunningPerOwner;
   } catch (caughtError11) {
     journalCaught(caughtError11, "index.ownerCap.readQueueSettings", null);
     return null;
@@ -3128,8 +3240,8 @@ export async function setupLinkMain(
   }
   try {
     const paths = pawsPaths(loadEnv(source).home);
-    const publicUrl = loadRuntime(source).publicUrl;
-    print(await withSecretStore(source, async () => setupLink(paths.secretsDir, publicUrl)));
+    const publicUrl = loadEnv(source).publicUrl;
+    print(await withSecretStore(source, async () => setupLink(paths.secretsDir, publicUrl), null));
     return 0;
   } catch (error) {
     journalCaught(error, "paws setup-link failed.", null);
@@ -3150,10 +3262,14 @@ async function withDatabaseSecrets(
   opened: PawsStore,
   url: string | null,
   secretsDir: string,
+  service = false,
 ): Promise<PawsStore> {
-  if (url === null) return opened;
   try {
-    const secrets = await useDatabaseSecrets(opened.store, secretsDir);
+    const secrets = await useDatabaseSecrets(opened.store, secretsDir, {
+      files: url === null ? [SETUP_TOKEN_FILE] : [],
+      ...(service ? { deleteRetired: { now: Date.now() } } : {}),
+    });
+    await migrateAgentCredentials(opened.store, secretsDir);
     return {
       store: opened.store,
       close: async () => {
@@ -3167,20 +3283,32 @@ async function withDatabaseSecrets(
   }
 }
 
-async function openCommandStore(source: EnvSource): Promise<PawsStore | null> {
+async function openCommandStore(
+  source: EnvSource,
+  settings: string | null,
+): Promise<PawsStore | null> {
   const url = databaseUrlOf(source);
-  if (url === null) return null;
+  if (url === null && settings === null) return null;
   const paths = pawsPaths(loadEnv(source).home);
-  return withDatabaseSecrets(
-    await openPawsStore({ url, pgliteDir: paths.pgliteDir }),
-    url,
-    paths.secretsDir,
+  ensureLayout(paths);
+  const opened = await openPawsStore({ url, pgliteDir: paths.pgliteDir }).catch(
+    (error: unknown) => {
+      if (!(error instanceof PgliteInUseError)) throw error;
+      throw new Error(`Paws is running; open Settings › ${settings} or stop the service first.`, {
+        cause: error,
+      });
+    },
   );
+  return withDatabaseSecrets(opened, url, paths.secretsDir);
 }
 
-async function withSecretStore<T>(source: EnvSource, work: () => Promise<T>): Promise<T> {
+async function withSecretStore<T>(
+  source: EnvSource,
+  work: () => Promise<T>,
+  settings: string | null,
+): Promise<T> {
   if (source.PAWS_SECRET_KEY) process.env.PAWS_SECRET_KEY ??= source.PAWS_SECRET_KEY;
-  const database = await openCommandStore(source);
+  const database = await openCommandStore(source, settings);
   try {
     return await work();
   } finally {
@@ -3188,12 +3316,8 @@ async function withSecretStore<T>(source: EnvSource, work: () => Promise<T>): Pr
   }
 }
 
-async function withCommandStore<T>(command: string, work: (store: Db) => Promise<T>): Promise<T> {
-  const database = await openCommandStore(process.env);
-  if (database === null)
-    throw new Error(
-      `paws ${command} needs PAWS_DATABASE_URL: only the running Paws opens its embedded PGlite database.`,
-    );
+async function withCommandStore<T>(settings: string, work: (store: Db) => Promise<T>): Promise<T> {
+  const database = (await openCommandStore(process.env, settings))!;
   try {
     return await work(database.store);
   } finally {
@@ -3211,8 +3335,8 @@ if (import.meta.main || compiled()) {
   if (command === "runner") process.exit(await runRunnerCli(argv.slice(1)));
   if (command === "runner-storage")
     process.exit(
-      await withSecretStore(process.env, () =>
-        runRunnerTranscriptStorageCli(argv.slice(1), loadEnv(process.env).home),
+      await runRunnerTranscriptStorageCli(argv.slice(1), loadEnv(process.env).home, (work) =>
+        withSecretStore(process.env, work, "Storage"),
       ),
     );
   if (command === "--help" || command === "-h" || command === "help") {
@@ -3220,14 +3344,18 @@ if (import.meta.main || compiled()) {
     process.exit(0);
   }
   if (command === "install" && argv[1] === "secrets")
-    process.exit(await runInstallCli(argv.slice(1), process.env, withSecretStore));
+    process.exit(
+      await runInstallCli(argv.slice(1), process.env, (merged, work) =>
+        withSecretStore(merged, work, null),
+      ),
+    );
   if (command === "setup-link") process.exit(await setupLinkMain(argv.slice(1), process.env));
   if (command === "login" && argv[1] === "slack") {
     try {
       if (argv.length !== 2) throw new Error("usage: paws login slack");
       const home = loadEnv(process.env).home;
       ensureLayout(pawsPaths(home));
-      await withCommandStore("login slack", (store) =>
+      await withCommandStore("Integrations › Slack", (store) =>
         loginSlack({
           db: store,
           home,

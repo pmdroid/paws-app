@@ -3,6 +3,10 @@ import { agentAuthFailureSteps } from "./agent-auth";
 import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
 import { type RunnerCodingAgent } from "../runner-protocol";
 import { AgentAccountError, listAgentBindingsSteps } from "./agent-accounts";
+import {
+  agentCredentialSecretJoin,
+  putAgentCredentialSecretSteps,
+} from "./agent-account-credentials";
 import { enqueueJobSteps } from "./jobs";
 import { wakeRunnerSlotWaitsSteps } from "./runner-capacity";
 import type { Q, Steps } from "./db";
@@ -31,7 +35,7 @@ export function* agentAccountOverviewSteps(
   now: number,
   ownerUserId?: string,
 ): Steps<AgentAccountOverview[]> {
-  const { agentAccount: a, agentAccountCredential: c } = q.t;
+  const { agentAccount: a, agentAccountCredential: c, secret: s } = q.t;
   const { agentAccountBinding: b, runner, runnerLogin } = q.t;
   const accounts = yield* q.all(
     q.orm
@@ -42,12 +46,13 @@ export function* agentAccountOverviewSteps(
         position: a.position,
         extraUsage: a.extraUsage,
         enabled: a.enabled,
-        signedOut: c.ciphertext,
+        signedOut: s.ciphertext,
         refreshedAt: c.updatedAt,
         refreshedBy: c.runnerId,
       })
       .from(a)
       .leftJoin(c, eq(c.accountId, a.id))
+      .leftJoin(s, agentCredentialSecretJoin(q))
       .where(
         and(
           eq(a.workspaceId, workspaceId),
@@ -98,7 +103,7 @@ export function* agentAccountOverviewSteps(
     enabled: row.enabled === 1,
     signingIn: signingIn.has(row.id),
     credential:
-      row.refreshedAt === null || row.signedOut === "" || expired.has(row.id)
+      row.refreshedAt === null || !row.signedOut || expired.has(row.id)
         ? null
         : {
             refreshedAt: row.refreshedAt,
@@ -202,4 +207,5 @@ export function* signOutAgentAccountSteps(
       .values({ accountId: row.id, ...signedOut })
       .onConflictDoUpdate({ target: c.accountId, set: signedOut }),
   );
+  yield* putAgentCredentialSecretSteps(q, row.id, null, input.now);
 }

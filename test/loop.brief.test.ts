@@ -189,7 +189,7 @@ test.each([
         home: process.env.HOME,
         launch,
       });
-      const configPath = join(pawsRoot, "config.toml");
+      const configPath = pawsRoot;
       useMemorySettings(configPath);
       await writeBriefTemplates(configPath, {
         template: `${workspace}\n\n${defaultBriefTemplate()}`,

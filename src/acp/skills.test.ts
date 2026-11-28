@@ -62,10 +62,7 @@ async function fixture() {
     "Local added skill\nRead references/context.txt.\n",
   );
   await writeFile(join(skillRoot, "added/references/context.txt"), "Local reference\n");
-  useMemorySettings(
-    join(pawsRoot, "config.toml"),
-    '[skills.projects."Acme/Demo"]\nroot = "local skills"\n',
-  );
+  useMemorySettings(pawsRoot, '[skills.projects."Acme/Demo"]\nroot = "local skills"\n');
   return { root, source, pawsRoot, skillRoot };
 }
 
@@ -150,7 +147,7 @@ test("local additions and replacements run with resources without entering candi
 test("follow-up runs discover project skills from origin while review material stays authoritative", async () => {
   const layout = await fixture();
   await git(["-C", layout.source, "remote", "add", "origin", "git@github.com:acme/demo.git"]);
-  const config = parseConfigToml(readConfigText(join(layout.pawsRoot, "config.toml")));
+  const config = parseConfigToml(readConfigText(layout.pawsRoot));
   const selected = await loadImplementationSkills({
     config,
     pawsRoot: layout.pawsRoot,

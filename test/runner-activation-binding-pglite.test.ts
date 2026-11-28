@@ -6,7 +6,13 @@ import {
   updateRunnerStatusSteps,
   type Db,
 } from "../src/db";
-import { describePglite, seed, withoutForeignKeys, type PgliteTestDb } from "./pglite-fixtures";
+import {
+  describePglite,
+  sealedCredentialSecret,
+  seed,
+  withoutForeignKeys,
+  type PgliteTestDb,
+} from "./pglite-fixtures";
 import { seedRunner } from "./runner-rows";
 
 const NOW = 1_800_000_000_000;
@@ -39,14 +45,17 @@ async function account(
     }),
   );
   if (options.signedIn)
-    await seed(db, (q) =>
-      q.orm.insert(q.t.agentAccountCredential).values({
-        accountId: created.id,
-        agent,
-        ciphertext: "sealed",
-        version: 1,
-        updatedAt: NOW,
-      }),
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.agentAccountCredential).values({
+          accountId: created.id,
+          agent,
+          ciphertext: "",
+          version: 1,
+          updatedAt: NOW,
+        }),
+      sealedCredentialSecret(created.id, NOW),
     );
   return created.id;
 }

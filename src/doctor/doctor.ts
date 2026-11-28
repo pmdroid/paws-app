@@ -1,7 +1,7 @@
 import { journalCaught } from "../journal";
 import { accessSync, constants, statSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { checkSecrets, storedSecrets } from "../credentials";
+import { resolve } from "node:path";
+import { checkSecrets, secretFilesOnDisk, storedSecrets } from "../credentials";
 import { GROK_LOGIN_MESSAGE } from "../acp";
 import {
   LINEAR_WORKSPACE_REQUIRED,
@@ -21,7 +21,6 @@ import {
 import { doctorAgentProfiles, type DoctorAgentConfig } from "./agents";
 import type { GrokLoginStatus } from "../install";
 import { realProbeFacts, type GitHubDoctorFacts, type ProbeFacts } from "./probe";
-import { DATABASE_HELD, withSavedStore, type SavedStore } from "./store";
 
 export type DoctorCheck = {
   name: string;
@@ -37,6 +36,7 @@ export type DoctorContext = {
   config?: DoctorAgentConfig;
   /** Login probe for `agents.implementer = grok`. */
   grok?: GrokLoginStatus | null;
+  deployLagUnavailable?: string | null;
 };
 
 export type DoctorProbe = {
@@ -52,8 +52,9 @@ const FIX = {
   git: "Install git and put it on PATH.",
   bun: "Install Bun 1.4 or newer and run this process with bun.",
   home: "Create ~/.paws and make sure this user can write it.",
-  database: 'See "A database from an older Paws" in docs/postgres.md.',
   linear: "Open Paws in your browser and connect Linear.",
+  linearClient:
+    "Set LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET together in the service environment, or remove both and enter the client through the setup link.",
   mode: "Connect your Linear workspace in the Paws website.",
   team: "Choose the Linear teams in workspace settings.",
   workspace: LINEAR_WORKSPACE_REQUIRED,
@@ -66,7 +67,7 @@ const FIX = {
     "Set LINEAR_WEBHOOK_SECRET to the Linear webhook signing secret, or enter it through the setup link.",
   publicUrl: "Set PAWS_PUBLIC_URL to the public https origin.",
   githubApp:
-    "Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH (mode 0600), or save them in ~/.paws/secrets/github-app.json (docs/github-app.md).",
+    "Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH (mode 0600), or save the GitHub App in Settings > Integrations (docs/github-app.md).",
   githubInstallation:
     "Install the GitHub App on the repository and connect it in Settings > Integrations (docs/github-app.md).",
   githubPush:
@@ -81,7 +82,7 @@ const FIX = {
   githubWebhook:
     "Enable the GitHub App webhook at PAWS_PUBLIC_URL/webhooks/github with GITHUB_WEBHOOK_SECRET and the Check runs, Check suites, Statuses, Pull requests, Pull request reviews, Pull request review comments, Issue comments and Merge groups events (docs/github-app.md).",
   githubEvents:
-    "In the GitHub App settings, under Permissions & events, subscribe to Check run, Check suite, Status, Pull request, Pull request review, Pull request review comment, Issue comment and Merge group, then accept the change on the installation (docs/github-app.md).",
+    "In the GitHub App settings, under Permissions & events, subscribe to Check run, Check suite, Status, Pull request, Pull request review, Pull request review comment, Issue comment, Merge group, Push and Release, then accept the change on the installation (docs/github-app.md).",
   slack:
     "Reconnect Slack in Workspace > Integrations so Slack grants the missing scopes (docs/slack.md).",
 } as const;
@@ -109,6 +110,7 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
     ),
   ];
   {
+    if (facts.linearClient) checks.push(linearClientCheck(facts.linearClient));
     checks.push(linearCheck(facts), workspaceCheck(probe.env, facts), teamCheck(facts));
   }
   checks.push(...githubAppChecks(probe, facts.githubDoctor));
@@ -126,10 +128,9 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
       FIX.repo,
     ),
   );
-  if (facts.databaseHeld) checks.push(note("database", DATABASE_HELD));
-  if (facts.databaseRefused)
-    checks.push(check("database", false, facts.databaseRefused, FIX.database));
-  if (facts.secrets) checks.push(secretsCheck(facts.secrets));
+  if (context.deployLagUnavailable)
+    checks.push(note("deploy-lag", `deploy lag can't be checked: ${context.deployLagUnavailable}`));
+  if (facts.secrets) checks.push(secretsCheck(facts.secrets), ...secretFileChecks(facts.secrets));
   if (facts.exeDevToken !== undefined)
     checks.push(providerKeyCheck("exe-dev", "exe.dev", facts.exeDevToken, FIX.exeDev));
   if (facts.boatToken !== undefined)
@@ -140,14 +141,13 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
     checks.push(tailscaleAuthKeyCheck(facts.tailscaleAuthKey, isTailnetUrl(facts.publicUrl)));
   for (const slack of facts.slack ?? []) checks.push(...slackChecks(slack));
   if (facts.webhooks) {
-    const linearSecret =
-      env.linearWebhookSecret !== null ||
-      probe.stat(join(paths.secretsDir, "linear-webhook")) !== null;
+    const webhook =
+      facts.linearClient?.webhook ?? (env.linearWebhookSecret !== null ? "environment" : "unset");
     checks.push(
       check(
         "linear-webhook",
-        linearSecret,
-        linearSecret ? "secret configured" : "LINEAR_WEBHOOK_SECRET is empty",
+        webhook !== "unset",
+        webhook !== "unset" ? `secret configured (${webhook})` : "LINEAR_WEBHOOK_SECRET is empty",
         FIX.webhook,
       ),
       ...(facts.linearWebhook === undefined ? [] : [webhookDeliveryCheck(facts.linearWebhook)]),
@@ -159,7 +159,11 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
       ),
     );
   }
-  if (facts.webhooks || env.githubWebhookSecret !== null || facts.githubDelivery) {
+  if (
+    facts.webhooks ||
+    (facts.githubWebhookSecret ?? env.githubWebhookSecret !== null) ||
+    facts.githubDelivery
+  ) {
     const delivery = facts.githubDelivery ?? null;
     checks.push(
       check(
@@ -185,21 +189,17 @@ export function formatDoctor(checks: readonly DoctorCheck[]): string {
   return lines.join("\n");
 }
 
-export async function realProbe(env: EnvSource = process.env, store?: Db): Promise<DoctorProbe> {
-  const probeFacts = async (saved: SavedStore) => {
-    const secretsDir = pawsPaths(loadEnv(env).home).secretsDir;
-    const stored = storedSecrets()?.map((row) => resolve(secretsDir, row.name)) ?? null;
-    const secrets = { ...checkSecrets(secretsDir), stored };
-    try {
-      return { ...(await realProbeFacts(env, saved)), secrets };
-    } catch (error) {
-      if (secrets.failed.length === 0) throw error;
-      throw new Error(formatDoctor([secretsCheck(secrets)]), { cause: error });
-    }
-  };
-  const facts = await (store === undefined
-    ? withSavedStore(env, probeFacts)
-    : probeFacts({ store, held: false }));
+export async function realProbe(env: EnvSource, store: Db): Promise<DoctorProbe> {
+  const secretsDir = pawsPaths(loadEnv(env).home).secretsDir;
+  const stored = storedSecrets()?.map((row) => resolve(secretsDir, row.name)) ?? null;
+  const secrets = { ...checkSecrets(secretsDir), stored, files: secretFilesOnDisk(secretsDir) };
+  let facts: ProbeFacts;
+  try {
+    facts = { ...(await realProbeFacts(env, store)), secrets };
+  } catch (error) {
+    if (secrets.failed.length === 0) throw error;
+    throw new Error(formatDoctor([secretsCheck(secrets)]), { cause: error });
+  }
   return {
     env,
     facts,
@@ -237,7 +237,7 @@ export async function realProbe(env: EnvSource = process.env, store?: Db): Promi
 
 /** `github-app` credentials, then the installation and push access on the repository. */
 function githubAppChecks(probe: DoctorProbe, github: GitHubDoctorFacts): DoctorCheck[] {
-  const credentials = githubAppCheck(probe, github.appId, github.privateKeyPath);
+  const credentials = githubAppCheck(probe, github);
   if (!credentials.ok) return [credentials];
   return [
     credentials,
@@ -251,6 +251,13 @@ function githubAppChecks(probe: DoctorProbe, github: GitHubDoctorFacts): DoctorC
     check("github-rate", github.rate.ok, github.rate.detail, FIX.githubRate),
     check("github-app-events", github.events.ok, github.events.detail, FIX.githubEvents),
   ];
+}
+
+function linearClientCheck(client: NonNullable<ProbeFacts["linearClient"]>): DoctorCheck {
+  if (client.error !== null) return check("linear-client", false, client.error, FIX.linearClient);
+  if (client.client === "unset")
+    return check("linear-client", false, "no Linear OAuth client", FIX.linearClient);
+  return check("linear-client", true, `OAuth client from ${client.client}`);
 }
 
 function linearCheck(facts: ProbeFacts): DoctorCheck {
@@ -299,13 +306,16 @@ function closeoutCheck(facts: ProbeFacts): DoctorCheck {
   return check("closeout", false, facts.closeout.detail, facts.closeout.fix ?? FIX.closeout);
 }
 
-function githubAppCheck(
-  probe: DoctorProbe,
-  appId: string | null,
-  keyPath: string | null,
-): DoctorCheck {
+function githubAppCheck(probe: DoctorProbe, github: GitHubDoctorFacts): DoctorCheck {
+  const { appId, privateKeyPath: keyPath, privateKeyReadable: readable } = github;
+  if (keyPath === null && appId !== null)
+    return readable
+      ? check("github-app", true, `app ${appId} configured (key saved in Settings)`)
+      : check("github-app", false, "GitHub App private key is missing", FIX.githubApp);
   const keyStat = keyPath === null ? null : probe.stat(keyPath);
   const mode = keyStat === null ? null : keyStat.mode & 0o777;
+  if (appId !== null && keyStat !== null && readable === false)
+    return check("github-app", false, "GitHub App private key is not a usable key", FIX.githubApp);
   const ok = appId !== null && keyStat !== null && (mode === 0o600 || mode === 0o400);
   return check("github-app", ok, githubDetail(appId, keyStat !== null, mode), FIX.githubApp);
 }
@@ -456,6 +466,28 @@ function secretsCheck(secrets: NonNullable<ProbeFacts["secrets"]>): DoctorCheck 
       : `${key} does not decrypt ${secrets.failed.join(", ")} in ${secrets.where}`,
     "Set PAWS_SECRET_KEY to the base64 of the .envelope-key these secrets were written with.",
   );
+}
+
+function secretFileChecks({ files }: NonNullable<ProbeFacts["secrets"]>): DoctorCheck[] {
+  if (files === undefined) return [];
+  const checks: DoctorCheck[] = [];
+  if (files.kept > 0)
+    checks.push(
+      check(
+        "secret-files",
+        false,
+        `${files.kept} secret ${files.kept === 1 ? "file" : "files"} still on disk besides the table`,
+        "Paws journals at startup why it kept each file. Save the right value through Paws, then restart it.",
+      ),
+    );
+  if (files.retired.length > 0)
+    checks.push(
+      note(
+        "secret-files-retired",
+        `retired copies in ${files.retired.join(", ")} are still usable secrets on this host; Paws deletes a folder at startup once it is 24 hours old, its files decrypt from the table and the previous start completed`,
+      ),
+    );
+  return checks;
 }
 
 function check(name: string, ok: boolean, detail: string, fix?: string): DoctorCheck {

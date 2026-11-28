@@ -1,4 +1,4 @@
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import { defaultRecorder, statusClass, type MetricsRecorder } from "../metrics";
 import {
   budgetFromHeaders,
@@ -16,6 +16,10 @@ import {
 import type { FetchLike, LinearAuth } from "./oauth";
 
 const GRAPHQL_URL = "https://api.linear.app/graphql";
+
+export const LINEAR_SLOW_CALL_MS = 5_000;
+
+type LinearPhase = "ledger" | "current" | "authorize" | "token" | "fetch" | "body";
 
 export type LinearClient = {
   query(
@@ -36,18 +40,42 @@ export function createLinearClient(options: {
   const ledger = options.ledger ?? createLinearLedger();
   const client: LinearClient = {
     async query(query, variables, { signal, isCurrent } = {}) {
-      const current = async () => {
-        signal?.throwIfAborted();
-        if (isCurrent && !(await isCurrent())) throw new Error("Linear request was superseded.");
+      const began = performance.now();
+      const phases = new Map<LinearPhase, number>();
+      let slow = false;
+      const timed = async <T>(phase: LinearPhase, work: () => Promise<T>): Promise<T> => {
+        const at = performance.now();
+        try {
+          return await work();
+        } finally {
+          const now = performance.now();
+          metrics.recordDuration("linear.phase", { phase }, now - at);
+          phases.set(phase, (phases.get(phase) ?? 0) + now - at);
+          if (!slow && now - began > LINEAR_SLOW_CALL_MS) {
+            slow = true;
+            const spent = [...phases].sort((x, y) => y[1] - x[1]);
+            journal(
+              `linear call ${currentLinearCaller().caller} slow ${Math.round(now - began)}ms phase=${spent[0]![0]} ${spent.map(([name, ms]) => `${name}=${Math.round(ms)}`).join(" ")}`,
+            );
+          }
+        }
       };
+      const current = () =>
+        timed("current", async () => {
+          signal?.throwIfAborted();
+          if (isCurrent && !(await isCurrent())) throw new Error("Linear request was superseded.");
+        });
       await current();
       const { caller, priority, item, itemId } = currentLinearCaller();
-      const held =
-        ledger.admit(caller, priority, query) ?? (await ledger.reserve(caller, priority));
+      const held = await timed(
+        "ledger",
+        async () =>
+          ledger.admit(caller, priority, query) ?? (await ledger.reserve(caller, priority)),
+      );
       if (held !== null) throw held;
       const run = async (token: string) => {
         await current();
-        await options.auth.assertAuthorized?.();
+        await timed("authorize", async () => options.auth.assertAuthorized?.());
         const started = performance.now();
         const observe = (status: number | null) =>
           metrics.recordDuration(
@@ -55,7 +83,7 @@ export function createLinearClient(options: {
             { caller, status_class: statusClass(status) },
             performance.now() - started,
           );
-        const response = await fetchImpl(GRAPHQL_URL, {
+        const request = fetchImpl(GRAPHQL_URL, {
           method: "POST",
           headers: {
             "content-type": "application/json",
@@ -63,7 +91,8 @@ export function createLinearClient(options: {
           },
           body: JSON.stringify({ query, variables: variables ?? {} }),
           ...(signal === undefined ? {} : { signal }),
-        }).catch((error: unknown) => {
+        });
+        const response = await timed("fetch", () => request).catch((error: unknown) => {
           if (!signal?.aborted) observe(null);
           throw error;
         });
@@ -72,10 +101,11 @@ export function createLinearClient(options: {
       };
       let response: Response;
       try {
-        let token = await abortable(options.auth.ensureFresh(), signal);
+        let token = await timed("token", () => abortable(options.auth.ensureFresh(), signal));
         response = await run(token);
         if (response.status === 401) {
-          token = await abortable(options.auth.forceRefresh(), signal);
+          void response.body?.cancel().catch(() => undefined);
+          token = await timed("token", () => abortable(options.auth.forceRefresh(), signal));
           response = await run(token);
         }
       } catch (error) {
@@ -86,7 +116,8 @@ export function createLinearClient(options: {
       if (budget.requestsRemaining !== null)
         metrics.setGauge("linear.rate_remaining", {}, budget.requestsRemaining);
       await ledger.observe(caller, budget, item, itemId, query);
-      const json: unknown = await abortable(response.json(), signal).catch((error: unknown) => {
+      const body = () => readBody(response, signal);
+      const json: unknown = await timed("body", body).catch((error: unknown) => {
         signal?.throwIfAborted();
         if (error instanceof Error && error.name === "AbortError") throw error;
         journalCaught(error, "graphql.query.abortable", itemId, "cancellation may interrupt work");
@@ -144,6 +175,24 @@ export function callerClient(
   const ledger = linearLedger(client);
   if (ledger !== null) useLinearLedger(labelled, ledger);
   return labelled;
+}
+
+async function readBody(response: Response, signal?: AbortSignal): Promise<unknown> {
+  if (signal === undefined || response.body === null) return response.json();
+  const reader = response.body.getReader();
+  const cancel = () => void reader.cancel(signal.reason).catch(() => undefined);
+  if (signal.aborted) cancel();
+  signal.addEventListener("abort", cancel, { once: true });
+  try {
+    const chunks: Uint8Array[] = [];
+    for (;;) {
+      const { done, value } = await abortable(reader.read(), signal);
+      if (done) return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      chunks.push(value);
+    }
+  } finally {
+    signal.removeEventListener("abort", cancel);
+  }
 }
 
 async function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {

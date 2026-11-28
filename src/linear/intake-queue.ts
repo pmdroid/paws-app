@@ -1,16 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { idleBackstopMs, listenForNotify, type Db } from "../db";
 import { linearCommentOf } from "./comments";
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
+import { defaultRecorder, type MetricsRecorder } from "../metrics";
 import { acknowledgeNewSession } from "./acknowledge";
 import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 import { linearCaller, linearItem, LinearRateLimitError, type LinearLedger } from "./budget";
 import type { AcceptedLinearEvent } from "./events";
+import { LinearForeignInstallationError } from "./access";
 import { LinearEntityNotFoundError } from "./graphql";
 import type { InboxStore, QueuedLinearEvent } from "./inbox";
 
 /** Intakes that run at once. The rest wait in `inbox_event`, oldest first. */
-export const INTAKE_CONCURRENCY = 2;
+export const INTAKE_CONCURRENCY = 6;
+
+export const INTAKE_DEADLINE_MS = 45_000;
 
 export const INTAKE_LEASE_MS = 2 * 60_000;
 
@@ -58,9 +62,15 @@ export type IntakeQueue = {
 export function createIntakeQueue(options: {
   store: InboxStore;
   arrive: (event: AcceptedLinearEvent) => Promise<void | boolean>;
-  deliver: (event: AcceptedLinearEvent, attempts: number) => Promise<void | boolean>;
+  deliver: (
+    event: AcceptedLinearEvent,
+    attempts: number,
+    signal: AbortSignal,
+  ) => Promise<void | boolean>;
   ledger?: LinearLedger;
   concurrency?: number;
+  deadline?: (ms: number) => AbortSignal;
+  metrics?: MetricsRecorder;
   owner?: string;
   leaseMs?: number;
   pollMs?: number;
@@ -74,7 +84,14 @@ export function createIntakeQueue(options: {
   const owner = options.owner ?? `paws:${randomUUID()}`;
   const leaseMs = options.leaseMs ?? INTAKE_LEASE_MS;
   const pollMs = options.pollMs ?? INTAKE_POLL_MS;
+  const deadline = options.deadline ?? ((ms: number) => AbortSignal.timeout(ms));
+  const metrics = options.metrics ?? defaultRecorder;
   const arrivals = new Set<Promise<void>>();
+  const finishing = new Set<string>();
+  const finish = (dedupeKey: string) => {
+    finishing.add(dedupeKey);
+    return store;
+  };
   const intakes = new Set<Promise<void>>();
   let pausedUntil = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -97,15 +114,18 @@ export function createIntakeQueue(options: {
   };
 
   const held = (dedupeKey: string, work: () => Promise<void>, into: Set<Promise<void>>) => {
+    let released = false;
     const renewal = setInterval(() => {
       void guarded("intake-queue.createIntakeQueue.renew", async () => {
-        if (!(await store.renew(dedupeKey, lease())))
+        if (!(await store.renew(dedupeKey, lease())) && !released && !finishing.has(dedupeKey))
           log(`linear intake ${dedupeKey} lost its lease to another instance`);
       });
     }, leaseMs / 4);
     renewal.unref?.();
     const release = async () => {
+      released = true;
       clearInterval(renewal);
+      finishing.delete(dedupeKey);
       into.delete(running);
       await guarded("intake-queue.createIntakeQueue.release", async () => {
         await store.release(dedupeKey, owner);
@@ -157,22 +177,44 @@ export function createIntakeQueue(options: {
     held(
       event.dedupeKey,
       async () => {
+        const started = now();
+        let outcome = "handled";
         try {
-          await options.deliver((await store.get(event.dedupeKey)) ?? event, queued.attempts);
-          await store.markHandled(event.dedupeKey);
+          const newer =
+            event.action === "prompted" ? await store.newerDuplicatePrompt(event.dedupeKey) : null;
+          if (newer !== null) {
+            outcome = "coalesced";
+            journal(`linear intake ${event.dedupeKey} coalesced into ${newer}`);
+            await finish(event.dedupeKey).markHandled(event.dedupeKey);
+            return;
+          }
+          const signal = deadline(INTAKE_DEADLINE_MS);
+          await untilAborted(
+            signal,
+            options.deliver((await store.get(event.dedupeKey)) ?? event, queued.attempts, signal),
+          );
+          await finish(event.dedupeKey).markHandled(event.dedupeKey);
         } catch (error) {
+          outcome = "failed";
           journalCaught(error, "intake-queue.createIntakeQueue.deliver", null);
           if (stopped) return;
           if (error instanceof LinearEntityNotFoundError && error.entity === "AgentSession") {
             log(`linear session ${event.sessionId ?? "unknown"} no longer exists; skipped`);
-            await store.markHandled(event.dedupeKey);
+            await finish(event.dedupeKey).markHandled(event.dedupeKey);
+            return;
+          }
+          if (error instanceof LinearForeignInstallationError) {
+            log(
+              `linear session ${event.sessionId ?? "unknown"} belongs to another installation; skipped`,
+            );
+            await finish(event.dedupeKey).markHandled(event.dedupeKey);
             return;
           }
           const at = now();
           const message = error instanceof Error ? error.message : "intake failed";
           if (error instanceof LinearRateLimitError) {
             pausedUntil = Math.max(pausedUntil, at + error.retryAfterMs);
-            await store.markFailed(event.dedupeKey, {
+            await finish(event.dedupeKey).markFailed(event.dedupeKey, {
               error: message,
               nextAttemptAt: at + Math.max(error.retryAfterMs, INTAKE_RETRY_MS[0]),
               counted: false,
@@ -181,7 +223,7 @@ export function createIntakeQueue(options: {
           }
           const attempts = queued.attempts + 1;
           const waitMs = intakeRetryMs(attempts);
-          await store.markFailed(event.dedupeKey, {
+          await finish(event.dedupeKey).markFailed(event.dedupeKey, {
             error: message,
             nextAttemptAt: at + waitMs,
             counted: true,
@@ -189,6 +231,8 @@ export function createIntakeQueue(options: {
           log(
             `linear intake ${event.dedupeKey} failed (attempt ${attempts}), retrying in ${Math.round(waitMs / 1000)}s: ${message}`,
           );
+        } finally {
+          metrics.recordDuration("intake.duration", { outcome }, now() - started);
         }
       },
       intakes,
@@ -215,7 +259,7 @@ export function createIntakeQueue(options: {
             options
               .arrive(event)
               .then(async (accepted) => {
-                if (accepted === false) await store.markHandled(event.dedupeKey);
+                if (accepted === false) await finish(event.dedupeKey).markHandled(event.dedupeKey);
               })
               .catch((error: unknown) => {
                 journalCaught(error, "intake-queue.arrive.then", null);
@@ -261,12 +305,13 @@ export function createLinearIntake(options: {
   signal: AbortSignal;
   ledger?: LinearLedger;
   concurrency?: number;
+  deadline?: (ms: number) => AbortSignal;
   owner?: string;
   pollMs?: number;
   now?: () => number;
   log?: (line: string) => void;
 }): { onEvent: LinearEventDelivery; queue: IntakeQueue } {
-  const { tracker, followUp, beforeEvent, progressReporter, signal } = options;
+  const { tracker, followUp, beforeEvent, progressReporter } = options;
   const inflight = new Map<string, Promise<void | boolean>>();
   const acknowledged = new Set<string>();
   /** Events whose access check and first activity already ran on arrival. */
@@ -275,8 +320,12 @@ export function createLinearIntake(options: {
 
   const run = (
     event: AcceptedLinearEvent,
-    mode: { phase: "all" | "arrive" | "intake"; attempts: number },
+    mode: { phase: "all" | "arrive" | "intake"; attempts: number; deadline?: AbortSignal },
   ) => {
+    const signal =
+      mode.deadline === undefined
+        ? options.signal
+        : AbortSignal.any([options.signal, mode.deadline]);
     if (closed) return Promise.reject(new Error("Linear event delivery is shutting down"));
     const key = mode.phase === "arrive" ? `arrive:${event.dedupeKey}` : event.dedupeKey;
     const existing = inflight.get(key);
@@ -287,7 +336,7 @@ export function createLinearIntake(options: {
     const reportProgress = progressReporter?.(event);
     const identifier = eventIssueIdentifier(event);
     const forIssue = <T>(task: () => T): T => (identifier ? linearItem(identifier, task) : task());
-    const work = forIssue(() =>
+    const task = forIssue(() =>
       linearCaller("events", async () => {
         signal.throwIfAborted();
         if (mode.phase !== "arrive" && linearCommentOf(event) !== null)
@@ -329,9 +378,12 @@ export function createLinearIntake(options: {
           },
         );
       }),
-    ).finally(() => {
-      inflight.delete(key);
-    });
+    );
+    const work = (mode.deadline === undefined ? task : untilAborted(mode.deadline, task)).finally(
+      () => {
+        inflight.delete(key);
+      },
+    );
     inflight.set(key, work);
     return work;
   };
@@ -348,15 +400,26 @@ export function createLinearIntake(options: {
   const queue = createIntakeQueue({
     store: options.store,
     arrive: (event) => run(event, { phase: "arrive", attempts: 0 }),
-    deliver: (event, attempts) => run(event, { phase: "intake", attempts }),
+    deliver: (event, attempts, deadline) => run(event, { phase: "intake", attempts, deadline }),
     ledger: options.ledger,
     concurrency: options.concurrency,
+    deadline: options.deadline,
     owner: options.owner,
     pollMs: options.pollMs,
     now: options.now,
     log: options.log,
   });
   return { onEvent, queue };
+}
+
+function untilAborted<T>(signal: AbortSignal, work: Promise<T>): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return Promise.race([
+    work,
+    new Promise<never>((_, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }),
+  ]);
 }
 
 async function guarded(site: string, run: () => Promise<unknown>): Promise<void> {

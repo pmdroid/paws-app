@@ -65,6 +65,31 @@ export function createRunnerResults(options: { store: Db; work: RunnerWork; now?
       throw new RunnerWorkFencedError("Runner result belongs to fenced work.");
     return command;
   }
+  function* questionTurnSteps(
+    q: Q,
+    key: { runId: string; generation: number },
+    result: RunnerResult,
+  ) {
+    if (
+      result.role !== "implementer" ||
+      result.stopReason !== "end_turn" ||
+      result.timedOut ||
+      result.authRequired ||
+      result.interrupted ||
+      result.handedOver ||
+      result.handoverFailure !== undefined ||
+      result.sessionId !== undefined ||
+      result.identity !== undefined ||
+      result.errorMessage !== undefined ||
+      result.failureReason !== undefined
+    )
+      return false;
+    for (const answer of yield* runnerQuestionAnswersAfterSteps(q, key, 0)) {
+      const event = yield* storedRunnerEventSteps(q, key, answer.sequence);
+      if (event && (yield* work.openEventSteps(q, event)).type === "question") return true;
+    }
+    return false;
+  }
   const api = {
     async submit(input: {
       runnerId: string;
@@ -86,11 +111,14 @@ export function createRunnerResults(options: { store: Db; work: RunnerWork; now?
             (result.candidateSha !== undefined || result.reviewText !== undefined)) ||
           (command.type === "run" && result.reviewText !== undefined) ||
           (command.type === "review" && result.candidateSha !== undefined) ||
-          (result.candidateSha !== undefined && (result.cancelled || !result.agentExited)) ||
+          (result.candidateSha !== undefined && result.cancelled) ||
           (result.handedOver &&
             (command.type !== "run" || result.cancelled || !result.agentExited)) ||
           (result.handoverFailure !== undefined &&
-            (command.type !== "run" || result.handedOver || result.cancelled))
+            (command.type !== "run" || result.handedOver || result.cancelled)) ||
+          (result.candidateSha !== undefined &&
+            !result.agentExited &&
+            !(command.type === "run" && (yield* questionTurnSteps(q, input, result))))
         )
           throw new Error("Runner result command binding is invalid.");
         const payload = JSON.stringify(result);

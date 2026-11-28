@@ -146,12 +146,8 @@ try:
         assert calls["artifact"]["ok"] and calls["askTeam"]["text"] == "Yes"
     coordinator.send_signal(signal.SIGTERM)
     assert coordinator.wait(timeout=5) == 0
-    db = sqlite3.connect(root / "server" / "paws.db")
-    rows = db.execute("SELECT payload FROM runner_result ORDER BY rowid").fetchall()
-    events = db.execute("SELECT payload FROM runner_event ORDER BY rowid").fetchall()
-    answers = db.execute("SELECT answer FROM runner_question_answer ORDER BY rowid").fetchall()
-    transcripts = db.execute("SELECT execution_id,sealed_size,sha256,uri FROM runner_transcript WHERE uri IS NOT NULL ORDER BY rowid").fetchall()
-    db.close()
+    facts = json.loads((root / "server" / "facts.json").read_text())
+    rows, events, answers, transcripts = facts["results"], facts["events"], facts["answers"], facts["transcripts"]
     assert len(transcripts) == (1 if permanent else 2)
     for execution_id, size, digest, uri in transcripts:
         raw = (root / "results" / execution_id / "events.jsonl").read_bytes()
@@ -168,12 +164,12 @@ try:
     journal.close()
     assert len(offsets) == len(transcripts) and all(consumed == uploaded and uploaded > 0 for consumed, uploaded in offsets)
     assert len(rows) == (1 if permanent else 2)
-    results = [json.loads(row[0]) for row in rows]
+    results = rows
     if not permanent:
         assert results[0]["role"] == "implementer" and results[0]["candidateSha"]
     review = results[-1]
     assert review["role"] == "reviewer" and review["reviewText"] == "[]" and "candidateSha" not in review
-    kinds = [json.loads(row[0])["type"] for row in events]
+    kinds = [event["type"] for event in events]
     assert kinds.count("question") == kinds.count("artifact") == (1 if permanent else 2)
     assert len(answers) == (2 if permanent else 4)
     branch = subprocess.run(["/usr/bin/git", "-c", "safe.directory=*", "--git-dir", str(root / "origin.git"), "show-ref"], check=not permanent, capture_output=True, text=True).stdout

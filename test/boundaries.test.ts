@@ -91,6 +91,7 @@ const MODULES = [
   "notebook",
   "storage-usage",
   "storage-cleanup",
+  "runner-host-metrics",
   "metrics",
   "alerts",
   "telemetry",
@@ -136,7 +137,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   assets: [],
   db: ["assets", "journal", "core", "runner-protocol", "dashboard-links", "host-operation"],
   linear: ["journal", "core", "credentials", "db", "webhook-body", "metrics"],
-  intake: ["journal", "core", "db", "linear", "dashboard-links"],
+  intake: ["journal", "core", "db", "linear", "dashboard-links", "runner-placement"],
   "execution-controls": ["journal", "core", "db", "workspace"],
   scheduler: ["journal", "core", "db", "intake"],
   "finding-groups": ["db", "linear"],
@@ -213,6 +214,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "storage-usage",
     "webhook-body",
   ],
+  "runner-host-metrics": ["db", "metrics", "runner-protocol", "webhook-body"],
   metrics: ["db"],
   telemetry: ["config", "credentials", "db", "journal", "metrics"],
   "project-context": ["db", "linear"],
@@ -253,8 +255,10 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "slack",
     "improvements",
     "notebook",
+    "credentials",
   ],
   doctor: [
+    "onboarding",
     "journal",
     "credentials",
     "config",
@@ -283,6 +287,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   "runner-repository-commands": ["journal", "db", "runner-protocol", "workspace"],
   "runner-transcript-config": [
+    "config",
     "journal",
     "credentials",
     "runner-transcripts",
@@ -442,11 +447,11 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-models": ["journal", "db", "runner-work", "runner-protocol", "runner-placement"],
   provisioning: ["journal", "config"],
   "member-vm": ["journal", "config", "db", "provisioning", "vm-provider-checks", "workspace"],
-  "issue-vm": ["config", "db", "journal", "provisioning", "settings", "workspace"],
+  "issue-vm": ["config", "db", "journal", "provisioning", "settings", "vm-hosts", "workspace"],
   "vm-hosts": ["db", "journal", "webhook-body", "workspace"],
   "vm-provider-checks": ["config", "db", "journal", "provisioning"],
   "review-score": ["db"],
-  alerts: ["db"],
+  alerts: ["db", "telemetry"],
 };
 
 describe("module boundaries", () => {

@@ -207,3 +207,79 @@ export async function readCommit(
     parents: body.parents.map((parent) => String(parent.sha).toLowerCase()),
   };
 }
+
+async function readDefaultBranch(input: HeadRead): Promise<string> {
+  const token = await acquireOperationToken(input, "pr");
+  const read = await input.client.request({
+    method: "GET",
+    path: repoApiPath(input.owner, input.repo, ""),
+    token,
+    signal: input.signal,
+  });
+  const branch = (read.body as { default_branch?: unknown } | null)?.default_branch;
+  if (read.status !== 200 || typeof branch !== "string")
+    throw new Error(`Could not read ${input.owner}/${input.repo}`);
+  return branch;
+}
+
+async function readMissingCommits(
+  input: HeadRead & { base: string; branch: string },
+): Promise<{ count: number; committedAt: number[] } | null> {
+  const token = await acquireOperationToken(input, "pr");
+  const compared = await input.client.request({
+    method: "GET",
+    path: repoApiPath(
+      input.owner,
+      input.repo,
+      `/compare/${encodeURIComponent(input.base)}...${encodeURIComponent(input.branch)}`,
+    ),
+    token,
+    signal: input.signal,
+  });
+  if (compared.status === 404) return null;
+  const body = compared.body as {
+    ahead_by?: unknown;
+    commits?: { commit?: { committer?: { date?: unknown } } }[];
+  } | null;
+  if (compared.status !== 200 || typeof body?.ahead_by !== "number")
+    throw new Error(`Could not compare ${input.branch} with ${input.base}`);
+  return {
+    count: body.ahead_by,
+    committedAt: (body.commits ?? [])
+      .map((entry) => Date.parse(String(entry.commit?.committer?.date)))
+      .filter(Number.isFinite),
+  };
+}
+
+async function readLatestRelease(
+  input: HeadRead,
+): Promise<{ version: string; publishedAt: number } | null> {
+  const token = await acquireOperationToken(input, "pr");
+  const read = await input.client.request({
+    method: "GET",
+    path: repoApiPath(input.owner, input.repo, "/releases/latest"),
+    token,
+    signal: input.signal,
+  });
+  if (read.status === 404) return null;
+  const body = read.body as { tag_name?: unknown; published_at?: unknown } | null;
+  const publishedAt = Date.parse(String(body?.published_at));
+  if (read.status !== 200 || typeof body?.tag_name !== "string" || !Number.isFinite(publishedAt))
+    throw new Error(`Could not read the latest release of ${input.owner}/${input.repo}`);
+  return { version: body.tag_name.replace(/^v/, ""), publishedAt };
+}
+
+export function githubSourceRepository(
+  repository: { owner: string; repo: string },
+  read: () => HeadRead,
+) {
+  return {
+    name: `${repository.owner}/${repository.repo}`,
+    defaultBranch: (signal: AbortSignal) => readDefaultBranch({ ...read(), signal }),
+    missing: (base: string, branch: string, signal: AbortSignal) =>
+      readMissingCommits({ ...read(), base, branch, signal }),
+    contains: async (base: string, sha: string, signal: AbortSignal) =>
+      (await branchContains({ ...read(), branch: base, sha, signal })).contains,
+    latestRelease: (signal: AbortSignal) => readLatestRelease({ ...read(), signal }),
+  };
+}

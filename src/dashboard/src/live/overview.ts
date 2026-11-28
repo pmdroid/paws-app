@@ -5,17 +5,16 @@ import {
   listCloseoutProgressStatesSteps,
   listConfirmedMergeShasSteps,
   listItemHoldsSteps,
-  listJobsSteps,
   listLastWorkItemEventTimesSteps,
+  listMergeJobsForItemsSteps,
   listMergeQueuesSteps,
   listOpenQuestionsSteps,
   listQueuePositions,
   type Db,
-  listRunsSteps,
+  listRunsForItemsSteps,
   listTaskBlockersForIssuesSteps,
   listVisualReviewsForItemsSteps,
   listWorkItemEventRowsForItemsSteps,
-  listWorkItemFactsSteps,
   runnerWorkActiveForRunsSteps,
   setupFactsSteps,
   usagePausesSteps,
@@ -53,13 +52,13 @@ import {
   questionLine,
   questionsFor,
   queueOf,
-  readerOutbox,
+  outboxForRecords,
   readIntake,
   readPushOutages,
   runState,
   textOr,
   usagePauseOf,
-  visibleRecords,
+  visibleRecordsWithFacts,
   visualReviewRounds,
   type LiveStatusOptions,
 } from "./provider";
@@ -74,12 +73,11 @@ export async function readOverview(
   const now = options.now?.() ?? new Date();
   const nowMs = now.getTime();
   const generatedAt = now.toISOString();
-  const facts = new Map(
-    (await store.run(listWorkItemFactsSteps)).map((fact) => [fact.itemId, fact]),
-  );
-  const visible = await visibleRecords(store, options, facts);
-  const listed = await listedRecords(store, visible, facts, nowMs);
-  const rows = await readerOutbox(store, options);
+  const { visible, facts } = await visibleRecordsWithFacts(store, options);
+  const scope = options.sessionIds === undefined ? undefined : visible.map((record) => record.id);
+  const changed = await store.run((q) => listLastWorkItemEventTimesSteps(q, scope));
+  const listed = await listedRecords(store, visible, facts, nowMs, changed);
+  const rows = await outboxForRecords(store, listed);
   const openQuestions = await store.run(listOpenQuestionsSteps);
   const questions: OverviewQuestion[] = (
     await questionsFor(store, listed, rows, () => null, openQuestions)
@@ -96,7 +94,6 @@ export async function readOverview(
       : null,
   }));
   const asked = new Set(questions.map((question) => question.itemId));
-  const changed = await store.run(listLastWorkItemEventTimesSteps);
   const merged = new Set(
     listed
       .filter((record) => record.state === "merged")
@@ -115,7 +112,8 @@ export async function readOverview(
     if (!firstQuestion.has(question.itemId))
       firstQuestion.set(question.itemId, questionLine(question.body));
   const storedRuns = new Map<string, StoredRun[]>();
-  for (const run of await store.run((q) => listRunsSteps(q)))
+  const shownIds = shown.map((record) => record.id);
+  for (const run of await store.run((q) => listRunsForItemsSteps(q, shownIds)))
     storedRuns.set(run.itemId, [...(storedRuns.get(run.itemId) ?? []), run]);
   const itemsByIssue = latestByLinearIssue(visible, facts);
   const reads = await store.run((q) =>
@@ -129,7 +127,7 @@ export async function readOverview(
     facts,
     rows,
     changed,
-    jobs: await store.run(listJobsSteps),
+    jobs: await store.run((q) => listMergeJobsForItemsSteps(q, shownIds)),
     progress: await store.run(listCloseoutProgressStatesSteps),
     queue: new Map((await listQueuePositions(store)).map((entry) => [entry.itemId, entry])),
     places,
@@ -147,7 +145,7 @@ export async function readOverview(
     generatedAt,
     issues,
     questions,
-    mergedTimes: (await mergedTimesFor(store, visible, facts, nowMs)).mergedTimes ?? null,
+    mergedTimes: (await mergedTimesFor(store, visible, facts, nowMs, changed)).mergedTimes ?? null,
     intake: intake.intake ?? [],
     linearBudget: intake.linearBudget ?? null,
     linearWebhook: intake.linearWebhook ?? null,

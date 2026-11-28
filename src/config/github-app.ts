@@ -1,69 +1,116 @@
 import { readSecretFile, saveSecret, secretFileExists } from "../credentials";
+import { createPrivateKey } from "node:crypto";
 import { join } from "node:path";
 import type { EnvSource } from "./env";
+import { envSetting, settingSources } from "./env-settings";
 import { pawsPaths } from "./paths";
 
 export type GitHubAppCredentials = {
   appId: string;
   clientId: string;
   clientSecret: string;
-  privateKeyPath: string;
+  privateKeyPem: string | null;
   installationId: string | null;
-  privateKeyPem?: string;
-  webhookSecret?: string;
+  webhookSecret: string | null;
 };
+
+const APP_RECORD = "github-browser-app.json";
+
+function readRecord(path: string, label: string): Record<string, unknown> | null {
+  if (!secretFileExists(path)) return null;
+  try {
+    const parsed: unknown = JSON.parse(readSecretFile(path, false)!);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error();
+    return parsed as Record<string, unknown>;
+  } catch {
+    throw new Error(`Could not read secrets/${label}. Save the GitHub App again in Settings.`);
+  }
+}
+
+function readSavedGitHubApp(home: string): Record<string, unknown> {
+  return readRecord(join(pawsPaths(home).secretsDir, APP_RECORD), APP_RECORD) ?? {};
+}
+
+function text(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function usableKey(pem: string | null): string | null {
+  if (pem === null) return null;
+  try {
+    createPrivateKey(pem);
+    return pem;
+  } catch {
+    return null;
+  }
+}
+
+function privateKey(env: EnvSource, saved: Record<string, unknown>): string | null {
+  const path = envSetting(env, "github", "privateKeyPath");
+  if (path === undefined) return usableKey(text(saved.privateKeyPem));
+  try {
+    return usableKey(text(readSecretFile(path, false)));
+  } catch {
+    return null;
+  }
+}
+
+export function gitHubAppSources(home: string, env: EnvSource) {
+  const saved = readSavedGitHubApp(home);
+  return settingSources(env, "github", { ...saved, privateKeyPath: saved.privateKeyPem });
+}
+
+export function gitHubWebhookSecret(home: string, env: EnvSource): string | null {
+  return (
+    envSetting(env, "github", "webhookSecret") ??
+    text(readSavedGitHubApp(home).webhookSecret) ??
+    null
+  );
+}
 
 export function loadGitHubAppCredentials(
   home: string,
   env: EnvSource,
 ): GitHubAppCredentials | null {
-  const dir = pawsPaths(home).secretsDir;
-  const browser = join(dir, "github-browser-app.json");
-  const path = secretFileExists(browser) ? browser : join(dir, "github-app.json");
-  let saved: Partial<GitHubAppCredentials> = {};
-  if (secretFileExists(path)) {
-    try {
-      const parsed: unknown = JSON.parse(readSecretFile(path)!);
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error();
-      saved = parsed;
-    } catch {
-      throw new Error(
-        "Could not read secrets/github-app.json. Restore a valid GitHub App credentials file.",
-      );
-    }
-  }
-  const appId = env.GITHUB_APP_ID ?? saved.appId;
-  const clientId = env.PAWS_GITHUB_CLIENT_ID ?? saved.clientId;
-  const clientSecret = env.PAWS_GITHUB_CLIENT_SECRET ?? saved.clientSecret;
-  const privateKeyPath = env.GITHUB_APP_PRIVATE_KEY_PATH ?? saved.privateKeyPath;
-  if (
-    typeof appId !== "string" ||
-    !appId.trim() ||
-    typeof clientId !== "string" ||
-    !clientId.trim() ||
-    typeof clientSecret !== "string" ||
-    !clientSecret.trim() ||
-    typeof privateKeyPath !== "string" ||
-    !privateKeyPath.trim()
-  )
-    return null;
+  const saved = readSavedGitHubApp(home);
+  const field = (name: "appId" | "clientId" | "clientSecret") =>
+    text(envSetting(env, "github", name)) ?? text(saved[name]);
+  const appId = field("appId");
+  const clientId = field("clientId");
+  const clientSecret = field("clientSecret");
+  const keyConfigured =
+    envSetting(env, "github", "privateKeyPath") !== undefined || text(saved.privateKeyPem) !== null;
+  if (appId === null || clientId === null || clientSecret === null || !keyConfigured) return null;
   return {
-    ...(env.GITHUB_APP_PRIVATE_KEY_PATH ? {} : { privateKeyPem: saved.privateKeyPem }),
-    webhookSecret: env.GITHUB_WEBHOOK_SECRET ?? saved.webhookSecret,
     appId,
     clientId,
     clientSecret,
-    privateKeyPath,
-    installationId: env.GITHUB_APP_INSTALLATION_ID ?? saved.installationId ?? null,
+    privateKeyPem: privateKey(env, saved),
+    installationId: env.GITHUB_APP_INSTALLATION_ID ?? text(saved.installationId),
+    webhookSecret: gitHubWebhookSecret(home, env),
   };
 }
 
-export async function saveGitHubAppCredentials(
-  home: string,
-  app: GitHubAppCredentials,
-): Promise<void> {
+export async function importLegacyGitHubApp(home: string, env: EnvSource): Promise<void> {
   const dir = pawsPaths(home).secretsDir;
-  const privateKeyPath = join(dir, "github-app.pem");
-  await saveSecret(privateKeyPath, readSecretFile(app.privateKeyPath, false)!);
-  await saveSecret(join(dir, "github-app.json"), `${JSON.stringify({ ...app, privateKeyPath })}\n`);
+  if (secretFileExists(join(dir, APP_RECORD))) return;
+  const legacy = readRecord(join(dir, "github-app.json"), "github-app.json");
+  const webhookSecret = text(readSecretFile(join(dir, "github-webhook"), false)?.trim());
+  if (legacy === null && (webhookSecret === null || !loadGitHubAppCredentials(home, env))) return;
+  const keyPath = text(legacy?.privateKeyPath);
+  let privateKeyPem = text(legacy?.privateKeyPem);
+  try {
+    privateKeyPem ??= keyPath === null ? null : text(readSecretFile(keyPath, false));
+  } catch {
+    privateKeyPem = null;
+  }
+  const { privateKeyPath: _, ...record } = legacy ?? {};
+  await saveSecret(
+    join(dir, APP_RECORD),
+    JSON.stringify({
+      ...record,
+      ...(privateKeyPem === null ? {} : { privateKeyPem }),
+      ...(text(record.webhookSecret) || webhookSecret === null ? {} : { webhookSecret }),
+    }),
+  );
 }

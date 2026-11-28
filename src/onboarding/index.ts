@@ -1,4 +1,9 @@
 export { createBrowserOnboarding } from "./route";
 export { createLinearReconnect } from "./reconnect";
-export { browserSetupRuntime, webhookFileDigest } from "./setup-runtime";
-export { forgetSetupToken, setupLink, setupToken } from "./setup-token";
+export {
+  browserSetupRuntime,
+  resolveLinearClient,
+  type LinearClientResolution,
+  type LinearSecretSource,
+} from "./setup-runtime";
+export { forgetSetupToken, SETUP_TOKEN_FILE, setupLink, setupToken } from "./setup-token";

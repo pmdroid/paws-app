@@ -299,6 +299,10 @@ export async function probeAgentModels(
     await catalog.refresh();
     assert.equal(await count(), 2);
     observe("background discovery yields to active runner work", true, {});
+    await exec((q) => q.orm.insert(q.t.runnerCapacity).values({ runnerId, capacity: 3 }));
+    await catalog.refresh();
+    assert.equal(await count(), 3);
+    observe("background discovery probes a busy runner that has a free slot", true, {});
     await exec((q) =>
       q.orm
         .update(q.t.runnerHelper)

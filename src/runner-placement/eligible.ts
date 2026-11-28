@@ -4,10 +4,14 @@ import {
   listAgentBindingsSteps,
   delegatedLinearUserIdSteps,
   eligibleRunnerRowsSteps,
+  getWorkItemRepositoryChoiceSteps,
   getWorkItemRepositorySteps,
+  getWorkItemSteps,
+  listRepositoryCandidatesSteps,
   itemOwnerScopeRowSteps,
   lastItemRunnerSteps,
   runnerHostVersionSteps,
+  runnerIsVmHostSteps,
   runnerNameSteps,
   runnerRepositoryRefusalSteps,
   workspaceMemberSteps,
@@ -42,6 +46,7 @@ export function* eligibleRunnersSteps(q: Q, input: EligibleRunnersInput): Steps<
     runners.push({ ...runner, eligible: reason === "own" || reason === "issue-vm", reason });
     function* reasonSteps(): Steps<EligibleRunnerReason> {
       if (revokedAt !== null || status === "revoked") return "revoked";
+      if (yield* runnerIsVmHostSteps(q, runner.id)) return "vm-host";
       const own = input.ownerUserId !== null && runner.ownerId === input.ownerUserId;
       if (!own && runner.isolation !== "issue_vm") return "not-yours";
       const member = yield* workspaceMemberSteps(q, input.workspaceId, runner.ownerId);
@@ -80,9 +85,8 @@ export function* eligibleRunnersSteps(q: Q, input: EligibleRunnersInput): Steps<
 
 /** A rejection reason as placement reports it: an outdated runner names the release it needs. */
 export function eligibleReasonText(reason: EligibleRunnerReason): string {
-  return reason === "outdated"
-    ? `Upgrade this runner to ${MINIMUM_RUNNER_VERSION.join(".")}`
-    : reason;
+  if (reason === "outdated") return `Upgrade this runner to ${MINIMUM_RUNNER_VERSION.join(".")}`;
+  return reason === "vm-host" ? "hosts issue VMs only" : reason;
 }
 
 function* runnerNameOrIdSteps(q: Q, runnerId: string) {
@@ -248,6 +252,34 @@ export function* itemRepositoryAllowedOnSteps(
     found.runners.some((runner) => runner.id === input.runnerId) &&
     (yield* runnerRepositoryRefusalSteps(q, input.runnerId, found.repository)) === null
   );
+}
+
+function* itemReleaseRepositoriesSteps(q: Q, itemId: string): Steps<string[]> {
+  const binding =
+    (yield* getWorkItemRepositorySteps(q, itemId)) ??
+    (yield* getWorkItemRepositoryChoiceSteps(q, itemId));
+  if (binding) return [`${binding.owner}/${binding.repo}`];
+  const sessionKey = (yield* getWorkItemSteps(q, itemId))?.sessionKey ?? null;
+  return (yield* listRepositoryCandidatesSteps(q, sessionKey, [])).map(
+    (candidate) => `${candidate.owner}/${candidate.repo}`,
+  );
+}
+
+export function* itemRunnerOnReleaseSteps(q: Q, itemId: string, tag: string): Steps<boolean> {
+  const match = tag.match(/^v?(\d+)\.(\d+)\.(\d+)$/);
+  const scope = match && (yield* itemOwnerScopeSteps(q, itemId));
+  if (!match || !scope) return false;
+  const release = [Number(match[1]), Number(match[2]), Number(match[3])] as const;
+  const repositories = yield* itemReleaseRepositoriesSteps(q, itemId);
+  const runners = yield* eligibleRunnersSteps(q, { ...scope, agent: "", purpose: "prepare" });
+  for (const runner of runners) {
+    if (!runner.eligible) continue;
+    if (!runnerReleaseAtLeast(yield* runnerHostVersionSteps(q, runner.id), release)) continue;
+    if (repositories.length === 0) return true;
+    for (const repository of repositories)
+      if ((yield* runnerRepositoryRefusalSteps(q, runner.id, repository)) === null) return true;
+  }
+  return false;
 }
 
 export function* itemRepositoryRefusalsSteps(q: Q, input: { itemId: string; now?: number }) {

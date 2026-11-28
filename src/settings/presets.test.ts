@@ -17,8 +17,8 @@ import { useMemorySettings } from "../config";
 import { handleAgentSettingsRequest } from "./handler";
 
 test("agents settings save and return presets and refuse duplicate names", async () => {
-  const options = { configPath: join(tempHome(), "config.toml"), csrfToken: "test" };
-  useMemorySettings(options.configPath);
+  const options = { home: tempHome(), csrfToken: "test" };
+  useMemorySettings(options.home);
   const settings = {
     defaults: {
       implementer: { agent: "claude", model: "opus" },

@@ -1,6 +1,6 @@
 import {
   issueVmSettings,
-  loadConfigFile,
+  loadSettings,
   parseIssueVmSettings,
   writeIssueVmSettings,
   type StoredIssueVmSettings,
@@ -12,7 +12,7 @@ import { json, localRequest, readJson, sameToken } from "./handler";
 export const ISSUE_VM_SETTINGS_PATH = "/api/settings/issue-vm";
 
 export type IssueVmSettingsOptions = {
-  configPath: string;
+  home: string;
   csrfToken: string;
   trustedOrigin?: string;
   role?: string;
@@ -30,7 +30,7 @@ export async function handleIssueVmSettingsRequest(
     return json({ error: "Only workspace admins can see and change issue VM limits." }, 403);
   const listing = () => {
     try {
-      return json(issueVmSettings(loadConfigFile(options.configPath).issueVm));
+      return json(issueVmSettings(loadSettings(options.home).issueVm));
     } catch (error) {
       journalCaught(error, "issue-vm.handleIssueVmSettingsRequest.read", null);
       return json({ error: "Issue VM settings could not be read" }, 503);
@@ -50,7 +50,7 @@ export async function handleIssueVmSettingsRequest(
       400,
     );
   }
-  await writeIssueVmSettings(options.configPath, settings);
+  await writeIssueVmSettings(options.home, settings);
   const resolved = issueVmSettings(settings);
   await options.audit(
     "settings.issue_vm",

@@ -49,10 +49,7 @@ test("paired runner consumes snapshotted external skills without committing the 
     const repositoryBundle = join(root, "source.bundle");
     await git(["-C", source, "bundle", "create", repositoryBundle, "--all"]);
     chmodSync(repositoryBundle, 0o600);
-    useMemorySettings(
-      join(pawsRoot, "config.toml"),
-      '[skills.projects."acme/repo"]\nroot = "skills"\n',
-    );
+    useMemorySettings(pawsRoot, '[skills.projects."acme/repo"]\nroot = "skills"\n');
     writeFileSync(join(pawsRoot, "skills/check/SKILL.md"), "External implementation skill");
     writeFileSync(
       join(pawsRoot, "skills/check/scripts/run.sh"),

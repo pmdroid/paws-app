@@ -9,6 +9,7 @@ if (!origin || !evidenceRoot || new URL(origin).hostname !== "127.0.0.1")
 const observations = [];
 const errors = [];
 const observe = (name, detail) => observations.push({ name, detail });
+const navigation = 'nav[aria-label="Main navigation"]';
 
 async function inspect(page, name) {
   for (const [width, height, size] of [
@@ -42,23 +43,19 @@ async function inspect(page, name) {
     await page.locator(".live-bar").waitFor();
     assert.equal(await page.locator("#side .nav").count(), 2);
     const issues = await page.evaluate(async () => (await fetch("/api/issues")).json());
-    for (const view of ["runs", "questions", "verdicts", "queue", "sessions", "epics"]) {
-      await page.locator(`.work-navigation a[href="#/${view}"]`).click();
-      assert.equal(new URL(page.url()).hash, `#/${view}`);
-      assert.equal(await page.locator('#side [aria-current="page"]').innerText(), "Overview");
+    const views = ["issues", "questions", "merge-queue", "findings", "improvements"];
+    for (const view of views) {
+      const link = page.locator(`${navigation} a[href="/dashboard/${view}"]`);
+      await link.click();
+      await page.waitForURL(`${origin}/dashboard/${view}`);
+      assert.equal(await link.getAttribute("aria-current"), "page");
     }
-    observe("All work details remain reachable under Overview", [
-      "runs",
-      "questions",
-      "verdicts",
-      "queue",
-      "sessions",
-      "epics",
-    ]);
+    observe("All work pages are reachable from the main navigation", views);
     await page.locator("#side .nav").filter({ hasText: "Overview" }).click();
     const run = issues.runs[0];
     assert.ok(run);
-    await page.locator(`.overview-work a[href="#/runs/${encodeURIComponent(run.id)}"]`).click();
+    await page.goto(`${origin}/dashboard/runs/${encodeURIComponent(run.id)}`);
+    await page.waitForURL(`${origin}/dashboard/issues/${encodeURIComponent(run.itemId)}`);
     await page.locator("#content .log").waitFor();
     observe("A real completed run opens its logs", run.id);
     await page.locator(".crumbs a").click();
@@ -78,7 +75,7 @@ async function inspect(page, name) {
     await page.locator('[data-action="refresh"]').click();
     await page.locator("#content a").filter({ hasText: "Answer in Linear" }).first().waitFor();
     assert.equal(parked.source, "live");
-    const focused = page.locator('.work-navigation a[href="#/questions"]');
+    const focused = page.locator(`${navigation} a[href="/dashboard/questions"]`);
     await focused.focus();
     const preserved = await page.evaluate(
       () =>
@@ -91,7 +88,7 @@ async function inspect(page, name) {
           document.querySelector('[data-action="refresh"]').click();
         }),
     );
-    assert.equal(preserved, "#/questions");
+    assert.equal(preserved, "/dashboard/questions");
     observe(
       "Live question handoff and focused link survive refresh",
       parked.questions.map(({ id, links }) => ({ id, links })),
@@ -143,7 +140,8 @@ async function inspect(page, name) {
       await account.getByRole("button", { name: "Connect workspace" }).click();
       await account.getByRole("button", { name: "Sign out" }).waitFor();
       assert.equal(await account.locator("#workspace-members").isVisible(), false);
-      await account.locator('#side a[href="#/settings"]').click();
+      await account.goto(`${fixture.origin}/dashboard/workspace/members`);
+      await account.waitForURL(`${fixture.origin}/dashboard/workspace/members`);
       await account.locator("#workspace-members > summary").click();
       await account.locator('textarea[name="repositories"]').fill("fixture/repo fixture-team");
       await account.getByRole("button", { name: "Save repositories" }).click();
@@ -158,7 +156,8 @@ async function inspect(page, name) {
       identity = "member";
       await account.getByRole("link", { name: "Sign in with Linear" }).click();
       await account.getByRole("button", { name: "Sign out" }).waitFor();
-      await account.locator('#tabbar a[href="#/settings"]').click();
+      await account.goto(`${fixture.origin}/dashboard/workspace/members`);
+      await account.getByRole("navigation", { name: "Main navigation" }).waitFor();
       assert.equal(await account.locator("#workspace-members").count(), 0);
       observe("Member sign-in excludes admin controls", "member");
       await workspace.close();

@@ -1,4 +1,4 @@
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { type Q } from "./db";
 
 export type CredentialKey = { kind: "linear" | "slack"; workspace: string };
@@ -49,25 +49,60 @@ export function* secretRowsSteps(q: Q) {
   );
 }
 
-export function* writeSecretRowSteps(
+export type SecretVersion = { name: string; version: number };
+
+export class SecretConflictError extends Error {
+  constructor(
+    readonly secret: string,
+    readonly expectedVersion: number | null,
+  ) {
+    super(`Secret ${secret} changed since version ${expectedVersion ?? "none"}.`);
+    this.name = "SecretConflictError";
+  }
+}
+
+export function* secretVersionsSteps(q: Q) {
+  const { secret } = q.t;
+  return yield* q.all(q.orm.select({ name: secret.name, version: secret.version }).from(secret));
+}
+
+export function* readSecretSteps(q: Q, name: string) {
+  const { secret } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ ciphertext: secret.ciphertext, version: secret.version })
+      .from(secret)
+      .where(eq(secret.name, name)),
+  );
+  if (!row) return null;
+  return { value: row.ciphertext === "" ? null : row.ciphertext, version: row.version };
+}
+
+export function* writeSecretSteps(
   q: Q,
-  input: { name: string; ciphertext: string | null; now: number; exclusive: boolean },
+  name: string,
+  value: string | null,
+  expectedVersion: number | null,
+  now = Date.now(),
 ) {
   const { secret } = q.t;
-  const { name, now } = input;
-  const ciphertext = input.ciphertext ?? "";
+  const ciphertext = value ?? "";
   const rows = yield* q.all(
-    q.orm
-      .insert(secret)
-      .values({ name, ciphertext, updatedAt: now })
-      .onConflictDoUpdate({
-        target: secret.name,
-        set: { ciphertext, updatedAt: now },
-        ...(input.exclusive ? { setWhere: eq(secret.ciphertext, "") } : {}),
-      })
-      .returning({ name: secret.name }),
+    expectedVersion === null
+      ? q.orm
+          .insert(secret)
+          .values({ name, ciphertext, updatedAt: now })
+          .onConflictDoNothing()
+          .returning({ version: secret.version })
+      : q.orm
+          .update(secret)
+          .set({ ciphertext, updatedAt: now, version: sql`${secret.version} + 1` })
+          .where(and(eq(secret.name, name), eq(secret.version, expectedVersion)))
+          .returning({ version: secret.version }),
   );
-  return rows.length > 0;
+  const written = rows[0];
+  if (written === undefined) throw new SecretConflictError(name, expectedVersion);
+  return written.version;
 }
 
 export function* copySecretRowsSteps(q: Q, rows: readonly SecretRow[], now: number) {

@@ -21,7 +21,7 @@ function markup(html: string) {
 }
 
 function ready(
-  view: "overview" | "questions" | "runs",
+  view: "overview" | "questions" | "issues",
   id: string | null = null,
   closeout = openedView(),
 ) {
@@ -73,7 +73,7 @@ test("state pills render a mono badge with a leading dot in the state's color", 
 });
 
 test("every dashboard view renders without authored inline styles", () => {
-  for (const view of ["overview", "issues", "runs", "questions", "settings", "runners"] as const) {
+  for (const view of ["overview", "issues", "questions", "settings", "runners"] as const) {
     const rendered = render({
       route: { view, id: null },
       phase: "ready",
@@ -118,7 +118,7 @@ test("overview keeps action rows responsive without delivery columns", () => {
 test("run checks, transcripts, and stop controls keep their columns aligned", () => {
   const closeout = openedView();
   closeout.open[`section\n${checkListKey("ENG-101", 1)}`] = true;
-  const html = markup(ready("runs", "r-101", closeout).content);
+  const html = markup(ready("issues", "ENG-101", closeout).content);
   const checks = classNames(html, "chk").filter((value) => !value.includes("section-toggle"));
   expect(checks.length).toBeGreaterThan(1);
   for (const value of checks) {

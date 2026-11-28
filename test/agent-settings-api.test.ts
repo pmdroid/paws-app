@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { join } from "node:path";
 import {
   activeRunnerReadiness,
   handleAgentSettingsRequest,
@@ -14,7 +13,7 @@ import {
 } from "../src/db";
 import { workspaceId } from "../src/workspace";
 import {
-  loadConfigFile,
+  loadSettings,
   readAgentSettings,
   useMemorySettings,
   type AgentSettings,
@@ -26,10 +25,10 @@ import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
 
 function fixture() {
-  const configPath = join(tempHome(), "config.toml");
+  const configPath = tempHome();
   useMemorySettings(configPath);
   const options: AgentSettingsOptions = {
-    configPath,
+    home: configPath,
     csrfToken: "test-token",
     repos: ["pmdroid/barkvisor"],
   };
@@ -81,7 +80,7 @@ describe("local agent settings API", () => {
     };
     const saved = await handleAgentSettingsRequest(request(undefined, "PUT", fast), options);
     expect(saved?.status).toBe(200);
-    expect(readConfigText(options.configPath)).toContain("fast = true");
+    expect(readConfigText(options.home)).toContain("fast = true");
     const body = (await (await handleAgentSettingsRequest(
       request(),
       options,
@@ -91,7 +90,7 @@ describe("local agent settings API", () => {
 
   test("a save from a stale revision is refused and the newer file is kept", async () => {
     const { options } = fixture();
-    useMemorySettings(options.configPath, '[findings]\ngrouping_time = "07:00"\n');
+    useMemorySettings(options.home, '[findings]\ngrouping_time = "07:00"\n');
     const loaded = (await (await handleAgentSettingsRequest(request(), options))!.json()) as {
       revision: string;
     };
@@ -100,7 +99,7 @@ describe("local agent settings API", () => {
       options,
     );
     expect(first?.status).toBe(200);
-    const saved = readConfigText(options.configPath);
+    const saved = readConfigText(options.home);
     const { revision } = (await first!.json()) as { revision: string };
     expect(revision).not.toBe(loaded.revision);
     const stale = await handleAgentSettingsRequest(
@@ -116,7 +115,7 @@ describe("local agent settings API", () => {
     );
     expect(stale?.status).toBe(409);
     expect(await stale!.json()).toEqual({ error: expect.stringMatching(/changed/), revision });
-    expect(readConfigText(options.configPath)).toBe(saved);
+    expect(readConfigText(options.home)).toBe(saved);
     const bad = await handleAgentSettingsRequest(
       request(undefined, "PUT", { ...settings, revision: 7 }),
       options,
@@ -126,7 +125,7 @@ describe("local agent settings API", () => {
 
   test("a save with defaults.accounts is refused and the file is kept", async () => {
     const { options } = fixture();
-    useMemorySettings(options.configPath, '[findings]\ngrouping_time = "07:00"\n');
+    useMemorySettings(options.home, '[findings]\ngrouping_time = "07:00"\n');
     const saved = await handleAgentSettingsRequest(
       request(undefined, "PUT", {
         ...settings,
@@ -135,7 +134,7 @@ describe("local agent settings API", () => {
       options,
     );
     expect(saved?.status).toBe(400);
-    expect(readConfigText(options.configPath)).toBe('[findings]\ngrouping_time = "07:00"\n');
+    expect(readConfigText(options.home)).toBe('[findings]\ngrouping_time = "07:00"\n');
   });
 
   test("applyToWaiting is a per-save boolean and is never stored", async () => {
@@ -160,12 +159,12 @@ describe("local agent settings API", () => {
     );
     expect(await saved!.json()).toMatchObject({ waitingRuns: 3 });
     expect(calls).toBe(1);
-    expect(readConfigText(options.configPath)).not.toContain("applyToWaiting");
+    expect(readConfigText(options.home)).not.toContain("applyToWaiting");
   });
 
   test("PUT persists and reloads validated profiles while preserving config", async () => {
     const { options } = fixture();
-    useMemorySettings(options.configPath, '[findings]\ngrouping_time = "07:00"\n');
+    useMemorySettings(options.home, '[findings]\ngrouping_time = "07:00"\n');
     const response = await handleAgentSettingsRequest(request(undefined, "PUT", settings), options);
     expect(response?.status).toBe(200);
     expect(await response!.json()).toEqual({
@@ -174,13 +173,13 @@ describe("local agent settings API", () => {
       queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
       revision: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
-    expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
+    expect(readAgentSettings(loadSettings(options.home))).toEqual(settings);
   });
 
   test("agent settings carry only CI fix attempts and keep the Merging default", async () => {
     const { options } = fixture();
     useMemorySettings(
-      options.configPath,
+      options.home,
       '[findings]\ngrouping_time = "07:00"\n\n[merge]\nmain_moved = "closeout"\n\n[[merge.rules]]\nlabel = "Bug"\norder = "ci-green"\n',
     );
     for (const merge of [{ closeoutAfterUpdate: true }, { other: true }, true]) {
@@ -195,10 +194,10 @@ describe("local agent settings API", () => {
       options,
     );
     expect(((await saved!.json()) as { merge: unknown }).merge).toEqual({ ciFixAttempts: 4 });
-    const text = readConfigText(options.configPath);
+    const text = readConfigText(options.home);
     expect(text).toContain('[merge]\nmain_moved = "closeout"\nci_fix_attempts = 4');
     expect(text).not.toContain("[[merge.rules]]");
-    expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
+    expect(readAgentSettings(loadSettings(options.home))).toEqual(settings);
   });
 
   test("reads and writes CI fix attempts from 0 to 10 and audits each change", async () => {
@@ -207,7 +206,7 @@ describe("local agent settings API", () => {
     options.audit = async (action, subject) => {
       audits.push([action, subject]);
     };
-    useMemorySettings(options.configPath, '[merge]\nmain_moved = "closeout"\n');
+    useMemorySettings(options.home, '[merge]\nmain_moved = "closeout"\n');
     const read = async () =>
       ((await (await handleAgentSettingsRequest(request(), options))!.json()) as { merge: unknown })
         .merge;
@@ -217,7 +216,7 @@ describe("local agent settings API", () => {
       handleAgentSettingsRequest(request(undefined, "PUT", { ...settings, merge }), options);
     expect((await put({ ciFixAttempts: 5 }))?.status).toBe(200);
     expect(await read()).toEqual({ ciFixAttempts: 5 });
-    expect(readConfigText(options.configPath)).toContain(
+    expect(readConfigText(options.home)).toContain(
       '[merge]\nmain_moved = "closeout"\nci_fix_attempts = 5',
     );
     expect((await put({ ciFixAttempts: 0 }))?.status).toBe(200);
@@ -245,7 +244,7 @@ describe("local agent settings API", () => {
     options.audit = async (action, subject) => {
       audits.push([action, subject]);
     };
-    useMemorySettings(options.configPath, "[merge]\nci_fix_attempts = 5\n");
+    useMemorySettings(options.home, "[merge]\nci_fix_attempts = 5\n");
     const read = async () =>
       ((await (await handleAgentSettingsRequest(request(), options))!.json()) as { queue: unknown })
         .queue;
@@ -260,7 +259,7 @@ describe("local agent settings API", () => {
       maxRunningPerOwner: null,
     });
     expect(await read()).toEqual({ startTimeoutHours: 6, maxRunningPerOwner: null });
-    const text = readConfigText(options.configPath);
+    const text = readConfigText(options.home);
     expect(text).toContain("[queue]\nstart_timeout_hours = 6");
     expect(text).toContain("ci_fix_attempts = 5");
     // Saving profiles or merge settings without the queue keeps the stored value.
@@ -271,7 +270,7 @@ describe("local agent settings API", () => {
     expect(await read()).toEqual({ startTimeoutHours: 6, maxRunningPerOwner: null });
     expect((await put({ startTimeoutHours: 720 }))?.status).toBe(200);
     await put({ startTimeoutHours: 720 });
-    expect(readConfigText(options.configPath).match(/\[queue\]/g)).toHaveLength(1);
+    expect(readConfigText(options.home).match(/\[queue\]/g)).toHaveLength(1);
     expect(audits).toEqual([
       ["settings.queue-start-timeout", "Queue start timeout 24 h → 6 h"],
       ["settings.ci-fix-attempts", "CI fix attempts 5 → 4"],
@@ -306,7 +305,7 @@ describe("local agent settings API", () => {
 
     expect((await put({ maxRunningPerOwner: 3 }))?.status).toBe(200);
     expect(await read()).toEqual({ startTimeoutHours: 24, maxRunningPerOwner: 3 });
-    expect(readConfigText(options.configPath)).toContain(
+    expect(readConfigText(options.home)).toContain(
       "[queue]\nstart_timeout_hours = 24\nmax_running_per_owner = 3",
     );
     expect((await put({ startTimeoutHours: 6 }))?.status).toBe(200);
@@ -315,7 +314,7 @@ describe("local agent settings API", () => {
       expect((await put(queue))?.status).toBe(400);
     expect((await put({ maxRunningPerOwner: null }))?.status).toBe(200);
     expect(await read()).toEqual({ startTimeoutHours: 6, maxRunningPerOwner: null });
-    expect(readConfigText(options.configPath)).not.toContain("max_running_per_owner");
+    expect(readConfigText(options.home)).not.toContain("max_running_per_owner");
     expect(audits).toEqual([
       ["settings.queue-owner-cap", "Running tasks per owner no cap → 3"],
       ["settings.queue-start-timeout", "Queue start timeout 24 h → 6 h"],
@@ -326,13 +325,13 @@ describe("local agent settings API", () => {
   test("PUT repairs malformed saved profile sections without changing unrelated config", async () => {
     const { options } = fixture();
     useMemorySettings(
-      options.configPath,
+      options.home,
       '[findings]\ngrouping_time = "07:00"\n[agents.defaults.implementer]\nagent = "missing-agent"\n',
     );
     expect((await handleAgentSettingsRequest(request(), options))?.status).toBe(503);
     const saved = await handleAgentSettingsRequest(request(undefined, "PUT", settings), options);
     expect(saved?.status).toBe(200);
-    expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
+    expect(readAgentSettings(loadSettings(options.home))).toEqual(settings);
   });
 
   test("rejects hostile origins, hosts, missing CSRF, and preflight without writing", async () => {
@@ -448,7 +447,7 @@ describe("reviewer profile validation", () => {
 
   test("refuses a reviewer with the implementer's agent and model and keeps the file", async () => {
     const { options } = fixture();
-    useMemorySettings(options.configPath, '[findings]\ngrouping_time = "07:00"\n');
+    useMemorySettings(options.home, '[findings]\ngrouping_time = "07:00"\n');
     const same = {
       defaults: {
         implementer: { agent: "claude", model: "opus" },
@@ -462,7 +461,7 @@ describe("reviewer profile validation", () => {
     });
     const project = await put({ ...settings, projects: [] }, options);
     expect(project?.status).toBe(400);
-    expect(readConfigText(options.configPath)).toBe('[findings]\ngrouping_time = "07:00"\n');
+    expect(readConfigText(options.home)).toBe('[findings]\ngrouping_time = "07:00"\n');
   });
 
   test("saves a reviewer that no active runner has signed in, with a warning naming the runners", async () => {
@@ -483,7 +482,7 @@ describe("reviewer profile validation", () => {
       "No active runner has codex signed in and ready to review: laptop, studio.",
     ]);
     expect(asked).toEqual(["codex"]);
-    expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
+    expect(readAgentSettings(loadSettings(options.home))).toEqual(settings);
 
     options.runnerReadiness = () => [];
     expect(

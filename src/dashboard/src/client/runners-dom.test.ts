@@ -74,6 +74,16 @@ afterEach(async () => {
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
 
+function asAdmin() {
+  const fallback = globalThis.fetch;
+  globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+    const path = new URL(String(url), ORIGIN).pathname;
+    if (path === "/api/auth/session") return Response.json({ userId: "owner", role: "admin" });
+    if (path === "/api/workspaces/repositories") return Response.json({ repositories: [] });
+    return fallback(url as string, init);
+  }) as unknown as typeof fetch;
+}
+
 test("the Agents block lists agents and versions without sign-in or usage", async () => {
   const root = window.document.createElement("div") as unknown as HTMLElement;
   window.document.body.append(root as unknown as Parameters<typeof window.document.body.append>[0]);
@@ -124,6 +134,7 @@ test("Add a runner shows the server's refusal instead of a command", async () =>
           },
         });
   }) as unknown as typeof fetch;
+  asAdmin();
   const root = window.document.createElement("div") as unknown as HTMLElement;
   window.document.body.append(root as unknown as Parameters<typeof window.document.body.append>[0]);
   createRunners().mount(root, ORIGIN, "live", null);
@@ -167,6 +178,7 @@ test("with no runners the list explains what a runner is and offers Add a runner
     new URL(String(url), ORIGIN).pathname === "/api/runners"
       ? Response.json({ runners: [], serverVersion: null })
       : fallback(url as string, init)) as unknown as typeof fetch;
+  asAdmin();
   const root = window.document.createElement("div") as unknown as HTMLElement;
   window.document.body.append(root as unknown as Parameters<typeof window.document.body.append>[0]);
   createRunners().mount(root, ORIGIN, "live", null);
@@ -274,7 +286,13 @@ const memberVm = (id: string, step: MemberVm["step"], patch: Partial<MemberVm> =
   ...patch,
 });
 
-async function mountWithVms(vms: MemberVm[], selected: string | null, refusal?: string) {
+async function mountWithVms(
+  vms: MemberVm[],
+  selected: string | null,
+  refusal?: string,
+  admin = false,
+) {
+  if (admin) asAdmin();
   const fallback = globalThis.fetch;
   globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
     const path = new URL(String(url), ORIGIN).pathname;
@@ -327,6 +345,7 @@ test("Create VM sits in the header, names size and pool in its dialog, posts and
     [memberVm("ready", "ready", { runnerId: RUNNER })],
     null,
     refusal,
+    true,
   );
   const header = root.querySelector("[data-runner-add]")!.parentElement!;
   expect(header.querySelector("[data-vm-create]")).not.toBeNull();
@@ -374,4 +393,131 @@ test("the Runners page leaves member VM size to Settings, for admins too", async
   await settle();
   expect(requests.some((request) => request.url === "/api/settings/member-vm")).toBe(false);
   expect(root.querySelector("[data-vm-size]")).toBeNull();
+});
+
+const HOST = "01JHOST00000000000000000AA";
+
+async function mountSections(
+  role: string,
+  options: { runners: Runner[]; grant?: { limit: number } | null; defaultLimit?: number },
+) {
+  const fallback = globalThis.fetch;
+  globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+    const path = new URL(String(url), ORIGIN).pathname;
+    if (path === "/api/auth/session") return Response.json({ userId: "owner", role });
+    if (path === "/api/workspaces/repositories") return Response.json({ repositories: [] });
+    if (path === "/api/runners")
+      return Response.json({ runners: options.runners, serverVersion: null });
+    if (path === "/api/runners/vm")
+      return Response.json({ available: true, vm: null, vms: [], size: {} });
+    if (path === "/api/runners/vm/pools") return Response.json({ available: true, pools: [] });
+    if (path === "/api/vm-hosts")
+      return Response.json({
+        hosts: [
+          {
+            id: HOST,
+            name: "vm-host-1",
+            status: "active",
+            online: true,
+            slots: { used: 2, total: 6 },
+            vm: { vcpus: 2, memoryGb: 4, diskGb: 16 },
+            addedBy: "Pascal",
+          },
+        ],
+        grant: options.grant ?? null,
+      });
+    if (path === "/api/settings/issue-vm/members")
+      return Response.json({ defaultLimit: options.defaultLimit ?? 2, members: [] });
+    return fallback(url as string, init);
+  }) as unknown as typeof fetch;
+  const root = window.document.createElement("div") as unknown as HTMLElement;
+  window.document.body.append(root as unknown as Parameters<typeof window.document.body.append>[0]);
+  createRunners().mount(root, ORIGIN, "live", null);
+  await settle();
+  return root;
+}
+
+const hostRunner: Runner = { ...runner, id: HOST, name: "vm-host-1", ownerUserId: "admin" };
+const othersRunner: Runner = {
+  ...runner,
+  id: "01JOTHER000000000000000000",
+  name: "dana-box",
+  ownerUserId: "dana",
+  ownerName: "Dana",
+};
+
+test("an admin sees their runners, the shared hosts, members' runners and the add controls", async () => {
+  const root = await mountSections("admin", { runners: [runner, hostRunner, othersRunner] });
+  const sections = [...root.querySelectorAll<HTMLElement>("[data-runners-section]")];
+  expect(sections.map((section) => section.dataset.runnersSection)).toEqual([
+    "yours",
+    "hosts",
+    "members",
+  ]);
+  const [yours, hosts, members] = sections;
+  expect(yours!.querySelector("h2")!.textContent).toBe("Your runners");
+  expect(yours!.textContent).toContain(
+    "Only you use these, with your own agent accounts. An admin adds them.",
+  );
+  expect([...yours!.querySelectorAll("[data-runner-row]")].map((row) => row.textContent)).toEqual([
+    expect.stringContaining("build-box"),
+  ]);
+  expect(hosts!.querySelector("h2")!.textContent).toBe("Workspace VM hosts");
+  expect(hosts!.querySelector(".tag")?.textContent).toBe("Shared");
+  const card = hosts!.querySelector(`[data-vm-host="${HOST}"]`)!;
+  expect(card.textContent).toContain("2 of 6 VMs in use");
+  expect(card.textContent).toContain("Each VM: 2 vCPUs · 4 GB memory · 16 GB disk");
+  expect(card.textContent).toContain("Added by Pascal");
+  expect(card.querySelector("a")?.textContent).toBe("VM size");
+  expect(
+    card.querySelector(`[data-runner-status="draining"][data-runner="${HOST}"]`),
+  ).not.toBeNull();
+  expect(
+    card.querySelector(`[data-runner-status="revoked"][data-runner="${HOST}"]`),
+  ).not.toBeNull();
+  const details = members!.querySelector<HTMLDetailsElement>("details")!;
+  expect(details.open).toBe(false);
+  expect(members!.querySelector("summary")!.textContent).toBe("Members' runners (1)");
+  expect(members!.querySelector('[data-runner-owner="Dana"] h3')?.textContent).toBe("Dana");
+  expect(members!.querySelector(`[data-runner-row="${othersRunner.id}"]`)).not.toBeNull();
+  expect(root.querySelector("[data-runner-add]")).not.toBeNull();
+  expect(root.querySelector("[data-vm-create]")).not.toBeNull();
+});
+
+test("a member sees their runners, the hosts and their allowance, without add or admin controls", async () => {
+  const root = await mountSections("member", {
+    runners: [runner, hostRunner, othersRunner],
+    grant: { limit: 5 },
+  });
+  const sections = [...root.querySelectorAll<HTMLElement>("[data-runners-section]")];
+  expect(sections.map((section) => section.dataset.runnersSection)).toEqual(["yours", "hosts"]);
+  expect(sections[0]!.querySelectorAll("[data-runner-row]")).toHaveLength(1);
+  expect(sections[0]!.querySelector(`[data-runner-row="${RUNNER}"]`)).not.toBeNull();
+  expect(root.querySelector("[data-vm-allowance]")?.textContent).toBe(
+    "You can run 5 issues at once in issue VMs.",
+  );
+  expect(root.querySelector(`[data-vm-host="${HOST}"]`)?.textContent).toContain(
+    "2 of 6 VMs in use",
+  );
+  for (const selector of [
+    "[data-runner-add]",
+    "[data-vm-create]",
+    "[data-runner-status]",
+    '[data-runners-section="members"]',
+    `[data-vm-host="${HOST}"] a`,
+  ])
+    expect(root.querySelector(selector)).toBeNull();
+  expect(root.textContent).not.toContain("dana-box");
+});
+
+test("a member with no runner of their own sees the empty state and the default allowance", async () => {
+  const root = await mountSections("member", { runners: [hostRunner], defaultLimit: 1 });
+  expect(
+    root.querySelector('[data-runners-section="yours"] [data-runners-empty]')?.textContent,
+  ).toBe("You have no runner of your own. Your issues run in issue VMs.");
+  expect(root.querySelector("[data-vm-allowance]")?.textContent).toBe(
+    "You can run 1 issue at once in issue VMs.",
+  );
+  expect(root.querySelector("[data-runner-row]")).toBeNull();
+  expect(root.querySelector("[data-runner-add]")).toBeNull();
 });

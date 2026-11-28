@@ -4,10 +4,8 @@ import {
   latestItemIssueVmSteps,
   latestSealedSnapshotSteps,
   markFailedIssueVmGoneSteps,
-  runnerStandingSteps,
   setIssueVmWantSteps,
   undeletedFailedIssueVmsSteps,
-  updateRunnerStatusSteps,
   type Db,
   type IssueVm,
   type IssueVmProvider,
@@ -16,7 +14,7 @@ import {
 import { journal } from "../journal";
 import { issueVmAdmissionSteps, type IssueVmAdmission } from "./admission";
 import type { IssueVmDriver } from "./lifecycle";
-import { recordIssueVmSteps } from "./records";
+import { recordIssueVmSteps, revokeIssueVmRunnerSteps } from "./records";
 
 const ENDED_ITEM_STATES = ["completed", "merged", "cancelled", "failed"];
 
@@ -70,16 +68,7 @@ export function createIssueVmReplacer(
     await driver.delete(failed.id, call);
     const at = now();
     await store.transaction(function* (q) {
-      const runnerId = failed.runnerId;
-      const standing = runnerId === null ? null : yield* runnerStandingSteps(q, runnerId);
-      if (runnerId !== null && standing !== null && standing.revokedAt === null)
-        yield* updateRunnerStatusSteps(q, {
-          runnerId,
-          workspaceId: failed.workspaceId,
-          userId: failed.memberUserId,
-          status: "revoked",
-          now: at,
-        });
+      yield* revokeIssueVmRunnerSteps(q, failed, at);
       if (!keepRow) yield* markFailedIssueVmGoneSteps(q, { id: failed.id, now: at });
     });
   }

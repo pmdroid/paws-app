@@ -218,13 +218,16 @@ test("an admin saves the Slack app and reads back only whether it is configured"
   const f = await fixture({});
   await f.workspace("ws1", { alice: "admin", bob: "member" });
   const read = async (user: string) => (await f.call(user, "/api/settings/slack-app")).json();
-  expect(await read("alice")).toEqual({ configured: false, clientId: null });
+  expect(await read("alice")).toMatchObject({ configured: false, clientId: null });
   expect((await f.call("alice", "/api/settings/slack-app", "PUT", { clientId: "c" })).status).toBe(
     400,
   );
   expect((await f.call("alice", "/api/settings/slack-app", "PUT", APP)).status).toBe(200);
   const body = await read("alice");
-  expect(body).toEqual({ configured: true, clientId: "c-saved" });
+  expect(body).toMatchObject({
+    configured: true,
+    sources: { clientSecret: { source: "settings" } },
+  });
   expect(JSON.stringify([body, await f.status("alice")])).not.toMatch(/cs-saved|ss-saved/);
   expect(readSlackApp(f.home)).toEqual(APP);
   expect((await f.call("bob", "/api/settings/slack-app")).status).toBe(403);
@@ -235,13 +238,43 @@ test("an admin saves the Slack app and reads back only whether it is configured"
 test("server environment values override the saved Slack app", async () => {
   const f = await fixture(env);
   await f.workspace("ws1", { alice: "admin" });
-  expect((await f.call("alice", "/api/settings/slack-app", "PUT", APP)).status).toBe(200);
-  expect(await (await f.call("alice", "/api/settings/slack-app")).json()).toEqual({
+  const put = await f.call("alice", "/api/settings/slack-app", "PUT", APP);
+  expect(put.status).toBe(409);
+  expect(await put.json()).toEqual({
+    error:
+      "Set by environment variable SLACK_CLIENT_ID; remove it from the service environment to edit here",
+  });
+  expect(readSlackApp(f.home)).toBeNull();
+  const body = await (await f.call("alice", "/api/settings/slack-app")).json();
+  expect(body).toMatchObject({
     configured: true,
     clientId: "c",
+    sources: { clientId: { source: "environment", variable: "SLACK_CLIENT_ID" } },
   });
+  expect(JSON.stringify(body)).not.toMatch(/client-secret|"s"/);
   expect(await f.status("alice")).toMatchObject({ environment: true });
   expect(slackSigningSecret(f.home, env)).toBe("s");
+});
+
+test("a Slack app PUT saves its other fields when one is set by the environment", async () => {
+  const partial = { SLACK_SIGNING_SECRET: "env-signing-marker" };
+  const f = await fixture(partial);
+  await f.workspace("ws1", { alice: "admin" });
+  const put = await f.call("alice", "/api/settings/slack-app", "PUT", APP);
+  expect(put.status).toBe(409);
+  expect(((await put.json()) as { error: string }).error).toContain("SLACK_SIGNING_SECRET");
+  expect(readSlackApp(f.home) as unknown).toEqual({
+    clientId: "c-saved",
+    clientSecret: "cs-saved",
+  });
+  const body = await (await f.call("alice", "/api/settings/slack-app")).json();
+  expect(body).toMatchObject({
+    sources: { clientId: { source: "settings" }, signingSecret: { source: "environment" } },
+  });
+  expect(JSON.stringify(body)).not.toContain("env-signing-marker");
+  expect(slackSigningSecret(f.home, partial)).toBe("env-signing-marker");
+  const { signingSecret: _, ...editable } = APP;
+  expect((await f.call("alice", "/api/settings/slack-app", "PUT", editable)).status).toBe(200);
 });
 
 test("Slack events verify with a newly saved signing secret without a restart", async () => {

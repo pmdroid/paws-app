@@ -7,14 +7,11 @@ export {
 export {
   improvementSourceStatus,
   inboxCounts,
-  itemsForIssue,
   listInboxItemsSteps,
-  reuseChoice,
   type ImprovementAccess,
   type ImprovementSourceStatus,
   type InboxCounts,
   type InboxItem,
-  type ReuseChoice,
 } from "./inbox";
 export {
   createFakeIssueLookup,
@@ -57,3 +54,4 @@ export {
   type StartIssueSession,
   type VerificationRequest,
 } from "./outcomes";
+export { parseRetroEvidenceRef } from "./evidence-ref";

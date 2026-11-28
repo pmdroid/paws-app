@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pawsPaths } from "../src/config";
 import { openPawsStore, setSyncCursorSteps, syncCursorSteps, type Db } from "../src/db";
@@ -14,6 +14,9 @@ async function roundTrip(store: Db, name: string) {
 describe("openPawsStore", () => {
   test("without a url opens PGlite in pglite/, migrated, and keeps its rows across opens", async () => {
     const paths = pawsPaths(tempHome());
+    const legacy = join(paths.home, "paws.db");
+    const legacyBytes = Buffer.from([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0x00, 0xff, 0x01]);
+    writeFileSync(legacy, legacyBytes);
     const first = await openPawsStore({
       url: null,
       pgliteDir: paths.pgliteDir,
@@ -25,7 +28,7 @@ describe("openPawsStore", () => {
     }
     expect(paths.pgliteDir).toBe(join(paths.home, "pglite"));
     expect(existsSync(join(paths.pgliteDir, "PG_VERSION"))).toBe(true);
-    expect(existsSync(paths.db)).toBe(false);
+    expect(readFileSync(legacy).equals(legacyBytes)).toBe(true);
     const second = await openPawsStore({
       url: null,
       pgliteDir: paths.pgliteDir,

@@ -35,6 +35,7 @@ export {
 } from "./issue-vm-machines";
 export { heldCredentialsLeft } from "./credential-store";
 export { createRunnerHostSampler, type RunnerHostSamplerOptions } from "./host";
+export { createRunnerHostMetricsReporter } from "./node-exporter";
 export type {
   RunnerHeartbeat,
   RunnerGrantRequest,

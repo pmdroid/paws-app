@@ -5,7 +5,13 @@ import { z } from "zod";
 import { isAbsolute, join } from "node:path";
 import { createRunnerInputStore } from "../runner-inputs";
 import { createRunnerModels } from "../runner-models";
-import { readSecretFile, removeSecret, saveSecret, secretFileExists } from "../credentials";
+import {
+  readSecretFile,
+  removeSecret,
+  saveSecret,
+  secretFileExists,
+  uncopiedSecretFile,
+} from "../credentials";
 import { createRunnerControl, createRunnerHttp } from "../runner-control";
 import {
   initializeRunnerAuthority,
@@ -75,6 +81,10 @@ export async function ensureRunnerCoordinator(
   const hasKey = secretFileExists(keyPath);
   if (hasAuthority && hasKey)
     return { created: false, signingKeys: signingIdentity(root).signingKeys };
+  if (uncopiedSecretFile(authorityPath) || uncopiedSecretFile(keyPath))
+    throw new Error(
+      "Runner identity files are not in the database secret table. Paws will not replace them with a new authority.",
+    );
   if (hasAuthority || hasKey)
     throw new Error(
       `Runner identity is incomplete: ${hasAuthority ? SIGNING_FILE : AUTHORITY_FILE} is missing. Restore it from backup.`,

@@ -579,6 +579,7 @@ export async function probeWorkspaceLinearHttps(root: string, observe: Observe) 
     PAWS_TLS_CERT_PATH: cert,
     LINEAR_MODE: "agent-session",
     LINEAR_CLIENT_ID: "client",
+    LINEAR_CLIENT_SECRET: "client-secret-marker",
     LINEAR_ACCESS_TOKEN: "fixture-access",
     LINEAR_APP_USER_ID: "app",
     LINEAR_TEAM_ID: "team",

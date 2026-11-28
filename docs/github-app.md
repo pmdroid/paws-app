@@ -11,7 +11,7 @@ Create a GitHub App under **Settings > Developer settings > GitHub Apps**. Regis
 
 Grant repository **Contents**, **Pull requests**, **Checks**, **Issues**, **Workflows** and **Actions** permissions with **Read and write** access, and **Commit statuses** and **Merge queues** with **Read-only** access. GitHub grants **Metadata** read access automatically. Each agent turn on a runner gets a read-only token for the task's repository, with Contents, Metadata, Actions, Checks, Commit statuses, Pull requests and Issues read, so the agent reads CI with `gh run view --log-failed`; see [The agent's read-only GitHub token](runner-enrollment.md#the-agents-read-only-github-token). Push, pull request and merge tokens also ask for Actions read so Paws can read failed job logs; an installation without Actions gets them without it. **Actions** write lets `rerun_ci` re-run a head commit's failed jobs once, with a token that holds Actions write and Metadata read. With only **Read-only** Actions, `rerun_ci` answers that the App lacks Actions write permission, so the agent asks a person instead. Grant **Workflows** only after the release key is set up as described in [Security considerations](security-considerations.md).
 
-Under **Webhook**, check **Active** and set the URL to your HTTPS origin followed by `/webhooks/github`. Choose a webhook secret and set `GITHUB_WEBHOOK_SECRET`, or save it as `~/.paws/secrets/github-webhook`. Subscribe to **Check runs**, **Check suites**, **Statuses**, **Pull requests**, **Pull request reviews**, **Pull request review comments**, **Issue comments**, **Merge groups**, **Pushes**, **Installations** and **Installation repositories**.
+Under **Webhook**, check **Active** and set the URL to your HTTPS origin followed by `/webhooks/github`. Choose a webhook secret and set `GITHUB_WEBHOOK_SECRET`, or enter it when you save the App in Settings. Subscribe to **Check runs**, **Check suites**, **Statuses**, **Pull requests**, **Pull request reviews**, **Pull request review comments**, **Issue comments**, **Merge groups**, **Pushes**, **Releases**, **Installations** and **Installation repositories**.
 
 Generate a client secret and a private key. Install the App on the repositories Paws will work on.
 
@@ -27,7 +27,7 @@ Set these on the Paws server:
 | `GITHUB_APP_PRIVATE_KEY_PATH` | Path to the private key, mode `0600`.                       |
 | `GITHUB_APP_INSTALLATION_ID`  | Optional. Integrations finds the installation when omitted. |
 
-Paws can also read these from `~/.paws/secrets/github-app.json` and `github-app.pem`. Both files are envelope-encrypted, mode `0600`, inside the mode `0700` secrets directory. Environment variables override the saved files.
+You can instead save the App in Settings › Integrations, where Paws stores it encrypted. Each variable that is set wins over the saved value, and Settings shows that field as read-only. When `GITHUB_APP_PRIVATE_KEY_PATH` is set, Paws reads the key only from that path. If that file is missing or isn't a valid private key, GitHub access stops and Paws doesn't use the saved key. Paws imports an older `~/.paws/secrets/github-app.json` and `github-webhook` once, on its first start without a saved App.
 
 Paws needs no GitHub credential besides the App.
 

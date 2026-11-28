@@ -99,7 +99,7 @@ let browser;
     await page.locator("input[name=bootstrap]").fill(fixture.bootstrap);
     await page.getByRole("button", { name: "Connect workspace" }).click();
     await page.getByRole("navigation", { name: "Main navigation" }).waitFor();
-    await page.goto(fixture.origin + "/dashboard/#/settings/agents");
+    await page.goto(fixture.origin + "/dashboard/workspace/agents");
     await page.getByRole("button", { name: "Save settings", exact: true }).waitFor();
     assert.equal(await page.locator("#defaults-implementer-model").isDisabled(), true);
     assert.equal(

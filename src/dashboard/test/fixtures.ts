@@ -638,7 +638,7 @@ export function withRuleResults(full: FullStatus): FullStatus {
 
 /**
  * The data the dashboard has on `route`: the list of `full`, and on an issue page that issue's
- * detail. A run link opens its issue's page, as the dashboard redirects it.
+ * detail.
  */
 export function pageData(
   full: FullStatus,
@@ -655,16 +655,10 @@ export function pageData(
 } {
   const readers = questionReaders(full);
   const asked = route.view === "questions" ? route.id : null;
-  const issue =
-    route.view === "runs" && route.id !== null
-      ? full.runs.find((run) => run.id === route.id || run.attempts?.includes(route.id!))?.itemId
-      : route.view === "issues" && route.id !== null
-        ? route.id
-        : undefined;
-  const shown: Route = issue === undefined ? route : { view: "issues", id: issue };
+  const issue = route.view === "issues" && route.id !== null ? route.id : undefined;
   const known = issue !== undefined && full.items.some((entry) => entry.id === issue);
   return {
-    route: shown,
+    route,
     issues: issueList(full),
     issue: known ? issueResource(full, issue) : null,
     overview: overviewOf(full),

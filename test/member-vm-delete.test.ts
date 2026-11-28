@@ -347,7 +347,7 @@ describe("Delete VM", () => {
     const runnerId = vm.runnerId!;
     f.exeDev.calls.length = 0;
 
-    const started = await f.remove(f.member, vm.id);
+    const started = await f.remove(f.admin, vm.id);
     expect(started.status).toBe(200);
     expect(deleteStates(viewOf(started.body))).toEqual([
       "drain:running",
@@ -405,7 +405,7 @@ describe("Delete VM", () => {
     const vm = await f.ready();
     f.setOff(["exe-dev"]);
     expect(viewOf((await f.call(f.member, "/api/runners/vm")).body).id).toBe(vm.id);
-    expect((await f.remove(f.member, vm.id)).status).toBe(200);
+    expect((await f.remove(f.admin, vm.id)).status).toBe(200);
     await f.settle();
     expect(await getMemberVm(f.db, vm.id)).toBeNull();
     expect(f.exeDev.vms.has(vm.vmName)).toBe(false);
@@ -416,7 +416,7 @@ describe("Delete VM", () => {
     const vm = await f.ready();
     const itemId = await f.task(vm.runnerId!, "PAS-901");
 
-    await f.remove(f.member, vm.id);
+    await f.remove(f.admin, vm.id);
     await f.settle();
     const blocked = viewOf((await f.call(f.member, "/api/runners/vm")).body);
     expect(blocked.deleting!.step).toBe("drain");
@@ -429,12 +429,12 @@ describe("Delete VM", () => {
     expect(f.stopped).toEqual([]);
     expect(f.exeDev.vms.has(vm.vmName)).toBe(true);
 
-    await f.remove(f.member, vm.id);
+    await f.remove(f.admin, vm.id);
     await f.settle();
     expect((await getMemberVm(f.db, vm.id))!.deleteFailure).toContain("PAS-901");
     expect(f.stopped).toEqual([]);
 
-    const forced = await f.remove(f.member, vm.id, true);
+    const forced = await f.remove(f.admin, vm.id, true);
     expect(viewOf(forced.body).deleting!.force).toBe(true);
     expect(viewOf(forced.body).deleting!.failure).toBeNull();
     await f.settle();
@@ -453,7 +453,7 @@ describe("Delete VM", () => {
       q.orm.update(q.t.workItem).set({ cancelRequested: 1 }).where(eq(q.t.workItem.id, itemId)),
     );
 
-    await f.remove(f.member, vm.id);
+    await f.remove(f.admin, vm.id);
     await f.settle();
     const blocked = (await getMemberVm(f.db, vm.id))!;
     expect(blocked.deleteStep).toBe("drain");
@@ -469,7 +469,7 @@ describe("Delete VM", () => {
           .where(eq(q.t.runnerWork.commandId, "cmd-PAS-903")),
       (q) => q.orm.update(q.t.run).set({ status: "lost" }).where(eq(q.t.run.itemId, itemId)),
     );
-    await f.remove(f.member, vm.id);
+    await f.remove(f.admin, vm.id);
     await f.settle();
     expect(await getMemberVm(f.db, vm.id)).toBeNull();
     expect(f.stopped).toEqual([]);
@@ -479,7 +479,7 @@ describe("Delete VM", () => {
     const f = await fixture();
     const vm = await f.ready();
     const itemId = await f.task(vm.runnerId!, "PAS-904");
-    await f.remove(f.member, vm.id, true);
+    await f.remove(f.admin, vm.id, true);
     await f.loop.tick();
     expect(f.stopped).toEqual([itemId]);
     expect((await getMemberVm(f.db, vm.id))!.deleteStep).toBe("tailnet");
@@ -498,7 +498,7 @@ describe("Delete VM", () => {
     const f = await fixture();
     const vm = await f.ready();
     f.exeDev.vms.delete(vm.vmName);
-    await f.remove(f.member, vm.id);
+    await f.remove(f.admin, vm.id);
     await f.settle();
     expect(await getMemberVm(f.db, vm.id)).toBeNull();
     expect(f.exeDev.calls.at(-1)).toEqual({ operation: "deleteVm", vm: vm.vmName });
@@ -506,7 +506,7 @@ describe("Delete VM", () => {
     const g = await fixture();
     const other = await g.ready();
     g.exeDev.fail("deleteVm", "missing", { vm: other.vmName });
-    await g.remove(g.member, other.id);
+    await g.remove(g.admin, other.id);
     await g.settle();
     expect(await getMemberVm(g.db, other.id)).toBeNull();
   });
@@ -515,7 +515,7 @@ describe("Delete VM", () => {
     const f = await fixture();
     const vm = await f.ready();
     f.exeDev.fail("execVm", "timeout", { command: MEMBER_VM_TAILNET_LOGOUT });
-    await f.remove(f.member, vm.id);
+    await f.remove(f.admin, vm.id);
     await f.settle();
     expect(await getMemberVm(f.db, vm.id)).toBeNull();
   });
@@ -524,7 +524,7 @@ describe("Delete VM", () => {
     const f = await fixture();
     const vm = await f.ready();
     f.exeDev.fail("deleteVm", "rate_limited");
-    await f.remove(f.member, vm.id);
+    await f.remove(f.admin, vm.id);
     await f.settle();
     const failed = viewOf((await f.call(f.member, "/api/runners/vm")).body);
     expect(failed.deleting!.step).toBe("destroy");
@@ -538,7 +538,7 @@ describe("Delete VM", () => {
     ]);
     const logouts = f.exeDev.calls.filter((entry) => entry.operation === "execVm").length;
 
-    await f.remove(f.member, vm.id);
+    await f.remove(f.admin, vm.id);
     await f.settle();
     expect(await getMemberVm(f.db, vm.id)).toBeNull();
     expect(f.exeDev.calls.filter((entry) => entry.operation === "execVm")).toHaveLength(logouts);
@@ -554,8 +554,8 @@ describe("Delete VM", () => {
     }
     expect((await getMemberVm(f.db, vm.id))!.deleteStep).toBeNull();
     expect(await openJobs(f.db, MEMBER_VM_DELETE_QUEUE)).toHaveLength(0);
-    expect((await f.remove(f.member, "01NOSUCHVM0000000000000000")).status).toBe(404);
-    expect((await f.call(f.member, "/api/runners/vm/delete", { id: 7 })).status).toBe(400);
+    expect((await f.remove(f.admin, "01NOSUCHVM0000000000000000")).status).toBe(404);
+    expect((await f.call(f.admin, "/api/runners/vm/delete", { id: 7 })).status).toBe(400);
 
     const listed = (body: Record<string, unknown>) =>
       (body as Extract<MemberVmResponse, { available: true }>).vms.map((entry) => entry.id);
@@ -571,8 +571,8 @@ describe("Delete VM", () => {
   test("re-running any step after it finished changes nothing more", async () => {
     const f = await fixture();
     const vm = await f.ready();
-    await f.remove(f.member, vm.id);
-    await f.remove(f.member, vm.id);
+    await f.remove(f.admin, vm.id);
+    await f.remove(f.admin, vm.id);
     expect(await openJobs(f.db, MEMBER_VM_DELETE_QUEUE)).toHaveLength(1);
 
     const steps = ["drain", "tailnet", "revoke", "destroy"] as const;
@@ -611,11 +611,13 @@ describe("Delete VM", () => {
   test("Create VM after a delete reuses the name and provisions a new runner", async () => {
     const f = await fixture();
     const vm = await f.ready();
-    await f.remove(f.member, vm.id);
+    await f.remove(f.admin, vm.id);
     await f.settle();
     expect(await getMemberVm(f.db, vm.id)).toBeNull();
 
-    const again = viewOf((await f.call(f.member, "/api/runners/vm", {})).body);
+    const created = await f.call(f.admin, "/api/runners/vm", { memberUserId: f.member.userId });
+    expect(created.status).toBe(200);
+    const again = viewOf((await f.call(f.member, "/api/runners/vm")).body);
     expect(again.vmName).toBe(vm.vmName);
     expect(again.id).not.toBe(vm.id);
     const recreated = await f.ready();
@@ -629,7 +631,7 @@ describe("Delete VM", () => {
     f.exeDev.addVm("ada-lovelace-paws");
     const row = await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     expect(await openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(1);
-    await f.remove(f.member, row.id);
+    await f.remove(f.admin, row.id);
     expect(await openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(0);
     await f.settle();
     expect(await getMemberVm(f.db, row.id)).toBeNull();
@@ -640,10 +642,11 @@ describe("Delete VM", () => {
   test("Retry leaves a VM that is being deleted alone and Create VM makes another", async () => {
     const f = await fixture();
     const vm = await f.ready();
-    await f.remove(f.member, vm.id);
-    expect((await f.call(f.member, "/api/runners/vm/retry", { id: vm.id })).status).toBe(409);
-    expect((await f.call(f.member, "/api/runners/vm/retry", {})).status).toBe(409);
-    const answer = (await f.call(f.member, "/api/runners/vm", {})).body as Extract<
+    await f.remove(f.admin, vm.id);
+    expect((await f.call(f.admin, "/api/runners/vm/retry", { id: vm.id })).status).toBe(409);
+    expect((await f.call(f.admin, "/api/runners/vm/retry", {})).status).toBe(409);
+    await f.call(f.admin, "/api/runners/vm", { memberUserId: f.member.userId });
+    const answer = (await f.call(f.member, "/api/runners/vm")).body as Extract<
       MemberVmResponse,
       { available: true }
     >;
@@ -695,7 +698,7 @@ describe("Delete VM while a provisioning step is still running", () => {
     await waitFor(() => f.hold.createCalls > 0, { what: "the VM create request" });
     expect((await getMemberVm(f.db, row.id))!.createRequestedAt).not.toBeNull();
 
-    expect((await f.remove(f.member, row.id)).status).toBe(200);
+    expect((await f.remove(f.admin, row.id)).status).toBe(200);
     await pump(f, 3);
     expect((await getMemberVm(f.db, row.id))!.deleteStep).toBe("drain");
     expect(f.exeDev.calls.filter((call) => call.operation !== "createVm")).toEqual([]);
@@ -716,7 +719,7 @@ describe("Delete VM while a provisioning step is still running", () => {
     f.hold.create = held.promise;
     const creating = f.loop.tick();
     await waitFor(() => f.hold.createCalls > 0, { what: "the VM create request" });
-    await f.remove(f.member, row.id);
+    await f.remove(f.admin, row.id);
     await pump(f, 3);
     expect((await getMemberVm(f.db, row.id))!.deleteStep).toBe("drain");
     held.open();
@@ -747,7 +750,7 @@ describe("Delete VM while a provisioning step is still running", () => {
     const runner = (await runnerNamed(f.db, "ada-lovelace-paws"))!;
     expect((await getMemberVm(f.db, row.id))!.runnerId).toBeNull();
 
-    await f.remove(f.member, row.id);
+    await f.remove(f.admin, row.id);
     expect((await getMemberVm(f.db, row.id))!.deleteRunnerId).toBeNull();
     await pump(f, 3);
     expect((await getMemberVm(f.db, row.id))!.deleteStep).toBe("drain");
@@ -795,7 +798,7 @@ describe("Delete VM while a provisioning step is still running", () => {
       csr: (await createRunnerKey(temp("paws-same-name-host-"))).csr,
     });
 
-    await f.remove(f.member, row.id);
+    await f.remove(f.admin, row.id);
     await f.settle();
     const blocked = viewOf((await f.call(f.member, "/api/runners/vm")).body);
     expect(blocked.deleting!.step).toBe("drain");
@@ -803,7 +806,7 @@ describe("Delete VM while a provisioning step is still running", () => {
     expect((await getRunner(f.db, orphan.id))!.status).toBe("draining");
     expect(f.stopped).toEqual([]);
 
-    await f.remove(f.member, row.id, true);
+    await f.remove(f.admin, row.id, true);
     await f.settle();
     expect(f.stopped).toEqual([itemId]);
     expect(await getMemberVm(f.db, row.id)).toBeNull();
@@ -822,7 +825,7 @@ describe("Delete VM while a provisioning step is still running", () => {
     expect(token).toBeTruthy();
     expect((await getMemberVm(f.db, row.id))!.step).toBe("enroll");
 
-    await f.remove(f.member, row.id);
+    await f.remove(f.admin, row.id);
     for (
       let index = 0;
       index < 20 && (await getMemberVm(f.db, row.id))!.deleteStep !== "destroy";
@@ -849,7 +852,7 @@ describe("Delete VM while a provisioning step is still running", () => {
     const orphan = (await runnerNamed(f.db, "ada-lovelace-paws", true))!;
     await untrackEnrollments(f.db, row.id);
 
-    await f.remove(f.member, row.id);
+    await f.remove(f.admin, row.id);
     await f.settle();
     const stopped = (await getMemberVm(f.db, row.id))!;
     expect(stopped.deleteStep).toBe("drain");
@@ -858,7 +861,7 @@ describe("Delete VM while a provisioning step is still running", () => {
     expect(f.exeDev.vms.has("ada-lovelace-paws")).toBe(true);
 
     await f.control.setStatus(f.admin, orphan.id, "revoked");
-    await f.remove(f.member, row.id);
+    await f.remove(f.admin, row.id);
     await f.settle();
     expect(await getMemberVm(f.db, row.id)).toBeNull();
     expect(f.exeDev.vms.has("ada-lovelace-paws")).toBe(false);
@@ -870,13 +873,13 @@ describe("Delete VM while a provisioning step is still running", () => {
     await untrackEnrollments(f.db, vm.id);
     await f.control.createEnrollment(f.principal(f.member.userId, "member"), { name: vm.vmName });
 
-    await f.remove(f.member, vm.id);
+    await f.remove(f.admin, vm.id);
     await f.settle();
     expect((await getMemberVm(f.db, vm.id))!.deleteFailure).toContain("Retry after it expires");
     expect((await getRunner(f.db, vm.runnerId!))!.status).toBe("draining");
 
     f.clock.advance(11 * 60_000);
-    await f.remove(f.member, vm.id);
+    await f.remove(f.admin, vm.id);
     await f.settle();
     expect(await getMemberVm(f.db, vm.id)).toBeNull();
     expect((await getRunner(f.db, vm.runnerId!))!.status).toBe("revoked");
@@ -900,7 +903,7 @@ describe("Delete VM while a provisioning step is still running", () => {
           .where(eq(q.t.job.queue, MEMBER_VM_QUEUE)),
     );
 
-    await f.remove(f.member, row.id);
+    await f.remove(f.admin, row.id);
     await f.settle();
     const failed = (await getMemberVm(f.db, row.id))!;
     expect(failed.deleteStep).toBe("destroy");
@@ -909,7 +912,7 @@ describe("Delete VM while a provisioning step is still running", () => {
     expect(f.exeDev.calls.map((call) => call.operation)).toEqual(["getVm"]);
 
     f.exeDev.vms.delete("ada-lovelace-paws");
-    await f.remove(f.member, row.id);
+    await f.remove(f.admin, row.id);
     await f.settle();
     expect(await getMemberVm(f.db, row.id)).toBeNull();
     expect(f.exeDev.calls.map((call) => call.operation)).toEqual(["getVm", "getVm"]);

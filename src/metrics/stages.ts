@@ -62,6 +62,35 @@ function quantile(sorted: readonly number[], p: number): number {
   return Math.round(low + (sorted[Math.ceil(at)]! - low) * (at - Math.floor(at)));
 }
 
+function median(values: readonly number[]): number | null {
+  return values.length === 0
+    ? null
+    : quantile(
+        values.toSorted((a, b) => a - b),
+        0.5,
+      );
+}
+
+function average(values: readonly number[]): number | null {
+  return values.length === 0 ? null : values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function medians<T extends Counts>(rows: readonly T[], keys: T): Record<keyof T, number | null> {
+  return Object.fromEntries(
+    Object.keys(keys).map((key) => [key, median(rows.map((row) => row[key]!))]),
+  ) as Record<keyof T, number | null>;
+}
+
+type CheckRow = { stepId: string; startedAt: number | null; finishedAt: number | null };
+
+function checkMedians<T extends CheckRow>(rows: readonly T[]) {
+  return [...Map.groupBy(rows, (row) => row.stepId)].map(([checkId, runs]) => ({
+    checkId,
+    runs,
+    medianMs: median(runs.map((run) => run.finishedAt! - run.startedAt!))!,
+  }));
+}
+
 export async function readStageTimes(
   db: Db,
   query: { from: number; to: number; now: number; repository?: { owner: string; repo: string } },
@@ -73,6 +102,7 @@ export async function readStageTimes(
   const window = { start: query.from, end: query.to };
   const until = Math.min(query.to, query.now);
   const total = emptyTotals();
+  const merged = new Set<string>();
   const items = history.items.map((row) => {
     const item = {
       itemId: row.id,
@@ -100,6 +130,7 @@ export async function readStageTimes(
       if (event.at < query.from) return;
       if (event.toState === "running") item.turns += 1;
       if (event.toState === "verifying") item.closeoutRounds += 1;
+      if (event.toState === "merged") merged.add(row.id);
     });
     let counted = -Infinity;
     const asks = history.questions.filter((question) => question.itemId === row.id);
@@ -123,18 +154,59 @@ export async function readStageTimes(
     total.closeoutRounds += item.closeoutRounds;
     return item;
   });
-  const runs = Map.groupBy(checkRows, (row) => row.stepId);
-  const checks = [...runs]
-    .map(([checkId, rows]) => {
-      const sorted = rows.map((run) => run.finishedAt! - run.startedAt!).sort((a, b) => a - b);
+  const failed = (run: (typeof checkRows)[number]) =>
+    run.timedOut !== 1 && run.exitCode !== null && run.exitCode !== 0;
+  const checks = checkMedians(checkRows)
+    .map(({ checkId, runs, medianMs }) => {
+      const sorted = runs.map((run) => run.finishedAt! - run.startedAt!).sort((a, b) => a - b);
       return {
         checkId,
-        runs: rows.length,
-        timeouts: rows.filter((run) => run.timedOut === 1).length,
-        medianMs: quantile(sorted, 0.5),
+        runs: runs.length,
+        failures: runs.filter(failed).length,
+        timeouts: runs.filter((run) => run.timedOut === 1).length,
+        medianMs,
         p95Ms: quantile(sorted, 0.95),
       };
     })
     .sort((a, b) => b.medianMs - a.medianMs || a.checkId.localeCompare(b.checkId));
-  return { items, total, checks };
+  const itemsByRepository = Map.groupBy(
+    items.filter((item) => item.repository !== null),
+    (item) => item.repository!,
+  );
+  const runsByRepository = Map.groupBy(
+    checkRows.filter((run) => run.owner && run.repo),
+    (run) => `${run.owner}/${run.repo}`,
+  );
+  const names = [...new Set([...itemsByRepository.keys(), ...runsByRepository.keys()])].sort();
+  const repositories = names.map((repository) => {
+    const rows = itemsByRepository.get(repository) ?? [];
+    const runs = runsByRepository.get(repository) ?? [];
+    const slowest = checkMedians(runs).sort(
+      (a, b) => b.medianMs - a.medianMs || a.checkId.localeCompare(b.checkId),
+    )[0];
+    return {
+      repository,
+      issues: rows.length,
+      merged: rows.filter((item) => merged.has(item.itemId)).length,
+      medianTotalMs: median(
+        rows.map((item) => Object.values(item.stagesMs).reduce((sum, ms) => sum + ms, 0)),
+      ),
+      medianStagesMs: medians(
+        rows.map((item) => item.stagesMs),
+        total.stagesMs,
+      ),
+      medianMergeWaitMs: medians(
+        rows.map((item) => item.mergeWaitMs),
+        total.mergeWaitMs,
+      ),
+      medianWaitingForPersonMs: median(rows.map((item) => item.waitingForPersonMs)),
+      avgCloseoutRounds: average(rows.map((item) => item.closeoutRounds)),
+      avgTurns: average(rows.map((item) => item.turns)),
+      checkRuns: runs.length,
+      checkFailures: runs.filter(failed).length,
+      checkTimeouts: runs.filter((run) => run.timedOut === 1).length,
+      slowestCheck: slowest ? { checkId: slowest.checkId, medianMs: slowest.medianMs } : null,
+    };
+  });
+  return { items, total, checks, repositories };
 }

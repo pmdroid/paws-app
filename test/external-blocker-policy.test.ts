@@ -1,9 +1,22 @@
 import { expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
-import { bindLinearSessionTask, recordLinearInstallation, saveTaskMode, type Db } from "../src/db";
-import { intakeDelegatedIssue, readyItemsSteps, syncItemDependencies } from "../src/intake";
+import { createDeployLagCheck, runningDeployIncludes } from "../src/alerts";
+import {
+  bindLinearSessionTask,
+  recordLinearInstallation,
+  registerInstance,
+  saveTaskMode,
+  stopInstance,
+  type Db,
+} from "../src/db";
+import {
+  blockingIssuesSteps,
+  intakeDelegatedIssue,
+  readyItemsSteps,
+  syncItemDependencies,
+} from "../src/intake";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../src/linear";
-import { inspectPullRequestMerge } from "../src/github";
+import { createFakeRunnerReleases, inspectPullRequestMerge } from "../src/github";
 import { seed } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
@@ -99,12 +112,15 @@ async function fixture() {
   });
   const itemId = intake.items[0]!.id;
   const target = { workspaceId: "workspace", itemId };
-  const refresh = async () =>
+  const releases = createFakeRunnerReleases();
+  const refresh = async (extra: Partial<Parameters<typeof syncItemDependencies>[1]> = {}) =>
     syncItemDependencies(db, {
       ...target,
       expectedGeneration: (await db.run((q) => readyItemsSteps(q, target))).generation,
       tracker,
       lifecycle,
+      releases: releases.lookup,
+      ...extra,
     });
   return {
     db,
@@ -112,6 +128,7 @@ async function fixture() {
     target,
     tracker,
     lifecycle,
+    releases,
     refresh,
     ready: async () =>
       (await db.run((q) => readyItemsSteps(q, target))).readyItemIds.includes(itemId),
@@ -347,4 +364,142 @@ test("Linear blocker links require complete attachment pagination and exact issu
   expect(page).toBe(2);
   wrong = true;
   await expect(tracker.listIssuePullRequests!("a")).rejects.toThrow("another blocker");
+});
+
+async function releaseBlocker(f: Awaited<ReturnType<typeof fixture>>, label: string) {
+  Object.assign(f.lifecycle.issue, { identifier: "DEP-3", labels: [label] });
+  f.tracker.epics.set("a", {
+    ...{ linearIssueId: "a", identifier: "DEP-3", title: "Runner half" },
+    ...{ description: null, subIssues: [] },
+  });
+  const intake = await intakeDelegatedIssue(f.db, f.tracker, { linearIssueId: "a", now: 2000 });
+  if (!intake.ok) throw new Error("Intake failed");
+  await recordLinearInstallation(f.db, {
+    organizationId: "org",
+    oauthClientId: "client",
+    appUserId: "app",
+    sessionId: "other-session",
+    teamId: "team",
+    observedAtMs: 2000,
+  });
+  await bindLinearSessionTask(f.db, "other-session", intake.delegation.id, {
+    actorId: "linear-person",
+  });
+  const blocker = intake.items[0]!.id;
+  await saveTaskMode(f.db, blocker, "code");
+  const repository = { owner: "owner", repo: "repo", remoteUrl: "https://github.com/owner/repo" };
+  const runner = { workspaceId: "workspace", ownerUserId: "person", name: "r", status: "active" };
+  await seed(
+    f.db,
+    (q) =>
+      q.orm.insert(q.t.repositoryCatalog).values({
+        ...{ repository: "owner/repo", ...repository },
+        ...{ defaultBranch: "main", refreshedAt: 1 },
+      }),
+    (q) =>
+      q.orm
+        .insert(q.t.workItemRepository)
+        .values({ itemId: blocker, ...repository, repo: "runner" }),
+    (q) => q.orm.insert(q.t.runner).values({ id: "runner", ...runner, createdAt: Date.now() }),
+  );
+  await setItem(f.db, blocker, { state: "merged" });
+  await recordMerge(f.db, blocker, 12, "c".repeat(40), 2000);
+}
+
+function runnerOn(db: Db, runnerVersion: string) {
+  return seed(
+    db,
+    (q) => q.orm.update(q.t.runner).set({ lastSeenAt: Date.now() }),
+    (q) =>
+      q.orm
+        .insert(q.t.runnerHostStatus)
+        .values({ runnerId: "runner", runnerVersion, reportedAt: Date.now() })
+        .onConflictDoUpdate({ target: q.t.runnerHostStatus.runnerId, set: { runnerVersion } }),
+  );
+}
+
+test("A 'needs runner release' blocker holds its dependent until a runner runs the release", async () => {
+  const f = await fixture();
+  try {
+    await releaseBlocker(f, "Needs runner release");
+    await runnerOn(f.db, "0.1.109");
+    await f.refresh();
+    expect(await f.ready()).toBe(false);
+    expect(await f.db.run((q) => blockingIssuesSteps(q, f.target.itemId))).toEqual([
+      "waiting for a runner release with DEP-3",
+    ]);
+    expect(f.releases.calls).toEqual([{ repository: "owner/runner", mergeSha: "c".repeat(40) }]);
+    f.releases.releases.set("c".repeat(40), "v0.1.110");
+    await f.refresh();
+    expect(await f.ready()).toBe(false);
+    await runnerOn(f.db, "0.1.110");
+    expect(await f.ready()).toBe(true);
+    await seed(f.db, (q) => q.orm.update(q.t.runner).set({ lastSeenAt: 0 }));
+    expect(await f.ready()).toBe(false);
+    await runnerOn(f.db, "0.1.109");
+    expect(await f.ready()).toBe(false);
+    await runnerOn(f.db, "0.1.111");
+    expect(await f.ready()).toBe(true);
+  } finally {
+    await f.close();
+  }
+});
+
+test("A merged blocker without the release label releases its dependent", async () => {
+  const f = await fixture();
+  try {
+    await releaseBlocker(f, "bug");
+    await f.refresh();
+    expect(await f.ready()).toBe(true);
+    expect(f.releases.calls).toEqual([]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("A 'needs deploy' blocker holds its dependent until the running Paws contains the merge", async () => {
+  const f = await fixture();
+  try {
+    await releaseBlocker(f, "Needs deploy");
+    const contains = new Set<string>();
+    const check = createDeployLagCheck(f.db, {
+      name: "owner/repo",
+      defaultBranch: async () => "main",
+      missing: async () => null,
+      contains: async (base, sha) => contains.has(`${base}:${sha}`),
+      latestRelease: async () => null,
+    });
+    const deployed = (sha: string) => runningDeployIncludes(check, sha);
+    const register = (version: string) =>
+      registerInstance(f.db, { role: "all", host: "h", version, now: Date.now() });
+    const old = await register("git:old");
+    contains.add(`new:${"c".repeat(40)}`);
+    await f.refresh({ deployed });
+    expect(await f.ready()).toBe(false);
+    expect(await f.db.run((q) => blockingIssuesSteps(q, f.target.itemId))).toEqual([
+      "waiting for the DEP-3 fix to be deployed",
+    ]);
+    await stopInstance(f.db, old.id, Date.now());
+    await register("git:new");
+    await f.refresh({ deployed });
+    expect(await f.ready()).toBe(true);
+  } finally {
+    await f.close();
+  }
+});
+
+test("A 'needs deploy' blocker holds when the source repository is unknown", async () => {
+  const f = await fixture();
+  try {
+    await releaseBlocker(f, "needs deploy");
+    await registerInstance(f.db, { role: "all", host: "h", version: "git:new", now: Date.now() });
+    const check = createDeployLagCheck(f.db, null);
+    await f.refresh({ deployed: (sha) => runningDeployIncludes(check, sha) });
+    expect(await f.ready()).toBe(false);
+    expect(await f.db.run((q) => blockingIssuesSteps(q, f.target.itemId))).toEqual([
+      "waiting for the DEP-3 fix to be deployed; the deploy can't be checked: the running checkout has no GitHub origin remote",
+    ]);
+  } finally {
+    await f.close();
+  }
 });

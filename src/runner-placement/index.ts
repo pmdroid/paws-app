@@ -19,6 +19,7 @@ export type EligibleRunnerReason =
   | "own"
   | "issue-vm"
   | "not-yours"
+  | "vm-host"
   | "outdated"
   | "offline"
   | "paused"
@@ -65,7 +66,9 @@ export {
   itemOwnerEligibleRunnerSteps,
   itemOwnerHasEligibleRunnerSteps,
   itemOwnerRunnerSetupNeedSteps,
+  itemOwnerScopeSteps,
   itemRepositoryRunnerSteps,
+  itemRunnerOnReleaseSteps,
   RUNNER_ONLINE_MS,
 } from "./eligible";
 /**

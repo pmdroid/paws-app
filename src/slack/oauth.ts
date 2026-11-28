@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { pawsPaths } from "../config";
+import { envSetting, pawsPaths } from "../config";
 import {
   readCredentialSteps,
   readSecretFile,
@@ -37,7 +37,7 @@ export async function saveSlackApp(home: string, app: SlackApp): Promise<void> {
 }
 
 export function slackSigningSecret(home: string, env: Record<string, string | undefined>) {
-  return env.SLACK_SIGNING_SECRET ?? readSlackApp(home)?.signingSecret ?? null;
+  return envSetting(env, "slack", "signingSecret") ?? readSlackApp(home)?.signingSecret ?? null;
 }
 
 export function resolveSlackApp(
@@ -45,9 +45,9 @@ export function resolveSlackApp(
   env: Record<string, string | undefined>,
 ): SlackApp | null {
   const stored = readSlackApp(home);
-  const clientId = env.SLACK_CLIENT_ID ?? stored?.clientId;
-  const clientSecret = env.SLACK_CLIENT_SECRET ?? stored?.clientSecret;
-  const signingSecret = env.SLACK_SIGNING_SECRET ?? stored?.signingSecret;
+  const clientId = envSetting(env, "slack", "clientId") ?? stored?.clientId;
+  const clientSecret = envSetting(env, "slack", "clientSecret") ?? stored?.clientSecret;
+  const signingSecret = envSetting(env, "slack", "signingSecret") ?? stored?.signingSecret;
   return clientId && clientSecret && signingSecret
     ? { clientId, clientSecret, signingSecret }
     : null;
@@ -132,15 +132,10 @@ export async function loginSlack(input: {
   fetch?: SlackFetch;
   onAuthorize: (url: string, port: number) => void | Promise<void>;
 }): Promise<SlackToken> {
-  const stored = readSlackApp(input.home);
-  const app = {
-    clientId: input.env.SLACK_CLIENT_ID ?? stored?.clientId,
-    clientSecret: input.env.SLACK_CLIENT_SECRET ?? stored?.clientSecret,
-    signingSecret: input.env.SLACK_SIGNING_SECRET ?? stored?.signingSecret,
-  };
-  if (!app.clientId || !app.clientSecret || !app.signingSecret)
+  const app = resolveSlackApp(input.home, input.env);
+  if (!app)
     throw new Error(
-      "Set SLACK_CLIENT_ID, SLACK_CLIENT_SECRET and SLACK_SIGNING_SECRET before paws login slack.",
+      "Set the Slack client ID, client secret and signing secret in Settings or SLACK_CLIENT_ID, SLACK_CLIENT_SECRET and SLACK_SIGNING_SECRET before paws login slack.",
     );
   const publicUrl = input.env.PAWS_PUBLIC_URL;
   if (!publicUrl)
@@ -156,7 +151,6 @@ export async function loginSlack(input: {
     ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     ...(input.fetch ? { fetch: input.fetch } : {}),
   });
-  await saveSecret(join(pawsPaths(input.home).secretsDir, "slack-app.json"), JSON.stringify(app));
   await input.db.run((q) => writeSlackTokenSteps(q, input.home, token));
   return token;
 }

@@ -1,4 +1,5 @@
 import { readCsrfToken } from "./csrf";
+import { envNote, envVariable, type FieldSources } from "./env-source";
 import { esc } from "./format";
 import { renderMarkup } from "./theme";
 
@@ -11,6 +12,7 @@ type Storage = {
   accessKeyId: string | null;
   hasSecretAccessKey: boolean;
   hasSessionToken: boolean;
+  sources?: FieldSources;
   closeoutLogRetentionDays?: number;
   restartRequired?: boolean;
 };
@@ -35,19 +37,19 @@ export function createStorageSettings() {
   let generation = 0;
   let restart = false;
   const paint = () => {
-    const locked = data?.source === "environment";
+    const locked = fields.some(([key]) => envVariable(data?.sources, key));
     const field = (key: string, label: string, secret = false) => {
       const saved = key === "secretAccessKey" ? data?.hasSecretAccessKey : data?.hasSessionToken;
-      return `<div class="settings-field"><label for="storage-${key}">${label}</label><input id="storage-${key}" name="${key}" type="${secret ? "password" : "text"}" value="${esc(draft[key] ?? "")}" autocomplete="${secret ? "new-password" : "off"}"${secret && saved ? ' placeholder="Saved, enter a new one to replace it"' : ""}${!secret && key !== "sessionToken" ? " required" : ""}></div>`;
+      const variable = envVariable(data?.sources, key);
+      return `<div class="settings-field"><label for="storage-${key}">${label}</label><input id="storage-${key}" name="${key}" type="${secret ? "password" : "text"}" value="${esc(draft[key] ?? "")}" autocomplete="${secret ? "new-password" : "off"}"${variable ? " readonly" : `${secret && saved ? ' placeholder="Saved, enter a new one to replace it"' : ""}${!secret && key !== "sessionToken" ? " required" : ""}`}>${variable ? envNote(variable) : ""}</div>`;
     };
     renderMarkup(
       root,
       `<section class="settings-section"><div class="settings-label"><h2>Storage</h2></div><div class="col">
-      ${locked ? '<p class="sub">Set by PAWS_S3_* on this host</p>' : ""}
       ${
         data
-          ? `<form id="storage-form" class="col"><fieldset class="col" ${locked || busy ? "disabled" : ""}>
-        <div class="settings-field"><label for="storage-kind">Storage kind</label><select id="storage-kind" name="kind"><option value="local"${draft.kind === "local" ? " selected" : ""}>Local</option><option value="s3"${draft.kind === "s3" ? " selected" : ""}>S3</option></select></div>
+          ? `<form id="storage-form" class="col"><fieldset class="col" ${busy ? "disabled" : ""}>
+        <div class="settings-field"><label for="storage-kind">Storage kind</label><select id="storage-kind" name="kind"${locked ? " disabled" : ""}><option value="local"${draft.kind === "local" ? " selected" : ""}>Local</option><option value="s3"${draft.kind === "s3" ? " selected" : ""}>S3</option></select></div>
         ${draft.kind === "s3" ? fields.map(([key, label]) => field(key, label, key === "secretAccessKey" || key === "sessionToken")).join("") : ""}
         ${data.closeoutLogRetentionDays !== undefined ? `<div class="settings-field"><label for="storage-days">Delete Closeout logs of finished issues after N days</label><input id="storage-days" name="days" type="number" min="0" max="3650" step="1" required value="${esc(draft.days ?? "0")}"><small class="sub">0 = keep forever</small></div>` : ""}
         <div class="row"><button class="btn" type="submit">Save storage settings</button><button class="btn" type="button" data-storage="check">Check connection</button></div>
@@ -71,7 +73,8 @@ export function createStorageSettings() {
     ...(draft.kind === "s3"
       ? Object.fromEntries(
           fields.flatMap(([key]) =>
-            (key === "secretAccessKey" || key === "sessionToken") && !draft[key]
+            envVariable(data?.sources, key) ||
+            ((key === "secretAccessKey" || key === "sessionToken") && !draft[key])
               ? []
               : [[key, draft[key] ?? ""]],
           ),
@@ -139,14 +142,13 @@ export function createStorageSettings() {
     const action = (event.target as Element).closest<HTMLElement>("[data-storage]")?.dataset
       .storage;
     if (action === "reload") void run("reload");
-    if (action === "check" && data?.source !== "environment") {
+    if (action === "check") {
       read();
       if (root.querySelector<HTMLFormElement>("form")?.reportValidity()) void run("check");
     }
   };
   const submit = (event: Event) => {
     event.preventDefault();
-    if (data?.source === "environment") return;
     read();
     void run("save");
   };

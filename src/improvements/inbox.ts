@@ -19,6 +19,7 @@ import {
   type Db,
 } from "../db";
 import { improvementFindingsSteps } from "./daily";
+import { parseRetroEvidenceRef } from "./evidence-ref";
 
 export type ImprovementAccess = {
   workspaceId: string;
@@ -133,13 +134,18 @@ export function* listInboxItemsSteps(q: Q, access: ImprovementAccess): Steps<Inb
       let visible = proposal.evidence.length > 0;
       for (const ref of proposal.evidence) {
         if (!visible) break;
-        const [, retroId, evidenceId] = ref.split(":");
-        const repository = (yield* retroEvidenceSteps(retroId ?? "")).get(evidenceId ?? "");
+        const parsed = parseRetroEvidenceRef(ref);
+        if (!parsed) {
+          visible = false;
+          break;
+        }
+        const { retroId, evidenceId } = parsed;
+        const repository = (yield* retroEvidenceSteps(retroId)).get(evidenceId);
         visible =
           repository !== undefined &&
           allowedRepository(access, repository) &&
           (access.retroEvidence === undefined ||
-            (yield* access.retroEvidence(q, retroId!))?.has(evidenceId!) === true);
+            (yield* access.retroEvidence(q, retroId))?.has(evidenceId) === true);
       }
       if (!visible) continue;
     }
@@ -176,46 +182,6 @@ export function inboxCounts(items: readonly InboxItem[]): InboxCounts {
     linked: items.filter((i) => i.lifecycle === "linked").length,
     missingCriterion: items.filter((i) => i.lifecycle === "needs_review" && !i.criterion).length,
   };
-}
-
-export function itemsForIssue(
-  items: readonly InboxItem[],
-  issue: { id?: string; identifier?: string },
-): InboxItem[] {
-  return items.filter(
-    (i) =>
-      i.issue !== null &&
-      ((issue.id !== undefined && i.issue.id === issue.id) ||
-        (issue.identifier !== undefined && i.issue.identifier === issue.identifier)),
-  );
-}
-
-export type ReuseChoice =
-  | { kind: "create" }
-  | { kind: "reuse"; issue: KnownIssue }
-  | {
-      kind: "review";
-      issue: KnownIssue;
-      reason: "closed" | "unconfirmed" | "scope_changed" | "recurred";
-    };
-
-export function reuseChoice(
-  item: InboxItem,
-  issueState: "open" | "closed" | "unknown",
-): ReuseChoice {
-  const issue = item.issue;
-  if (!issue) return { kind: "create" };
-  if (issueState === "closed") return { kind: "review", issue, reason: "closed" };
-  const verifiedAt = item.improvement.verificationAt ?? 0;
-  if (
-    item.verification === "verified" &&
-    item.members.some((m) => m.status === "open" && m.lastSeenAt > verifiedAt)
-  )
-    return { kind: "review", issue, reason: "recurred" };
-  const scopeChanged = item.improvement.reviewedProposal !== item.proposal.version;
-  if (scopeChanged) return { kind: "review", issue, reason: "scope_changed" };
-  if (issueState === "unknown") return { kind: "review", issue, reason: "unconfirmed" };
-  return { kind: "reuse", issue };
 }
 
 export type ImprovementSourceStatus = {

@@ -33,7 +33,7 @@ const orchestrator = new Orchestrator({
   jobs: new JobLoop(db, systemClock),
   outbox: new OutboxDispatcher(db, systemClock),
 });
-const configPath = join(root, "config.toml");
+const configPath = root;
 useMemorySettings(configPath);
 const original = {
   implementer: { agent: "claude", model: "old" },

@@ -180,17 +180,22 @@ export function* runnerSlotsHeldBetweenCommandsSteps(
   now: number,
   excludeRunId = "",
 ) {
+  const holders = (yield* betweenCommandHoldersSteps(q, [runnerId], now)).map((row) => row.runId);
+  return holders.includes(excludeRunId) ? 0 : holders.length;
+}
+
+function* betweenCommandHoldersSteps(q: Q, runnerIds: string[], now: number) {
   const w = alias(q.t.runnerWork, "w");
   const r = alias(q.t.run, "r");
   const { runnerResult: result } = q.t;
-  const rows = yield* q.all(
+  return yield* q.all(
     q.orm
-      .select({ runId: w.runId })
+      .select({ runnerId: w.runnerId, runId: w.runId })
       .from(w)
       .innerJoin(r, eq(r.id, w.runId))
       .where(
         and(
-          eq(w.runnerId, runnerId),
+          inArray(w.runnerId, runnerIds),
           or(
             isNotNull(w.endedAt),
             and(
@@ -219,8 +224,74 @@ export function* runnerSlotsHeldBetweenCommandsSteps(
         ),
       ),
   );
-  const holders = rows.map((row) => row.runId);
-  return holders.includes(excludeRunId) ? 0 : holders.length;
+}
+
+export type RunnerFleetOccupancy = {
+  capacity: number;
+  occupied: number;
+  leasedRunIds: string[];
+  holderRunIds: string[];
+};
+
+/** Occupancy of every listed runner, read in one pass with each run's share kept apart. */
+export function* runnerFleetOccupancySteps(q: Q, runnerIds: string[], now: number) {
+  const fleet = new Map<string, RunnerFleetOccupancy>(
+    runnerIds.map((id) => [id, { capacity: 1, occupied: 0, leasedRunIds: [], holderRunIds: [] }]),
+  );
+  if (!runnerIds.length) return fleet;
+  const { runnerCapacity: c, runnerHelper: h, retroDispatch: retro } = q.t;
+  const w = alias(q.t.runnerWork, "w");
+  const least = sql.raw("LEAST");
+  for (const row of yield* q.all(
+    q.orm
+      .select({
+        runnerId: c.runnerId,
+        capacity: num(sql`${least}(${c.capacity},COALESCE(${c.desired},16))`),
+      })
+      .from(c)
+      .where(inArray(c.runnerId, runnerIds)),
+  ))
+    fleet.get(row.runnerId)!.capacity = row.capacity;
+  for (const row of yield* q.all(
+    q.orm
+      .select({ runnerId: w.runnerId, runId: w.runId, endedAt: w.endedAt })
+      .from(w)
+      .where(
+        and(
+          inArray(w.runnerId, runnerIds),
+          sql`((w.ended_at IS NULL AND w.lease_until>${runnerLeaseCutoff(now)}) OR ${teardownUnresolved})`,
+        ),
+      ),
+  )) {
+    const runner = fleet.get(row.runnerId)!;
+    runner.occupied += 1;
+    if (row.endedAt === null) runner.leasedRunIds.push(row.runId);
+  }
+  const counts = [
+    q.orm
+      .select({ runnerId: h.runnerId, count: num(sql`count(*)`) })
+      .from(h)
+      .where(
+        and(
+          inArray(h.runnerId, runnerIds),
+          isNull(h.endedAt),
+          gt(h.expiresAt, now),
+          laneHelperSql(q, "runner_helper", now),
+        ),
+      )
+      .groupBy(h.runnerId),
+    q.orm
+      .select({ runnerId: retro.runnerId, count: num(sql`count(*)`) })
+      .from(retro)
+      .where(and(inArray(retro.runnerId, runnerIds), isNull(retro.releasedAt)))
+      .groupBy(retro.runnerId),
+  ];
+  for (const query of counts)
+    for (const row of yield* q.all(query))
+      if (row.runnerId) fleet.get(row.runnerId)!.occupied += row.count;
+  for (const row of yield* betweenCommandHoldersSteps(q, runnerIds, now))
+    fleet.get(row.runnerId)!.holderRunIds.push(row.runId);
+  return fleet;
 }
 
 function* runnerOccupancyCapacitySteps(q: Q, runnerId: string) {

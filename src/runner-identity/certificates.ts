@@ -4,11 +4,14 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
+  statfsSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { readSecretFile, saveSecret, secretFileExists } from "../credentials";
 
 export type RunnerCertificate = {
@@ -26,6 +29,10 @@ export type RunnerAuthority = {
 };
 
 const AUTHORITY_FILE = "runner-authority.json";
+const SCRATCH_PREFIX = "paws-certificate-";
+const LEGACY_SCRATCH_PREFIX = ".certificate-";
+const STALE_SCRATCH_MS = 10 * 60_000;
+const TMPFS_MAGIC = 0x01021994;
 const CLIENT_EXTENSIONS = `basicConstraints=critical,CA:FALSE
 keyUsage=critical,digitalSignature
 extendedKeyUsage=clientAuth
@@ -35,7 +42,7 @@ export async function initializeRunnerAuthority(root: string): Promise<RunnerAut
   privateDirectory(root);
   if (secretFileExists(join(root, AUTHORITY_FILE)))
     throw new Error("Runner authority already exists");
-  await scratch(root, async (dir) => {
+  await scratch(certificateScratchRoot(), SCRATCH_PREFIX, async (dir) => {
     await openssl(dir, [
       "req",
       "-x509",
@@ -74,6 +81,7 @@ export async function initializeRunnerAuthority(root: string): Promise<RunnerAut
 
 export function openRunnerAuthority(root: string): RunnerAuthority {
   privateDirectory(root);
+  removeStaleCertificateScratch(root);
   const value: unknown = JSON.parse(readSecretFile(join(root, AUTHORITY_FILE)) ?? "null");
   if (
     value === null ||
@@ -109,7 +117,7 @@ export function openRunnerAuthority(root: string): RunnerAuthority {
         Date.parse(certificate.validTo) < notAfter
       )
         throw new Error("Runner authority cannot cover the requested certificate lifetime");
-      return scratch(root, async (dir) => {
+      return scratch(certificateScratchRoot(), SCRATCH_PREFIX, async (dir) => {
         await validateRequest(dir, csr);
         privateFile(join(dir, "authority.key"), key);
         privateFile(join(dir, "authority.pem"), pem);
@@ -163,7 +171,7 @@ export async function createRunnerKey(root: string): Promise<{ csr: string; keyP
   privateDirectory(root);
   const keyPath = join(root, "runner-key.pem");
   if (existsSync(keyPath)) throw new Error("Runner private key already exists");
-  return scratch(root, async (dir) => {
+  return scratch(root, LEGACY_SCRATCH_PREFIX, async (dir) => {
     await openssl(dir, [
       "req",
       "-new",
@@ -189,7 +197,7 @@ export async function createRunnerKey(root: string): Promise<{ csr: string; keyP
 
 export async function validateRunnerRequest(root: string, csr: string): Promise<void> {
   privateDirectory(root);
-  await scratch(root, (dir) => validateRequest(dir, csr));
+  await scratch(root, LEGACY_SCRATCH_PREFIX, (dir) => validateRequest(dir, csr));
 }
 
 export function describeRunnerCertificate(pem: string): RunnerCertificate {
@@ -222,8 +230,58 @@ async function validateRequest(dir: string, csr: string): Promise<void> {
     throw new Error("Runner certificate requests require a P-256 key");
 }
 
-async function scratch<T>(root: string, run: (dir: string) => Promise<T>): Promise<T> {
-  const dir = mkdtempSync(join(root, ".certificate-"));
+export function certificateScratchRoot(
+  candidates: readonly (string | undefined)[] = tmpfsCandidates(),
+): string {
+  for (const candidate of candidates) {
+    if (!candidate || !isAbsolute(candidate)) continue;
+    try {
+      if (statfsSync(candidate).type === TMPFS_MAGIC) return candidate;
+    } catch {
+      continue;
+    }
+  }
+  throw new Error(
+    "Runner certificates need a tmpfs scratch folder: set XDG_RUNTIME_DIR to a tmpfs folder or mount /dev/shm",
+  );
+}
+
+export function removeStaleCertificateScratch(root: string, now = Date.now()): void {
+  const places: [string, string][] = [[root, LEGACY_SCRATCH_PREFIX]];
+  for (const candidate of tmpfsCandidates())
+    if (candidate && isAbsolute(candidate)) places.push([candidate, SCRATCH_PREFIX]);
+  for (const [dir, prefix] of places) {
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (!name.startsWith(prefix)) continue;
+      const path = join(dir, name);
+      try {
+        const stat = statSync(path);
+        if (!stat.isDirectory() || stat.uid !== process.getuid?.()) continue;
+        if (now - stat.mtimeMs < STALE_SCRATCH_MS) continue;
+        rmSync(path, { recursive: true, force: true });
+      } catch {
+        continue;
+      }
+    }
+  }
+}
+
+function tmpfsCandidates(): (string | undefined)[] {
+  return [process.env.XDG_RUNTIME_DIR, "/dev/shm"];
+}
+
+async function scratch<T>(
+  root: string,
+  prefix: string,
+  run: (dir: string) => Promise<T>,
+): Promise<T> {
+  const dir = mkdtempSync(join(root, prefix));
   chmodSync(dir, 0o700);
   try {
     return await run(dir);

@@ -1,14 +1,23 @@
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import {
   claimAgentAuthSteps,
   deviceAccountSteps,
   listAgentAuthSteps,
+  listDeviceAgentAuthSteps,
   readAgentAuthSteps,
   writeAgentAuthSteps,
   bindToOwnerRunnersSteps,
   type Db,
 } from "../db";
-import { readAgentCredentialSteps, writeAgentCredentialSteps } from "../credentials";
+import {
+  readAgentCredentialSteps,
+  readSecretFile,
+  removeSecret,
+  saveSecret,
+  secretFileExists,
+  writeAgentCredentialSteps,
+} from "../credentials";
 import { createCodexProvider, type AuthProvider, type Device } from "./codex";
 import { createGrokProvider } from "./grok";
 import { createOpencodeProvider } from "./opencode";
@@ -21,7 +30,7 @@ type Provider = AuthProvider<{ expiresAt: number }>;
 type Agent = "codex" | "grok" | "opencode";
 type State = {
   state: "pending" | "signed-in" | "denied" | "expired";
-  device?: Device;
+  device?: Omit<Device, "deviceId"> & { deviceId?: string };
   nextPoll: number;
   expiresAt?: number;
   failures: number;
@@ -45,6 +54,20 @@ export function createAgentAuth(options: {
     opencode: createOpencodeProvider(),
     ...options.providers,
   };
+  const secretPath = (id: string) => join(secretsDir, "agent-auth-device-" + id);
+  async function forget(id: string) {
+    if (secretFileExists(secretPath(id))) await removeSecret(secretPath(id));
+  }
+  async function sweep(row: { id: string; value: string }) {
+    const state = JSON.parse(row.value) as State;
+    const { deviceId, ...device } = state.device ?? {};
+    if (deviceId) {
+      await saveSecret(secretPath(row.id), deviceId);
+      const value = JSON.stringify({ ...state, device });
+      await store.transaction((q) => claimAgentAuthSteps(q, "device:" + row.id, row.value, value));
+    }
+    if (state.state !== "pending" || (state.device?.expiresAt ?? 0) <= now()) await forget(row.id);
+  }
   async function claim(id: string, raw: string, state: State) {
     if ((state.lockUntil ?? 0) > now()) return null;
     const value = JSON.stringify({ ...state, lock: randomUUID(), lockUntil: now() + 120_000 });
@@ -129,7 +152,8 @@ export function createAgentAuth(options: {
     async device(workspaceId: string, id: string, start: boolean) {
       const provider = providers[await store.run((q) => deviceAccountSteps(q, workspaceId, id))];
       if (start) {
-        const device = await provider.startDevice();
+        const { deviceId, ...device } = await provider.startDevice();
+        await saveSecret(secretPath(id), deviceId);
         const state: State = {
           state: "pending",
           device,
@@ -140,8 +164,7 @@ export function createAgentAuth(options: {
         await store.transaction((q) =>
           writeAgentAuthSteps(q, "device:" + id, JSON.stringify(state)),
         );
-        const { deviceId: _, ...publicDevice } = device;
-        return publicDevice;
+        return device;
       }
       const raw = await store.run((q) => readAgentAuthSteps(q, "device:" + id));
       if (!raw) return { state: "expired" };
@@ -150,11 +173,26 @@ export function createAgentAuth(options: {
       if (state.nextPoll > now()) return { state: "pending" };
       const locked = await claim("device:" + id, raw, state);
       if (!locked) return { state: "pending" };
+      const { deviceId: legacy, ...stored } = state.device!;
+      if (legacy) await saveSecret(secretPath(id), legacy);
+      const deviceId = readSecretFile(secretPath(id), false);
+      if (!deviceId) {
+        const { device: _, ...rest } = state;
+        const saved = await save(
+          provider,
+          id,
+          locked,
+          { ...rest, state: "expired" },
+          undefined,
+          true,
+        );
+        return { state: saved || "pending" };
+      }
       try {
-        const result = await provider.pollDevice(state.device!);
+        const result = await provider.pollDevice({ ...stored, deviceId });
         const device = {
-          ...state.device!,
-          interval: ("interval" in result && result.interval) || state.device!.interval,
+          ...stored,
+          interval: ("interval" in result && result.interval) || stored.interval,
         };
         const next: State = {
           ...state,
@@ -175,13 +213,14 @@ export function createAgentAuth(options: {
           result.state === "signed-in" ? result.tokens : undefined,
           true,
         );
+        if (saved && saved !== "pending") await forget(id);
         return { state: saved || "pending" };
       } catch {
         await save(
           provider,
           id,
           locked,
-          { ...state, nextPoll: now() + state.device!.interval * 1000 },
+          { ...state, device: stored, nextPoll: now() + stored.interval * 1000 },
           undefined,
           true,
         );
@@ -193,6 +232,7 @@ export function createAgentAuth(options: {
       return row ? (await refresh(row, true)) === "signed-in" : false;
     },
     async tick() {
+      for (const row of await store.run(listDeviceAgentAuthSteps)) await sweep(row);
       for (const row of await store.run(listAgentAuthSteps)) await refresh(row, false);
     },
   };

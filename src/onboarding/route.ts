@@ -1,4 +1,3 @@
-import { webhookFileDigest } from "./setup-runtime";
 import { readWebhookBody } from "../webhook-body";
 import { journalCaught } from "../journal";
 import { createHash, createHmac } from "node:crypto";
@@ -53,7 +52,6 @@ export function createBrowserOnboarding(options: {
   setupToken?: string;
   clientId: string | null;
   clientSecret: string | null;
-  clientSecretOverride?: string;
   environmentClient?: boolean;
   expectedOrganizationId?: string | null;
   installed: () => void;
@@ -91,7 +89,6 @@ export function createBrowserOnboarding(options: {
   let installing = false;
   let setupConnected = false;
   let saving = false;
-  const initialClientSecret = options.clientSecretOverride;
   const setupBrowser = workspaceSecret();
   return async (request: Request, peer: WorkspaceClient = {}): Promise<Response> => {
     const url = new URL(request.url);
@@ -139,15 +136,11 @@ export function createBrowserOnboarding(options: {
           await saveSecret(join(secretsDir, "linear-setup-pending"), "pending");
           await saveSecret(
             clientFile,
-            JSON.stringify({
-              clientId: values[0],
-              clientSecret: values[1],
-              webhookFileDigest: webhookFileDigest(secretsDir),
-            }),
+            JSON.stringify({ clientId: values[0], clientSecret: values[1] }),
           );
           await saveSecret(join(secretsDir, "linear-webhook"), values[2]!);
           options.clientId = values[0]!;
-          options.clientSecret = initialClientSecret ?? values[1]!;
+          options.clientSecret = values[1]!;
           const response = await beginWorkspaceOAuth(db, {
             clientId: options.clientId!,
             origin,

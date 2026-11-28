@@ -1,5 +1,6 @@
 import { mountRepositorySettings } from "./repository-settings";
 import { createStorageSettings } from "./storage-settings";
+import { createTelemetrySettings } from "./telemetry-settings";
 import { createStorageDisk } from "./storage-disk";
 import { createIssueVmSettings } from "./issue-vm-settings";
 import { createCloseoutSettings } from "./closeout-settings";
@@ -98,6 +99,7 @@ const mergeSettings = createMergeSettings(() => paint());
 const hookSettings = createHookSettings();
 const briefSettings = createBriefSettings();
 const storageSettings = createStorageSettings();
+const telemetrySettings = createTelemetrySettings();
 const storageDisk = createStorageDisk();
 const performancePage = createPerformance();
 const issueVmSettings = createIssueVmSettings();
@@ -195,8 +197,7 @@ document.addEventListener("change", (event) => {
   }
   if (!(target instanceof HTMLSelectElement) || target.dataset.routePicker === undefined) return;
   const path = appPath(target.value);
-  if (path !== null && ["issues", "runs"].includes(parseRoute(path).view))
-    void router.navigate(path);
+  if (path !== null && parseRoute(path).view === "issues") void router.navigate(path);
 });
 
 void boot();
@@ -534,6 +535,8 @@ function paint(): void {
   if (notebooksRoot) notebooks.mount(notebooksRoot, currentEngine());
   const storageRoot = document.querySelector<HTMLElement>("#storage-settings");
   if (storageRoot) storageSettings.mount(storageRoot, currentEngine());
+  const telemetryRoot = document.querySelector<HTMLElement>("#telemetry-settings");
+  if (telemetryRoot) telemetrySettings.mount(telemetryRoot, currentEngine());
   const storageDiskRoot = document.querySelector<HTMLElement>("#storage-disk-settings");
   if (storageDiskRoot) storageDisk.mount(storageDiskRoot, currentEngine());
   const performanceRoot = document.querySelector<HTMLElement>("#performance-settings");

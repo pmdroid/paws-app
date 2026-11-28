@@ -1,6 +1,5 @@
 import { useMemorySettings } from "../../src/config";
 import { readConfigText } from "../saved-settings";
-import { join } from "node:path";
 import dirty from "./dirty-pull-ci-wait";
 import { type Proof } from "./harness";
 
@@ -19,7 +18,7 @@ export default {
     return dirty.agent(input);
   },
   async run(proof) {
-    const configPath = join(process.env.PAWS_HOME!, "config.toml");
+    const configPath = process.env.PAWS_HOME!;
     useMemorySettings(configPath, `${readConfigText(configPath)}\n[merge]\nmain_moved = "green"\n`);
     await proof.delegate();
     await proof.waitFor(

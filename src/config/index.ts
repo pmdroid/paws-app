@@ -12,7 +12,7 @@ export {
   emptyConfigFile,
   githubMirrorsOn,
   isImplementer,
-  loadConfigFile,
+  loadSettings,
   parseConfigToml,
   saveSettingsSection,
   saveSettingsSections,
@@ -26,10 +26,8 @@ export type {
   AgentsConfig,
   CloseoutSettings,
   SettingsSectionName,
-  GitHubConfigAuth,
   ImplementerName,
   PawsConfigFile,
-  TrackerKind,
 } from "./file";
 export {
   readSettingSections,
@@ -74,6 +72,7 @@ export { ensureLayout, pawsPaths } from "./paths";
 export { parseRepositoryList } from "./repositories";
 export type { PawsPaths } from "./paths";
 export {
+  CONFIG_FILE_RETIRED,
   databaseUrlOf,
   LINEAR_WORKSPACE_REQUIRED,
   loadRuntime,
@@ -81,7 +80,14 @@ export {
   startupSettings,
 } from "./runtime";
 export type { PawsRole, RuntimeConfig } from "./runtime";
-export { loadGitHubAppCredentials, saveGitHubAppCredentials } from "./github-app";
+export {
+  gitHubAppSources,
+  gitHubWebhookSecret,
+  importLegacyGitHubApp,
+  loadGitHubAppCredentials,
+} from "./github-app";
+export { ENV_SETTINGS, envSetting, envSettingRefusal, settingSources } from "./env-settings";
+export type { EnvSettingField, EnvSettingGroup, SettingSource } from "./env-settings";
 export type { GitHubAppCredentials } from "./github-app";
 
 export {

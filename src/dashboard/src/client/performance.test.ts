@@ -117,3 +117,85 @@ test("labels thresholds and durations", () => {
     "2.0 h",
   ]);
 });
+
+test("breaks the work down by repository and picks one repository", async () => {
+  const window = new Window({ url: "http://127.0.0.1:8787/dashboard/workspace/performance" });
+  const globals = ["window", "document", "Element", "HTMLElement", "Event"];
+  const saved = globals.map((name) => (globalThis as Record<string, unknown>)[name]);
+  const realFetch = globalThis.fetch;
+  const stages: URL[] = [];
+  const now = Date.now();
+  const repository = (name: string, failures: number) => ({
+    ...{ repository: name, issues: 4, merged: 2, medianTotalMs: 7_200_000 },
+    medianStagesMs: { verifying: 600_000 },
+    ...{ medianWaitingForPersonMs: 60_000, avgCloseoutRounds: 1.5, checkRuns: 8 },
+    ...{ checkFailures: failures, slowestCheck: { checkId: "test", medianMs: 90_000 } },
+  });
+  try {
+    for (const name of globals)
+      (globalThis as Record<string, unknown>)[name] =
+        name === "window" ? window : (window as unknown as Record<string, unknown>)[name];
+    globalThis.fetch = (async (url: URL | string) => {
+      const target = new URL(String(url));
+      if (target.pathname !== "/api/metrics/stages")
+        return Response.json({ step: "hour", from: now - 86_400_000, to: now, series: [] });
+      stages.push(target);
+      const picked = target.searchParams.get("repository");
+      return Response.json({
+        items: [],
+        checks: [
+          { checkId: "test", runs: 3, failures: 1, timeouts: 0, medianMs: 90_000, p95Ms: 1 },
+        ],
+        repositories: picked
+          ? [repository(picked, 2)]
+          : [repository("acme/api", 2), repository("acme/web", 0)],
+      });
+    }) as typeof fetch;
+    const root = window.document.createElement("div") as unknown as HTMLElement;
+    window.document.body.appendChild(root as never);
+    createPerformance().mount(root, "http://127.0.0.1:8787");
+    await settleReactWork();
+
+    expect(stages[0]!.searchParams.has("repository")).toBe(false);
+    const rows = [...root.querySelectorAll("tr[data-perf-repository]")];
+    expect(rows.map((row) => row.getAttribute("data-perf-repository"))).toEqual([
+      "acme/api",
+      "acme/web",
+    ]);
+    expect(rows[0]!.textContent).toContain("2 of 8 runs");
+    expect(root.querySelector('[data-perf-section="repositories"]')?.textContent).toContain(
+      "By repository",
+    );
+    const checks = [...root.querySelectorAll('[data-perf-section="work"] tr')];
+    expect(checks.find((row) => row.textContent?.includes("1 of 3"))).toBeDefined();
+    expect(root.querySelector("[data-perf-workspace-note]")).toBeNull();
+    expect(
+      [...root.querySelectorAll("select[data-perf-repository] option")].map((o) => o.textContent),
+    ).toEqual(["All repositories", "acme/api", "acme/web"]);
+
+    (root.querySelector('[data-perf-pick="acme/api"]') as unknown as { click(): void }).click();
+    await settleReactWork();
+    expect(stages.at(-1)!.searchParams.get("repository")).toBe("acme/api");
+    expect(new URL(window.location.href).searchParams.get("repository")).toBe("acme/api");
+    expect(root.querySelector('[data-perf-section="repositories"]')).toBeNull();
+    expect(root.querySelector("#perf-work")?.textContent).toContain("acme/api");
+    const notes = [...root.querySelectorAll("[data-perf-workspace-note]")];
+    expect(
+      notes.map((note) => note.closest("[data-perf-section]")?.getAttribute("data-perf-section")),
+    ).toEqual(["responsiveness", "queues", "services"]);
+    expect(notes[0]!.textContent).toBe("For the whole workspace");
+
+    createPerformance().mount(
+      window.document.createElement("div") as unknown as HTMLElement,
+      "http://127.0.0.1:8787",
+    );
+    await settleReactWork();
+    expect(stages.at(-1)!.searchParams.get("repository")).toBe("acme/api");
+  } finally {
+    globalThis.fetch = realFetch;
+    globals.forEach((name, index) => {
+      (globalThis as Record<string, unknown>)[name] = saved[index];
+    });
+    await window.happyDOM.close();
+  }
+});

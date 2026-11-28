@@ -5,6 +5,7 @@ import {
   advanceLinearSessionGeneration,
   consumeWorkspaceBootstrap,
   openPawsStore,
+  pgSchema,
   putWorkspaceUser,
   recordLinearInstallation,
 } from "../../src/db";
@@ -16,6 +17,7 @@ import { openRunnerHealthRuntime } from "../../src/runner-health-runtime";
 import { executeRunnerCommand } from "../../src/runner-worker";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 import { copyMigratedPglite } from "../pglite";
+import { isNotNull } from "drizzle-orm";
 
 const mode = process.argv[2]!;
 const root = process.argv[3]!;
@@ -222,6 +224,7 @@ if (mode === "prepare") {
     )
       return;
     await coordinator.helpers.finish(config.commandIds[0]!);
+    writeFileSync(join(server, "helper-ended"), "ended");
     nextHelper = (
       await coordinator.helpers.dispatch({
         runnerId: config.runnerId!,
@@ -237,8 +240,24 @@ if (mode === "prepare") {
     () =>
       void coordinator
         .stop()
-        .then(() => {
+        .then(async () => {
           clearInterval(advance);
+          const { runnerHelper, runnerHealthResult } = pgSchema;
+          const helpers = await db.orm
+            .select({ result: runnerHelper.result })
+            .from(runnerHelper)
+            .where(isNotNull(runnerHelper.result));
+          const health = (await db.orm.select().from(runnerHealthResult)).sort(
+            (a, b) =>
+              config.commandIds.indexOf(a.commandId) - config.commandIds.indexOf(b.commandId),
+          );
+          writeFileSync(
+            join(server, "facts.json"),
+            JSON.stringify({
+              helperResults: helpers.map((row) => row.result),
+              healthResults: health.map((row) => JSON.parse(row.resultJson)),
+            }),
+          );
           return close();
         })
         .then(() => process.exit(0)),

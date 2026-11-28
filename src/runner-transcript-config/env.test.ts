@@ -71,9 +71,17 @@ test("PAWS_S3_SESSION_TOKEN reaches the presigned URL", () => {
   );
 });
 
-test("a partial or invalid PAWS_S3_* set fails closed", () => {
+test("each PAWS_S3_* variable overrides only its own stored field", () => {
   const home = join(root, "home");
   configureRunnerTranscriptStorage(home, JSON.stringify(stored));
+  process.env.PAWS_S3_BUCKET = "env-transcripts";
+  expect(loadRunnerTranscriptS3(home)?.bucket).toBe("env-transcripts");
+  const url = new URL(loadRunnerTranscriptS3(home)!.client.presign("key"));
+  expect(url.hostname).toContain("objects.example.invalid");
+});
+
+test("a partial or invalid PAWS_S3_* set fails closed", () => {
+  const home = join(root, "home");
   for (const name of NAMES.slice(0, 5)) {
     setEnv();
     delete process.env[name];
@@ -85,9 +93,10 @@ test("a partial or invalid PAWS_S3_* set fails closed", () => {
   setEnv();
   process.env.PAWS_S3_ENDPOINT = "http://s3.example.invalid";
   expect(() => loadRunnerTranscriptS3(home)).toThrow(FAILURE);
+  configureRunnerTranscriptStorage(home, JSON.stringify(stored));
   setEnv();
-  process.env.PAWS_S3_SESSION_TOKEN = "";
-  expect(() => loadRunnerTranscriptS3(home)).toThrow(FAILURE);
+  process.env.PAWS_S3_BUCKET = "";
+  expect(loadRunnerTranscriptS3(home)?.bucket).toBe("stored-transcripts");
 });
 
 test("without PAWS_S3_* variables the stored configuration decides", () => {

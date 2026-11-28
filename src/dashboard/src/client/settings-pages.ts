@@ -29,7 +29,7 @@ export const WORKSPACE_PAGES = [
     id: "agents",
     name: "Agents",
     description:
-      "Choose the agents that implement and review your work. Check each connection on an installed runner after sign-in. Sign in to each agent per runner on the Runners page.",
+      "Choose the agents that implement and review your work. Check each connection on an installed runner after sign-in. Sign in to each agent in Settings › Agent accounts.",
 
     sections: ["Global defaults", "Label presets", "Agent", "Model", "Effort"],
   },
@@ -105,6 +105,13 @@ export const WORKSPACE_PAGES = [
     sections: ["Queue", "Time limits", "Most items one person or project runs at once"],
   },
   {
+    id: "telemetry",
+    name: "Telemetry",
+    description: "Export metrics, alerts, item events and traces to an OpenTelemetry collector.",
+
+    sections: ["Export to OpenTelemetry", "Destination", "What to export", "Send test"],
+  },
+  {
     id: "splits",
     name: "Issue splits",
     description:
@@ -120,9 +127,9 @@ export const WORKSPACE_PAGES = [
     id: "issue-vms",
     name: "Issue VMs",
     description:
-      "How many issue VMs each member and the workspace may run, extra usage for members, each provider's VM size, and the size of each VM host's microVMs.",
+      "An issue VM is a machine of its own for one delegated issue. Paws makes it when the issue starts, lets it sleep while the issue waits, and deletes it after it has slept for the days set below. Set who may use them, where they run and what they may cost.",
 
-    sections: ["Limits", "Extra usage", "VM sizes", "VM hosts"],
+    sections: ["Who may use them", "Extra usage", "VM hosts", "Cloud providers", "Cost"],
   },
   {
     id: "runner-vms",
@@ -268,5 +275,5 @@ export function settingsRedirect(path: string): string | null {
 export function renderSettingsPage(requested: SettingsPage = "account"): string {
   const page = settingsAdmin || memberCanOpen(requested) ? requested : "account";
   const current = SETTINGS_PAGES.find((entry) => entry.id === page)!;
-  return `<h1>${current.name}</h1><div class="settings-body min-w-0 space-y-4"><p class="sub">${current.description}</p>${page === "repositories" || page === "linear" ? `<div id="${page}-settings"></div>` : page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div>' : page === "agent-accounts" ? '<div id="agent-account-settings" class="agent-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "storage" ? '<div id="storage-settings" class="agent-settings"></div><div id="storage-disk-settings" class="agent-settings"></div>' : page === "issue-vms" ? '<div id="issue-vm-settings" class="agent-settings"></div>' : page === "splits" ? '<div id="split-settings" class="skill-settings"></div>' : page === "runner-vms" ? '<div id="runner-vm-keys" class="agent-settings"></div>' : page === "closeout" ? '<div id="closeout-settings" class="agent-settings"></div>' : page === "performance" ? '<div id="performance-settings"></div>' : page === "limits" ? '<div id="queue-settings" class="skill-settings"></div><div id="time-limit-settings" class="skill-settings"></div>' : page === "integrations" ? '<div id="doctor-checks"></div>' : ""}</div>`;
+  return `<h1>${current.name}</h1><div class="settings-body min-w-0 space-y-4"><p class="sub">${current.description}</p>${page === "repositories" || page === "linear" ? `<div id="${page}-settings"></div>` : page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div>' : page === "agent-accounts" ? '<div id="agent-account-settings" class="agent-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "storage" ? '<div id="storage-settings" class="agent-settings"></div><div id="storage-disk-settings" class="agent-settings"></div>' : page === "telemetry" ? '<div id="telemetry-settings" class="agent-settings"></div>' : page === "issue-vms" ? '<div id="issue-vm-settings" class="agent-settings"></div>' : page === "splits" ? '<div id="split-settings" class="skill-settings"></div>' : page === "runner-vms" ? '<div id="runner-vm-keys" class="agent-settings"></div>' : page === "closeout" ? '<div id="closeout-settings" class="agent-settings"></div>' : page === "performance" ? '<div id="performance-settings"></div>' : page === "limits" ? '<div id="queue-settings" class="skill-settings"></div><div id="time-limit-settings" class="skill-settings"></div>' : page === "integrations" ? '<div id="doctor-checks"></div>' : ""}</div>`;
 }

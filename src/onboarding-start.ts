@@ -2,12 +2,13 @@ import { journal, journalCaught } from "./journal";
 import { ensureRunnerCoordinator } from "./runner-coordinator";
 import type { PawsProcess } from "./index";
 import { ensureLayout, loadRunnerControl, pawsPaths, type RuntimeConfig } from "./config";
-import { useDatabaseSecrets } from "./credentials";
 import { workspaceOrganizationIds, type PawsStore } from "./db";
 import { publicTlsProxy, type PublicTls } from "./deployment";
 import { createBrowserOnboarding, setupToken as savedSetupToken } from "./onboarding";
 import { startServer } from "./server";
 import { isDashboardPage } from "./dashboard-links";
+
+const SETUP_OPEN = 'Setup is open: run "paws setup-link" to get the link';
 
 export async function startBrowserOnboarding(
   runtime: RuntimeConfig,
@@ -21,7 +22,6 @@ export async function startBrowserOnboarding(
   const paths = pawsPaths(runtime.env.home);
   ensureLayout(paths);
   const db = database.store;
-  let setupSecrets: Awaited<ReturnType<typeof useDatabaseSecrets>> | undefined;
   let active: PawsProcess | undefined;
   let stopping = false;
   let switching: Promise<void> | undefined;
@@ -31,7 +31,6 @@ export async function startBrowserOnboarding(
   async function closeDatabase() {
     if (closed) return;
     closed = true;
-    await setupSecrets?.close();
     await database.close();
   }
   const environmentClient = runtime.linearClientId !== null && !setupPending;
@@ -40,11 +39,8 @@ export async function startBrowserOnboarding(
       ? await savedSetupToken(paths.secretsDir)
       : undefined;
   if (setupToken) {
-    if (runtime.databaseUrl === null)
-      setupSecrets = await useDatabaseSecrets(db, paths.secretsDir, { copy: false });
-    const setupUrl = runtime.publicUrl + "/setup?token=" + setupToken;
-    journal(setupUrl);
-    console.log(setupUrl);
+    journal(SETUP_OPEN);
+    console.log(SETUP_OPEN);
   }
   const handle = createBrowserOnboarding({
     setupToken,
@@ -53,7 +49,6 @@ export async function startBrowserOnboarding(
     origin: runtime.publicUrl!,
     clientId: runtime.linearClientId,
     clientSecret: runtime.linearClientSecret,
-    clientSecretOverride: source.LINEAR_CLIENT_SECRET?.trim() || undefined,
     environmentClient,
     expectedOrganizationId: runtime.linearOrganizationId,
     reconnect,

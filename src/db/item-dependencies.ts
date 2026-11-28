@@ -51,6 +51,7 @@ export type DependencySnapshot = {
   scope: string;
   linearStates: string;
   linearIdentifiers: string;
+  externalEvidence: string;
   workspaceId: string;
 };
 
@@ -59,6 +60,7 @@ export type ManagedBlockerItem = {
   mode: TaskMode | null;
   cancelRequested: number;
   mergeSha: string | null;
+  repository?: string | null;
 };
 
 function jsonText(q: Q, value: unknown): string {
@@ -105,9 +107,15 @@ export function* readDependencyScopeSteps(
   itemId: string,
   workspaceId: string,
 ): Steps<(DependencyItem & DependencyIdentity) | null> {
-  const row = yield* q.one(
+  const found = (yield* listDependencyScopesSteps(q, [itemId])).get(itemId);
+  return found?.workspaceId === workspaceId ? found.scope : null;
+}
+
+export function* listDependencyScopesSteps(q: Q, itemIds: readonly string[]) {
+  const rows = yield* q.all(
     q.orm
       .select({
+        workspaceId: sql<string>`w.id`,
         id: sql<string>`i.id`,
         delegationId: sql<string>`i.delegation_id`,
         linearIssueId: sql<string>`i.linear_issue_id`,
@@ -146,18 +154,25 @@ export function* readDependencyScopeSteps(
       .leftJoin(sql`work_item_task t`, sql`t.item_id=i.id`)
       .leftJoin(sql`work_item_specification p`, sql`p.item_id=i.id`)
       .where(
-        sql`i.id=${itemId} AND w.id=${workspaceId} AND ${sql.raw(delegationHasOpenWork("i.delegation_id"))}
+        sql`${inArray(sql`i.id`, [...itemIds])} AND ${sql.raw(delegationHasOpenWork("i.delegation_id"))}
        AND s.stopped_at IS NULL
        AND s.oauth_client_id IS NOT NULL AND s.app_user_id IS NOT NULL
        AND s.team_id IS NOT NULL AND COALESCE(p.present,1)=1`,
       ),
   );
-  if (row === undefined) return null;
-  return { ...row, brief: row.brief === null ? null : jsonText(q, row.brief) } as DependencyItem &
-    DependencyIdentity;
+  return new Map(
+    rows.map(({ workspaceId, ...row }) => {
+      const scope = { ...row, brief: row.brief === null ? null : jsonText(q, row.brief) };
+      return [row.id, { workspaceId, scope: scope as DependencyItem & DependencyIdentity }];
+    }),
+  );
 }
 
 export function* listPresentDelegationItemsSteps(q: Q, delegationId: string) {
+  return yield* listPresentItemsOfDelegationsSteps(q, [delegationId]);
+}
+
+export function* listPresentItemsOfDelegationsSteps(q: Q, delegationIds: readonly string[]) {
   const { workItem, workItemSpecification, workItemTask } = q.t;
   const rows = yield* q.all(
     q.orm
@@ -177,7 +192,7 @@ export function* listPresentDelegationItemsSteps(q: Q, delegationId: string) {
       .leftJoin(workItemSpecification, eq(workItemSpecification.itemId, workItem.id))
       .where(
         and(
-          eq(workItem.delegationId, delegationId),
+          inArray(workItem.delegationId, [...delegationIds]),
           sql`COALESCE(${workItemSpecification.present},1)=1`,
         ),
       )
@@ -203,27 +218,38 @@ function storedText(value: unknown): string {
 }
 
 export function* readDependencySnapshotSteps(q: Q, itemId: string) {
+  return (yield* listDependencySnapshotsSteps(q, [itemId])).get(itemId) ?? null;
+}
+
+export function* listDependencySnapshotsSteps(q: Q, itemIds: readonly string[]) {
   const { itemDependencySnapshot } = q.t;
-  const row = yield* q.one(
+  const rows = yield* q.all(
     q.orm
       .select({
+        itemId: itemDependencySnapshot.itemId,
         generation: itemDependencySnapshot.generation,
         scope: itemDependencySnapshot.scope,
         linearStates: itemDependencySnapshot.linearStates,
         linearIdentifiers: itemDependencySnapshot.linearIdentifiers,
+        externalEvidence: itemDependencySnapshot.externalEvidence,
         workspaceId: itemDependencySnapshot.workspaceId,
       })
       .from(itemDependencySnapshot)
-      .where(eq(itemDependencySnapshot.itemId, itemId)),
+      .where(inArray(itemDependencySnapshot.itemId, [...itemIds])),
   );
-  if (!row) return null;
-  return {
-    generation: row.generation,
-    scope: storedText(row.scope),
-    linearStates: storedText(row.linearStates),
-    linearIdentifiers: storedText(row.linearIdentifiers),
-    workspaceId: row.workspaceId,
-  } satisfies DependencySnapshot;
+  return new Map(
+    rows.map((row) => [
+      row.itemId,
+      {
+        generation: row.generation,
+        scope: storedText(row.scope),
+        linearStates: storedText(row.linearStates),
+        linearIdentifiers: storedText(row.linearIdentifiers),
+        externalEvidence: storedText(row.externalEvidence),
+        workspaceId: row.workspaceId,
+      } satisfies DependencySnapshot,
+    ]),
+  );
 }
 
 export async function readDependencySnapshot(
@@ -350,6 +376,7 @@ type NewDependencySnapshot = {
   scope: string;
   linearStates: string;
   linearIdentifiers: string;
+  externalEvidence?: string;
 };
 
 export function* saveDependencySnapshotSteps(q: Q, snapshot: NewDependencySnapshot) {
@@ -364,7 +391,7 @@ export function* saveDependencySnapshotSteps(q: Q, snapshot: NewDependencySnapsh
         scope: jsonValue(q, snapshot.scope),
         linearStates: jsonValue(q, snapshot.linearStates),
         linearIdentifiers: jsonValue(q, snapshot.linearIdentifiers),
-        externalEvidence: jsonValue(q, "{}"),
+        externalEvidence: jsonValue(q, snapshot.externalEvidence ?? "{}"),
       })
       .onConflictDoUpdate({
         target: itemDependencySnapshot.itemId,
@@ -389,9 +416,10 @@ export async function saveDependencySnapshot(
 
 export function* listManagedBlockerItemsSteps(
   q: Q,
-  input: { workspaceId: string; issueId: string; itemId: string },
+  input: { workspaceId: string; issueId: string; itemId: string; withRepository?: true },
 ) {
-  const { linearSession, remoteMergeFact, workItem, workItemTask, workspace } = q.t;
+  const { linearSession, remoteMergeFact, workItem, workItemRepository, workItemTask, workspace } =
+    q.t;
   const rows = yield* q.all(
     q.orm
       .select({
@@ -399,12 +427,15 @@ export function* listManagedBlockerItemsSteps(
         mode: workItemTask.mode,
         cancelRequested: workItem.cancelRequested,
         mergeSha: remoteMergeFact.mergeSha,
+        owner: workItemRepository.owner,
+        repo: workItemRepository.repo,
       })
       .from(workItem)
       .innerJoin(linearSession, eq(linearSession.sessionId, workItem.sessionKey))
       .innerJoin(workspace, eq(workspace.linearOrganizationId, linearSession.organizationId))
       .leftJoin(workItemTask, eq(workItemTask.itemId, workItem.id))
       .leftJoin(remoteMergeFact, eq(remoteMergeFact.itemId, workItem.id))
+      .leftJoin(workItemRepository, eq(workItemRepository.itemId, workItem.id))
       .where(
         and(
           eq(workspace.id, input.workspaceId),
@@ -418,10 +449,11 @@ export function* listManagedBlockerItemsSteps(
       )
       .orderBy(asc(workItem.createdAt), asc(workItem.id)),
   );
-  return rows.map((row): ManagedBlockerItem => ({
+  return rows.map(({ owner, repo, ...row }): ManagedBlockerItem => ({
     ...row,
     state: row.state as WorkItemState,
     mode: row.mode as TaskMode | null,
+    ...(input.withRepository ? { repository: owner && repo ? `${owner}/${repo}` : null } : {}),
   }));
 }
 

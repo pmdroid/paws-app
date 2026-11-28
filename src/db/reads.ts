@@ -1,5 +1,5 @@
 import { journalCaught } from "../journal";
-import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { type Q, type Db } from "./db";
 import { jsonText } from "./json-text";
 
@@ -22,7 +22,8 @@ export type WorkItemFact = {
   createdAt: number;
 };
 
-export function* listWorkItemFactsSteps(q: Q) {
+export function* listWorkItemFactsSteps(q: Q, itemIds?: readonly string[]) {
+  if (itemIds?.length === 0) return [];
   const { workItem, workspaceUser } = q.t;
   const rows = yield* q.all(
     q.orm
@@ -36,6 +37,7 @@ export function* listWorkItemFactsSteps(q: Q) {
       })
       .from(workItem)
       .leftJoin(workspaceUser, eq(workspaceUser.id, workItem.ownerUserId))
+      .where(itemIds === undefined ? undefined : inArray(workItem.id, [...itemIds]))
       .orderBy(desc(workItem.createdAt), desc(workItem.id)),
   );
   return rows.map((row): WorkItemFact => ({

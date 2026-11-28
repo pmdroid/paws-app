@@ -5,6 +5,7 @@ import {
   applyWorkItemEvent,
   beginImplementRun,
   enqueueJob,
+  enqueueOutbox,
   enterMergeQueue,
   insertLinkAsk,
   insertQueuedItem,
@@ -12,6 +13,9 @@ import {
   recordAccountObservation,
   upsertCloseoutStep,
   type Db,
+  type Job,
+  type Q,
+  type Steps,
 } from "../../../db";
 import { parseOverviewResponse, type OverviewResponse } from "../contract";
 import { render } from "../client/render";
@@ -264,6 +268,131 @@ describe("overview resource", () => {
     expect(mine.issues.map((issue) => issue.id)).toEqual(["ENG-9"]);
     expect(mine.questions).toEqual([]);
     expect(mine.mergeQueueCount).toBe(0);
+  });
+
+  test("reads only the merge jobs of the issues it shows, for every reader scope", async () => {
+    const db = await fixture();
+    await insertQueuedItem(db, { id: "ENG-8", title: "Other team", sessionKey: "s2", now: NOW });
+    await beginImplementRun(db, "ENG-8", NOW - 500);
+    await enterMergeQueue(db, "ENG-8", {
+      phase: "merge_queue",
+      baseSha: "b".repeat(40),
+      wipCommit: "d".repeat(40),
+    });
+    await enqueueJob(db, {
+      queue: "github.merge",
+      payload: { itemId: "ENG-8", summary: "Closeout: rejected\nItems: 1", head: HEAD },
+      now: NOW - 400,
+    });
+    const jobs: Job[] = [];
+    const watched = new Proxy(db, {
+      get(target, key, receiver) {
+        if (key !== "run") return Reflect.get(target, key, receiver);
+        return async (...args: Parameters<Db["run"]>) => {
+          const result: unknown = await target.run(...args);
+          if (Array.isArray(result))
+            for (const row of result)
+              if (row && typeof row === "object" && "queue" in row && "attempts" in row)
+                jobs.push(row as Job);
+          return result;
+        };
+      },
+    });
+    const scopes = [undefined, ["s1"], ["s2"], ["s1", "s2"], []];
+    const read = (store: Db, sessionIds: string[] | undefined) =>
+      createLiveStatusProvider(store, { now: () => new Date(NOW), env: {}, sessionIds }).overview();
+    const before = await Promise.all(scopes.map((scope) => read(db, scope)));
+    const queues = ["github.merge", "github.merge.ready", "run.start", "run.reverify"];
+    for (let start = 0; start < 50_000; start += 5_000)
+      await seed(db, (q) =>
+        q.orm.insert(q.t.job).values(
+          Array.from({ length: 5_000 }, (_, index) => ({
+            queue: queues[(start + index) % queues.length]!,
+            payload: { itemId: `GHOST-${start + index}`, summary: "Closeout: accepted" },
+            runAt: NOW - 100,
+            status: "done",
+            createdAt: NOW - 50,
+            finishedAt: NOW - 50,
+          })),
+        ),
+      );
+    for (const [index, scope] of scopes.entries()) {
+      jobs.length = 0;
+      const after = await read(watched, scope);
+      expect(after).toEqual(before[index]!);
+      const shown = new Set(after.issues.map((issue) => issue.id));
+      expect(
+        jobs.filter((job) => !shown.has(String((job.payload as { itemId?: unknown }).itemId))),
+      ).toEqual([]);
+      expect(jobs.every((job) => job.queue.startsWith("github.merge"))).toBe(true);
+      expect(jobs.length).toBeLessThanOrEqual(shown.size * 2);
+    }
+    expect(before[2]!.issues.find((issue) => issue.id === "ENG-8")?.verdict?.decision).toBe(
+      "rejected",
+    );
+    expect(before[1]!.issues.some((issue) => issue.id === "ENG-8")).toBe(false);
+    expect(before[4]!.issues).toEqual([]);
+  });
+
+  test("reads rows keyed by the reader's visible items, not unrelated ones", async () => {
+    const db = await fixture();
+    let rows = 0;
+    const counted: Db = {
+      ...db,
+      run: <T>(body: (q: Q) => Steps<T>) =>
+        db.run(function* (q): Steps<T> {
+          const steps = body(q);
+          let next = steps.next();
+          while (!next.done) {
+            const value: unknown = yield next.value;
+            if (next.value.kind === "all" && Array.isArray(value)) rows += value.length;
+            next = steps.next(value);
+          }
+          return next.value;
+        }),
+    };
+    const cost = async (sessionIds: string[]) => {
+      rows = 0;
+      let body = "";
+      const sql = await queriesDuring(db, async () => {
+        body = JSON.stringify(
+          await createLiveStatusProvider(counted, {
+            now: () => new Date(NOW),
+            env: {},
+            sessionIds,
+          }).overview(),
+        );
+      });
+      return { body, cost: { sql: sql.length, rows, bytes: body.length } };
+    };
+    const scopes = [["s1"], ["s1", "s3"], []];
+    const before = [];
+    for (const scope of scopes) before.push(await cost(scope));
+    for (let index = 0; index < 40; index++) {
+      const id = `OTHER-${index}`;
+      await insertQueuedItem(db, { id, title: id, sessionKey: "s2", now: NOW - 100 });
+      await beginImplementRun(db, id, NOW - 90);
+      await enqueueOutbox(db, {
+        target: "linear",
+        op: "activity",
+        orderingKey: "s2",
+        idempotencyKey: `${id}:pr:${index + 1}`,
+        payload: { body: `https://github.com/acme/app/pull/${index + 1}` },
+        now: NOW - 80,
+      });
+    }
+    for (const [index, scope] of scopes.entries()) {
+      const after = await cost(scope);
+      expect(after.body).toBe(before[index]!.body);
+      expect(after.cost).toEqual(before[index]!.cost);
+    }
+    expect(before[0]!.cost.rows).toBeGreaterThan(0);
+    const all = await createLiveStatusProvider(db, {
+      now: () => new Date(NOW),
+      env: {},
+    }).overview();
+    expect(all.issues.filter((issue) => issue.id.startsWith("OTHER-")).length).toBe(40);
+    expect(all.issues.find((issue) => issue.id === "OTHER-3")?.pr?.number).toBe(4);
   });
 
   test("setup reads which first-run steps are done", async () => {

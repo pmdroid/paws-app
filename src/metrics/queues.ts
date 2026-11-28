@@ -1,4 +1,10 @@
-import { jobQueueDepthsSteps, outboxQueueDepthsSteps, type Db, type QueueDepthRow } from "../db";
+import {
+  inboxBacklogSteps,
+  jobQueueDepthsSteps,
+  outboxQueueDepthsSteps,
+  type Db,
+  type QueueDepthRow,
+} from "../db";
 import { defaultRecorder, type MetricsRecorder } from "./recorder";
 
 export const QUEUE_DEPTH_JOB = "metrics.queues";
@@ -20,4 +26,7 @@ export async function recordQueueDepths(
   };
   gauges("job", "queue", jobs);
   gauges("outbox", "kind", outbox);
+  const inbox = await db.run((q) => inboxBacklogSteps(q, now));
+  recorder.setGauge("intake.depth", {}, inbox.depth);
+  recorder.setGauge("intake.oldest_age_ms", {}, now - inbox.oldestAt);
 }

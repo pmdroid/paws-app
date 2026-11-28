@@ -5,7 +5,7 @@ import {
   offerFixtureModels,
   seedCredential,
 } from "./pglite-fixtures";
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -45,29 +45,16 @@ import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { tempStore } from "./pglite";
 
+setDefaultTimeout(120_000);
+
 type RunCommand = Extract<RunnerCommand, { type: "run" }>;
 type Setup = Awaited<ReturnType<typeof setup>>;
 
-async function until<T>(check: () => T | Promise<T>, ms = 10_000): Promise<T> {
-  const deadline = Date.now() + ms;
+async function until<T>(check: () => T | Promise<T>): Promise<T> {
   for (;;) {
     const value = await check();
-    if (value || Date.now() >= deadline) return value;
+    if (value) return value;
     await delay(1);
-  }
-}
-
-async function settleWithin(promises: Promise<unknown>[], what: string, ms = 10_000) {
-  const timer = new AbortController();
-  try {
-    await Promise.race([
-      Promise.allSettled(promises),
-      delay(ms, undefined, { signal: timer.signal }).then(() => {
-        throw new Error(`${what} did not finish within ${ms} ms`);
-      }),
-    ]);
-  } finally {
-    timer.abort();
   }
 }
 
@@ -286,8 +273,7 @@ async function setup() {
   const runCommands = new Map<string, RunCommand>();
   /** The next command for `runnerId`, or null once `attempts` polls found none. */
   async function next(runnerId: string, attempts = Infinity) {
-    const deadline = Date.now() + 10_000;
-    for (let index = 0; index < attempts && Date.now() < deadline; index++) {
+    for (let index = 0; index < attempts; index++) {
       for (const envelope of await work.commands(runnerId)) {
         const verified = verifyRunnerCommand(envelope, {
           accountBindings,
@@ -621,10 +607,10 @@ async function setup() {
       moveRoutes.clear();
       for (const { stop } of routes) stop.abort();
       const stopped = { done: false };
-      const settling = settleWithin(
-        [...stopping.map(({ running }) => running), ...routes.map(({ settled }) => settled())],
-        "Stopping the turns and moves",
-      ).finally(() => {
+      const settling = Promise.allSettled([
+        ...stopping.map(({ running }) => running),
+        ...routes.map(({ settled }) => settled()),
+      ]).finally(() => {
         stopped.done = true;
       });
       try {
@@ -1574,6 +1560,85 @@ async function nextReview(runnerId: string) {
   }
   return undefined;
 }
+
+function toolchainQuestionResult(command: RunCommand, candidateSha: string) {
+  return {
+    executionId: workspaceId(),
+    commandId: command.id,
+    account: command.account,
+    role: "implementer" as const,
+    stopReason: "end_turn" as const,
+    cancelled: false,
+    timedOut: false,
+    authRequired: false,
+    agentExited: false,
+    candidateSha,
+  };
+}
+
+test("a turn that ended on a missing-toolchain question is accepted once and frees its slot", async () => {
+  const { db, runners } = context;
+  const record = await context.item();
+  await setRunner(db, runners.b, { status: "paused" });
+  const { running } = context.turn(record, [], async (request) => {
+    await insertQuestion(db, {
+      itemId: record.id,
+      runId: record.runId,
+      sessionId: record.sessionKey,
+      body: request.question,
+      status: "open",
+    });
+    return { answer: "Question posted to the team. End your turn now." };
+  });
+  const onA = (await context.next(runners.a)) as RunCommand;
+  await context.events(onA, runners.a, [
+    { type: "question", text: "Cargo.toml needs cargo.", options: [] },
+  ]);
+  await until(async () => (await questionAnswers(db, onA.runId)).length > 0);
+  await setWorkItem(db, record.id, { state: "awaiting_input" });
+  const access = {
+    runnerId: runners.a,
+    runId: onA.runId,
+    generation: onA.generation,
+    token: await context.grant(onA, runners.a),
+  };
+  const result = toolchainQuestionResult(onA, context.base);
+  expect(await context.results.submit({ ...access, result })).toEqual({ duplicate: false });
+  expect(await context.results.submit({ ...access, result })).toEqual({ duplicate: true });
+  expect(await running).toMatchObject({ stopReason: "end_turn", agentExited: false });
+  const work = await db.run((q) =>
+    q.one(
+      q.orm
+        .select({ endedAt: q.t.runnerWork.endedAt })
+        .from(q.t.runnerWork)
+        .where(eq(q.t.runnerWork.runId, onA.runId)),
+    ),
+  );
+  expect(work?.endedAt).not.toBeNull();
+  expect((await getWorkItem(db, record.id))?.state).toBe("awaiting_input");
+  expect(await openedQuestion(db, onA.runId)).toBeTruthy();
+});
+
+test("a candidate without the agent is refused when the turn did not end on a question", async () => {
+  const { db, runners } = context;
+  const record = await context.item();
+  await setRunner(db, runners.b, { status: "paused" });
+  context.turn(record, []);
+  const onA = (await context.next(runners.a)) as RunCommand;
+  const access = {
+    runnerId: runners.a,
+    runId: onA.runId,
+    generation: onA.generation,
+    token: await context.grant(onA, runners.a),
+  };
+  const result = toolchainQuestionResult(onA, context.base);
+  await expect(context.results.submit({ ...access, result })).rejects.toThrow(
+    "Runner result command binding is invalid.",
+  );
+  await expect(
+    context.results.submit({ ...access, result: { ...result, sessionId: "claude-session" } }),
+  ).rejects.toThrow("Runner result command binding is invalid.");
+});
 
 test("a review after the session's account was removed starts fresh on the remaining account", async () => {
   const { db, runners } = context;

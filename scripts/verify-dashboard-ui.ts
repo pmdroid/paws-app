@@ -681,11 +681,16 @@ try {
     await admin.getByRole("button", { name: "Save storage settings" }).click();
     await expect(admin.getByText("Storage settings saved.", { exact: true })).toBeVisible();
     await admin.screenshot({ path: join(out, `storage-s3-${width}.png`), fullPage: true });
-    storage.source = "environment";
+    Object.assign(storage, {
+      source: "environment",
+      sources: { bucket: { source: "environment", variable: "PAWS_S3_BUCKET" } },
+    });
     await admin.reload();
-    await expect(admin.getByText("Set by PAWS_S3_* on this host")).toBeVisible();
+    await expect(admin.getByText("Set by PAWS_S3_BUCKET in the service environment")).toBeVisible();
+    await expect(admin.locator("#storage-bucket")).toHaveAttribute("readonly", "");
     await expect(admin.locator("#storage-kind")).toBeDisabled();
-    await expect(admin.locator("#storage-days")).toBeDisabled();
+    await expect(admin.locator("#storage-region")).toBeEditable();
+    await expect(admin.locator("#storage-days")).toBeEnabled();
     await admin.screenshot({ path: join(out, `storage-environment-${width}.png`), fullPage: true });
     const GB = 1024 ** 3;
     const disk = (mount: string, total: number, free: number) => ({
@@ -868,6 +873,71 @@ try {
       await admin.unroute(`**/api/settings/${path}`);
     await admin.unroute("**/api/settings/storage");
     await admin.unroute("**/api/settings/storage/check");
+    const telemetrySignal = (enabled: boolean, rest: Record<string, unknown>) => ({
+      enabled,
+      ...rest,
+    });
+    let telemetry: Record<string, unknown> = {
+      enabled: false,
+      endpoint: "",
+      protocol: "http/protobuf",
+      headerName: "Authorization",
+      environment: "",
+      metrics: telemetrySignal(true, {
+        intervalMinutes: 1,
+        temporality: "delta",
+        durations: "histogram",
+      }),
+      alerts: telemetrySignal(true, { minSeverity: "warning", sendCleared: true }),
+      items: telemetrySignal(true, { scope: "all", includeRepositoryAndRunner: true }),
+      traces: telemetrySignal(false, { which: "all", detail: "stages_and_checks", slowHours: 4 }),
+      headerValue: "set",
+      status: {
+        error: null,
+        metrics: { lastExportAt: Date.now() - 12_000, failuresLastHour: 0 },
+        logs: { lastExportAt: null, failuresLastHour: 0 },
+        traces: { lastExportAt: null, failuresLastHour: 0 },
+      },
+    };
+    await admin.route("**/api/settings/telemetry", async (route) => {
+      if (route.request().method() === "PUT") {
+        const body = route.request().postDataJSON();
+        expect(body.headerValue).toBeUndefined();
+        telemetry = { ...telemetry, ...body };
+      }
+      await route.fulfill({ json: telemetry });
+    });
+    await admin.route("**/api/settings/telemetry/check", (route) =>
+      route.fulfill({ json: { ok: false, status: 401, error: "Unauthorized" } }),
+    );
+    await visit(admin, width, "telemetry-off", "/dashboard/workspace/telemetry", "Telemetry");
+    await expect(admin.locator("[data-telemetry-status]")).toHaveText("Off");
+    await expect(admin.locator("#telemetry-headerValue")).toHaveAttribute(
+      "placeholder",
+      "Stored as a secret",
+    );
+    await admin.getByRole("switch", { name: "Export to OpenTelemetry" }).click();
+    await admin.getByRole("switch", { name: "Traces" }).click();
+    await admin.locator("#telemetry-endpoint").fill("https://otel.example.test");
+    await admin.getByLabel("gRPC").check();
+    await admin.getByRole("button", { name: "Send test" }).click();
+    await expect(admin.getByRole("alert")).toHaveText("Test export failed (401): Unauthorized");
+    await admin.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(admin.getByText("Telemetry settings saved.", { exact: true })).toBeVisible();
+    await expect(admin.locator("[data-telemetry-status]")).toContainText("Exporting · last export");
+    await expect(admin.locator("#telemetry-traces-slowHours")).toBeVisible();
+    expect(telemetry).toMatchObject({ enabled: true, protocol: "grpc", traces: { enabled: true } });
+    await admin.screenshot({ path: join(out, `telemetry-on-${width}.png`), fullPage: true });
+    const telemetryMember = await open(width);
+    await visit(
+      telemetryMember,
+      width,
+      "telemetry-member",
+      "/dashboard/workspace/telemetry",
+      "Your account",
+    );
+    await expect(telemetryMember.locator("#telemetry-settings")).toHaveCount(0);
+    await telemetryMember.close();
 
     const metricCalls: string[] = [];
     const sample = (at: number, p95: number, gauge: number | null = null) => ({
@@ -1011,7 +1081,7 @@ try {
       .getByRole("navigation", { name: "Main navigation" })
       .getByRole("list", { name: "Workspace pages" })
       .getByRole("link");
-    await expect(submenu).toHaveCount(15);
+    await expect(submenu).toHaveCount(16);
     await expect(submenu.and(admin.locator('[aria-current="page"]'))).toHaveText("Agents");
     await admin.screenshot({
       path: join(out, `workspace-submenu-${width}.png`),
@@ -1123,6 +1193,7 @@ try {
             {
               id: "agent-summary-runner",
               name: "build-box",
+              ownerUserId: "member",
               codingAgents: ["claude", "codex", "grok"].map((agent) => ({
                 agent,
                 current: "1",

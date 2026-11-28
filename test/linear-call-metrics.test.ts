@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createLinearClient, linearCaller } from "../src/linear";
 import { createMetricsRecorder } from "../src/metrics";
+import { waitFor } from "./wait-for";
 
 const auth = {
   hasToken: async () => true,
@@ -11,6 +12,7 @@ const auth = {
 function rows(metrics: ReturnType<typeof createMetricsRecorder>) {
   return metrics
     .drain(Number.POSITIVE_INFINITY)
+    .filter(({ name }) => name !== "linear.phase")
     .map(({ name, labels, count, gauge }) => ({ name, labels, count, gauge }));
 }
 
@@ -62,4 +64,46 @@ test("a Linear 429 counts as rate limited and a failed fetch as a network call",
     ["linear.rate_limited", { caller: "poller" }],
     ["linear.call", { caller: "poller", status_class: "network" }],
   ]);
+});
+
+test("a Linear call records the duration of each phase", async () => {
+  const metrics = createMetricsRecorder();
+  const client = createLinearClient({
+    auth,
+    metrics,
+    fetch: async () => Response.json({ data: { viewer: { id: "u" } } }),
+  });
+  await client.query("query { viewer { id } }", {}, { signal: new AbortController().signal });
+  const phases = metrics
+    .drain(Number.POSITIVE_INFINITY)
+    .filter(({ name }) => name === "linear.phase")
+    .map(({ labels }) => labels["phase"])
+    .sort();
+  expect(phases).toEqual(["authorize", "body", "current", "fetch", "ledger", "token"]);
+});
+
+test("a stalled response body aborts at the deadline and is cancelled", async () => {
+  let cancelled = false;
+  let requested = false;
+  const stalled = new ReadableStream<Uint8Array>({
+    start: (controller) => controller.enqueue(new TextEncoder().encode('{"data":')),
+    cancel: () => {
+      cancelled = true;
+    },
+  });
+  const client = createLinearClient({
+    auth,
+    metrics: createMetricsRecorder(),
+    fetch: async () => {
+      requested = true;
+      return new Response(stalled, { headers: { "content-type": "application/json" } });
+    },
+  });
+  const deadline = new AbortController();
+  const query = client.query("query { viewer { id } }", {}, { signal: deadline.signal });
+  const reason = new DOMException("The operation timed out.", "TimeoutError");
+  await waitFor(() => requested);
+  deadline.abort(reason);
+  await expect(query).rejects.toBe(reason);
+  await waitFor(() => cancelled);
 });

@@ -1,5 +1,5 @@
 import {
-  loadConfigFile,
+  loadSettings,
   parseCloseoutSettings,
   readCloseoutSettings,
   writeCloseoutSettings,
@@ -12,7 +12,7 @@ import { json, localRequest, readJson, sameToken } from "./handler";
 export const CLOSEOUT_SETTINGS_PATH = "/api/settings/closeout";
 
 export type CloseoutSettingsOptions = {
-  configPath: string;
+  home: string;
   csrfToken: string;
   trustedOrigin?: string;
   role?: string;
@@ -28,7 +28,7 @@ export async function handleCloseoutSettingsRequest(
     return json({ error: "Closeout settings are only available on the local Paws origin" }, 403);
   const listing = () => {
     try {
-      return json(readCloseoutSettings(loadConfigFile(options.configPath)));
+      return json(readCloseoutSettings(loadSettings(options.home)));
     } catch (error) {
       journalCaught(error, "closeout.handleCloseoutSettingsRequest.read", null);
       return json({ error: "Closeout settings could not be read" }, 503);
@@ -50,7 +50,7 @@ export async function handleCloseoutSettingsRequest(
       400,
     );
   }
-  await writeCloseoutSettings(options.configPath, settings);
+  await writeCloseoutSettings(options.home, settings);
   const repos = Object.keys(settings.projects);
   await options.audit(
     "settings.closeout",

@@ -103,6 +103,10 @@ sudo apt-get update && sudo apt-get install paws-runner
 
 The repository serves `amd64` and `arm64` packages in `stable main`, retaining the newest 10 versions per package. Pin an available version with `apt-get install paws-runner=0.1.83`. Runner installation procedures are unchanged.
 
+The package recommends `prometheus-node-exporter`, which apt installs unless you pass `--no-install-recommends`. When the exporter's `ARGS` in `/etc/default/prometheus-node-exporter` are missing, empty (the distro default) or set to `--web.listen-address=<this runner's Tailscale IPv4>:9100`, package configuration changes them to `ARGS="--web.listen-address=127.0.0.1:9100"` and restarts `prometheus-node-exporter.service`. It leaves any other `ARGS` alone.
+
+Every 30 seconds the runner reads the exporter at `127.0.0.1:9100`, or at the IPv4 `--web.listen-address` on port 9100 from those `ARGS`, and sends CPU, memory, root filesystem, load, network, disk busy and memory pressure values to Paws, which exports them over OTLP as `runner.host` metrics. While the exporter can't be reached, the runner tries again every 10 minutes.
+
 To set up the dnf repository by hand, create `/etc/yum.repos.d/paws.repo`:
 
 ```ini

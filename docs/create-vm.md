@@ -1,8 +1,12 @@
 # Create a runner VM on exe.dev
 
-Create VM on the Runners page makes a VM on [exe.dev](https://exe.dev), installs the Paws runner on it, enrolls it for the member who clicked, and waits for its first heartbeat. It is a shortcut for the manual steps in [Enroll a remote Linux runner](runner-enrollment.md), so prepare Paws the same way first: HTTPS workspace access, the runner authority, and the runner listener on port 8788.
+Create VM on the Runners page makes a VM on [exe.dev](https://exe.dev), installs the Paws runner on it, enrolls it for the member a workspace admin chose, and waits for its first heartbeat. It is a shortcut for the manual steps in [Enroll a remote Linux runner](runner-enrollment.md), so prepare Paws the same way first: HTTPS workspace access, the runner authority, and the runner listener on port 8788.
 
 A runner Paws creates always gets Docker for agent jobs. The install step adds Docker Engine (the distro's `docker.io` package) when the image has none, runs the installer with `PAWS_RUNNER_DOCKER_ACCESS=grant`, then checks as `paws-agent`, the account agents run as, that `docker info` answers on `/run/paws-agent-docker/docker.sock`. That daemon is `paws-agent-docker.service`, a user unit of `paws-agent`'s systemd user manager, so its containers get cgroups ([Docker access for runner work](runner-enrollment.md#docker-access-for-runner-work)). If it doesn't within 30 seconds, the install fails with that reason instead of finishing a runner without Docker.
+
+## Who may create and change VMs
+
+Only workspace admins create, move, retry and delete runner VMs. An admin picks the member the VM is for, and the VM and the runner it enrolls belong to that member, who must be an active workspace member. A member who tries any of these gets HTTP 403 "Only workspace admins create or change runner VMs", and Paws records the refusal in the workspace audit log. Members still see their own VMs on the Runners page. VMs that members created before this keep running and keep their owner.
 
 ## Give Paws an exe.dev token
 
@@ -49,7 +53,7 @@ The machine's idle pause is turned off and it has no run limit, so a runner VM s
 
 exe.dev VM names are global, so another account may already hold `<name>-paws`. When exe.dev answers that a name is not available, Create VM tries `<name>-paws-2`, `<name>-paws-3` and so on.
 
-Each Create VM makes a new VM, so a member may have several: `<name>-paws`, then `<name>-paws-2` and so on. A member may have at most 5 VMs that are not being deleted; the sixth Create VM is refused with "You already have 5 VMs. Delete one on its runner page first." Retry a failed VM from its runner page.
+Each Create VM makes a new VM, so a member may have several: `<name>-paws`, then `<name>-paws-2` and so on, named after the member the VM is for. A member may have at most 5 VMs that are not being deleted; the sixth Create VM for them is refused with "You already have 5 VMs. Delete one on its runner page first." An admin retries a failed VM from its runner page.
 
 ## Paws reachable only on Tailscale
 

@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { join } from "node:path";
 import { useMemorySettings } from "../src/config";
 import { FakeClock, ordinal, queueLine } from "../src/core";
 import {
@@ -128,7 +127,7 @@ test("the queued thought shows the place in line, and the start timeout comes fr
   const { db, close: closeDb } = await tempStore();
   const clock = new FakeClock(1_000);
   const pawsRoot = tempHome();
-  useMemorySettings(join(pawsRoot, "config.toml"), "[queue]\nstart_timeout_hours = 2\n");
+  useMemorySettings(pawsRoot, "[queue]\nstart_timeout_hours = 2\n");
   const orchestrator = new Orchestrator({
     store: db,
     admission: workspaceAdmission(db),

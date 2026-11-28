@@ -22,6 +22,7 @@ let spend: Record<string, unknown>;
 let host: Record<string, unknown>;
 let failing: Set<string>;
 let others: Record<string, unknown>[];
+let failingDeletes: Record<string, unknown>[];
 let sizes: Record<string, Record<string, unknown>>;
 let offProviders: string[];
 let instaBoxKey: boolean;
@@ -54,6 +55,7 @@ beforeEach(() => {
   };
   failing = new Set();
   others = [];
+  failingDeletes = [];
   sizes = { "exe-dev": {}, boat: {}, instabox: {} };
   offProviders = [];
   instaBoxKey = true;
@@ -98,7 +100,11 @@ beforeEach(() => {
       return Response.json(spend);
     }
     if (path === "/api/settings/issue-vm/members")
-      return Response.json({ defaultLimit: limits.perMember, members: [member(), ...others] });
+      return Response.json({
+        defaultLimit: limits.perMember,
+        failingDeletes,
+        members: [member(), ...others],
+      });
     if (path === "/api/settings/issue-vm/grants") {
       if (body.limit > 50)
         return Response.json(
@@ -201,6 +207,17 @@ test("an admin saves each limit and sees an out-of-range value refused", async (
   expect(root.querySelector('[role="alert"]')?.textContent).toContain("from 1 to 500");
 });
 
+test("an issue VM Paws could not delete shows its failure, and none shows no section", async () => {
+  expect((await mount()).querySelector("[data-vm-delete-failing]")).toBeNull();
+  failingDeletes = [
+    { id: "01KVM", itemId: "PAS-9", memberUserId: "user-2", failure: "The VM host refused" },
+  ];
+  const root = await mount(false);
+  const row = root.querySelector('[data-vm-delete-failing="01KVM"]');
+  expect(row?.textContent).toBe("01KVM for PAS-9 (Robin): The VM host refused");
+  expect(row?.closest('[role="alert"]')?.textContent).toContain("keeps retrying");
+});
+
 test("an admin adds and revokes a grant", async () => {
   const root = await mount();
   type(root, "#issue-vm-grant-limit", "5");
@@ -235,6 +252,18 @@ test("an admin changes a host's VM size and sees the new slots", async () => {
   expect(root.querySelector(`[data-slots="${RUNNER}"]`)?.textContent).toBe(
     "3 slots, limited by vCPUs",
   );
+});
+
+test("a revoked runner is neither listed as a VM host nor offered as a new one", async () => {
+  const listing = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
+    new URL(String(input)).pathname === "/api/runners"
+      ? Response.json({ runners: [{ id: RUNNER, name: "goldbox", status: "revoked" }] })
+      : listing(input, init)) as typeof fetch;
+  const root = await mount();
+  expect(root.querySelector(`[data-host="${RUNNER}"]`)).toBeNull();
+  expect(root.querySelector("[data-add-host]")).toBeNull();
+  expect(root.textContent).not.toContain("goldbox");
 });
 
 test("a member sees only their own limit and grant, read-only", async () => {

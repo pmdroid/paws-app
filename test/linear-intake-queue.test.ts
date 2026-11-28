@@ -15,6 +15,7 @@ import {
   intakePollMs,
   wakeIntakeOnInsert,
   LinearRateLimitError,
+  LinearForeignInstallationError,
   type AcceptedLinearEvent,
   type TrackerAdapter,
 } from "../src/linear";
@@ -60,7 +61,7 @@ async function inboxRow(db: Db, sessionId: string) {
   ))!;
 }
 
-test("a burst of 20 sessions while every runner slot is busy and Linear rate-limits is queued two at a time", async () => {
+test("a burst of 20 sessions while every runner slot is busy and Linear rate-limits is queued six at a time", async () => {
   const home = tempHome();
   const root = join(home, "paws");
   mkdirSync(root);
@@ -188,7 +189,7 @@ test("a burst of 20 sessions while every runner slot is busy and Linear rate-lim
       states: ["queued"],
       errors: [],
       questions: [],
-      mostActive: 2,
+      mostActive: 6,
       rateLimited: true,
     });
   } finally {
@@ -270,6 +271,50 @@ test("a session that keeps failing retries on its own schedule while later sessi
       unhandled: [{ sessionId: "s0" }],
     });
     expect(INTAKE_RETRY_MS).toEqual([30_000, 60_000, 120_000, 300_000, 600_000]);
+  } finally {
+    await queue.stop();
+    await close();
+  }
+});
+
+test("a session of another installation is skipped once, an unreadable one is retried and ours is processed", async () => {
+  const { db, close } = await tempStore();
+  const store = createInboxStore(db);
+  let clock = 1_000_000;
+  const delivered: string[] = [];
+  const logs: string[] = [];
+  const queue = createIntakeQueue({
+    store,
+    now: () => clock,
+    log: (line) => logs.push(line),
+    arrive: async () => true,
+    deliver: async (event) => {
+      delivered.push(event.sessionId!);
+      if (event.sessionId === "s0") throw new LinearForeignInstallationError("s0");
+      if (event.sessionId === "s1")
+        throw new Error("Linear returned incomplete installation access.");
+    },
+  });
+  try {
+    for (const n of [0, 1, 2]) await store.commit(created(n));
+    queue.wake();
+    await queue.idle();
+    clock += INTAKE_RETRY_MS[0]!;
+    queue.wake();
+    await queue.idle();
+    expect({
+      delivered: delivered.toSorted(),
+      skipped: logs.filter((line) => line.includes("another installation")),
+      foreign: (await inboxRow(db, "s0")).attempts,
+      unreadable: (await inboxRow(db, "s1")).attempts,
+      unhandled: await unhandled(db),
+    }).toEqual({
+      delivered: ["s0", "s1", "s1", "s2"],
+      skipped: ["linear session s0 belongs to another installation; skipped"],
+      foreign: 0,
+      unreadable: 2,
+      unhandled: 1,
+    });
   } finally {
     await queue.stop();
     await close();
@@ -359,7 +404,7 @@ test("a rate limit that asks for no wait still does not restart the intake at on
   }
 });
 
-test("every arrival posts its first activity at once while both intake slots are busy", async () => {
+test("every arrival posts its first activity at once while every intake slot is busy", async () => {
   const { db, close } = await tempStore();
   const store = createInboxStore(db);
   const fake = createFakeTracker([]);
@@ -379,12 +424,12 @@ test("every arrival posts its first activity at once while both intake slots are
     },
   });
   try {
-    for (let n = 0; n < 5; n++) {
+    for (let n = 0; n < 9; n++) {
       const event = created(n);
       await store.commit(event);
       queue.arrive(event);
     }
-    while (started.length < 2) await Bun.sleep(1);
+    while (started.length < 6) await Bun.sleep(1);
     const acknowledged = fake.progress
       .filter((update) => update.body === "Picked up this issue.")
       .map((update) => update.sessionId);
@@ -392,9 +437,9 @@ test("every arrival posts its first activity at once while both intake slots are
     release();
     await queue.idle();
     expect({ acknowledged, whileBusy, started, unhandled: await unhandled(db) }).toEqual({
-      acknowledged: ["s0", "s1", "s2", "s3", "s4"],
-      whileBusy: ["s0", "s1"],
-      started: ["s0", "s1", "s2", "s3", "s4"],
+      acknowledged: ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"],
+      whileBusy: ["s0", "s1", "s2", "s3", "s4", "s5"],
+      started: ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"],
       unhandled: 0,
     });
   } finally {

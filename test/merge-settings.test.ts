@@ -1,10 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { join } from "node:path";
 import {
   DEFAULT_IGNORED_COMMENT_BOTS,
   MAIN_MOVED,
   ignoredCommentBots,
-  loadConfigFile,
+  loadSettings,
   mergeLaneKey,
   parseCommentWait,
   parseConfigToml,
@@ -104,13 +103,13 @@ packages = ["apps/*", "packages/*"]
     expect(reviewApps(settings, "acme/web")).toEqual([]);
     expect(settings.commentWait.reviewWaitMaxSeconds).toBe(600);
     const home = tempHome();
-    const path = join(home, "config.toml");
+    const path = home;
     await writeMergePolicy(
       path,
       { default: { order: "queue", mainMoved: "ci" } },
       storedMerge(parseConfigToml(text)),
     );
-    const saved = readMergeSettings(loadConfigFile(path));
+    const saved = readMergeSettings(loadSettings(path));
     expect(reviewApps(saved, "acme/platform")).toEqual(["acme-review", "acme-lint"]);
     expect(saved.commentWait.reviewWaitMaxSeconds).toBe(600);
     expect(() =>
@@ -129,9 +128,9 @@ packages = ["apps/*", "packages/*"]
       );
       const settings = readMergeSettings(config);
       expect(settings.default.mainMoved).toBe(value);
-      const path = join(tempHome(), "config.toml");
+      const path = tempHome();
       await writeMergePolicy(path, { default: settings.default }, storedMerge(config));
-      expect(readMergeSettings(loadConfigFile(path))).toEqual(settings);
+      expect(readMergeSettings(loadSettings(path))).toEqual(settings);
     }
   });
 
@@ -163,9 +162,9 @@ packages = ["apps/*", "packages/*"]
     expect(mergeLaneKey(item("A", PAWS, "ann"), settings)).toBe(`${PAWS}:ann`);
     expect(mergeLaneKey(item("B", PAYMENTS, "ann"), settings)).toBe(":ann");
 
-    const path = join(tempHome(), "config.toml");
+    const path = tempHome();
     await writeMergePolicy(path, { default: settings.default }, storedMerge(config));
-    expect(readMergeSettings(loadConfigFile(path))).toEqual(settings);
+    expect(readMergeSettings(loadSettings(path))).toEqual(settings);
     expect(readConfigText(path)).toContain('lanes = ["person"]\nno_project = "lane"');
     expect(readConfigText(path)).not.toContain("ci-green");
 
@@ -175,7 +174,7 @@ packages = ["apps/*", "packages/*"]
     ] as const) {
       const legacy = parseConfigToml(`[merge]\nlane = "${old}"\n`);
       expect(readMergeSettings(legacy).lanes).toEqual([...lanes]);
-      const written = join(tempHome(), "config.toml");
+      const written = tempHome();
       await writeMergePolicy(
         written,
         { default: readMergeSettings(legacy).default },
@@ -231,9 +230,9 @@ packages = ["apps/*", "packages/*"]
     expect(suggestedFindingsMode(settings, "Acme/Platform")).toBe("own_turn");
     expect(suggestedFindingsMode(settings, "acme/web")).toBe("off");
     expect(suggestedFindingsMode(settings, "acme/api")).toBe("next_turn");
-    const path = join(tempHome(), "config.toml");
+    const path = tempHome();
     await writeMergePolicy(path, { default: settings.default }, storedMerge(config));
-    expect(readMergeSettings(loadConfigFile(path)).repositories).toEqual(settings.repositories);
+    expect(readMergeSettings(loadSettings(path)).repositories).toEqual(settings.repositories);
     expect(() =>
       parseConfigToml(`[merge.repositories."acme/platform"]\nsuggested_findings = "always"\n`),
     ).toThrow("suggested_findings");
@@ -290,10 +289,10 @@ packages = ["apps/*", "packages/*"]
 });
 
 function fixture() {
-  const configPath = join(tempHome(), "config.toml");
+  const configPath = tempHome();
   const audits: [string, string][] = [];
   const options: MergeSettingsOptions = {
-    configPath,
+    home: configPath,
     csrfToken: "test-token",
     audit: async (action, subject) => {
       audits.push([action, subject]);
@@ -414,12 +413,12 @@ describe("Merging settings API", () => {
         withFiles,
       );
     expect((await put(["src/index.ts"]))?.status).toBe(200);
-    expect(readConfigText(options.configPath)).toContain(
+    expect(readConfigText(options.home)).toContain(
       '[merge.repositories."acme/platform"]\npackages = []\nparallel_files = ["src/index.ts"]',
     );
-    expect(
-      parallelFiles(readMergeSettings(loadConfigFile(options.configPath)), "Acme/Platform"),
-    ).toEqual(["src/index.ts"]);
+    expect(parallelFiles(readMergeSettings(loadSettings(options.home)), "Acme/Platform")).toEqual([
+      "src/index.ts",
+    ]);
     const read = (await (await handleMergeSettingsRequest(request(), withFiles))!.json()) as {
       parallelFiles: unknown;
       hotFiles: unknown;
@@ -432,7 +431,7 @@ describe("Merging settings API", () => {
     }))!.json()) as { hotFiles: unknown };
     expect(expired.hotFiles).toEqual([{ ...file, conflicts: 0, items: [], held: false }]);
     expect((await put([]))?.status).toBe(200);
-    expect(readConfigText(options.configPath)).not.toContain("parallel_files");
+    expect(readConfigText(options.home)).not.toContain("parallel_files");
     expect(audits.map(([, text]) => text)).toEqual([
       "Conflict-prone files not held: none → acme/platform src/index.ts",
       "Conflict-prone files not held: acme/platform src/index.ts → none",
@@ -443,7 +442,7 @@ describe("Merging settings API", () => {
   test("PUT saves the settings, keeps other settings and audits each change", async () => {
     const { options, audits } = fixture();
     useMemorySettings(
-      options.configPath,
+      options.home,
       `[merge]\nmain_moved = "closeout"\nci_fix_attempts = 5\n\n[merge.projects."${PAYMENTS}"]\norder = "github-queue"\n\n[[merge.rules]]\nlabel = "Bug"\nmain_moved = "overlap"\n\n[merge.repositories."acme/platform"]\npackages = ["apps/*"]\n\n[agents.defaults.implementer]\nagent = "claude"\n`,
     );
     const stored = (await (await handleMergeSettingsRequest(request(), options))!.json()) as {
@@ -474,11 +473,11 @@ describe("Merging settings API", () => {
       sessionDone: "pull_request",
       sessionQuietMinutes: 10,
     });
-    const text = readConfigText(options.configPath);
+    const text = readConfigText(options.home);
     expect(text).toContain('[agents.defaults.implementer]\nagent = "claude"');
     expect(text).not.toContain("[merge.projects.");
     expect(text).not.toContain("[[merge.rules]]");
-    const config = loadConfigFile(options.configPath);
+    const config = loadSettings(options.home);
     expect(readMergeSettings(config)).toEqual({
       default: { order: "queue", mainMoved: "ci" },
       repositories: { "acme/platform": { packages: ["apps/*"] } },
@@ -515,7 +514,7 @@ describe("Merging settings API", () => {
     const saved = await handleMergeSettingsRequest(request("PUT", body), options);
     expect(saved?.status).toBe(200);
     expect(await saved!.json()).toMatchObject({ lanes: ["person"], noProject: "lane" });
-    expect(readConfigText(options.configPath)).toContain('lanes = ["person"]\nno_project = "lane"');
+    expect(readConfigText(options.home)).toContain('lanes = ["person"]\nno_project = "lane"');
     expect(audits).toContainEqual([
       "settings.merging",
       "Merge lanes split by: project, person → person",
@@ -539,7 +538,7 @@ describe("Merging settings API", () => {
     const saved = await handleMergeSettingsRequest(request("PUT", body), options);
     expect(saved?.status).toBe(200);
     expect(await saved!.json()).toMatchObject({ parallel: 3 });
-    expect(readConfigText(options.configPath)).toContain("parallel = 3");
+    expect(readConfigText(options.home)).toContain("parallel = 3");
     expect(audits).toContainEqual(["settings.merging", "Merges at once in a lane: 1 → 3"]);
     const read = await handleMergeSettingsRequest(request(), options);
     expect(await read!.json()).toMatchObject({ parallel: 3 });
@@ -555,7 +554,7 @@ describe("Merging settings API", () => {
   test("PUT saves high-risk paths per repository and a body without them keeps them", async () => {
     const { options, audits } = fixture();
     useMemorySettings(
-      options.configPath,
+      options.home,
       '[merge.repositories."acme/platform"]\npackages = ["apps/*"]\nignore_comment_bots = ["codecov[bot]"]\n',
     );
     const valid = { default: { order: "queue", mainMoved: "closeout" } };
@@ -575,7 +574,7 @@ describe("Merging settings API", () => {
       { repository: "acme/web", paths: ["infra/**"] },
     ];
     expect(((await saved!.json()) as { highRiskPaths: unknown }).highRiskPaths).toEqual(expected);
-    expect(readMergeSettings(loadConfigFile(options.configPath)).repositories).toEqual({
+    expect(readMergeSettings(loadSettings(options.home)).repositories).toEqual({
       "acme/platform": {
         packages: ["apps/*"],
         ignoreCommentBots: ["codecov[bot]"],
@@ -603,7 +602,7 @@ describe("Merging settings API", () => {
       request("PUT", { ...valid, highRiskPaths: [{ repository: "acme/web", paths: [] }] }),
       options,
     );
-    expect(readMergeSettings(loadConfigFile(options.configPath)).repositories).toEqual({
+    expect(readMergeSettings(loadSettings(options.home)).repositories).toEqual({
       "acme/platform": { packages: ["apps/*"], ignoreCommentBots: ["codecov[bot]"] },
       "acme/web": { packages: [] },
     });
@@ -704,7 +703,7 @@ describe("Merging settings API", () => {
       maxWaitSeconds: 900,
       reviewWaitMaxSeconds: 900,
     });
-    const text = readConfigText(options.configPath);
+    const text = readConfigText(options.home);
     expect(text).toContain("comment_quiet_seconds = 120\ncomment_max_wait_seconds = 900");
     expect(audits).toContainEqual([
       "settings.merging",
@@ -721,7 +720,7 @@ describe("Merging settings API", () => {
     const review = { quietSeconds: 120, maxWaitSeconds: 900, reviewWaitMaxSeconds: 1200 };
     await handleMergeSettingsRequest(request("PUT", { ...valid, commentWait: review }), options);
     expect(await read()).toEqual(review);
-    expect(readConfigText(options.configPath)).toContain("review_wait_max_seconds = 1200");
+    expect(readConfigText(options.home)).toContain("review_wait_max_seconds = 1200");
     expect(audits).toContainEqual([
       "settings.merging",
       "Review check wait: 900s at most → 1200s at most",
@@ -834,8 +833,8 @@ test("automatic high-risk approval defaults off, round-trips, and old clients pr
     expect(((await response!.json()) as { autoApproveHighRisk: boolean }).autoApproveHighRisk).toBe(
       enabled,
     );
-    expect(readConfigText(options.configPath)).toContain(`auto_approve_high_risk = ${enabled}`);
-    expect(readMergeSettings(loadConfigFile(options.configPath)).autoApproveHighRisk).toBe(enabled);
+    expect(readConfigText(options.home)).toContain(`auto_approve_high_risk = ${enabled}`);
+    expect(readMergeSettings(loadSettings(options.home)).autoApproveHighRisk).toBe(enabled);
     await handleMergeSettingsRequest(request("PUT", body), options);
     expect(
       (
@@ -848,15 +847,15 @@ test("automatic high-risk approval defaults off, round-trips, and old clients pr
   options.riskGate = { on: false };
   const put = (enabled: boolean) =>
     handleMergeSettingsRequest(request("PUT", { ...body, autoApproveHighRisk: enabled }), options);
-  const saved = readConfigText(options.configPath);
+  const saved = readConfigText(options.home);
   const auditCount = audits.length;
   expect((await put(true))?.status).toBe(400);
-  expect(readConfigText(options.configPath)).toBe(saved);
+  expect(readConfigText(options.home)).toBe(saved);
   expect(audits).toHaveLength(auditCount);
-  useMemorySettings(options.configPath, "[merge]\nauto_approve_high_risk = true\n");
+  useMemorySettings(options.home, "[merge]\nauto_approve_high_risk = true\n");
   expect((await put(true))?.status).toBe(200);
   expect((await put(false))?.status).toBe(200);
-  expect(readMergeSettings(loadConfigFile(options.configPath)).autoApproveHighRisk).toBe(false);
+  expect(readMergeSettings(loadSettings(options.home)).autoApproveHighRisk).toBe(false);
   expect(audits.map(([, text]) => text)).toContain("Automatic high-risk approval: on");
   expect(audits.map(([, text]) => text)).toContain("Automatic high-risk approval: off");
   for (const invalid of ["true", 1, null]) {
@@ -884,12 +883,12 @@ test("the overlap hold defaults on, round-trips off, survives other saves and is
   const response = await put(false);
   expect(response?.status).toBe(200);
   expect(((await response!.json()) as { overlapHold: boolean }).overlapHold).toBe(false);
-  expect(readConfigText(options.configPath)).toContain("overlap_hold = false");
+  expect(readConfigText(options.home)).toContain("overlap_hold = false");
   expect(audits.map(([, text]) => text)).toContain(
     "Hold work that changes conflict-prone files: off",
   );
   await handleMergeSettingsRequest(request("PUT", { ...body, parallel: 2 }), options);
-  expect(readMergeSettings(loadConfigFile(options.configPath)).overlapHold).toBe(false);
+  expect(readMergeSettings(loadSettings(options.home)).overlapHold).toBe(false);
   const read = await (await handleMergeSettingsRequest(request(), options))!.json();
   expect((read as { overlapHold: boolean }).overlapHold).toBe(false);
   for (const invalid of ["false", 0, null]) expect((await put(invalid))?.status).toBe(400);
@@ -901,10 +900,10 @@ test("the overlap hold defaults on, round-trips off, survives other saves and is
       })
     )?.status,
   ).toBe(403);
-  expect(readMergeSettings(loadConfigFile(options.configPath)).overlapHold).toBe(false);
+  expect(readMergeSettings(loadSettings(options.home)).overlapHold).toBe(false);
   expect((await put(true))?.status).toBe(200);
-  expect(readConfigText(options.configPath)).not.toContain("overlap_hold");
-  expect(readMergeSettings(loadConfigFile(options.configPath)).overlapHold).toBe(true);
+  expect(readConfigText(options.home)).not.toContain("overlap_hold");
+  expect(readMergeSettings(loadSettings(options.home)).overlapHold).toBe(true);
   expect(audits.map(([, text]) => text)).toContain(
     "Hold work that changes conflict-prone files: on",
   );
@@ -934,7 +933,7 @@ test("the conflict-prone rule round-trips, survives other saves, and drives the 
     handleMergeSettingsRequest(request("PUT", { ...body, ...extra }), options);
   const saved = await put({ conflictProneAfter: 3, conflictProneDays: 14 });
   expect(await saved!.json()).toMatchObject({ conflictProneAfter: 3, conflictProneDays: 14 });
-  expect(readConfigText(options.configPath)).toContain(
+  expect(readConfigText(options.home)).toContain(
     "conflict_prone_after = 3\nconflict_prone_days = 14",
   );
   expect(audits.map(([, text]) => text)).toEqual([
@@ -942,7 +941,7 @@ test("the conflict-prone rule round-trips, survives other saves, and drives the 
     "Days a conflict counts toward conflict-prone: 7 → 14",
   ]);
   await put({ parallel: 2 });
-  expect(readMergeSettings(loadConfigFile(options.configPath))).toMatchObject({
+  expect(readMergeSettings(loadSettings(options.home))).toMatchObject({
     conflictProneAfter: 3,
     conflictProneDays: 14,
   });
@@ -962,13 +961,13 @@ test("the conflict-prone rule round-trips, survives other saves, and drives the 
     expect(((await refused!.json()) as { field: string }).field).toBe(field);
   }
   await put({ conflictProneAfter: 2, conflictProneDays: 7 });
-  expect(readConfigText(options.configPath)).not.toContain("conflict_prone");
+  expect(readConfigText(options.home)).not.toContain("conflict_prone");
 });
 
 test("a stored conflict_checks list is ignored and a body that sends one is refused", async () => {
   const { options } = fixture();
   useMemorySettings(
-    options.configPath,
+    options.home,
     '[merge.repositories."acme/platform"]\npackages = ["apps/*"]\nconflict_checks = ["lint"]\n',
   );
   const read = (await (await handleMergeSettingsRequest(request(), options))!.json()) as Record<
@@ -987,7 +986,7 @@ test("a stored conflict_checks list is ignored and a body that sends one is refu
   const saved = await handleMergeSettingsRequest(request("PUT", { ...body, parallel: 2 }), options);
   expect(saved?.status).toBe(200);
   expect(await saved!.json()).not.toHaveProperty("conflictChecks");
-  const text = readConfigText(options.configPath);
+  const text = readConfigText(options.home);
   expect(text).toContain('[merge.repositories."acme/platform"]\npackages = ["apps/*"]');
   expect(text).not.toContain("conflict_checks");
 });
@@ -1006,7 +1005,7 @@ test("a failed display notification does not undo a settings write or its audit"
     options,
   );
   expect(response?.status).toBe(200);
-  expect(readMergeSettings(loadConfigFile(options.configPath)).autoApproveHighRisk).toBe(true);
+  expect(readMergeSettings(loadSettings(options.home)).autoApproveHighRisk).toBe(true);
   expect(audits).toContainEqual(["settings.merging", "Automatic high-risk approval: on"]);
 });
 
@@ -1038,7 +1037,7 @@ test("both enabled stored finding modes are exposed as true", async () => {
   for (const mode of ["next_turn", "own_turn"]) {
     const { options } = fixture();
     useMemorySettings(
-      options.configPath,
+      options.home,
       `[merge.repositories."acme/web"]\nsuggested_findings = "${mode}"\n`,
     );
     const response = await handleMergeSettingsRequest(request(), options);

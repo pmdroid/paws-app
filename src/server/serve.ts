@@ -5,7 +5,7 @@ import { journalCaught } from "../journal";
 import type { DoctorCheck } from "../doctor";
 import { recordDuration } from "../metrics";
 import { observeRequest, type RequestMetrics } from "./request-metrics";
-import { ALERTS_PATH, readAlerts } from "../alerts";
+import { ALERTS_PATH, readAlerts, type DeployLagCheck } from "../alerts";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
 import { createGitHubStatusCache, type GitHubStatusCache } from "./github-status-cache";
@@ -27,7 +27,7 @@ import {
 } from "../slack";
 import type { PublicTls } from "../deployment";
 import { createGitHubInstallationCheck, createWorkspaceGitHubActivation } from "../auth";
-import { DEFAULT_HOST, DEFAULT_PORT, loadRuntime, loadGitHubAppCredentials } from "../config";
+import { DEFAULT_HOST, DEFAULT_PORT, gitHubWebhookSecret, loadRuntime } from "../config";
 import { handleGitHubWebhook, type GitHubWebhook } from "../github";
 import {
   handleLinearWebhook,
@@ -154,7 +154,12 @@ import {
 } from "../issue-vm";
 import type { WorkspaceSession } from "../db";
 import { isDashboardPage, isDashboardPath } from "../dashboard-links";
-import { handleVmHostRequest, isVmHostPath } from "../vm-hosts";
+import {
+  handleVmHostRequest,
+  handleVmHostsListRequest,
+  isVmHostPath,
+  VM_HOSTS_PATH,
+} from "../vm-hosts";
 
 export type ServerOptions = {
   metrics?: RequestMetrics;
@@ -182,6 +187,7 @@ export type ServerOptions = {
   ) => Promise<Response>;
   vmProviderChecks?: VmProviderCheckService;
   doctor?: () => Promise<readonly DoctorCheck[]>;
+  deployLag?: DeployLagCheck;
   retros?: (
     request: Request,
     principal: WorkspacePrincipal,
@@ -277,7 +283,7 @@ export type ServerOptions = {
   };
   /** Registered agent skills: bundles under `root` (`~/.paws/skills`), pins in `db`. */
   skillSettings?: {
-    configPath?: string;
+    home?: string;
     root: string;
     resolver: SkillResolver;
     updates?: SkillUpdates;
@@ -307,7 +313,15 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const health = createHealthReport({
     ...(store ? { store } : {}),
     linearWebhook: webhooks && Boolean(linearWebhookSecret),
-    githubWebhook: webhooks && Boolean(githubWebhookSecret),
+    githubWebhook:
+      webhooks &&
+      Boolean(
+        githubWebhookSecret ??
+        gitHubWebhookSecret(
+          loadRuntime(options.statusEnv ?? process.env).env.home,
+          options.statusEnv ?? process.env,
+        ),
+      ),
     now: options.healthNow,
     ...(options.jobLoop === undefined ? {} : { jobLoop: options.jobLoop }),
     ...(options.healthDisk === undefined ? {} : { disk: options.healthDisk }),
@@ -377,6 +391,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(options.telemetry ? { telemetry: options.telemetry } : {}),
           ...(options.vmProviderChecks ? { vmProviderChecks: options.vmProviderChecks } : {}),
           ...(options.doctor ? { doctor: options.doctor } : {}),
+          ...(options.deployLag ? { deployLag: options.deployLag } : {}),
           ...(options.storageCleanup ? { storageCleanup: options.storageCleanup } : {}),
           ...(options.probeCollection ? { probeCollection: options.probeCollection } : {}),
           ...(options.improvements ? { improvements: options.improvements } : {}),
@@ -446,6 +461,7 @@ type Secrets = {
   probeCollection?: ServerOptions["probeCollection"];
   vmProviderChecks?: ServerOptions["vmProviderChecks"];
   doctor?: ServerOptions["doctor"];
+  deployLag?: ServerOptions["deployLag"];
   improvements?: ServerOptions["improvements"];
   executionControls?: ServerOptions["executionControls"];
   blockerChecks?: ServerOptions["blockerChecks"];
@@ -663,6 +679,11 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       }
       if (isVmHostPath(path))
         return (await handleVmHostRequest(request, { db: store, principal: access.principal }))!;
+      if (path === VM_HOSTS_PATH)
+        return (await handleVmHostsListRequest(request, {
+          db: store,
+          principal: access.principal,
+        }))!;
       if (path.startsWith("/api/runners") && secrets.runnerControl !== undefined) {
         const response = await secrets.runnerControl(request, access.principal, sessionIds);
         if (response !== null) return response;
@@ -778,12 +799,12 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     const store = secrets.store;
     const workspaceId = principal?.workspaceId ?? (await store.run(firstWorkspaceIdSteps));
     if (!workspaceId) return Response.json({ error: "Connect Linear first." }, { status: 404 });
-    const configPath = secrets.agentSettings?.configPath;
+    const home = secrets.agentSettings?.home;
     return (await handleFindingSettingsRequest(request, {
       store,
       csrfToken,
       workspaceId,
-      ...(configPath === undefined ? {} : { configPath }),
+      ...(home === undefined ? {} : { home }),
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
         auditWorkspaceAccess(store, {
@@ -819,7 +840,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (path === GITHUB_ACCESS_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
     const store = secrets.store;
     return (await handleGitHubAccessSettingsRequest(request, {
-      configPath: secrets.agentSettings.configPath,
+      home: secrets.agentSettings.home,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
@@ -836,7 +857,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (path === CLOSEOUT_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
     const store = secrets.store;
     return (await handleCloseoutSettingsRequest(request, {
-      configPath: secrets.agentSettings.configPath,
+      home: secrets.agentSettings.home,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
@@ -858,7 +879,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       store,
       workspaceId,
       pawsHome: loadRuntime(secrets.statusEnv ?? process.env).env.home,
-      configPath: secrets.agentSettings.configPath,
+      home: secrets.agentSettings.home,
       ...(principal === undefined ? {} : { role: principal.role }),
       ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     }))!;
@@ -943,7 +964,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       return Response.json({ error: "Method not allowed" }, { status: 405 });
     if (principal !== undefined && !isWorkspaceAdmin(principal.role))
       return Response.json({ error: "Workspace admin required." }, { status: 403 });
-    return Response.json(await readAlerts(secrets.store));
+    return Response.json(await readAlerts(secrets.store, Date.now(), secrets.deployLag));
   }
   if (path === "/api/settings/doctor" && secrets.doctor) {
     if (request.method !== "GET")
@@ -979,8 +1000,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   ) {
     const store = secrets.store;
     return (await handleVmProvidersSettingsRequest(request, {
-      home: loadRuntime(secrets.statusEnv ?? process.env).env.home,
-      configPath: secrets.agentSettings.configPath,
+      home: secrets.agentSettings.home,
       store,
       checks: secrets.vmProviderChecks,
       csrfToken,
@@ -1002,7 +1022,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     const store = secrets.store;
     const { instaBoxSizes } = secrets.agentSettings;
     return (await handleMemberVmSettingsRequest(request, {
-      configPath: secrets.agentSettings.configPath,
+      home: secrets.agentSettings.home,
       csrfToken,
       ...(instaBoxSizes === undefined ? {} : { instaBoxSizes }),
       ...(principal === undefined ? {} : { role: principal.role }),
@@ -1028,7 +1048,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (path === ISSUE_VM_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
     const store = secrets.store;
     return (await handleIssueVmSettingsRequest(request, {
-      configPath: secrets.agentSettings.configPath,
+      home: secrets.agentSettings.home,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
@@ -1045,7 +1065,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (path === SPLIT_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
     const store = secrets.store;
     return (await handleSplitSettingsRequest(request, {
-      configPath: secrets.agentSettings.configPath,
+      home: secrets.agentSettings.home,
       csrfToken,
       store,
       workspaceId: principal?.workspaceId ?? null,
@@ -1064,7 +1084,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (path === LINEAR_COMMENT_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
     const store = secrets.store;
     return (await handleLinearCommentSettingsRequest(request, {
-      configPath: secrets.agentSettings.configPath,
+      home: secrets.agentSettings.home,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
@@ -1081,7 +1101,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (path === TIME_LIMIT_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
     const store = secrets.store;
     return (await handleTimeLimitSettingsRequest(request, {
-      configPath: secrets.agentSettings.configPath,
+      home: secrets.agentSettings.home,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
@@ -1251,16 +1271,11 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   }
   if (path === "/webhooks" || path.startsWith("/webhooks/")) {
     if (request.method === "POST" && path === "/webhooks/github") {
-      const saved = loadGitHubAppCredentials(
-        loadRuntime(secrets.statusEnv ?? process.env).env.home,
-        secrets.statusEnv ?? process.env,
-      )?.webhookSecret;
-      if (!secrets.webhooks && !saved) return new Response("not found", { status: 404 });
-      return handleGitHubWebhook(
-        request,
-        secrets.githubWebhookSecret ?? saved ?? null,
-        secrets.githubWebhook,
-      );
+      const source = secrets.statusEnv ?? process.env;
+      const secret =
+        secrets.githubWebhookSecret ?? gitHubWebhookSecret(loadRuntime(source).env.home, source);
+      if (!secrets.webhooks && !secret) return new Response("not found", { status: 404 });
+      return handleGitHubWebhook(request, secret, secrets.githubWebhook);
     }
     if (!secrets.webhooks) return new Response("not found", { status: 404 });
     if (request.method === "POST" && path === "/webhooks/linear") {

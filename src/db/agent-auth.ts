@@ -1,5 +1,5 @@
 import { agentCredentialCiphertextSteps } from "./agent-account-credentials";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, like, sql } from "drizzle-orm";
 import { AgentAccountError } from "./agent-accounts";
 import { readSettingSteps, updateSettingSteps } from "./settings";
 import type { Q, Steps } from "./db";
@@ -60,6 +60,16 @@ export function* listAgentAuthSteps(q: Q) {
       .where(and(inArray(a.agent, [...DEVICE_AGENTS]), isNull(a.removedAt))),
   );
   return rows.map((row) => ({ ...row, agent: row.agent as (typeof DEVICE_AGENTS)[number] }));
+}
+export function* listDeviceAgentAuthSteps(q: Q) {
+  const s = q.t.setting;
+  const rows = yield* q.all(
+    q.orm
+      .select({ key: s.key, value: s.value })
+      .from(s)
+      .where(like(s.key, key("device:%"))),
+  );
+  return rows.map((row) => ({ id: row.key.slice(key("device:").length), value: row.value }));
 }
 export function* agentAuthFailureSteps(q: Q, id: string) {
   const raw = yield* readAgentAuthSteps(q, id);

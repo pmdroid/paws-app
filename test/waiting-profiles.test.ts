@@ -65,7 +65,7 @@ async function fixture() {
   const { db, close } = await tempStore(),
     root = tempHome(),
     clock = new FakeClock(1000),
-    settings = useMemorySettings(join(root, "config.toml"));
+    settings = useMemorySettings(root);
   cleanups.push(async () => {
     settings.release();
     await close();
@@ -124,7 +124,7 @@ async function fixture() {
         }),
       }),
       {
-        configPath: join(root, "config.toml"),
+        home: root,
         csrfToken: "test",
         applyToWaiting: () => orchestrator.applyAgentSettingsToWaiting(),
       },
@@ -216,7 +216,7 @@ test("agent change announces once at session start, including after a new run", 
 test("a retry resolves profiles from Settings, not the previous run's snapshot", async () => {
   const f = await fixture();
   const failed = await f.seed("running");
-  await writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles });
+  await writeAgentSettings(f.root, { defaults: profiles });
   await setRun(f.db, failed.run.id, "lost");
   const internals = f.orchestrator as unknown as {
     ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
@@ -247,7 +247,7 @@ test("a pending agent switch announcement carries to a retry's new run", async (
   const next = await internals.ensureRun((await getWorkItem(f.db, waiting.item.id))!);
   expect(internals.readProfileSnapshot(next.id)).toEqual({ profiles, settingsSwitch: pending });
   // Settings moved back to the original agent: there is no switch left to announce.
-  await writeAgentSettings(join(f.root, "config.toml"), { defaults: oldProfiles });
+  await writeAgentSettings(f.root, { defaults: oldProfiles });
   await setRun(f.db, next.id, "lost");
   const back = await internals.ensureRun((await getWorkItem(f.db, waiting.item.id))!);
   expect(internals.readProfileSnapshot(back.id)).toEqual({ profiles: oldProfiles });
@@ -256,7 +256,7 @@ test("a pending agent switch announcement carries to a retry's new run", async (
 test("model-only changes preserve candidate and do not announce an agent switch", async () => {
   const f = await fixture();
   const waiting = await f.seed("paused");
-  await writeAgentSettings(join(f.root, "config.toml"), {
+  await writeAgentSettings(f.root, {
     defaults: { ...oldProfiles, implementer: { agent: "claude", model: "new" } },
   });
   expect(await f.orchestrator.applyAgentSettingsToWaiting()).toBe(1);
@@ -268,7 +268,7 @@ test("model-only changes preserve candidate and do not announce an agent switch"
 
 test("an existing remote invocation resolves updated waiting profiles and role-specific fallback", async () => {
   const f = await fixture();
-  await writeAgentSettings(join(f.root, "config.toml"), { defaults: oldProfiles });
+  await writeAgentSettings(f.root, { defaults: oldProfiles });
   const waiting = await f.seed("running");
   const internal = f.orchestrator as unknown as {
     remoteAgentForItem(id: string): (input: RunAgentOptions) => Promise<RunAgentResult>;
@@ -284,7 +284,7 @@ test("an existing remote invocation resolves updated waiting profiles and role-s
     });
   expect((await f.calls[0]!.resolveProfiles!()).profile).toEqual(oldProfiles.implementer);
   const reviewerFallback = { agent: "codex", model: "fallback-review" } as const;
-  await writeAgentSettings(join(f.root, "config.toml"), {
+  await writeAgentSettings(f.root, {
     defaults: { ...profiles, reviewerFallback },
   });
   expect(await f.orchestrator.applyAgentSettingsToWaiting()).toBe(1);
@@ -302,14 +302,14 @@ test.each([false, true])(
   "config edits reconcile a waiting run before it starts, prior observation=%s",
   async (observed) => {
     const f = await fixture();
-    await writeAgentSettings(join(f.root, "config.toml"), { defaults: oldProfiles });
+    await writeAgentSettings(f.root, { defaults: oldProfiles });
     const waiting = await f.seed("paused");
     const internals = f.orchestrator as unknown as {
       ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
       remoteAgentForItem(id: string): (input: RunAgentOptions) => Promise<RunAgentResult>;
     };
     if (observed) await internals.ensureRun((await getWorkItem(f.db, waiting.item.id))!);
-    await writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles });
+    await writeAgentSettings(f.root, { defaults: profiles });
     await setItem(f.db, waiting.item.id, { state: "running" });
     expect((await internals.ensureRun((await getWorkItem(f.db, waiting.item.id))!)).id).toBe(
       waiting.run.id,
@@ -334,7 +334,7 @@ test.each([false, true])(
 test("automatic reconciliation waits for a live runner lease to end", async () => {
   const f = await fixture();
   const waiting = await f.seed("running");
-  await writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles });
+  await writeAgentSettings(f.root, { defaults: profiles });
   await withoutForeignKeys(f.db);
   await leaseRun(f.db, waiting.run.id, "command", 2000);
   const internals = f.orchestrator as unknown as {
@@ -354,7 +354,7 @@ test("automatic reconciliation waits for a live runner lease to end", async () =
 
 test("a retired account order in saved settings changes no waiting run and reaches no runner", async () => {
   const f = await fixture();
-  const config = join(f.root, "config.toml");
+  const config = f.root;
   await writeAgentSettings(config, { defaults: oldProfiles });
   const waiting = await f.seed("paused");
   const before = readFileSync(waiting.file, "utf8");
@@ -381,7 +381,7 @@ test("a retired account order in saved settings changes no waiting run and reach
 
 test("Acme labels change only the next run and a failed Linear read retains its labels", async () => {
   const f = await fixture();
-  await writeAgentSettings(join(f.root, "config.toml"), {
+  await writeAgentSettings(f.root, {
     defaults: oldProfiles,
     presets: {
       Opus: {
@@ -449,7 +449,7 @@ type Gate = {
 /** A retrying Acme item whose failed run saved old profiles, with labels set in the Linear fake. */
 async function labelled() {
   const f = await fixture();
-  await writeAgentSettings(join(f.root, "config.toml"), {
+  await writeAgentSettings(f.root, {
     defaults: oldProfiles,
     presets,
   });

@@ -1,7 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import { join } from "node:path";
-import { loadConfigFile, useSettingsStore } from "../src/config";
+import { loadSettings, useSettingsStore } from "../src/config";
 import { savedSettingsText, sectionSettings, seedSettings } from "./saved-settings";
 import { handleIssueVmSettingsRequest, type IssueVmSettingsOptions } from "../src/settings";
 import { tempHome } from "./helpers";
@@ -17,7 +16,7 @@ afterEach(async () => {
 async function instance() {
   const { db, close } = await tempStore();
   const home = tempHome();
-  const configPath = join(home, "config.toml");
+  const configPath = home;
   await seedSettings(db, '[vm_sizes.exe-dev]\nimage = "ubuntu:24.04"\n');
   const settings = await useSettingsStore(configPath, sectionSettings(db));
   cleanups.push(close, () => {
@@ -26,7 +25,7 @@ async function instance() {
   });
   const audits: string[] = [];
   const options = (role: string): IssueVmSettingsOptions => ({
-    configPath,
+    home: configPath,
     csrfToken: "csrf",
     role,
     audit: async (action, subject) => {
@@ -60,7 +59,7 @@ test("an admin reads the defaults and saves new limits", async () => {
     "[issue_vm]\nper_member = 0\nworkspace_max = 500\ndelete_after_days = 60",
   );
   expect(stored).toContain('image = "ubuntu:24.04"');
-  expect(loadConfigFile(configPath).issueVm).toEqual({
+  expect(loadSettings(configPath).issueVm).toEqual({
     perMember: 0,
     workspaceMax: 500,
     deleteAfterDays: 60,

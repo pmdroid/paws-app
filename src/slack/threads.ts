@@ -730,8 +730,7 @@ export async function acceptSlackMention(
 ): Promise<void> {
   if (mention.externallyShared) return;
   const { direct } = mention;
-  if (direct && DIRECT_LINK.test(mention.text.replace(/<@[A-Z0-9]+>/g, "").trim()))
-    return acceptSlackDirect(store, home, mention, at);
+  if (direct && linkCode(mention.text)) return acceptSlackDirect(store, home, mention, at);
   const dedupeKey = direct
     ? `slack:${mention.teamId}:dm:${mention.channelId}:${mention.ts}`
     : `slack:${mention.teamId}:${mention.eventId}`;
@@ -797,13 +796,18 @@ async function acceptSlackDirect(store: Db, home: string, mention: SlackMention,
       workspaceId,
       generation,
       conversationId: conversation.id,
-      mention,
+      mention: { ...mention, text: "" },
+      linkHash: workspaceTokenHash(linkCode(mention.text)?.toUpperCase() ?? ""),
     };
     if (!(yield* recordEventSteps(q, dedupeKey, event, at))) return false;
     const job = { queue: SLACK_THREAD_JOB, jobKey: dedupeKey, payload: { dedupeKey }, now: at };
     return (yield* enqueueJobOnceSteps(q, job)).inserted;
   });
   if (queued) emitJobReady(store);
+}
+
+function linkCode(text: string): string | undefined {
+  return DIRECT_LINK.exec(text.replace(/<@[A-Z0-9]+>/g, "").trim())?.[1];
 }
 
 export function createSlackThreads<Profile>(options: {
@@ -906,9 +910,8 @@ export function createSlackThreads<Profile>(options: {
     if (queued) emitJobReady(store);
   }
 
-  function claim(direct: Place, code: string) {
+  function claim(direct: Place, hash: string) {
     return store.transaction(function* (q): Steps<keyof typeof NOTICES> {
-      const hash = workspaceTokenHash(code.toUpperCase());
       const rows = yield* settingsWithPrefixSteps(q, codePrefix(direct.workspaceId));
       const row = rows.find((candidate) => parsed<Code>(candidate.value)?.hash === hash);
       const issued = row && parsed<Code>(yield* takeSettingSteps(q, row.key));
@@ -965,15 +968,14 @@ export function createSlackThreads<Profile>(options: {
 
   async function pair(
     direct: Place,
-    mention: SlackMention,
+    hash: string,
     dedupeKey: string,
     context: { signal: AbortSignal },
   ): Promise<void> {
     const current = await store.run((q) => installedSteps(q, home, direct));
-    const code = DIRECT_LINK.exec(mention.text.replace(/<@[A-Z0-9]+>/g, "").trim())?.[1];
-    if (!current || !code) return;
+    if (!current) return;
     if (!(await ownDirect(direct, context.signal))) return;
-    const outcome = await claim(direct, code);
+    const outcome = await claim(direct, hash);
     if (outcome === "released") emitJobReady(store);
     await notice(direct, dedupeKey, NOTICES[outcome], { dm: true });
   }
@@ -1044,16 +1046,19 @@ export function createSlackThreads<Profile>(options: {
     const event =
       typeof dedupeKey === "string" && (await store.run((q) => inboxEventByKeySteps(q, dedupeKey)));
     if (!event) return;
-    const { workspaceId, generation, mention, conversationId } = JSON.parse(event.payload) as {
+    const { workspaceId, generation, mention, conversationId, linkHash } = JSON.parse(
+      event.payload,
+    ) as {
       workspaceId: string;
       generation: number;
       mention: SlackMention;
       conversationId?: string;
+      linkHash?: string;
     };
     const { teamId, channelId, threadTs, slackUserId } = mention;
     const place: Place = { workspaceId, teamId, channelId, threadTs, slackUserId, generation };
-    if (mention.direct && DIRECT_LINK.test(mention.text.replace(/<@[A-Z0-9]+>/g, "").trim()))
-      return pair({ ...place, threadTs: "" }, mention, dedupeKey!, context);
+    if (mention.direct && linkHash)
+      return pair({ ...place, threadTs: "" }, linkHash, dedupeKey!, context);
     if (mention.direct && (await verifyDirect(place, context.signal)) && conversationId) {
       const input = { place, conversationId, text: mention.text, ts: mention.ts, dedupeKey };
       const handled = await store.transaction((q) => slackCommandSteps(q, home, input, now()));

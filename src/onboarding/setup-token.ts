@@ -2,8 +2,10 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { readSecretFile, removeSecret, saveSecret } from "../credentials";
 
+export const SETUP_TOKEN_FILE = "setup-token";
+
 function tokenFile(secretsDir: string): string {
-  return join(secretsDir, "setup-token");
+  return join(secretsDir, SETUP_TOKEN_FILE);
 }
 
 export async function setupToken(secretsDir: string): Promise<string> {
@@ -33,8 +35,8 @@ export function setupNeededPage(): Response {
 <body>
 <main>
 <h1>Paws needs setup</h1>
-<p>Finish setup in this browser with the setup link. Paws printed it when it started.</p>
-<p>To see the link again, run <code>paws setup-link</code> on the server.</p>
+<p>Finish setup in this browser with the setup link.</p>
+<p>To get the link, run <code>paws setup-link</code> on the server.</p>
 </main>
 </body>
 </html>`,

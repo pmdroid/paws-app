@@ -348,6 +348,34 @@ test("work goes only to runners whose reported repositories include the item's r
   }
 });
 
+test("an item never runs on its owner's runner that hosts issue VMs, and does once it stops", async () => {
+  const placed = await placeItem();
+  try {
+    const host = {
+      vmVcpus: 4,
+      vmMemoryGb: 8,
+      vmDiskGb: 40,
+      reserveVcpus: 2,
+      reserveMemoryGb: 4,
+      slotCap: null,
+    };
+    await seed(placed.db, (q) =>
+      q.orm
+        .insert(q.t.vmHost)
+        .values({ runnerId: "own", ...host, updatedAt: 0, updatedBy: placed.owner }),
+    );
+    const rejected: string[] = [];
+    expect(
+      await placed.ids({ onRejected: (id, reason) => rejected.push(`${id}: ${reason}`) }),
+    ).toEqual(["second"]);
+    expect(rejected).toContain("own: hosts issue VMs only");
+    await seed(placed.db, (q) => q.orm.delete(q.t.vmHost).where(eq(q.t.vmHost.runnerId, "own")));
+    expect(await placed.ids()).toEqual(["own", "second"]);
+  } finally {
+    await placed.close();
+  }
+});
+
 test("runner placement resolves its item through session_key alone", async () => {
   const placed = await placeItem(false);
   try {

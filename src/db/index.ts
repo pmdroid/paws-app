@@ -51,7 +51,6 @@ export {
 } from "./postgres";
 export { refuseOlderDatabase, UnknownDatabaseError } from "./db-check";
 export * from "./linear-budget";
-export { closingParen, createTableParts, splitTopLevel, unquoteName } from "./ddl";
 export {
   observeDb,
   postgresDb,
@@ -158,6 +157,7 @@ export * from "./retro-activity";
 export * from "./intake";
 export * from "./item-reconciliation";
 export * from "./item-dependencies";
+export * from "./readiness-inputs";
 export * from "./parent-delegations";
 export * from "./runner-work";
 export * from "./runner-health";
@@ -169,6 +169,7 @@ export * from "./vm-provider-checks";
 export * from "./metrics";
 export * from "./alerts";
 export * from "./stage-times";
+export * from "./trace-exports";
 export * from "./runner-file-objects";
 export * from "./run-file-chunks";
 export * from "./runner-transcripts";

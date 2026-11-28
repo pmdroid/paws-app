@@ -1,9 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { join } from "node:path";
 import {
   ignoredCommentBots,
   ignoredCommentMarkers,
-  loadConfigFile,
+  loadSettings,
   parseConfigToml,
   readMergeSettings,
   storedMerge,
@@ -28,11 +27,11 @@ const MARKERS = ["<!-- add-pr-comment:todo-count -->", "<!-- deploy-security-pro
 const POLICY = { default: { order: "queue", mainMoved: "ci" } } as const;
 
 function fixture() {
-  const configPath = join(tempHome(), "config.toml");
+  const configPath = tempHome();
   useMemorySettings(configPath);
   const audits: string[] = [];
   const options: MergeSettingsOptions = {
-    configPath,
+    home: configPath,
     csrfToken: "test-token",
     audit: async (_action, subject) => {
       audits.push(subject);
@@ -52,10 +51,10 @@ function request(method = "GET", body?: unknown) {
 describe("ignore_comment_markers in the merge settings", () => {
   test("parse, write back and parse again give the same lists", async () => {
     const home = tempHome();
-    const path = join(home, "config.toml");
+    const path = home;
     const text = `[merge.repositories."acme/monorepo"]\npackages = []\nignore_comment_bots = ["codecov[bot]"]\nignore_comment_markers = [${MARKERS.map((marker) => JSON.stringify(marker)).join(", ")}]\n`;
     useMemorySettings(path, text);
-    const first = loadConfigFile(path);
+    const first = loadSettings(path);
     const settings = readMergeSettings(first);
     expect(settings.repositories["acme/monorepo"]).toEqual({
       packages: [],
@@ -69,7 +68,7 @@ describe("ignore_comment_markers in the merge settings", () => {
     expect(readConfigText(path)).toContain(
       `ignore_comment_markers = ["<!-- add-pr-comment:todo-count -->", "<!-- deploy-security-proof -->"]`,
     );
-    expect(readMergeSettings(loadConfigFile(path)).repositories).toEqual(settings.repositories);
+    expect(readMergeSettings(loadSettings(path)).repositories).toEqual(settings.repositories);
   });
 
   test("an empty marker, too many markers or a repeated one is rejected with a clear message", () => {
@@ -93,7 +92,7 @@ describe("Settings › Merging › Ignored PR comments", () => {
   test("GET returns both lists per repository and PUT saves changes to them", async () => {
     const { options, audits } = fixture();
     useMemorySettings(
-      options.configPath,
+      options.home,
       '[merge.repositories."acme/monorepo"]\npackages = ["apps/*"]\nignore_comment_bots = ["codecov[bot]"]\n',
     );
     const listed = { ...options, repos: ["acme/web"] };
@@ -140,7 +139,7 @@ describe("Settings › Merging › Ignored PR comments", () => {
       },
       { repository: "acme/web", ignoreCommentBots: ["linear[bot]"], ignoreCommentMarkers: [] },
     ]);
-    expect(readMergeSettings(loadConfigFile(options.configPath)).repositories).toEqual({
+    expect(readMergeSettings(loadSettings(options.home)).repositories).toEqual({
       "acme/monorepo": {
         packages: ["apps/*"],
         ignoreCommentBots: ["codecov[bot]", "deploy-bot"],
@@ -158,14 +157,14 @@ describe("Settings › Merging › Ignored PR comments", () => {
 
     expect((await handleMergeSettingsRequest(request("PUT", POLICY), listed))?.status).toBe(200);
     expect(
-      ignoredCommentMarkers(readMergeSettings(loadConfigFile(options.configPath)), "acme/monorepo"),
+      ignoredCommentMarkers(readMergeSettings(loadSettings(options.home)), "acme/monorepo"),
     ).toEqual(MARKERS);
   });
 
   test("an invalid value is rejected with a field error and the settings stay unchanged", async () => {
     const { options } = fixture();
     const text = '[merge.repositories."acme/monorepo"]\npackages = []\n';
-    useMemorySettings(options.configPath, text);
+    useMemorySettings(options.home, text);
     const entry = { repository: "acme/monorepo", ignoreCommentBots: [], ignoreCommentMarkers: [] };
     for (const [lists, field, message] of [
       [{ ...entry, ignoreCommentMarkers: [""] }, "ignoreCommentMarkers", "must not be empty"],
@@ -188,7 +187,7 @@ describe("Settings › Merging › Ignored PR comments", () => {
       expect(body.field).toBe(`ignoredComments.0.${field}`);
       expect(body.error).toContain(message);
       expect(body.error).not.toContain("config.toml");
-      expect(readConfigText(options.configPath)).toBe(text);
+      expect(readConfigText(options.home)).toBe(text);
     }
   });
 
@@ -213,7 +212,7 @@ describe("Settings › Merging › Ignored PR comments", () => {
       pullUrl: null,
       openedAt: 1,
     });
-    const settings = () => readMergeSettings(loadConfigFile(options.configPath));
+    const settings = () => readMergeSettings(loadSettings(options.home));
     const filter: PullCommentFilter = {
       appId: async () => null,
       appLogin: () => null,

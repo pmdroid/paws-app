@@ -41,11 +41,6 @@ import {
 import { assignIssueVmKey, type StoredIssueVmSettings } from "./issue-vm";
 import { parseProjectSkills, type ProjectSkills } from "./skills";
 
-/** `github.auth`. Paws uses the GitHub App only. */
-export type GitHubConfigAuth = "app";
-
-export type TrackerKind = "linear";
-
 export const IMPLEMENTERS = ["claude", "grok", "codex", "opencode"] as const;
 
 export type ImplementerName = (typeof IMPLEMENTERS)[number];
@@ -121,8 +116,8 @@ export function emptyConfigFile(): PawsConfigFile {
   };
 }
 
-export function loadConfigFile(path: string): PawsConfigFile {
-  return configFromSections(readSettingSections(path));
+export function loadSettings(home: string): PawsConfigFile {
+  return configFromSections(readSettingSections(home));
 }
 
 export function parseConfigToml(text: string): PawsConfigFile {

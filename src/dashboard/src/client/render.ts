@@ -151,9 +151,7 @@ export function render(model: RenderModel): Rendered {
                               model.closeout ?? emptyCloseoutView(),
                               model.engineUrl,
                             )
-                          : model.phase !== "loading" &&
-                              model.issues &&
-                              (route.view === "issues" || route.view === "runs")
+                          : model.phase !== "loading" && model.issues && route.view === "issues"
                             ? viewIssues(model.issues, route.id)
                             : renderPending(model),
     title,

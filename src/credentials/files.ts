@@ -22,6 +22,7 @@ const KEY_FILE = ".envelope-key";
 export type SecretTable = {
   dir: string;
   rows: Map<string, string>;
+  files: ReadonlySet<string>;
   write(name: string, ciphertext: string | null, exclusive: boolean): Promise<void>;
 };
 
@@ -50,9 +51,22 @@ export function isStoredSecretName(name: string): boolean {
 function tableName(path: string): string | null {
   if (table === null) return null;
   const name = relative(resolve(table.dir), resolve(path));
-  return name === "" || name.startsWith("..") || isAbsolute(name) || !isStoredSecretName(name)
+  return name === "" ||
+    name.startsWith("..") ||
+    isAbsolute(name) ||
+    !isStoredSecretName(name) ||
+    table.files.has(name)
     ? null
     : name;
+}
+
+export function isTableSecretFile(path: string): boolean {
+  return tableName(path) !== null;
+}
+
+export function uncopiedSecretFile(path: string): boolean {
+  const name = tableName(path);
+  return name !== null && !table!.rows.has(name) && existsSync(path);
 }
 
 export function secretFileExists(path: string): boolean {

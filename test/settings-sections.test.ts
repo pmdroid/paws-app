@@ -1,9 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import { join } from "node:path";
 import {
   SETTINGS_CONVERSION,
-  loadConfigFile,
+  loadSettings,
   parseConfigToml,
   SETTINGS_SECTIONS,
   useSettingsStore,
@@ -100,7 +99,7 @@ async function rows(db: Db) {
 
 async function open(db: Db) {
   const home = tempHome();
-  const configPath = join(home, "config.toml");
+  const configPath = home;
   const settings = await useSettingsStore(configPath, sectionSettings(db));
   cleanups.push(() => {
     settings.release();
@@ -121,7 +120,7 @@ test("a blob with every section converts to one row per section with the same va
   const parsed = Bun.TOML.parse(EVERY_SECTION) as Record<string, unknown>;
   for (const name of SETTINGS_SECTIONS)
     expect(JSON.parse(stored[`settings.${name}`]!.value)).toEqual(parsed[name]);
-  expect(loadConfigFile(await open(db))).toEqual(parseConfigToml(KNOWN));
+  expect(loadSettings(await open(db))).toEqual(parseConfigToml(KNOWN));
   expect(await convert(db)).toBe(false);
 });
 
@@ -141,7 +140,7 @@ test("an old single VM size converts to the provider it names, from a blob or a 
     '[member_vm]\nprovider = "boat"\ncpu = 8\nmemory_gb = 16\n\n[queue]\nstart_timeout_hours = 12\n';
   await updateSetting(db, CONFIG_SETTINGS_KEY, () => legacy, 1);
   expect(await convert(db)).toBe(true);
-  expect(loadConfigFile(await open(db)).vmSizes).toEqual({
+  expect(loadSettings(await open(db)).vmSizes).toEqual({
     provider: "boat",
     sizes: { boat: { cpu: 8, memoryGb: 16 } },
   });
@@ -149,7 +148,7 @@ test("an old single VM size converts to the provider it names, from a blob or a 
   await updateSetting(row, "settings.member_vm", () => '{"cpu":4,"pool":"build"}', 1);
   expect(await convert(row)).toBe(false);
   expect(Object.keys(await rows(row))).toEqual(["settings.vm_sizes"]);
-  expect(loadConfigFile(await open(row)).vmSizes).toEqual({
+  expect(loadSettings(await open(row)).vmSizes).toEqual({
     sizes: { "exe-dev": { cpu: 4, pool: "build" } },
   });
 });
@@ -174,7 +173,7 @@ test("saving through a settings route writes only its section row", async () => 
         default: { implementationMinutes: 30, fixesMinutes: 0, closeoutMinutes: 0 },
       }),
     }),
-    { configPath, csrfToken: "csrf", role: "admin", audit: async () => {} },
+    { home: configPath, csrfToken: "csrf", role: "admin", audit: async () => {} },
   );
   expect(response?.status).toBe(200);
   const after = await rows(db);
@@ -182,7 +181,7 @@ test("saving through a settings route writes only its section row", async () => 
     (key) => JSON.stringify(after[key]) !== JSON.stringify(before[key]),
   );
   expect(changed).toEqual(["settings.time_limits"]);
-  expect(loadConfigFile(configPath).timeLimits?.implementationMinutes).toBe(30);
+  expect(loadSettings(configPath).timeLimits?.implementationMinutes).toBe(30);
 });
 
 test("a section heading in another case converts to its section row", async () => {
@@ -192,7 +191,7 @@ test("a section heading in another case converts to its section row", async () =
   const stored = await rows(db);
   expect(JSON.parse(stored["settings.github_access"]!.value)).toEqual({ agent_read: false });
   expect(stored[CONFIG_SETTINGS_KEY]).toBeUndefined();
-  expect(loadConfigFile(await open(db)).githubAccess).toEqual({ agentRead: false });
+  expect(loadSettings(await open(db)).githubAccess).toEqual({ agentRead: false });
 });
 
 test("a TOML syntax error stops the conversion with its line and stays in place", async () => {
@@ -215,7 +214,7 @@ test("a string with a DEL character reads back after a save", async () => {
   expect(readConfigText(reopened)).toContain("\\u007f");
   expect(parseConfigToml(readConfigText(reopened)).briefTemplate).toBe("Keep\u007f short.");
   await writeFindingsGroupingTime(reopened, "08:00");
-  expect(loadConfigFile(reopened).findingsGroupingTime).toBe("08:00");
+  expect(loadSettings(reopened).findingsGroupingTime).toBe("08:00");
   expect(JSON.parse((await rows(db))["settings.brief"]!.value)).toEqual({
     template: "Keep\u007f short.",
   });

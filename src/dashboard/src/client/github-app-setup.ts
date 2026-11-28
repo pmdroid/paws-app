@@ -1,3 +1,4 @@
+import { envNote, envVariable, type FieldSources } from "./env-source";
 import { esc } from "./format";
 import { renderMarkup } from "./theme";
 
@@ -21,7 +22,15 @@ export async function initializeGitHubAppSetup(
       webhookUrl: string;
       permissions: Record<string, string>;
       events: string[];
+      sources?: FieldSources;
     };
+    const variable = (name: string) =>
+      envVariable(data.sources, name === "privateKeyPem" ? "privateKeyPath" : name);
+    const state = (name: string) => {
+      const set = variable(name);
+      return set ? ` readonly>${envNote(set)}` : " required>";
+    };
+    const pemVariable = variable("privateKeyPem");
     if (data.configured) {
       section.remove();
       proceed();
@@ -36,12 +45,12 @@ export async function initializeGitHubAppSetup(
         .join("")}</ul><p>Events: ${data.events.map(esc).join(", ")}</p></details>${
         data.canManage
           ? `<form class="flex min-w-0 flex-col gap-4" autocomplete="off">
-      <label class="field"><span>App ID</span><input name="appId" inputmode="numeric" required /></label>
-      <label class="field"><span>OAuth client ID</span><input name="clientId" required /></label>
-      <label class="field"><span>OAuth client secret</span><input name="clientSecret" type="password" required /></label>
-      <label class="field"><span>Private key PEM</span><textarea name="privateKeyPem" rows="6" spellcheck="false" required></textarea></label>
-      <label class="field"><span>Or upload a private key</span><input name="keyFile" type="file" accept=".pem" /></label>
-      <label class="field"><span>Webhook secret</span><input name="webhookSecret" type="password" required /></label>
+      <label class="field"><span>App ID</span><input name="appId" inputmode="numeric"${state("appId")}</label>
+      <label class="field"><span>OAuth client ID</span><input name="clientId"${state("clientId")}</label>
+      <label class="field"><span>OAuth client secret</span><input name="clientSecret" type="password"${state("clientSecret")}</label>
+      <label class="field"><span>Private key PEM</span><textarea name="privateKeyPem" rows="6" spellcheck="false"${pemVariable ? " readonly" : " required"}></textarea>${pemVariable ? envNote(pemVariable) : ""}</label>
+      ${pemVariable ? "" : '<label class="field"><span>Or upload a private key</span><input name="keyFile" type="file" accept=".pem" /></label>'}
+      <label class="field"><span>Webhook secret</span><input name="webhookSecret" type="password"${state("webhookSecret")}</label>
       <p role="alert" data-error></p><button class="btn primary" type="submit">Save GitHub App</button>
     </form>`
           : "<p>Ask a workspace admin to configure the GitHub App.</p>"
@@ -50,12 +59,12 @@ export async function initializeGitHubAppSetup(
     const form = section.querySelector("form");
     if (!form) return;
     const pem = form.elements.namedItem("privateKeyPem") as HTMLTextAreaElement;
-    const file = form.elements.namedItem("keyFile") as HTMLInputElement;
+    const file = form.elements.namedItem("keyFile") as HTMLInputElement | null;
     const error = form.querySelector<HTMLElement>("[data-error]")!;
-    file.addEventListener("change", () => {
+    file?.addEventListener("change", () => {
       void (async () => {
         try {
-          if (file.files?.[0]) {
+          if (file?.files?.[0]) {
             if (file.files[0].size > 12000)
               throw new Error("Choose a PEM file smaller than 12 KB.");
             pem.value = await file.files[0].text();
@@ -76,10 +85,9 @@ export async function initializeGitHubAppSetup(
         try {
           const values = new FormData(form);
           const body = Object.fromEntries(
-            ["appId", "clientId", "clientSecret", "privateKeyPem", "webhookSecret"].map((name) => [
-              name,
-              values.get(name),
-            ]),
+            ["appId", "clientId", "clientSecret", "privateKeyPem", "webhookSecret"]
+              .filter((name) => !variable(name))
+              .map((name) => [name, values.get(name)]),
           );
           const saved = await fetch("/api/workspaces/github-app", {
             method: "POST",

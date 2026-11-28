@@ -4,6 +4,7 @@ import {
   hostIssueVmUnitSteps,
   runnerStandingSteps,
   updateLiveIssueVmStateSteps,
+  vmHostDisksSteps,
   type Db,
   type HostIssueVmUnit,
 } from "../db";
@@ -44,17 +45,21 @@ export function createHostIssueVmDriver(options: HostIssueVmDriverOptions): Issu
     id: string,
     signal: AbortSignal,
     running: boolean,
-    { sleeping = false, enrolled = false } = {},
+    { sleeping = false, enrolled = false, diskGone = false } = {},
   ) {
     const since = now();
     for (;;) {
       signal.throwIfAborted();
       const row = await unit(id);
+      const report = diskGone
+        ? await store.run((q) => vmHostDisksSteps(q, row.hostRunnerId))
+        : null;
       if (
         row.unitSeenAt !== null &&
         row.unitSeenAt >= since &&
         row.unitRunning === running &&
-        (!enrolled || row.tokenMintedAt === null || row.runnerId !== null)
+        (!enrolled || row.tokenMintedAt === null || row.runnerId !== null) &&
+        (!diskGone || (report !== null && report.reportedAt >= since && !report.disks.includes(id)))
       )
         return;
       if (sleeping && row.sleepRefusedAt !== null && row.sleepRefusedAt >= since)
@@ -82,7 +87,16 @@ export function createHostIssueVmDriver(options: HostIssueVmDriverOptions): Issu
         yield* closeIssueVmAwakeSteps(q, { issueVmId: id, now: at });
       });
       if (await hostGone(hostRunnerId)) return;
-      await until(id, AbortSignal.any([call.signal, AbortSignal.timeout(deleteMs)]), false);
+      const timeout = AbortSignal.timeout(deleteMs);
+      try {
+        await until(id, AbortSignal.any([call.signal, timeout]), false, { diskGone: true });
+      } catch (error) {
+        if (!timeout.aborted) throw error;
+        throw new Error(
+          `The VM host has not reported issue VM ${id} stopped with its disk removed`,
+          { cause: error },
+        );
+      }
     },
     async reconcile(id): Promise<IssueVmFound> {
       const row = await store.run((q) => hostIssueVmUnitSteps(q, id));

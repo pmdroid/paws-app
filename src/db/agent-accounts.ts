@@ -1,4 +1,5 @@
 import { readAgentAuthSteps } from "./agent-auth";
+import { agentCredentialCiphertextSteps } from "./agent-account-credentials";
 import { enqueueRunnerSetupChecksSteps } from "./runner-setup-hold";
 import {
   aliasedTable,
@@ -637,11 +638,7 @@ function* bindingHasControlPlaneAuthSteps(q: Q, bindingId: string) {
 
 export function* agentAccountSignedInSteps(q: Q, accountId: string) {
   if ((yield* readAgentAuthSteps(q, accountId)) !== null) return true;
-  const { agentAccountCredential: c } = q.t;
-  const stored = yield* q.one(
-    q.orm.select({ ciphertext: c.ciphertext }).from(c).where(eq(c.accountId, accountId)),
-  );
-  return stored !== undefined && stored.ciphertext !== "";
+  return !!(yield* agentCredentialCiphertextSteps(q, accountId))?.ciphertext;
 }
 
 export function* lockAgentAccountSteps(q: Q, accountId: string) {

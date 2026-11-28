@@ -184,7 +184,7 @@ inspect() {
 }
 
 build() {
-  local out=$PWD/out size=8G
+  local out=$PWD/out size=16G
   while [ $# -gt 0 ]; do
     case $1 in
       --out) out=$2; shift 2 ;;

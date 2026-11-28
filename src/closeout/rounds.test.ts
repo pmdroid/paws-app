@@ -54,8 +54,13 @@ test("rounds follow the heads in order, and the open findings are the last round
     { head: "ccc", findings: 2 },
   ]);
   expect(summary.open).toEqual([
-    { severity: "P1", location: "src/a.ts:9", bugClass: "unchecked null" },
-    { severity: "P1", location: "src/z.ts:1", bugClass: UNCLASSIFIED },
+    {
+      severity: "P1",
+      location: "src/a.ts:9",
+      bugClass: "unchecked null",
+      sentence: "Unchecked null: e",
+    },
+    { severity: "P1", location: "src/z.ts:1", bugClass: UNCLASSIFIED, sentence: "" },
   ]);
   expect(summary.bugClass).toBe("unchecked null");
 });
@@ -90,4 +95,30 @@ test("an order puts the rounds, and the open findings, in the order Closeout rev
 
 test("no review records means no rounds and no class", () => {
   expect(summarizeReviewRounds([])).toEqual({ rounds: [], open: [], bugClass: null });
+});
+
+function roundAt(head: string, ...explanations: string[]) {
+  const findings = explanations.map((text, index) => finding(`src/${head}.ts:${index}`, text));
+  return { itemId: "independent-review", head, attempt: 1, findings };
+}
+
+test("a class is named only when two heads report it and an open finding has it", () => {
+  expect(summarizeReviewRounds([roundAt("a", "race: x"), roundAt("b", "race: y")]).bugClass).toBe(
+    "race",
+  );
+  expect(summarizeReviewRounds([roundAt("a", "race: x", "race: y")]).bugClass).toBeNull();
+  const gone = summarizeReviewRounds([
+    roundAt("a", "host driver: x", "host driver: y"),
+    roundAt("b", "host driver: z"),
+    roundAt("c", "caller drift: the caller passes the old shape. It breaks."),
+  ]);
+  expect(gone.bugClass).toBeNull();
+  expect(gone.open).toEqual([
+    {
+      severity: "P1",
+      location: "src/c.ts:0",
+      bugClass: "caller drift",
+      sentence: "caller drift: the caller passes the old shape.",
+    },
+  ]);
 });

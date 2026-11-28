@@ -83,6 +83,7 @@ import {
   insertRunSteps,
   setCurrentRunSteps,
   claimRunSteps,
+  runOwnerSteps,
 } from "../db";
 import { dashboardUrl } from "../dashboard-links";
 import { RiskDisplayReader, type RiskDisplay } from "./risk-display";
@@ -195,7 +196,7 @@ import {
   highRiskPaths,
   agentReadAllowed,
   githubMirrorsOn,
-  loadConfigFile,
+  loadSettings,
   mergeLaneKey,
   parallelFiles,
   readMergeSettings,
@@ -520,6 +521,7 @@ import {
   createAdmission,
   dispatch,
   projectLeadId,
+  type IssueVmPlacement,
   type ItemAdmission,
   type ItemWait,
   overlapLine,
@@ -945,6 +947,7 @@ export type OrchestratorOptions = {
     now: number,
   ) => Steps<ItemRunnerVerdicts | null>;
   onRunnerHostRefusals?: (refusals: readonly RunnerHostRefusal[], now: number) => void;
+  issueVm?: (q: Q, itemId: string, now: number) => Steps<IssueVmPlacement | null>;
   /**
    * Why the item's owner has no runner they may use for this agent, for the runner-setup hold
    * and its thought. Null when a runner is usable or only offline. SQLite only.
@@ -1038,6 +1041,8 @@ export class Orchestrator {
   private readonly stopEvents = new Map<string, Promise<void>>();
   private readonly sessionEvents = new Map<string, Promise<void | boolean>>();
   private readonly linearEvents = new Set<Promise<unknown>>();
+  private executionPass: Promise<void> | null = null;
+  private executionAgain = false;
   private readonly heldFlushes = new Set<ReturnType<typeof setTimeout>>();
   private readonly intakeReads = new Map<
     string,
@@ -1123,8 +1128,7 @@ export class Orchestrator {
         ? (sessionId, onLaneWait) =>
             options.remoteExecution!.agentForSession(sessionId, "classify", onLaneWait)
         : undefined,
-      profile: () =>
-        resolveAgentProfiles(loadConfigFile(join(options.pawsRoot, "config.toml"))).implementer,
+      profile: () => resolveAgentProfiles(loadSettings(options.pawsRoot)).implementer,
     });
     this.catchUpFn = options.catchUp ?? (() => Promise.resolve());
     this.bus.subscribe((command) => {
@@ -1154,9 +1158,29 @@ export class Orchestrator {
     return reads;
   }
 
-  onLinearEvent(event: AcceptedLinearEvent): Promise<void | boolean> {
+  onLinearEvent(
+    event: AcceptedLinearEvent,
+    options: { awaitAdmission?: boolean } = {},
+  ): Promise<void | boolean> {
     if (this.shuttingDown) return Promise.reject(new Error("Paws is shutting down"));
-    return this.track(this.receiveLinearEvent(event));
+    return this.track(this.receiveLinearEvent(event, options.awaitAdmission !== false));
+  }
+
+  requestExecution(): void {
+    if (this.shuttingDown) return;
+    if (this.executionPass !== null) {
+      this.executionAgain = true;
+      return;
+    }
+    const site = "orchestrator.requestExecution";
+    this.executionPass = this.reconcileExecution()
+      .catch((error: unknown) => journalCaught(error, site, null, undefined, this.options.journal))
+      .finally(() => {
+        this.executionPass = null;
+        if (!this.executionAgain) return;
+        this.executionAgain = false;
+        this.requestExecution();
+      });
   }
 
   private track<T>(work: Promise<T>): Promise<T> {
@@ -1166,7 +1190,10 @@ export class Orchestrator {
     return work;
   }
 
-  private async receiveLinearEvent(event: AcceptedLinearEvent): Promise<void | boolean> {
+  private async receiveLinearEvent(
+    event: AcceptedLinearEvent,
+    awaitAdmission: boolean,
+  ): Promise<void | boolean> {
     const comment = linearCommentOf(event);
     if (comment !== null) return this.receiveLinearComment(comment);
     const decision = await this.options.authorizeLinearEvent?.(event);
@@ -1261,13 +1288,14 @@ export class Orchestrator {
         const questionDelegationId = open
           ? (await this.store.run((q) => getWorkItemSteps(q, open.itemId)))?.delegationId
           : null;
-        await this.handleLinearEvent(event);
+        await this.handleLinearEvent(event, awaitAdmission);
         const promptedSession = event.sessionId;
         if (event.action === "prompted" && promptedSession) {
           const delegationId =
             (await this.store.run((q) => workItemForSessionSteps(q, promptedSession)))
               ?.delegationId ?? questionDelegationId;
-          if (delegationId) await this.reconcileExecution();
+          if (delegationId && awaitAdmission) await this.reconcileExecution();
+          else if (delegationId) this.requestExecution();
         }
       });
     this.sessionEvents.set(key, done);
@@ -1453,6 +1481,7 @@ export class Orchestrator {
     this.heldFlushes.clear();
     await Promise.allSettled([
       ...this.linearEvents,
+      ...(this.executionPass === null ? [] : [this.executionPass]),
       ...this.sessionEvents.values(),
       ...this.stopEvents.values(),
     ]);
@@ -1496,7 +1525,10 @@ export class Orchestrator {
     );
   }
 
-  private async handleLinearEvent(event: AcceptedLinearEvent): Promise<void> {
+  private async handleLinearEvent(
+    event: AcceptedLinearEvent,
+    awaitAdmission = true,
+  ): Promise<void> {
     if (this.shuttingDown) throw new Error("Paws is shutting down");
     if (event.action === "prompted") {
       const question =
@@ -1574,7 +1606,11 @@ export class Orchestrator {
         : await this.store.transaction((q) => recordLinearSessionEventSteps(q, event, this.now()));
     const taskKey = session ? await sessionTaskKey(this.store, session) : null;
     if (session?.stoppedAt !== null && session?.stoppedAt !== undefined) return;
-    if (session && !startFresh && (await this.resumeRedelegatedItem(event.issueId, session)))
+    if (
+      session &&
+      !startFresh &&
+      (await this.resumeRedelegatedItem(event.issueId, session, awaitAdmission))
+    )
       return;
     let result: IntakeResult;
     try {
@@ -1608,7 +1644,8 @@ export class Orchestrator {
           );
         }
       }
-      await this.dispatch();
+      if (awaitAdmission) await this.dispatch();
+      else this.requestExecution();
     }
     await this.flush();
   }
@@ -3186,7 +3223,7 @@ export class Orchestrator {
     if (!eligibleRunner) return;
     const holds = await this.store.run((q) => listRunnerSetupHoldsSteps(q, ownerUserId));
     if (holds.length === 0) return;
-    const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+    const config = loadSettings(this.options.pawsRoot);
     const now = this.now();
     let resumed = false;
     for (const hold of holds) {
@@ -4913,6 +4950,8 @@ export class Orchestrator {
       const holder = (q: Q, current: WorkItemRecord) =>
         this.verificationHolderSteps(q, current, false);
       const ownerInstance = this.options.instanceId ?? null;
+      const journalLine = this.options.journal ?? journal;
+      const reattachable = (q: Q, current: WorkItemRecord) => this.reattachableSteps(q, current);
       item = await this.store.transaction(function* (q) {
         const current = yield* getWorkItemSteps(q, item.id);
         if (
@@ -4935,7 +4974,9 @@ export class Orchestrator {
             if (recheck || current.state !== "verifying") throw new VerificationHeld();
             return current;
           }
-          if (yield* runnerWorkHasResultSteps(q, prior.id)) {
+          const reattach = yield* reattachable(q, current);
+          if (reattach) journalLine(`run ${prior.id} reattached item=${current.id}`);
+          if (reattach || (yield* runnerWorkHasResultSteps(q, prior.id))) {
             // Keep the original run so the backend can import its delivered result.
             if (current.state === "merge_queue")
               yield* applyWorkItemEventSteps(q, current.id, "reverify_requested");
@@ -6514,10 +6555,31 @@ export class Orchestrator {
         item.cancelRequested,
         this.now() - 2 * 60_000,
       )) &&
-      !(yield* runnerWorkHasResultSteps(q, item.currentRunId))
+      !(yield* runnerWorkHasResultSteps(q, item.currentRunId)) &&
+      !(yield* this.ownedHereSteps(q, item.currentRunId))
     )
       return "runner";
     return null;
+  }
+
+  private *ownedHereSteps(q: Q, runId: string): Steps<boolean> {
+    const instanceId = this.options.instanceId;
+    return instanceId !== undefined && (yield* runOwnerSteps(q, runId)) === instanceId;
+  }
+
+  private *reattachableSteps(q: Q, item: WorkItemRecord): Steps<boolean> {
+    const runId = item.currentRunId;
+    return (
+      runId !== null &&
+      (yield* this.ownedHereSteps(q, runId)) &&
+      (yield* runnerHoldsRunWorkSteps(
+        q,
+        runId,
+        this.now(),
+        item.cancelRequested,
+        this.now() - 2 * 60_000,
+      ))
+    );
   }
 
   private verificationHolder(item: WorkItemRecord): Promise<"process" | "runner" | null> {
@@ -7223,7 +7285,7 @@ export class Orchestrator {
       changed,
       ...(fileGlobs ? { fileGlobs } : {}),
       settingsGlobs: highRiskPaths(
-        readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
+        readMergeSettings(loadSettings(this.options.pawsRoot)),
         `${repository.owner}/${repository.repo}`,
       ),
     });
@@ -7353,7 +7415,7 @@ export class Orchestrator {
         base,
         changed,
         settingsGlobs: highRiskPaths(
-          readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
+          readMergeSettings(loadSettings(this.options.pawsRoot)),
           `${owner}/${repo}`,
         ),
       });
@@ -7507,8 +7569,7 @@ export class Orchestrator {
   /** `[queue] start_timeout_hours`, read on every dispatch. Missing or unreadable means 24. */
   private queueStartTimeoutHours(): number {
     try {
-      return readQueueSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
-        .startTimeoutHours;
+      return readQueueSettings(loadSettings(this.options.pawsRoot)).startTimeoutHours;
     } catch (caughtError11) {
       journalCaught(
         caughtError11,
@@ -7527,10 +7588,7 @@ export class Orchestrator {
 
   private repositoryPackages(repository: string): string[] {
     try {
-      return repositoryPackages(
-        readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
-        repository,
-      );
+      return repositoryPackages(readMergeSettings(loadSettings(this.options.pawsRoot)), repository);
     } catch (caughtError) {
       journalCaught(
         caughtError,
@@ -7641,7 +7699,7 @@ export class Orchestrator {
   }
 
   private readMergePolicy(): MergeSettings {
-    return readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")));
+    return readMergeSettings(loadSettings(this.options.pawsRoot));
   }
 
   /**
@@ -8712,17 +8770,17 @@ export class Orchestrator {
 
   private async dispatch(): Promise<void> {
     const { ownerHasRunner, itemRunners } = this.options;
-    let config: ReturnType<typeof loadConfigFile> | null = null;
+    let config: ReturnType<typeof loadSettings> | null = null;
     let merge: MergeSettings | null = null;
     try {
       await this.applyAgentSettingsToWaiting();
-      const loaded = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+      const loaded = loadSettings(this.options.pawsRoot);
       merge = readMergeSettings(loaded);
       if (ownerHasRunner || this.options.itemRunners) config = loaded;
     } catch (caughtError15) {
       journalCaught(
         caughtError15,
-        "orchestrator.dispatch.loadConfigFile",
+        "orchestrator.dispatch.loadSettings",
         null,
         undefined,
         this.options.journal,
@@ -8742,6 +8800,9 @@ export class Orchestrator {
             overlapHold: merge.overlapHold,
             conflictProne: { conflicts: merge.conflictProneAfter, days: merge.conflictProneDays },
           }
+        : {}),
+      ...(this.options.issueVm
+        ? { issueVm: (q: Q, itemId: string) => this.options.issueVm!(q, itemId, this.now()) }
         : {}),
       onWaiting: (itemIds) => this.noteQueued(itemIds),
       onWaits: async (waits) => {
@@ -8773,7 +8834,7 @@ export class Orchestrator {
     });
   }
 
-  private async implementerAgent(item: WorkItemRecord, config: ReturnType<typeof loadConfigFile>) {
+  private async implementerAgent(item: WorkItemRecord, config: ReturnType<typeof loadSettings>) {
     return implementerAgentFor(config, this.knownProfileLabels(item));
   }
 
@@ -8786,7 +8847,7 @@ export class Orchestrator {
     q: Q,
     itemId: string,
     itemRunners: NonNullable<OrchestratorOptions["itemRunners"]>,
-    config: ReturnType<typeof loadConfigFile> | null,
+    config: ReturnType<typeof loadSettings> | null,
   ): Steps<ItemRunnerVerdicts | null> {
     const item = yield* getWorkItemSteps(q, itemId);
     return item && config
@@ -8803,7 +8864,7 @@ export class Orchestrator {
     q: Q,
     itemId: string,
     ownerHasRunner: NonNullable<OrchestratorOptions["ownerHasRunner"]>,
-    config: ReturnType<typeof loadConfigFile>,
+    config: ReturnType<typeof loadSettings>,
   ): Steps<boolean | null> {
     const item = yield* getWorkItemSteps(q, itemId);
     if (!item) return null;
@@ -8856,7 +8917,7 @@ export class Orchestrator {
    */
   private async awaitsAdmissionLabels(
     itemId: string,
-    config: ReturnType<typeof loadConfigFile>,
+    config: ReturnType<typeof loadSettings>,
   ): Promise<boolean> {
     if (this.admissionLabelReads.has(itemId)) return true;
     const item = await this.store.run((q) => getWorkItemSteps(q, itemId));
@@ -9073,7 +9134,7 @@ export class Orchestrator {
       }
     }
     // A new run, including a retry, uses the profiles saved in Settings now (PAS-831).
-    const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+    const config = loadSettings(this.options.pawsRoot);
     const previous = item.currentRunId ? this.readProfileSnapshot(item.currentRunId) : null;
     const defaultRoles = previous?.defaultRoles;
     const profileLabels = await this.readProfileLabels(item, previous?.profileLabels, defaultRoles);
@@ -9150,7 +9211,7 @@ export class Orchestrator {
   private async checkProfileLabels(item: WorkItemRecord, runId: string): Promise<boolean> {
     const saved = this.readProfileSnapshot(runId);
     if (!saved) return true;
-    const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+    const config = loadSettings(this.options.pawsRoot);
     let resolved = resolveAgentProfiles(config, saved.profileLabels);
     let answered = false;
     const question = saved.profileQuestion
@@ -10021,6 +10082,7 @@ export class Orchestrator {
   private async resumeRedelegatedItem(
     issueId: string,
     session: StoredLinearSession,
+    awaitAdmission: boolean,
   ): Promise<boolean> {
     const elsewhere = await this.store.run((q) =>
       issueOpenInOtherSessionSteps(q, issueId, session.sessionId),
@@ -10075,7 +10137,8 @@ export class Orchestrator {
       return true;
     });
     if (resumed) emitJobReady(this.store);
-    if (resumed) await this.reconcileExecution();
+    if (resumed && awaitAdmission) await this.reconcileExecution();
+    else if (resumed) this.requestExecution();
     await this.flush();
     return resumed;
   }
@@ -10919,9 +10982,7 @@ export class Orchestrator {
           .filter(Boolean)
           .join("\n\n")
       : "";
-    const template = resolveBriefTemplate(
-      loadConfigFile(join(this.options.pawsRoot, "config.toml")),
-    );
+    const template = resolveBriefTemplate(loadSettings(this.options.pawsRoot));
     return renderWorkContext(template, {
       brief: item.brief,
       projectOverview,
@@ -11753,7 +11814,7 @@ export class Orchestrator {
   }
 
   async applyAgentSettingsToWaiting(): Promise<number> {
-    const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+    const config = loadSettings(this.options.pawsRoot);
     let changedRuns = 0;
     const now = this.now();
     for (const run of await this.store.run((q) => listWaitingProfileRunsSteps(q, now))) {
@@ -11827,7 +11888,7 @@ export class Orchestrator {
   private async storedProfiles(runId: string): Promise<AgentProfiles> {
     const saved = this.readProfileSnapshot(runId);
     if (saved) return saved.profiles;
-    const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+    const config = loadSettings(this.options.pawsRoot);
     const profiles = resolveAgentProfiles(config);
     mkdirSync(runDir(this.options.pawsRoot, runId), { recursive: true, mode: 0o700 });
     writeFileSync(
@@ -12101,11 +12162,11 @@ export class Orchestrator {
 
   private agentReadAllowed(item: WorkItemRecord): boolean {
     try {
-      return agentReadAllowed(loadConfigFile(join(this.options.pawsRoot, "config.toml")));
+      return agentReadAllowed(loadSettings(this.options.pawsRoot));
     } catch (error) {
       journalCaught(
         error,
-        "orchestrator.agentReadAllowed.loadConfigFile",
+        "orchestrator.agentReadAllowed.loadSettings",
         item.id,
         undefined,
         this.options.journal,
@@ -12215,10 +12276,7 @@ export class Orchestrator {
   }
 
   private mirrorsOff(): boolean {
-    return !(
-      this.options.githubMirrors ??
-      githubMirrorsOn(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
-    );
+    return !(this.options.githubMirrors ?? githubMirrorsOn(loadSettings(this.options.pawsRoot)));
   }
 
   private storedCandidates(): boolean {
@@ -12614,8 +12672,7 @@ export class Orchestrator {
           itemId: item.id,
           pawsRoot: this.options.pawsRoot,
           home: this.options.home,
-          profile: resolveAgentProfiles(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
-            .implementer,
+          profile: resolveAgentProfiles(loadSettings(this.options.pawsRoot)).implementer,
           signal: controller.signal,
           launch: this.launchAgent,
           agentRunner: this.helperRunner(item, "select_repository"),
@@ -12870,7 +12927,7 @@ export class Orchestrator {
     const launched = this.options.launch?.(input) ?? {};
     if (launched.command) return launched;
     try {
-      const agents = loadConfigFile(join(this.options.pawsRoot, "config.toml")).agents;
+      const agents = loadSettings(this.options.pawsRoot).agents;
       const adapter = resolveAdapter(
         input.role,
         process.env,
@@ -12883,7 +12940,7 @@ export class Orchestrator {
     } catch (caughtError17) {
       journalCaught(
         caughtError17,
-        "orchestrator.launchAgent.loadConfigFile",
+        "orchestrator.launchAgent.loadSettings",
         input.itemId,
         undefined,
         this.options.journal,
@@ -12958,7 +13015,7 @@ export function attachOrchestrator(options: OrchestratorOptions): Orchestrator {
 }
 
 function implementerAgentFor(
-  config: ReturnType<typeof loadConfigFile>,
+  config: ReturnType<typeof loadSettings>,
   labels: ProfileLabels | undefined,
 ): string {
   return resolveAgentProfiles(config, labels).implementer.agent;

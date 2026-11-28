@@ -1,11 +1,17 @@
 import {
   agentCredentialCiphertextSteps,
+  agentCredentialSecretName,
+  clearLegacyAgentCredentialSteps,
+  legacyAgentCredentialsSteps,
+  putAgentCredentialSecretSteps,
   writeAgentCredentialCiphertextSteps,
   type AgentCredentialCiphertext,
   type AgentCredentialWrite,
+  type Db,
   type Q,
   type Steps,
 } from "../db";
+import { journal, journalCaught } from "../journal";
 import { openSecret, sealSecret } from "./files";
 
 export type AgentCredential = Omit<AgentCredentialCiphertext, "ciphertext"> & {
@@ -22,7 +28,10 @@ export function* readAgentCredentialSteps(
   const { ciphertext, ...rest } = stored;
   return {
     ...rest,
-    blob: ciphertext === "" ? null : openSecret(secretsDir, context(accountId), ciphertext),
+    blob:
+      ciphertext === ""
+        ? null
+        : openSecret(secretsDir, agentCredentialSecretName(accountId), ciphertext),
   };
 }
 
@@ -34,10 +43,35 @@ export function* writeAgentCredentialSteps(
   const { blob, ...write } = input;
   return yield* writeAgentCredentialCiphertextSteps(q, {
     ...write,
-    ciphertext: sealSecret(secretsDir, context(input.accountId), blob),
+    ciphertext: sealSecret(secretsDir, agentCredentialSecretName(input.accountId), blob),
   });
 }
 
-function context(accountId: string): string {
-  return `agent-account-credential:${accountId}`;
+export async function migrateAgentCredentials(store: Db, secretsDir: string): Promise<number> {
+  let moved = 0;
+  for (const row of await store.run(legacyAgentCredentialsSteps)) {
+    const name = agentCredentialSecretName(row.accountId);
+    try {
+      await store.transaction(function* (q) {
+        const blob = openSecret(
+          secretsDir,
+          `agent-account-credential:${row.accountId}`,
+          row.ciphertext,
+        );
+        const sealed = sealSecret(secretsDir, name, blob);
+        yield* putAgentCredentialSecretSteps(q, row.accountId, sealed, Date.now());
+        const stored = yield* agentCredentialCiphertextSteps(q, row.accountId);
+        if (stored?.ciphertext !== sealed || openSecret(secretsDir, name, sealed) !== blob)
+          throw new Error("The moved agent account credential did not verify.");
+        if (!(yield* clearLegacyAgentCredentialSteps(q, row.accountId, row.ciphertext)))
+          throw new Error("The agent account credential changed while it was moved.");
+      });
+      moved += 1;
+    } catch (error) {
+      journalCaught(error, "credentials.migrateAgentCredentials", null);
+    }
+  }
+  if (moved > 0)
+    journal(`Moved ${moved} agent account ${moved === 1 ? "sign-in" : "sign-ins"} into secrets.`);
+  return moved;
 }

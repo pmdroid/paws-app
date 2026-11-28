@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { readAlerts } from "../src/alerts";
-import { insertMetricMinutesSteps, type Db, type Q } from "../src/db";
+import { insertInboxEvent, insertMetricMinutesSteps, type Db, type Q } from "../src/db";
 import { seed, withoutForeignKeys } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
 
@@ -214,4 +214,36 @@ test("alerts are listed newest first", async () => {
   await requests(db, "/v1/heartbeat", "4xx", [0, 0, 0, 0, 0, 0, 0, 40]);
   const alerts = await readAlerts(db, NOW);
   expect(alerts.map((alert) => alert.since)).toEqual([NOW - 5 * MINUTE, NOW - 8 * MINUTE]);
+});
+
+function inbox(db: Db, key: string, receivedAt: number) {
+  return insertInboxEvent(db, {
+    dedupeKey: key,
+    deliveryId: null,
+    source: "webhook",
+    action: "created",
+    sessionId: key,
+    issueId: null,
+    activityId: null,
+    body: null,
+    signal: null,
+    updatedAtMs: receivedAt,
+    payload: "{}",
+    receivedAt,
+  });
+}
+
+test("intake_backlog warns after 10 minutes of unhandled intake and turns critical at 30", async () => {
+  const db = await store();
+  await inbox(db, "s1", NOW - 10 * MINUTE);
+  await inbox(db, "s2", NOW - MINUTE);
+  expect(await ids(db)).toEqual([]);
+  await inbox(db, "s0", NOW - 10 * MINUTE - 1);
+  expect(await readAlerts(db, NOW)).toEqual([
+    expect.objectContaining({ id: "intake_backlog", severity: "warning", count: 3 }),
+  ]);
+  await inbox(db, "s3", NOW - 30 * MINUTE);
+  expect(await readAlerts(db, NOW)).toEqual([
+    expect.objectContaining({ id: "intake_backlog", severity: "critical", count: 4 }),
+  ]);
 });
