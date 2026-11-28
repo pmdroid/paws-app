@@ -159,13 +159,22 @@ export async function listWorkItems(store: Db): Promise<WorkItemRecord[]> {
   return store.run((q) => listWorkItemsSteps(q));
 }
 
-export function* listWorkItemsByStatesSteps(q: Q, states: readonly WorkItemState[]) {
-  if (states.length === 0) return [];
+export function* listWorkItemsByStatesSteps(
+  q: Q,
+  states: readonly WorkItemState[],
+  sessionKeys?: readonly string[],
+) {
+  if (states.length === 0 || sessionKeys?.length === 0) return [];
   const { workItem } = q.t;
   const items = selectItems(q);
   const rows = yield* q.all(
     items
-      .where(inArray(workItem.state, [...states]))
+      .where(
+        and(
+          inArray(workItem.state, [...states]),
+          sessionKeys === undefined ? undefined : inArray(workItem.sessionKey, [...sessionKeys]),
+        ),
+      )
       .orderBy(asc(workItem.createdAt), asc(workItem.id)),
   );
   return rows.map(mapItem);
@@ -357,13 +366,15 @@ export type WorkItemEventRow = {
   actor: string | null;
 };
 
-/** When each item last changed state, in ms, from `work_item_event`. Items without rows are absent. */
-export function* listLastWorkItemEventTimesSteps(q: Q) {
+/** When each item last changed state, in ms, from `work_item_event`. Items without rows are absent. Pass `itemIds` to keep those items. */
+export function* listLastWorkItemEventTimesSteps(q: Q, itemIds?: readonly string[]) {
+  if (itemIds?.length === 0) return new Map<string, number>();
   const { workItemEvent } = q.t;
   const rows = yield* q.all(
     q.orm
       .select({ itemId: workItemEvent.itemId, at: max(workItemEvent.at) })
       .from(workItemEvent)
+      .where(itemIds === undefined ? undefined : inArray(workItemEvent.itemId, [...itemIds]))
       .groupBy(workItemEvent.itemId),
   );
   return new Map(rows.map((row) => [row.itemId, row.at!]));

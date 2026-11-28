@@ -101,6 +101,7 @@ import {
   listLastWorkItemEventTimesSteps,
   listMergeQueuesSteps,
   listOpenQuestionsSteps,
+  listOutboxForKeysSteps,
   listOutboxSteps,
   listPullRequestTitlesSteps,
   listPushOutagesSteps,
@@ -603,8 +604,9 @@ export async function listedRecords(
   visible: readonly WorkItemRecord[],
   facts: ReadonlyMap<string, WorkItemFact>,
   nowMs: number,
+  changed: ReadonlyMap<string, number> | undefined = undefined,
 ): Promise<WorkItemRecord[]> {
-  const changed = await store.run(listLastWorkItemEventTimesSteps);
+  changed ??= await store.run(listLastWorkItemEventTimesSteps);
   const recent = new Set(
     visible
       .filter((record) => isTerminalWorkItemState(record.state))
@@ -946,21 +948,37 @@ export async function visibleRecords(
   options: LiveStatusOptions,
   facts: ReadonlyMap<string, WorkItemFact>,
 ): Promise<WorkItemRecord[]> {
-  return (await store.run((q) => listWorkItemsByStatesSteps(q, WORK_ITEM_STATES)))
-    .filter(
-      (record) =>
-        options.sessionIds === undefined ||
-        (record.sessionKey !== null && options.sessionIds.includes(record.sessionKey)),
-    )
-    .sort((left, right) => compareNewest(left, right, facts));
+  return (
+    await store.run((q) => listWorkItemsByStatesSteps(q, WORK_ITEM_STATES, options.sessionIds))
+  ).sort((left, right) => compareNewest(left, right, facts));
+}
+
+export async function visibleRecordsWithFacts(
+  store: Db,
+  options: LiveStatusOptions,
+): Promise<{ visible: WorkItemRecord[]; facts: Map<string, WorkItemFact> }> {
+  const records = await store.run((q) =>
+    listWorkItemsByStatesSteps(q, WORK_ITEM_STATES, options.sessionIds),
+  );
+  const ids = options.sessionIds === undefined ? undefined : records.map((record) => record.id);
+  const facts = new Map(
+    (await store.run((q) => listWorkItemFactsSteps(q, ids))).map((fact) => [fact.itemId, fact]),
+  );
+  return { visible: records.sort((left, right) => compareNewest(left, right, facts)), facts };
 }
 
 export async function readerOutbox(store: Db, options: LiveStatusOptions): Promise<OutboxRow[]> {
-  return (await store.run((q) => listOutboxSteps(q))).filter(
-    (row) =>
-      options.sessionIds === undefined ||
-      (row.orderingKey !== null && options.sessionIds.includes(row.orderingKey)),
-  );
+  if (options.sessionIds !== undefined)
+    return store.run((q) => listOutboxForKeysSteps(q, options.sessionIds!));
+  return store.run((q) => listOutboxSteps(q));
+}
+
+export async function outboxForRecords(
+  store: Db,
+  records: readonly WorkItemRecord[],
+): Promise<OutboxRow[]> {
+  const keys = new Set(records.map((record) => record.sessionKey ?? record.id));
+  return store.run((q) => listOutboxForKeysSteps(q, [...keys]));
 }
 
 export function mergePlaces(
@@ -1546,9 +1564,10 @@ export async function mergedTimesFor(
   visible: readonly WorkItemRecord[],
   facts: ReadonlyMap<string, WorkItemFact>,
   now: number,
+  changed: ReadonlyMap<string, number> | undefined = undefined,
 ): Promise<{ mergedTimes?: StatusMergedTimes }> {
   const since = now - STATUS_RECENT_MS;
-  const changed = await store.run(listLastWorkItemEventTimesSteps);
+  changed ??= await store.run(listLastWorkItemEventTimesSteps);
   const recent = visible.filter((record) => (changed.get(record.id) ?? 0) >= since);
   const history = await store.run((q) =>
     listWorkItemEventRowsForItemsSteps(

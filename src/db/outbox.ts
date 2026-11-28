@@ -198,6 +198,19 @@ export function* listOutboxSteps(q: Q, orderingKey?: string) {
   return rows.map((row) => mapOutbox(q, row));
 }
 
+export function* listOutboxForKeysSteps(q: Q, orderingKeys: readonly string[]) {
+  if (orderingKeys.length === 0) return [];
+  const { outbox } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(outbox)
+      .where(inArray(outbox.orderingKey, [...orderingKeys]))
+      .orderBy(asc(outbox.id)),
+  );
+  return rows.map((row) => mapOutbox(q, row));
+}
+
 /**
  * Claim the ready head of each ordering key. A dead or in-flight head blocks
  * only that key. Rows with a null ordering key are independent.
