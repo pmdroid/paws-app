@@ -51,6 +51,7 @@ import {
   type ItemHold,
   type ItemRunnerVerdicts,
   type QueueWaitingFor,
+  type ReadinessInputs,
   type RunnerHostRefusal,
   type PinnedSlot,
   type JobLoop,
@@ -470,12 +471,13 @@ function* yieldIdleMergeSessions(
   ready: ReadonlySet<string>,
   admission: ItemAdmission,
   now: number,
+  inputs?: ReadinessInputs,
 ): Steps<void> {
   for (const item of items) {
     if (
       item.state !== "merge_queue" ||
       item.absent ||
-      !(yield* admission.steps.canDispatchDelegation(q, item.delegationId)) ||
+      !(yield* admission.steps.canDispatchDelegation(q, item.delegationId, inputs)) ||
       !items.some(
         (other) =>
           other.id !== item.id && other.delegationId === item.delegationId && ready.has(other.id),
@@ -492,25 +494,31 @@ function* reportDependencyCycles(
   admission: ItemAdmission,
   sessionFor: (q: Q, itemId: string) => Steps<string | null>,
   now: number,
+  inputs?: ReadinessInputs,
 ): Steps<void> {
   const delegations = new Map<string, Item[]>();
   for (const item of items)
     if (!item.absent)
       delegations.set(item.delegationId, [...(delegations.get(item.delegationId) ?? []), item]);
   for (const [delegationId, members] of delegations) {
+    const issueIds = members.map((member) => member.issueId);
+    const blocks = inputs?.blocks;
     if (
-      !(yield* listBlocksOfSteps(
-        q,
-        members.map((member) => member.issueId),
-      )).length
+      !(blocks && issueIds.every((id) => blocks.has(id))
+        ? issueIds.some((id) => blocks.get(id)!.length)
+        : (yield* listBlocksOfSteps(q, issueIds)).length)
     )
       continue;
     const workspaceId = members.find((member) => member.workspaceId)?.workspaceId;
-    if (!workspaceId || !(yield* admission.steps.canDispatchDelegation(q, delegationId))) continue;
+    if (!workspaceId || !(yield* admission.steps.canDispatchDelegation(q, delegationId, inputs)))
+      continue;
     const held: Item[] = [];
     try {
       for (const member of members.sort((left, right) => left.position - right.position))
-        if ((yield* readyItemsSteps(q, { itemId: member.id, workspaceId })).cycleHeldItemIds.length)
+        if (
+          (yield* readyItemsSteps(q, { itemId: member.id, workspaceId, inputs })).cycleHeldItemIds
+            .length
+        )
           held.push(member);
     } catch (caughtError2) {
       journalCaught(caughtError2, "scheduler.reportDependencyCycles.filter", null);
@@ -556,17 +564,23 @@ async function admit(
     armed = (yield* requeueOrphanedWorkSteps(q, now)).armed || armed;
     const items = yield* schedulerItemsSteps(q, now);
     const byId = new Map(items.map((item) => [item.id, item]));
+    const inputs = admission.steps.readiness
+      ? yield* admission.steps.readiness(
+          q,
+          items.filter((item) => !item.absent).map((item) => item.id),
+        )
+      : undefined;
     const starts: { item: Item; start: StartAdmission }[] = [];
     // A runner-setup hold waits for the delegator, not for a slot: it is neither started nor
     // counted as waiting, so no queue notice or start timeout reaches it. Only the
     // `runner_setup.check` job ends it, after a runner write, never this tick.
     for (const item of items)
       if (item.state === "queued" && !item.cancelRequested && !item.absent && !item.setupHeld)
-        starts.push({ item, start: yield* admission.steps.canStart(q, item.id) });
+        starts.push({ item, start: yield* admission.steps.canStart(q, item.id, inputs) });
     const ready = new Set(starts.filter(({ start }) => start.ok).map(({ item }) => item.id));
-    yield* yieldIdleMergeSessions(q, items, ready, admission, now);
+    yield* yieldIdleMergeSessions(q, items, ready, admission, now, inputs);
     if (options.sessionFor)
-      yield* reportDependencyCycles(q, items, admission, options.sessionFor, now);
+      yield* reportDependencyCycles(q, items, admission, options.sessionFor, now, inputs);
     const saved = yield* listSchedulerAdmissionsSteps(q);
     const held: Admission[] = [];
     for (const row of saved) {
@@ -930,7 +944,7 @@ async function admit(
         holds.push({
           itemId: item.id,
           reason: start.held,
-          blockers: start.held === "blocked" ? yield* blockingIssuesSteps(q, item.id) : [],
+          blockers: start.held === "blocked" ? yield* blockingIssuesSteps(q, item.id, inputs) : [],
         });
     for (const { item, capped } of waiting) {
       const noRunner = capped ? null : yield* noRunnerLine(item.id);

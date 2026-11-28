@@ -21,6 +21,7 @@ import {
   type DependencyItem,
   type DependencySnapshot,
   type Db,
+  type ReadinessInputs,
 } from "../db";
 import type { DependencyEdge, LinearIssueLifecycle, TrackerAdapter } from "../linear";
 import { itemRunnerOnReleaseSteps } from "../runner-placement";
@@ -42,7 +43,7 @@ export type RunnerReleases = (
   signal?: AbortSignal,
 ) => Promise<string | null>;
 
-type Target = { itemId: string; workspaceId: string };
+type Target = { itemId: string; workspaceId: string; inputs?: ReadinessInputs };
 type Item = DependencyItem;
 type Identity = DependencyIdentity;
 type Snapshot = DependencySnapshot;
@@ -68,10 +69,16 @@ export type DependencyReadiness = {
 };
 
 function* scopeSteps(q: Q, target: Target): Steps<Scope | null> {
-  const located = yield* itemSpecificationPresentSteps(q, target.itemId);
+  const inputs = target.inputs?.items.has(target.itemId) ? target.inputs : undefined;
+  const located =
+    inputs?.items.get(target.itemId)!.present ??
+    (yield* itemSpecificationPresentSteps(q, target.itemId));
   if (located === null) throw new Error("Dependency workspace or task ownership changed");
   if (located === 0) return null;
-  const row = yield* readDependencyScopeSteps(q, target.itemId, target.workspaceId);
+  const found = inputs?.scopes.get(target.itemId);
+  const row = !inputs
+    ? yield* readDependencyScopeSteps(q, target.itemId, target.workspaceId)
+    : found?.workspaceId === target.workspaceId && found.scope;
   if (!row) throw new Error("Dependency workspace or task ownership changed");
   const {
     delegationIssueId,
@@ -96,7 +103,9 @@ function* scopeSteps(q: Q, target: Target): Steps<Scope | null> {
     ownerActorId,
     creatorId,
   };
-  const siblings = yield* listPresentDelegationItemsSteps(q, item.delegationId);
+  const siblings =
+    inputs?.delegations.get(item.delegationId)?.items ??
+    (yield* listPresentDelegationItemsSteps(q, item.delegationId));
   if (new Set(siblings.map((entry) => entry.linearIssueId)).size !== siblings.length)
     throw new Error("Dependency task identities are incomplete");
   return {
@@ -137,7 +146,9 @@ function sameScope(saved: string, token: string): boolean {
 }
 
 function* snapshotSteps(q: Q, target: Target): Steps<Snapshot | null> {
-  const saved = yield* readDependencySnapshotSteps(q, target.itemId);
+  const saved = target.inputs?.items.has(target.itemId)
+    ? (target.inputs.snapshots.get(target.itemId) ?? null)
+    : yield* readDependencySnapshotSteps(q, target.itemId);
   if (saved && saved.workspaceId !== target.workspaceId)
     throw new Error("Dependency workspace or task ownership changed");
   return saved;
@@ -158,11 +169,32 @@ export async function hasPendingDelegationChanges(
 }
 
 export function* readyItemsSteps(q: Q, target: Target): Steps<DependencyReadiness> {
+  if (unblocked(target)) return yield* readReadyItemsSteps(q, target, false);
   return yield* q.transaction((tx) => readReadyItemsSteps(tx, target, false));
 }
 
 export function* canAdvanceItemSteps(q: Q, target: Target): Steps<boolean> {
+  if (unblocked(target)) return yield* canAdvanceSteps(q, target);
   return yield* q.transaction((tx) => canAdvanceSteps(tx, target));
+}
+
+function unblocked({ itemId, inputs }: Target): boolean {
+  const issueId = inputs?.items.get(itemId)?.issueId;
+  return issueId !== undefined && inputs!.blocks.get(issueId)?.length === 0;
+}
+
+function* blocksOfSteps(q: Q, target: Target, issueIds: string[]) {
+  const blocks = target.inputs?.blocks;
+  return blocks && issueIds.every((id) => blocks.has(id))
+    ? issueIds.flatMap((id) => blocks.get(id)!)
+    : yield* listBlocksOfSteps(q, issueIds);
+}
+
+function* reconcilingSteps(q: Q, target: Target, delegationId: string) {
+  return (
+    target.inputs?.delegations.get(delegationId)?.reconciling ??
+    (yield* delegationHasReconciliationWorkSteps(q, delegationId))
+  );
 }
 
 function* canAdvanceSteps(q: Q, target: Target): Steps<boolean> {
@@ -196,11 +228,11 @@ function* readReadyItemsSteps(
   if (
     !saved ||
     !sameScope(saved.scope, current.token) ||
-    (yield* delegationHasReconciliationWorkSteps(q, item.delegationId))
+    (yield* reconcilingSteps(q, target, item.delegationId))
   )
     return held();
   const issueIds = current.siblings.map((entry) => entry.linearIssueId);
-  const blocks = yield* listBlocksOfSteps(q, issueIds);
+  const blocks = yield* blocksOfSteps(q, target, issueIds);
   const owned = new Set(issueIds);
   const internal = blocks.filter((edge) => owned.has(edge.blockerLinearIssueId));
   const ordered = orderByBlocks(current.siblings, internal);
@@ -235,7 +267,7 @@ function* readItemBlockersSteps(q: Q, target: Target): Steps<string[]> {
   const identifiers = new Map<string, string>(JSON.parse(saved.linearIdentifiers));
   const siblings = new Map(current.siblings.map((entry) => [entry.linearIssueId, entry]));
   const unmet = new Map<string, Verdict>();
-  for (const edge of yield* listBlocksOfSteps(q, [current.item.linearIssueId])) {
+  for (const edge of yield* blocksOfSteps(q, target, [current.item.linearIssueId])) {
     const verdict = yield* satisfied(q, edge.blockerLinearIssueId);
     if (verdict !== "met") unmet.set(edge.blockerLinearIssueId, verdict);
   }
@@ -302,8 +334,10 @@ function blockerMerged(
       return (yield* managedBlockerSatisfiedSteps(q, target, id)) ?? states.get(id) === "completed";
     if (blocker.cancelRequested || blocker.state === "cancelled") return false;
     if (blocker.state === "manual") return states.get(id) === "completed";
-    const merge = yield* getConfirmedRemoteMergeSteps(q, blocker.id);
-    return isBlockerSatisfied({ ...blocker, mergeSha: merge?.mergeSha ?? null });
+    const mergeSha = target.inputs?.merges.has(blocker.id)
+      ? target.inputs.merges.get(blocker.id)!
+      : ((yield* getConfirmedRemoteMergeSteps(q, blocker.id))?.mergeSha ?? null);
+    return isBlockerSatisfied({ ...blocker, mergeSha });
   };
 }
 
