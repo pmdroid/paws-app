@@ -216,3 +216,58 @@ test("duplicates queued before the merge are merged on the next pass, and other 
     "session:s2:created",
   ]);
 });
+
+test("a merged alias never suppresses the event it merged into, and a newer webhook payload joins the queued intake", async () => {
+  const f = await fixture();
+  const pollIntake: AcceptedLinearEvent = {
+    ...webhookCreated(),
+    dedupeKey: "issue:issue-1:intake",
+    source: "poll",
+    deliveryId: null,
+    activityId: null,
+    body: null,
+    payload: JSON.stringify({ kind: "intake", mode: "delegate", identifier: "PAS-1" }),
+  };
+  expect(await f.store.commit(webhookCreated())).toEqual({ inserted: true, handled: false });
+  expect(await f.store.commit(pollIntake)).toEqual({ inserted: false, handled: true });
+  expect(await f.store.duplicateOf("session:s1:created")).toBeNull();
+
+  const g = await fixture();
+  await g.store.commit(pollIntake);
+  await g.store.commit(webhookCreated());
+  expect(await g.store.duplicateOf("issue:issue-1:intake")).toBeNull();
+  const survivor = (await g.store.get("issue:issue-1:intake"))!;
+  expect(survivor).toMatchObject({ activityId: "a1", body: "Work on PAS-1", actorId: null });
+  expect(JSON.parse(survivor.payload)).toMatchObject({
+    mode: "delegate",
+    agentActivity: { id: "a1" },
+  });
+});
+
+test("a polled session created merges into its issue intake, but a stale re-intake and a late session do not", async () => {
+  const f = await fixture();
+  const pollIntake: AcceptedLinearEvent = {
+    ...webhookCreated(),
+    dedupeKey: "issue:issue-1:intake",
+    source: "poll",
+    deliveryId: null,
+    activityId: null,
+    payload: JSON.stringify({ kind: "intake", mode: "delegate" }),
+  };
+  const polled: AcceptedLinearEvent = {
+    ...webhookCreated(),
+    source: "poll",
+    deliveryId: null,
+    activityId: null,
+    payload: JSON.stringify({ kind: "session" }),
+  };
+  await f.store.commit(pollIntake);
+  expect(await f.store.commit(polled)).toEqual({ inserted: false, handled: true });
+  const g = await fixture();
+  await g.store.commit(pollIntake);
+  const stale = { ...polled, payload: JSON.stringify({ kind: "session", reason: "stale" }) };
+  expect(await g.store.commit(stale)).toEqual({ inserted: true, handled: false });
+  const h = await fixture();
+  await h.store.commit({ ...pollIntake, sessionId: null });
+  expect(await h.store.commit(polled)).toEqual({ inserted: true, handled: false });
+});

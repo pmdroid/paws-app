@@ -77,9 +77,16 @@ export async function insertInboxEvent(store: Db, row: NewInboxEvent): Promise<b
 type InboxIdentity = Pick<
   NewInboxEvent,
   "dedupeKey" | "source" | "action" | "sessionId" | "issueId" | "activityId" | "signal"
->;
+> & { payload: unknown };
 
-function duplicateMatch(q: Q, event: InboxIdentity, other: Q["t"]["inboxEvent"]): SQL | null {
+function staleReintake(payload: unknown): boolean {
+  const parsed: unknown = typeof payload === "string" ? JSON.parse(payload) : payload;
+  return (
+    typeof parsed === "object" && parsed !== null && "reason" in parsed && parsed.reason === "stale"
+  );
+}
+
+function duplicateMatch(event: InboxIdentity, other: Q["t"]["inboxEvent"]): SQL | null {
   if (event.signal === "stop") return null;
   const { action, source, sessionId, issueId, activityId, dedupeKey } = event;
   if (action === "created" && issueId !== null && dedupeKey === `issue:${issueId}:intake`)
@@ -89,10 +96,15 @@ function duplicateMatch(q: Q, event: InboxIdentity, other: Q["t"]["inboxEvent"])
       sessionId === null ? undefined : eq(other.sessionId, sessionId),
       sql`${other.dedupeKey} = 'session:' || ${other.sessionId} || ':created'`,
     )!;
-  if (action === "created" && source === "webhook" && dedupeKey === `session:${sessionId}:created`)
+  if (
+    action === "created" &&
+    sessionId !== null &&
+    dedupeKey === `session:${sessionId}:created` &&
+    !(source === "poll" && staleReintake(event.payload))
+  )
     return and(
       eq(other.action, "created"),
-      eq(other.sessionId, sessionId!),
+      eq(other.sessionId, sessionId),
       sql`${other.dedupeKey} = 'issue:' || ${other.issueId} || ':intake'`,
     )!;
   if (action === "prompted" && source === "poll" && dedupeKey === `activity:${activityId}`)
@@ -104,33 +116,31 @@ function* inboxDuplicateSteps(
   q: Q,
   event: InboxIdentity,
   receivedAt: number | null,
-): Steps<string | null> {
+): Steps<{ dedupeKey: string; handled: number } | null> {
   const other = q.t.inboxEvent;
-  const match = duplicateMatch(q, event, other);
+  const match = duplicateMatch(event, other);
   if (match === null) return null;
   const earlier =
     receivedAt === null
       ? undefined
-      : or(
-          eq(other.handled, 1),
-          sql`(${other.receivedAt}, ${other.dedupeKey}) < (${receivedAt}, ${event.dedupeKey})`,
-        );
+      : sql`(${other.receivedAt}, ${other.dedupeKey}) < (${receivedAt}, ${event.dedupeKey})`;
   const row = yield* q.one(
     q.orm
-      .select({ dedupeKey: other.dedupeKey })
+      .select({ dedupeKey: other.dedupeKey, handled: other.handled })
       .from(other)
       .where(and(match, ne(other.dedupeKey, event.dedupeKey), earlier))
       .orderBy(asc(other.receivedAt), asc(other.dedupeKey))
       .limit(1),
   );
-  return row?.dedupeKey ?? null;
+  return row ?? null;
 }
 
 export function* commitInboxEventSteps(
   q: Q,
   row: NewInboxEvent,
 ): Steps<{ inserted: boolean; mergedInto: string | null }> {
-  if (duplicateMatch(q, row, q.t.inboxEvent) !== null)
+  const e = q.t.inboxEvent;
+  if (duplicateMatch(row, e) !== null)
     for (const scope of [row.issueId, row.sessionId])
       if (scope !== null)
         yield* q.exec(
@@ -138,17 +148,28 @@ export function* commitInboxEventSteps(
             .select({ lock: sql`pg_advisory_xact_lock(hashtextextended(${`inbox:${scope}`}, 0))` })
             .from(sql`(SELECT 1) AS lock_scope`),
         );
-  const mergedInto = yield* inboxDuplicateSteps(q, row, null);
-  const e = q.t.inboxEvent;
+  const survivor = yield* inboxDuplicateSteps(q, row, null);
   const inserted = yield* q.all(
     q.orm
       .insert(e)
-      .values({ ...row, payload: jsonFromText(q, row.payload), handled: mergedInto ? 1 : 0 })
+      .values({ ...row, payload: jsonFromText(q, row.payload), handled: survivor ? 1 : 0 })
       .onConflictDoNothing()
       .returning({ dedupeKey: e.dedupeKey }),
   );
   if (inserted.length === 0) return { inserted: false, mergedInto: null };
-  return { inserted: mergedInto === null, mergedInto };
+  if (survivor?.handled === 0 && row.action === "created")
+    yield* q.exec(
+      q.orm
+        .update(e)
+        .set({
+          payload: sql`${e.payload} || ${jsonFromText(q, row.payload)}`,
+          body: sql`COALESCE(${row.body}, ${e.body})`,
+          activityId: sql`COALESCE(${row.activityId}, ${e.activityId})`,
+          updatedAtMs: sql`GREATEST(${e.updatedAtMs}, ${row.updatedAtMs})`,
+        })
+        .where(eq(e.dedupeKey, survivor.dedupeKey)),
+    );
+  return { inserted: survivor === null, mergedInto: survivor?.dedupeKey ?? null };
 }
 
 export async function commitInboxEvent(store: Db, row: NewInboxEvent) {
@@ -159,7 +180,8 @@ export async function queuedDuplicateOf(store: Db, dedupeKey: string): Promise<s
   return store.run(function* (q) {
     const e = q.t.inboxEvent;
     const row = yield* q.one(q.orm.select().from(e).where(eq(e.dedupeKey, dedupeKey)));
-    return row === undefined ? null : yield* inboxDuplicateSteps(q, row, row.receivedAt);
+    if (row === undefined) return null;
+    return (yield* inboxDuplicateSteps(q, row, row.receivedAt))?.dedupeKey ?? null;
   });
 }
 
