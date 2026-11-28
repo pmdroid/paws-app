@@ -11,5 +11,5 @@ export function envVariable(sources: FieldSources | undefined, key: string): str
 }
 
 export function envNote(variable: string): string {
-  return `<small class="sub" data-env-source>Set by <code>${esc(variable)}</code> in the service environment</small>`;
+  return `<small class="sub font-normal" data-env-source>Set by <code>${esc(variable)}</code> in the service environment</small>`;
 }
