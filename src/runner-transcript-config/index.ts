@@ -243,10 +243,13 @@ export async function saveRunnerStorageSettings(home: string, input: unknown): P
   const previous = savedFields(home) as Record<string, unknown>;
   const kept = Object.entries(JSON.parse(text)).filter(([key]) => !environment.includes(key));
   const held = environment.filter((key) => previous[key] !== undefined);
-  const saved = JSON.stringify({
+  const next: Record<string, unknown> = {
     ...Object.fromEntries(kept),
     ...Object.fromEntries(held.map((key) => [key, previous[key]])),
-  });
+  };
+  if (next.bucket !== previous.bucket || next.endpoint !== previous.endpoint)
+    for (const key of CREDENTIALS) if (environment.includes(key)) delete next[key];
+  const saved = JSON.stringify(next);
   if (saved !== storedText(home)) await saveStorage(home, saved);
   if (refusal !== null) throw new RunnerStorageEnvironmentError(refusal);
   return startedWith !== undefined && fingerprint(text) !== startedWith;

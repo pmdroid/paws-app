@@ -227,6 +227,24 @@ test("a new endpoint or bucket needs the secret access key again", async () => {
   });
 });
 
+test("a destination saved under env credentials drops the saved credentials", async () => {
+  const body = { ...s3, secretAccessKey: "saved-secret-marker", sessionToken: "saved-token" };
+  expect((await call(send("PUT", body))).status).toBe(200);
+  process.env.PAWS_S3_ACCESS_KEY_ID = "env-key-id";
+  process.env.PAWS_S3_SECRET_ACCESS_KEY = "env-secret-marker";
+  const { accessKeyId: _, ...fields } = s3;
+  expect((await call(send("PUT", { ...fields, bucket: "other-objects" }))).status).toBe(200);
+  delete process.env.PAWS_S3_ACCESS_KEY_ID;
+  delete process.env.PAWS_S3_SECRET_ACCESS_KEY;
+  expect((await call(send("GET"))).body).toMatchObject({
+    bucket: "other-objects",
+    accessKeyId: null,
+    hasSecretAccessKey: false,
+    hasSessionToken: false,
+  });
+  expect(() => loadRunnerTranscriptS3(home)).toThrow();
+});
+
 test("objects written before a storage change still read back", async () => {
   const before = loadRunnerTranscriptStores(home);
   const bytes = new TextEncoder().encode("earlier transcript");
