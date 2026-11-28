@@ -401,6 +401,24 @@ export async function listJobs(store: Db): Promise<Job[]> {
   return store.run(listJobsSteps);
 }
 
+export function* listMergeJobsForItemsSteps(q: Q, itemIds: readonly string[]) {
+  if (itemIds.length === 0) return [];
+  const { job } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(job)
+      .where(
+        and(
+          or(eq(job.queue, MERGE_WORK.queue), like(job.queue, `${MERGE_WORK.queuePrefix}%`)),
+          inArray(jobItemId(q), [...new Set(itemIds)]),
+        ),
+      )
+      .orderBy(job.id),
+  );
+  return rows.map((row) => mapJob(q, row));
+}
+
 export function* nextClaimableRunAtSteps(
   q: Q,
   options: { now?: number; queues?: readonly string[] } = {},
