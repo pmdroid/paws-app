@@ -291,9 +291,12 @@ export function createIssueVmSettings() {
   };
   const loadHosts = async () => {
     const listed = await attempt("hosts", () =>
-      request<{ runners: { id: string; name: string }[] }>(engine!, "/api/runners"),
+      request<{ runners: { id: string; name: string; status?: string }[] }>(
+        engine!,
+        "/api/runners",
+      ),
     );
-    runners = listed?.runners ?? [];
+    runners = (listed?.runners ?? []).filter((runner) => runner.status !== "revoked");
     const views = await Promise.all(
       runners.map((runner) =>
         attempt("hosts", () => request<Host>(engine!, `/api/runners/${runner.id}/vm-host`)),
