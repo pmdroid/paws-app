@@ -53,6 +53,7 @@ export const POLL_DUE_CURSOR = "linear.poll.due";
 const INITIAL_LOOKBACK_MS = 60 * 60 * 1000;
 const OVERLAP_MS = 5_000;
 const MISSED_DELIVERY_GRACE_MS = 60_000;
+const WEBHOOK_SKIP_MS = 15 * 60_000;
 const EMPTY_SIGHTING: IntakeSighting = {
   sessions: [],
   issues: [],
@@ -305,6 +306,7 @@ export function startCatchUpPoller(options: {
             options.store,
             sessionHasTask,
             staleSessions.has(session.id),
+            now() - WEBHOOK_SKIP_MS,
           ),
         );
     const events = [
@@ -497,6 +499,7 @@ async function sessionEvent(
   store: InboxStore,
   sessionHasTask: (sessionId: string) => Promise<boolean>,
   stale: boolean,
+  webhookSinceMs: number,
 ): Promise<AcceptedLinearEvent | null> {
   const prior = await store.get(`issue:${session.issueId}:intake`);
   if (session.stoppedAtMs != null) {
@@ -531,6 +534,7 @@ async function sessionEvent(
     delegatedAt > session.createdAtMs + REDELEGATION_MARGIN_MS &&
     !(await sessionHasTask(session.id));
   if (!redelegated && prior?.sessionId === session.id) return null;
+  if (!redelegated && (await store.sessionWebhookSince(session.id, webhookSinceMs))) return null;
   if (!redelegated && prior === null && session.updatedAtMs < since) return null;
   return inboxEvent({
     dedupeKey: redelegated

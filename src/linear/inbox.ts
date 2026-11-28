@@ -4,19 +4,22 @@ import {
   clearSyncCursor,
   inboxEventByDelivery,
   inboxEventByKey,
+  commitInboxEvent,
   incrementSyncCounter,
-  insertInboxEvent,
   markInboxEventFailed,
   markInboxEventHandled,
   newerDuplicatePrompt,
+  queuedDuplicateOf,
   releaseInboxClaim,
   renewInboxClaim,
+  sessionWebhookSince,
   setSyncCursor,
   syncCursor,
   unhandledInboxEvents,
   type ClaimedInboxRow,
   type Db,
 } from "../db";
+import { journal } from "../journal";
 import { promptMetadata, type AcceptedLinearEvent } from "./events";
 
 export type CommitResult = {
@@ -53,6 +56,8 @@ export type InboxStore = {
   clearCursor(name: string): Promise<void>;
   get(dedupeKey: string): Promise<AcceptedLinearEvent | null>;
   newerDuplicatePrompt(dedupeKey: string): Promise<string | null>;
+  duplicateOf(dedupeKey: string): Promise<string | null>;
+  sessionWebhookSince(sessionId: string, sinceMs: number): Promise<boolean>;
 };
 
 type InboxRow = {
@@ -74,7 +79,7 @@ type InboxRow = {
 export function createInboxStore(db: Db): InboxStore {
   return {
     async commit(event) {
-      const inserted = await insertInboxEvent(db, {
+      const { inserted, mergedInto } = await commitInboxEvent(db, {
         dedupeKey: event.dedupeKey,
         deliveryId: event.deliveryId,
         source: event.source,
@@ -89,6 +94,12 @@ export function createInboxStore(db: Db): InboxStore {
         receivedAt: Date.now(),
       });
       if (inserted) return { inserted: true, handled: false };
+      if (mergedInto !== null) {
+        journal(
+          `merged duplicate ${event.source} ${event.action} for session ${event.sessionId ?? "unknown"} into ${mergedInto}`,
+        );
+        return { inserted: false, handled: true };
+      }
       const existing = await findExisting(db, event);
       return { inserted: false, handled: existing?.handled === 1 };
     },
@@ -110,6 +121,8 @@ export function createInboxStore(db: Db): InboxStore {
     countCursor: (name) => incrementSyncCounter(db, name),
     clearCursor: (name) => clearSyncCursor(db, name),
     newerDuplicatePrompt: (dedupeKey) => newerDuplicatePrompt(db, dedupeKey),
+    duplicateOf: (dedupeKey) => queuedDuplicateOf(db, dedupeKey),
+    sessionWebhookSince: (sessionId, sinceMs) => sessionWebhookSince(db, sessionId, sinceMs),
     async get(dedupeKey) {
       const row = (await inboxEventByKey(db, dedupeKey)) as InboxRow | null;
       return row === null ? null : mapRow(row);

@@ -172,6 +172,15 @@ export function createIntakeQueue(options: {
         const started = now();
         let outcome = "handled";
         try {
+          const duplicate = await store.duplicateOf(event.dedupeKey);
+          if (duplicate !== null) {
+            outcome = "coalesced";
+            journal(
+              `merged duplicate ${event.source} ${event.action} for session ${event.sessionId ?? "unknown"} into ${duplicate}`,
+            );
+            await store.markHandled(event.dedupeKey);
+            return;
+          }
           const newer =
             event.action === "prompted" ? await store.newerDuplicatePrompt(event.dedupeKey) : null;
           if (newer !== null) {

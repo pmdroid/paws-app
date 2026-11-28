@@ -1,4 +1,4 @@
-import { and, asc, eq, exists, inArray, lt, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, exists, gte, inArray, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { type Db, type Q, type Steps } from "./db";
 import { jsonField, jsonFromText, jsonText } from "./json-text";
@@ -72,6 +72,113 @@ export function* insertInboxEventSteps(q: Q, row: NewInboxEvent): Steps<boolean>
 
 export async function insertInboxEvent(store: Db, row: NewInboxEvent): Promise<boolean> {
   return store.transaction((q) => insertInboxEventSteps(q, row));
+}
+
+type InboxIdentity = Pick<
+  NewInboxEvent,
+  "dedupeKey" | "source" | "action" | "sessionId" | "issueId" | "activityId" | "signal"
+>;
+
+function duplicateMatch(q: Q, event: InboxIdentity, other: Q["t"]["inboxEvent"]): SQL | null {
+  if (event.signal === "stop") return null;
+  const { action, source, sessionId, issueId, activityId, dedupeKey } = event;
+  if (action === "created" && issueId !== null && dedupeKey === `issue:${issueId}:intake`)
+    return and(
+      eq(other.action, "created"),
+      eq(other.issueId, issueId),
+      sessionId === null ? undefined : eq(other.sessionId, sessionId),
+      sql`${other.dedupeKey} = 'session:' || ${other.sessionId} || ':created'`,
+    )!;
+  if (action === "created" && source === "webhook" && dedupeKey === `session:${sessionId}:created`)
+    return and(
+      eq(other.action, "created"),
+      eq(other.sessionId, sessionId!),
+      sql`${other.dedupeKey} = 'issue:' || ${other.issueId} || ':intake'`,
+    )!;
+  if (action === "prompted" && source === "poll" && dedupeKey === `activity:${activityId}`)
+    return and(eq(other.source, "webhook"), eq(other.activityId, activityId!))!;
+  return null;
+}
+
+function* inboxDuplicateSteps(
+  q: Q,
+  event: InboxIdentity,
+  receivedAt: number | null,
+): Steps<string | null> {
+  const other = q.t.inboxEvent;
+  const match = duplicateMatch(q, event, other);
+  if (match === null) return null;
+  const earlier =
+    receivedAt === null
+      ? undefined
+      : or(
+          eq(other.handled, 1),
+          sql`(${other.receivedAt}, ${other.dedupeKey}) < (${receivedAt}, ${event.dedupeKey})`,
+        );
+  const row = yield* q.one(
+    q.orm
+      .select({ dedupeKey: other.dedupeKey })
+      .from(other)
+      .where(and(match, ne(other.dedupeKey, event.dedupeKey), earlier))
+      .orderBy(asc(other.receivedAt), asc(other.dedupeKey))
+      .limit(1),
+  );
+  return row?.dedupeKey ?? null;
+}
+
+export function* commitInboxEventSteps(
+  q: Q,
+  row: NewInboxEvent,
+): Steps<{ inserted: boolean; mergedInto: string | null }> {
+  if (duplicateMatch(q, row, q.t.inboxEvent) !== null)
+    for (const scope of [row.issueId, row.sessionId])
+      if (scope !== null)
+        yield* q.exec(
+          q.orm
+            .select({ lock: sql`pg_advisory_xact_lock(hashtextextended(${`inbox:${scope}`}, 0))` })
+            .from(sql`(SELECT 1) AS lock_scope`),
+        );
+  const mergedInto = yield* inboxDuplicateSteps(q, row, null);
+  const e = q.t.inboxEvent;
+  const inserted = yield* q.all(
+    q.orm
+      .insert(e)
+      .values({ ...row, payload: jsonFromText(q, row.payload), handled: mergedInto ? 1 : 0 })
+      .onConflictDoNothing()
+      .returning({ dedupeKey: e.dedupeKey }),
+  );
+  if (inserted.length === 0) return { inserted: false, mergedInto: null };
+  return { inserted: mergedInto === null, mergedInto };
+}
+
+export async function commitInboxEvent(store: Db, row: NewInboxEvent) {
+  return store.transaction((q) => commitInboxEventSteps(q, row));
+}
+
+export async function queuedDuplicateOf(store: Db, dedupeKey: string): Promise<string | null> {
+  return store.run(function* (q) {
+    const e = q.t.inboxEvent;
+    const row = yield* q.one(q.orm.select().from(e).where(eq(e.dedupeKey, dedupeKey)));
+    return row === undefined ? null : yield* inboxDuplicateSteps(q, row, row.receivedAt);
+  });
+}
+
+export async function sessionWebhookSince(
+  store: Db,
+  sessionId: string,
+  sinceMs: number,
+): Promise<boolean> {
+  return store.run(function* (q) {
+    const e = q.t.inboxEvent;
+    const row = yield* q.one(
+      q.orm
+        .select({ dedupeKey: e.dedupeKey })
+        .from(e)
+        .where(and(eq(e.sessionId, sessionId), eq(e.source, "webhook"), gte(e.receivedAt, sinceMs)))
+        .limit(1),
+    );
+    return row !== undefined;
+  });
 }
 
 export function* markInboxEventHandledSteps(q: Q, dedupeKey: string) {
