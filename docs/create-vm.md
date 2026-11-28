@@ -51,6 +51,18 @@ exe.dev VM names are global, so another account may already hold `<name>-paws`. 
 
 Each Create VM makes a new VM, so a member may have several: `<name>-paws`, then `<name>-paws-2` and so on. A member may have at most 5 VMs that are not being deleted; the sixth Create VM is refused with "You already have 5 VMs. Delete one on its runner page first." Retry a failed VM from its runner page.
 
+## Issue VMs on boat and InstaBox
+
+Each item can run in its own issue VM. Paws picks the provider in this order: a VM host with a free slot, then boat, then InstaBox. It uses boat or InstaBox only when all of these hold:
+
+- the provider's key is saved on Settings › Runner VMs, and the provider is not in `off_providers`;
+- its hourly price is set under Spend on Settings › Issue VMs;
+- its snapshot is set under Snapshots on Settings › Issue VMs.
+
+The snapshot is the boat snapshot or the InstaBox snapshot id that every new issue VM on that provider starts from. Both are per workspace, so clearing one stops new issue VMs on that provider; VMs that already exist keep running. With no provider usable, items run on the workspace's runners as before. A workspace that has VM hosts but none online or free uses boat or InstaBox when one is usable. Otherwise its items wait for a host.
+
+Paws creates the VM from the snapshot, installs the runner and enrolls it with a single-use token bound to that VM. The runner takes work only for its own item, and an item that has an issue VM runs only on that VM's runner.
+
 ## Paws reachable only on Tailscale
 
 The VM must reach Paws on both ports: 8787 for enrollment and 8788 for the runner's mTLS connection. When `PAWS_PUBLIC_URL` or `PAWS_RUNNER_URL` is a Tailscale hostname such as `https://agentbox.tailnet-name.ts.net:8787`, an exe.dev VM cannot reach it from the internet. Paws stays private, and the VM joins your tailnet instead.

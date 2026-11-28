@@ -201,7 +201,9 @@ test("with a boat key, hourly price and snapshot, an item creates a boat issue V
   const name = `paws-${vm!.id.toLowerCase()}`;
   expect(vm).toMatchObject({ provider: "boat", state: "awake", runnerId: `runner-${name}` });
   expect(options.boat.sandboxes.get(name)).toMatchObject({ from: "paws-base", state: "ready" });
-  expect(vm!.providerVmId).toBe(options.boat.sandboxes.get(name)!.id);
+  expect((vm as IssueVm & { providerVmId: string }).providerVmId).toBe(
+    options.boat.sandboxes.get(name)!.id,
+  );
   const enrollments = await db.run((q) => q.all(q.orm.select().from(q.t.runnerEnrollment)));
   expect(enrollments.map((row) => [row.issueVmId, row.userId])).toEqual([[vm!.id, "owner"]]);
 

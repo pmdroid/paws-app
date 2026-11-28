@@ -94,8 +94,9 @@ beforeEach(() => {
       if (method === "PUT")
         spend = {
           ...spend,
-          monthlyLimitUsd: body.monthlyLimitUsd,
+          ...(body.monthlyLimitUsd === undefined ? {} : { monthlyLimitUsd: body.monthlyLimitUsd }),
           prices: { ...(spend.prices as object), ...body.prices },
+          snapshots: { ...(spend.snapshots as object), ...body.snapshots },
         };
       return Response.json(spend);
     }
@@ -287,6 +288,19 @@ test("an admin sees spend against the limit and saves the limit and prices", asy
   );
 });
 
+test("an admin saves the snapshot each cloud provider starts issue VMs from", async () => {
+  const root = await mount();
+  expect(root.textContent).toContain("No cloud issue VMs until a snapshot is set");
+  type(root, "#issue-vm-snapshot-boat", " paws-base ");
+  await submit(root, "[data-snapshots]");
+  expect(calls.find((call) => call.path.endsWith("/spend") && call.method === "PUT")?.body).toEqual(
+    { snapshots: { boat: "paws-base", instabox: null } },
+  );
+  expect(root.textContent).toContain("Snapshots saved.");
+  expect(root.querySelector<HTMLInputElement>("#issue-vm-snapshot-boat")!.value).toBe("paws-base");
+  expect(root.textContent).toContain("$40.00 of $50.00");
+});
+
 test("a price the browser could not read is refused, not skipped", async () => {
   const root = await mount();
   const price = root.querySelector<HTMLInputElement>("#issue-vm-price-boat")!;
@@ -307,6 +321,7 @@ test("a member sees the spend and prices without a form", async () => {
     "InstaBox: No cloud issue VMs until a price is set",
   );
   expect(root.querySelector("[data-spend]")).toBeNull();
+  expect(root.querySelector("[data-snapshots]")).toBeNull();
 });
 
 test("a member refused the spend sees the rest of the page and no error", async () => {

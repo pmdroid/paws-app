@@ -35,6 +35,7 @@ type Spend = {
   spentUsd: number;
   monthlyLimitUsd: number;
   prices: Record<Provider, number | null>;
+  snapshots?: Record<Provider, string | null>;
 };
 
 const LIMITS: [keyof Limits, string, number, number][] = [
@@ -71,6 +72,7 @@ const EXE_FIELDS: [keyof VmSize, string][] = [
   ["pool", "Default pool"],
 ];
 const NO_PRICE = "No cloud issue VMs until a price is set";
+const NO_SNAPSHOT = "No cloud issue VMs until a snapshot is set";
 const usd = (value: number) => `$${value.toFixed(2)}`;
 
 async function request<T>(engine: string, path: string, method = "GET", body?: unknown) {
@@ -147,6 +149,16 @@ export function createIssueVmSettings() {
       ? `<form data-spend class="col" novalidate>${money("issue-vm-spend-limit", "monthlyLimitUsd", "Monthly limit (US dollars)", limit, "Cloud issue VMs stop starting once this month's spend reaches it.")}${PROVIDERS.map(([key, label]) => money(`issue-vm-price-${key}`, key, `${label} price per VM hour (US dollars)`, prices[key], prices[key] === null ? NO_PRICE : "0 to 1000000")).join("")}<div class="row"><button class="btn" type="submit"${off()}>Save spend</button></div></form>`
       : `<ul class="col" aria-label="Hourly prices">${PROVIDERS.map(([key, label]) => `<li data-price="${key}">${label}: ${price(prices[key])}</li>`).join("")}</ul>`;
     return section("Spend", `${bar}${body}${note("spend")}`);
+  };
+  const snapshotsSection = () => {
+    if (!spend || !admin()) return "";
+    const names = spend.snapshots ?? { boat: null, instabox: null };
+    const input = ([key, label]: [Provider, string]) =>
+      `<div class="settings-field"><label for="issue-vm-snapshot-${key}">${label} snapshot</label><input id="issue-vm-snapshot-${key}" name="${key}" type="text" spellcheck="false" autocomplete="off" value="${esc(names[key] ?? "")}"><p class="sub">${names[key] === null ? NO_SNAPSHOT : "Each new issue VM starts from this snapshot."}</p></div>`;
+    return section(
+      "Snapshots",
+      `<form data-snapshots class="col" novalidate>${PROVIDERS.map(input).join("")}<div class="row"><button class="btn" type="submit"${off()}>Save snapshots</button></div></form>${note("snapshots")}`,
+    );
   };
   const grantCell = (member: Member) =>
     member.grant
@@ -254,7 +266,7 @@ export function createIssueVmSettings() {
     renderMarkup(
       root,
       admin()
-        ? `${deletesSection()}${limitsSection()}${spendSection()}${grantsSection()}${vmSection()}${hostsSection()}`
+        ? `${deletesSection()}${limitsSection()}${spendSection()}${snapshotsSection()}${grantsSection()}${vmSection()}${hostsSection()}`
         : `${deletesSection()}${spendSection()}${grantsSection()}${vmSection()}`,
     );
   };
@@ -385,6 +397,18 @@ export function createIssueVmSettings() {
         spend = await request<Spend>(engine!, "/api/settings/issue-vm/spend", "PUT", {
           monthlyLimitUsd,
           prices,
+        });
+      });
+    else if (form.matches("[data-snapshots]"))
+      void run("snapshots", "Snapshots saved.", async () => {
+        const snapshots = Object.fromEntries(
+          [...form.querySelectorAll<HTMLInputElement>("input")].map((input) => [
+            input.name,
+            input.value.trim() || null,
+          ]),
+        );
+        spend = await request<Spend>(engine!, "/api/settings/issue-vm/spend", "PUT", {
+          snapshots,
         });
       });
     else if (form.matches("[data-grant]")) {

@@ -30,7 +30,7 @@ const NAME = /^paws-([0-9a-z]{26})$/;
 export type CloudIssueVmDriverOptions = {
   store: Db;
   boat: BoatProvider;
-  instaBox: InstaBox;
+  instaBox: Omit<InstaBox, "listVms" | "listSizes">;
   readToken: (provider: PricedIssueVmProvider) => string | null | Promise<string | null>;
   bootstrap: (provider: PricedIssueVmProvider) => Promise<ExeDevBootstrap>;
   vmSizes: () => VmSizes | undefined;
