@@ -109,6 +109,10 @@ function parseGrant(body: unknown, now: number): GrantInput | string {
 }
 
 const MAX_USD = 1_000_000;
+const SNAPSHOTS = {
+  boat: /^(?:bsh_[A-Za-z0-9]{1,64}|[A-Za-z0-9][A-Za-z0-9._-]{0,63})$/,
+  instabox: /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/,
+};
 
 type SpendChanges = Partial<IssueVmSpendSettings>;
 
@@ -120,7 +124,7 @@ function amount(value: unknown, name: string): number | string {
 
 function parseSpend(body: unknown): SpendChanges | string {
   if (typeof body !== "object" || body === null) return "Expected a JSON object";
-  const { monthlyLimitUsd, prices } = body as Record<string, unknown>;
+  const { monthlyLimitUsd, prices, snapshots } = body as Record<string, unknown>;
   const changes: SpendChanges = {};
   if (monthlyLimitUsd !== undefined) {
     const limit = amount(monthlyLimitUsd, "monthlyLimitUsd");
@@ -137,7 +141,18 @@ function parseSpend(body: unknown): SpendChanges | string {
       changes[provider === "boat" ? "boatHourlyUsd" : "instaboxHourlyUsd"] = price;
     }
   }
-  if (Object.keys(changes).length === 0) return "Expected monthlyLimitUsd or prices";
+  if (snapshots !== undefined) {
+    if (typeof snapshots !== "object" || snapshots === null) return "snapshots must be an object";
+    for (const [provider, value] of Object.entries(snapshots)) {
+      if (provider !== "boat" && provider !== "instabox")
+        return "snapshots takes only boat and instabox";
+      const name = typeof value === "string" ? value.trim() || null : value;
+      if (name !== null && (typeof name !== "string" || !SNAPSHOTS[provider].test(name)))
+        return `snapshots.${provider} must be a ${provider === "boat" ? "boat" : "InstaBox"} snapshot name of up to 64 letters, digits, dashes and underscores, or null`;
+      changes[provider === "boat" ? "boatSnapshot" : "instaboxSnapshot"] = name;
+    }
+  }
+  if (Object.keys(changes).length === 0) return "Expected monthlyLimitUsd, prices or snapshots";
   return changes;
 }
 

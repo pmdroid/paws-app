@@ -19,6 +19,7 @@ import {
   recordRunnerRepositories,
   syncWorkspaceMember,
   syncSteps,
+  setIssueVmRunnerSteps,
   type Db,
   type Q,
 } from "../src/db";
@@ -29,6 +30,7 @@ import {
   SESSION_GRACE_MS,
   type PlacementRequest,
 } from "../src/runner-placement";
+import { recordIssueVmSteps } from "../src/issue-vm";
 import { MINIMUM_RUNNER_VERSION } from "../src/runner-protocol";
 import { RunnerCapacityWait, placementWaitMs } from "../src/core";
 import { saveSchedulingContextSteps } from "../src/scheduler";
@@ -387,6 +389,37 @@ test("an item runs on another member's issue VM runner after the owner's own run
     expect(await placed.ids()).toEqual(["pool"]);
     await setIsolation(placed.db, "pool", "none");
     expect(await placed.ids()).toEqual([]);
+  } finally {
+    await placed.close();
+  }
+});
+
+test("an issue VM's runner takes only its own item, and an item with a VM runs only on it", async () => {
+  const placed = await placeItem();
+  try {
+    const { db } = placed;
+    await setIsolation(db, "pool", "issue_vm");
+    await setIsolation(db, "pool-two", "issue_vm");
+    await insertQueuedItem(db, { id: "other", now: Date.now(), sessionKey: "other-session" });
+    const vm = (itemId: string, memberUserId: string, runnerId: string) =>
+      db.run(function* (q) {
+        const id = yield* recordIssueVmSteps(q, {
+          workspaceId: placed.workspaceId,
+          itemId,
+          memberUserId,
+          provider: "boat",
+          now: Date.now(),
+        });
+        yield* setIssueVmRunnerSteps(q, { id, runnerId });
+      });
+    await vm("other", placed.pool, "pool");
+    const rejected: string[] = [];
+    const onRejected = (id: string, reason: string) => rejected.push(`${id}: ${reason}`);
+    expect(await placed.ids({ onRejected })).toEqual(["own", "second", "pool-two"]);
+    expect(rejected).toContain("pool: the issue VM of another item");
+    await vm("item", placed.owner, "pool-two");
+    expect(await placed.ids({ onRejected })).toEqual(["pool-two"]);
+    expect(rejected).toContain("own: the item runs only in its own issue VM");
   } finally {
     await placed.close();
   }

@@ -15,6 +15,7 @@ const MICRO = 1_000_000;
 export type IssueVmSpendLimit = {
   monthlyLimitUsd: number;
   prices: Record<PricedIssueVmProvider, number | null>;
+  snapshots: Record<PricedIssueVmProvider, string | null>;
 };
 
 export type IssueVmSpend = IssueVmSpendLimit & { month: string; spentUsd: number };
@@ -40,6 +41,7 @@ export function* issueVmSpendLimitSteps(q: Q, workspaceId: string) {
   return {
     monthlyLimitUsd: row?.monthlyLimitUsd ?? DEFAULT_MONTHLY_LIMIT_USD,
     prices: { boat: row?.boatHourlyUsd ?? null, instabox: row?.instaboxHourlyUsd ?? null },
+    snapshots: { boat: row?.boatSnapshot ?? null, instabox: row?.instaboxSnapshot ?? null },
   } satisfies IssueVmSpendLimit;
 }
 

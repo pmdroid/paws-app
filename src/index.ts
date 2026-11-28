@@ -341,6 +341,7 @@ import {
 import { createExecutionControls } from "./execution-controls";
 import {
   createIssueVmDrivers,
+  issueVmProviderVmId,
   createIssueVmSweep,
   ISSUE_VM_SWEEP_EVERY_MS,
   ISSUE_VM_SWEEP_JOB,
@@ -1344,13 +1345,15 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     });
   const tailscaleAuthKey = tailscaleAuthKeyReader(paths.home);
   const memberVmExeDev = createExeDev({ readToken: exeDevToken });
+  const providerVmId = async (name: string) =>
+    (await memberVmProviderId(store, name)) ?? (await issueVmProviderVmId(store, name));
   const memberVmBoat = createBoat({
     readToken: () => readVmProviderToken(paths.home, "boat"),
-    lookup: (name) => memberVmProviderId(store, name),
+    lookup: providerVmId,
   });
   const memberVmInstaBox = createInstaBox({
     readToken: () => readVmProviderToken(paths.home, "instabox"),
-    lookup: (name) => memberVmProviderId(store, name),
+    lookup: providerVmId,
   });
   const vmProviderChecks = createVmProviderChecks({
     db: store,
@@ -1361,8 +1364,26 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       instabox: instaBoxKeyCheck(memberVmInstaBox),
     },
   });
-  const issueVmDrivers = createIssueVmDrivers(store, options?.issueVmDrivers);
-  const issueVmProviders = Object.keys(issueVmDrivers) as IssueVmProvider[];
+  const issueVmDrivers = createIssueVmDrivers(store, options?.issueVmDrivers, {
+    boat: memberVmBoat,
+    instaBox: memberVmInstaBox,
+    readToken: (provider) => readVmProviderToken(paths.home, provider),
+    bootstrap: async (provider) => (await provisionMemberVm(provider)).bootstrap,
+    vmSizes: memberVmSettings,
+  });
+  const issueVmProviderOn = (provider: IssueVmProvider) => {
+    if (provider === "host" || options?.issueVmDrivers !== undefined) return true;
+    if (provider === "exe-dev" || memberVmSettings()?.offProviders?.includes(provider))
+      return false;
+    try {
+      return readVmProviderToken(paths.home, provider) !== null;
+    } catch (caughtError) {
+      journalCaught(caughtError, "index.issueVmProviderOn", null);
+      return false;
+    }
+  };
+  const issueVmProviders = () =>
+    (Object.keys(issueVmDrivers) as IssueVmProvider[]).filter(issueVmProviderOn);
   const MEMBER_VM_STOP_WAIT_MS = 15_000;
   const provisionMemberVm = createMemberVmProvisioning({
     readToken: exeDevToken,
@@ -2146,7 +2167,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                   workspaceId: scope.workspaceId,
                   memberUserId: scope.ownerUserId,
                   itemId,
-                  providers: issueVmProviders,
+                  providers: issueVmProviders(),
                   now,
                 });
               },

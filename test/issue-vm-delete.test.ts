@@ -236,7 +236,7 @@ test("a provider 404 for the VM id Paws holds counts as deleted", async () => {
   const driver = createBoatIssueVmDriver(boat, {
     store: db,
     getVm: () => Promise.reject(new Error("not used")),
-    snapshot: "paws-base",
+    snapshot: () => "paws-base",
     vmSizes: () => undefined,
     mintToken: () => Promise.reject(new Error("not used")),
   });

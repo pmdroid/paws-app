@@ -90,7 +90,11 @@ describePglite((connect) => {
     const db = await connected(connect);
     const response = await call(db, "GET");
     expect(response?.status).toBe(200);
-    const body = { monthlyLimitUsd: 50, prices: { boat: null, instabox: null } };
+    const body = {
+      monthlyLimitUsd: 50,
+      prices: { boat: null, instabox: null },
+      snapshots: { boat: null, instabox: null },
+    };
     expect(await response!.json()).toEqual({ ...body, month: "2026-11", spentUsd: 0 });
     const message = "No hourly price is set for boat issue VMs";
     const refused = { ok: false, reason: "no_price", provider: "boat", message } as const;
@@ -161,6 +165,10 @@ describePglite((connect) => {
       { prices: { boat: "1" } },
       { prices: { "exe-dev": 1 } },
       { prices: { boat: null } },
+      { snapshots: { boat: "has space" } },
+      { snapshots: { instabox: "paws.base" } },
+      { snapshots: { "exe-dev": "paws-base" } },
+      { snapshots: "paws-base" },
       {},
     ])
       expect((await call(db, "PUT", { body }))?.status).toBe(400);
@@ -176,6 +184,15 @@ describePglite((connect) => {
       monthlyLimitUsd: 20,
       prices: { boat: 3, instabox: 1 },
     });
+    const named = await call(db, "PUT", {
+      body: { snapshots: { boat: " paws.base ", instabox: "snap_paws" } },
+    });
+    expect(await named!.json()).toMatchObject({
+      prices: { boat: 3, instabox: 1 },
+      snapshots: { boat: "paws.base", instabox: "snap_paws" },
+    });
+    const cleared = await call(db, "PUT", { body: { snapshots: { boat: "", instabox: null } } });
+    expect(await cleared!.json()).toMatchObject({ snapshots: { boat: null, instabox: null } });
   });
 
   test("an awake interval keeps the price it started with", async () => {

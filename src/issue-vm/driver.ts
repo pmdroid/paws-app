@@ -21,7 +21,7 @@ export type ProviderIssueVms = {
 export type IssueVmDriverOptions = {
   store: Db;
   getVm(name: string): Promise<ProviderVm>;
-  snapshot: string;
+  snapshot: (id: string) => string | Promise<string>;
   vmSizes: () => VmSizes | undefined;
   mintToken: (id: string) => Promise<string>;
 };
@@ -38,7 +38,7 @@ export function createProviderIssueVmDriver(
       const runner = await vms.create({
         name: issueVmName(id),
         key: `paws-issue-vm-${id}`,
-        snapshot: options.snapshot,
+        snapshot: await options.snapshot(id),
         size: vmSizeFor(options.vmSizes(), provider),
         mintToken: () => options.mintToken(id),
       });

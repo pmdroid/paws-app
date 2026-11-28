@@ -49,6 +49,7 @@ export type {
 export { createBoatIssueVmDriver } from "./boat";
 export { createInstaBoxIssueVmDriver } from "./instabox";
 export { createHostIssueVmDriver } from "./host";
+export { issueVmProviderVmId } from "./cloud";
 export type { HostIssueVmDriverOptions } from "./host";
 export { issueVmName } from "./driver";
 export type { IssueVmDriverOptions } from "./driver";

@@ -453,6 +453,8 @@ export type IssueVmSpendSettings = {
   monthlyLimitUsd: number;
   boatHourlyUsd: number | null;
   instaboxHourlyUsd: number | null;
+  boatSnapshot: string | null;
+  instaboxSnapshot: string | null;
 };
 
 export function* issueVmSpendSettingsSteps(q: Q, workspaceId: string) {
@@ -483,6 +485,19 @@ export function* saveIssueVmSpendSettingsSteps(
 export function* setIssueVmRunnerSteps(q: Q, input: { id: string; runnerId: string }) {
   const { issueVm: v } = q.t;
   yield* q.exec(q.orm.update(v).set({ runnerId: input.runnerId }).where(eq(v.id, input.id)));
+}
+
+export function* setIssueVmProviderIdSteps(q: Q, input: { id: string; providerVmId: string }) {
+  const { issueVm: v } = q.t;
+  yield* q.exec(
+    q.orm.update(v).set({ providerVmId: input.providerVmId }).where(eq(v.id, input.id)),
+  );
+}
+
+export function* issueVmProviderIdSteps(q: Q, id: string) {
+  const { issueVm: v } = q.t;
+  const row = yield* q.one(q.orm.select({ id: v.providerVmId }).from(v).where(eq(v.id, id)));
+  return row?.id ?? null;
 }
 
 export function* undeletedFailedIssueVmsSteps(q: Q) {

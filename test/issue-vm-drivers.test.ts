@@ -83,7 +83,7 @@ function boatSubject(store: Db): Subject {
   const driver = createBoatIssueVmDriver(vms, {
     store,
     getVm: (name) => boat.getVm(name),
-    snapshot: "paws-issue-vm",
+    snapshot: () => "paws-issue-vm",
     vmSizes: () => SIZES,
     mintToken: async (id) => `token-${id}`,
   });
@@ -109,7 +109,7 @@ function instaBoxSubject(store: Db): Subject {
   const driver = createInstaBoxIssueVmDriver(vms, {
     store,
     getVm: (name) => instaBox.getVm(name),
-    snapshot: "snap_paws-issue-vm",
+    snapshot: () => "snap_paws-issue-vm",
     vmSizes: () => SIZES,
     mintToken: async (id) => `token-${id}`,
   });

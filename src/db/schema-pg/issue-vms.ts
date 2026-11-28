@@ -44,6 +44,7 @@ export const issueVm = pgTable(
     sleepRefusal: text("sleep_refusal"),
     sleepRefusedAt: bigint("sleep_refused_at", { mode: "number" }),
     tokenMintedAt: bigint("token_minted_at", { mode: "number" }),
+    providerVmId: text("provider_vm_id"),
   },
   (table) => [
     uniqueIndex("issue_vm_item_live")
@@ -110,6 +111,8 @@ export const issueVmSpend = pgTable("issue_vm_spend", {
   monthlyLimitUsd: doublePrecision("monthly_limit_usd").notNull(),
   boatHourlyUsd: doublePrecision("boat_hourly_usd"),
   instaboxHourlyUsd: doublePrecision("instabox_hourly_usd"),
+  boatSnapshot: text("boat_snapshot"),
+  instaboxSnapshot: text("instabox_snapshot"),
   updatedBy: text("updated_by").references(() => workspaceUser.id),
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
 });
