@@ -1,9 +1,13 @@
 import {
   alertFactsSteps,
+  closeoutTestFailuresSteps,
+  closeoutTestPassesSteps,
   inboxBacklogSteps,
   metricMinutesSteps,
   orphanedBlockerFactsSteps,
   type AlertJobRow,
+  type CloseoutTestFailureRow,
+  type CloseoutTestPass,
   type Db,
   type OrphanedBlockerRow,
 } from "../db";
@@ -24,6 +28,8 @@ export const IDLE_WINDOW_MS = 30 * MINUTE_MS;
 export const INTAKE_BACKLOG_WARNING_MS = 10 * MINUTE_MS;
 export const INTAKE_BACKLOG_CRITICAL_MS = 30 * MINUTE_MS;
 export const ORPHANED_BLOCKER_MS = 30 * MINUTE_MS;
+export const SHARED_FAILURE_ITEMS = 2;
+export const SHARED_FAILURE_WINDOW_MS = 24 * 60 * MINUTE_MS;
 
 export type AlertSeverity = "critical" | "warning" | "info";
 
@@ -177,6 +183,72 @@ export function orphanedBlockers(rows: readonly OrphanedBlockerRow[], now: numbe
   });
 }
 
+const PROOF_FAIL = /^FAIL ([\w.-]+):/gm;
+
+function failingTests(row: CloseoutTestFailureRow): { file: string; name: string }[] {
+  const tests = row.failedTests.flatMap((t) =>
+    t.file ? [{ file: t.file, name: t.name ?? "" }] : [],
+  );
+  if (tests.length > 0) return tests;
+  return [...row.output.matchAll(PROOF_FAIL)].map((match) => ({
+    file: `test/proofs/${match[1]}.ts`,
+    name: "",
+  }));
+}
+
+function sharedFailureNeedle(file: string): string {
+  const proof = /^test\/proofs\/(.+)\.ts$/.exec(file);
+  return proof ? `PASS ${proof[1]} (` : file;
+}
+
+type FailureGroup = { file: string; name: string; items: Map<string, number>; bases: Set<string> };
+
+function failureGroups(rows: readonly CloseoutTestFailureRow[], now: number): FailureGroup[] {
+  const groups = new Map<string, FailureGroup>();
+  for (const row of rows) {
+    if (now - row.at > SHARED_FAILURE_WINDOW_MS) continue;
+    for (const test of failingTests(row)) {
+      if (row.changedPaths?.includes(test.file)) continue;
+      const key = JSON.stringify([test.file, test.name]);
+      const group = groups.get(key) ?? { ...test, items: new Map(), bases: new Set() };
+      group.items.set(row.identifier, Math.max(group.items.get(row.identifier) ?? 0, row.at));
+      group.bases.add(row.base);
+      groups.set(key, group);
+    }
+  }
+  return [...groups.values()].filter((group) => group.items.size >= SHARED_FAILURE_ITEMS);
+}
+
+export function sharedCheckFailures(
+  rows: readonly CloseoutTestFailureRow[],
+  passes: readonly CloseoutTestPass[],
+  now: number,
+): Alert[] {
+  const alerts: Alert[] = [];
+  for (const { file, name, items, bases } of failureGroups(rows, now)) {
+    const last = Math.max(...items.values());
+    if (passes.some((pass) => pass.file === file && pass.at > last && !bases.has(pass.base)))
+      continue;
+    const ordered = [...items].sort((a, b) => b[1] - a[1]).map(([identifier]) => identifier);
+    const listed = ordered.slice(0, 5);
+    const more = ordered.length - listed.length;
+    const named =
+      more > 0
+        ? `${listed.join(", ")} and ${more} more`
+        : `${listed.slice(0, -1).join(", ")} and ${listed.at(-1)}`;
+    const test = name === "" ? `\`${file}\`` : `\`${file}\` "${name}"`;
+    alerts.push({
+      id: `shared_check_failure:${file}:${name}`,
+      severity: "warning",
+      title: `${test} fails Closeout for ${named}: likely broken on main, fix it in its own issue`,
+      detail: `${test} failed Closeout for ${items.size} items in the last ${SHARED_FAILURE_WINDOW_MS / (60 * MINUTE_MS)} hours, and none of them changed ${file}.`,
+      since: Math.min(...items.values()),
+      count: items.size,
+    });
+  }
+  return alerts;
+}
+
 export async function readAlerts(
   db: Db,
   now = Date.now(),
@@ -195,6 +267,17 @@ export async function readAlerts(
   );
   const backlog = await db.run((q) => inboxBacklogSteps(q, now));
   const orphans = await db.run((q) => orphanedBlockerFactsSteps(q));
+  const failures = await db.run((q) =>
+    closeoutTestFailuresSteps(q, now - SHARED_FAILURE_WINDOW_MS),
+  );
+  const files = new Set(failureGroups(failures, now).map((group) => group.file));
+  const passes = await db.run((q) =>
+    closeoutTestPassesSteps(
+      q,
+      now - SHARED_FAILURE_WINDOW_MS,
+      [...files].map((file) => ({ file, needle: sharedFailureNeedle(file) })),
+    ),
+  );
   return [
     ...runnerHttp4xx(metrics),
     ...repeatedFailures(facts.jobs),
@@ -203,6 +286,7 @@ export async function readAlerts(
     ...idleCapacity(facts, now),
     ...intakeBacklog(backlog, now),
     ...orphanedBlockers(orphans, now),
+    ...sharedCheckFailures(failures, passes, now),
     ...(deployLag ? await deployLagAlerts(deployLag, now) : []),
   ].sort((a, b) => b.since - a.since);
 }

@@ -1,4 +1,18 @@
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, max, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  like,
+  max,
+  or,
+  sql,
+} from "drizzle-orm";
+import type { CloseoutFailedTests } from "./closeout-progress";
 import { type Q, type Steps } from "./db";
 import { jsonItemId } from "./jobs";
 import { jsonText } from "./json-text";
@@ -82,6 +96,83 @@ export function* alertFactsSteps(q: Q, now: number, since: AlertWindows) {
     lastQueuedAt: (lastQueued?.at ?? null) === null ? null : Number(lastQueued!.at),
     freeSlots,
   };
+}
+
+export type CloseoutTestFailureRow = {
+  identifier: string;
+  base: string;
+  at: number;
+  failedTests: { file?: string; name?: string }[];
+  output: string;
+  changedPaths: string[] | null;
+};
+
+export function* closeoutTestFailuresSteps(q: Q, since: number): Steps<CloseoutTestFailureRow[]> {
+  const { candidateRisk, closeoutProgress, closeoutStep, workItem } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        identifier: workItem.linearIdentifier,
+        base: closeoutProgress.base,
+        at: closeoutStep.finishedAt,
+        failedTests: jsonText(q, closeoutStep.failedTests),
+        output: sql<string>`case when ${closeoutStep.failedTests} is null then ${closeoutStep.stderr} else '' end`,
+        changedPaths: jsonText(q, candidateRisk.changedPaths),
+      })
+      .from(closeoutStep)
+      .innerJoin(closeoutProgress, eq(closeoutProgress.id, closeoutStep.progressId))
+      .innerJoin(workItem, eq(workItem.id, closeoutProgress.itemId))
+      .leftJoin(
+        candidateRisk,
+        and(
+          eq(candidateRisk.itemId, closeoutProgress.itemId),
+          eq(candidateRisk.headSha, closeoutProgress.head),
+        ),
+      )
+      .where(
+        and(
+          inArray(closeoutStep.state, ["failed", "exhausted"]),
+          gte(closeoutStep.finishedAt, since),
+          or(isNotNull(closeoutStep.failedTests), like(closeoutStep.stderr, "%FAIL %:%")),
+        ),
+      ),
+  );
+  return rows.map((row) => ({
+    ...row,
+    at: Number(row.at),
+    failedTests:
+      (JSON.parse(row.failedTests ?? "{}") as Pick<CloseoutFailedTests, "shown">).shown ?? [],
+    changedPaths: JSON.parse(row.changedPaths ?? "null") as string[] | null,
+  }));
+}
+
+export type CloseoutTestPass = { file: string; base: string; at: number };
+
+export function* closeoutTestPassesSteps(
+  q: Q,
+  since: number,
+  needles: readonly { file: string; needle: string }[],
+): Steps<CloseoutTestPass[]> {
+  const { closeoutProgress, closeoutStep } = q.t;
+  const passes: CloseoutTestPass[] = [];
+  for (const { file, needle } of needles) {
+    const pattern = `%${needle.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    for (const row of yield* q.all(
+      q.orm
+        .select({ base: closeoutProgress.base, at: closeoutStep.finishedAt })
+        .from(closeoutStep)
+        .innerJoin(closeoutProgress, eq(closeoutProgress.id, closeoutStep.progressId))
+        .where(
+          and(
+            eq(closeoutStep.state, "passed"),
+            gte(closeoutStep.finishedAt, since),
+            or(like(closeoutStep.stdout, pattern), like(closeoutStep.stderr, pattern)),
+          ),
+        ),
+    ))
+      passes.push({ file, base: row.base, at: Number(row.at) });
+  }
+  return passes;
 }
 
 export type OrphanedBlockerRow = {

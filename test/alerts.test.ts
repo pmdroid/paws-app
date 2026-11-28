@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { orphanedBlockers, readAlerts } from "../src/alerts";
+import { orphanedBlockers, readAlerts, sharedCheckFailures } from "../src/alerts";
 import { insertInboxEvent, insertMetricMinutesSteps, type Db, type Q } from "../src/db";
 import { seed, withoutForeignKeys } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
@@ -333,4 +333,121 @@ test("readAlerts raises orphaned_blocker only while the blocker's latest item is
     await blockedBy(db, state as string);
     expect(await ids(db)).toEqual(expected as string[]);
   }
+});
+
+const BUDGET_TEST = { file: "test/linear-lifecycle-budget.test.ts", name: "spends the budget" };
+const SHARED_ID = `shared_check_failure:${BUDGET_TEST.file}:${BUDGET_TEST.name}`;
+
+function failure(identifier: string, minutesAgo: number, extra: Record<string, unknown> = {}) {
+  return {
+    identifier,
+    base: "base-1",
+    at: NOW - minutesAgo * MINUTE,
+    failedTests: [BUDGET_TEST],
+    output: "",
+    changedPaths: ["src/loop/budget.ts"],
+    ...extra,
+  };
+}
+
+test("shared_check_failure fires once when two items fail the same unchanged test within 24 hours", () => {
+  const alerts = sharedCheckFailures([failure("PAS-2717", 90), failure("PAS-2646", 30)], [], NOW);
+  expect(alerts).toEqual([
+    expect.objectContaining({
+      id: SHARED_ID,
+      severity: "warning",
+      title: `\`${BUDGET_TEST.file}\` "spends the budget" fails Closeout for PAS-2646 and PAS-2717: likely broken on main, fix it in its own issue`,
+      count: 2,
+      since: NOW - 90 * MINUTE,
+    }),
+  ]);
+  const stale = [failure("PAS-2717", 25 * 60), failure("PAS-2646", 30)];
+  expect(sharedCheckFailures(stale, [], NOW)).toEqual([]);
+});
+
+test("shared_check_failure needs two items and skips an item that changed the test file", () => {
+  const one = [failure("PAS-2717", 90), failure("PAS-2717", 30)];
+  expect(sharedCheckFailures(one, [], NOW)).toEqual([]);
+  const changed = failure("PAS-2646", 30, { changedPaths: [BUDGET_TEST.file] });
+  expect(sharedCheckFailures([failure("PAS-2717", 90), changed], [], NOW)).toEqual([]);
+});
+
+test("shared_check_failure clears after a later pass on a newer base", () => {
+  const rows = [failure("PAS-2717", 90), failure("PAS-2646", 30)];
+  const pass = (base: string, ago: number) => ({
+    file: BUDGET_TEST.file,
+    base,
+    at: NOW - ago * MINUTE,
+  });
+  expect(sharedCheckFailures(rows, [pass("base-2", 10)], NOW)).toEqual([]);
+  expect(sharedCheckFailures(rows, [pass("base-1", 10), pass("base-2", 60)], NOW)).toHaveLength(1);
+});
+
+test("shared_check_failure reads proof FAIL lines as the scenario file and lists at most 5 items", () => {
+  const proof = (identifier: string, minutesAgo: number) =>
+    failure(identifier, minutesAgo, {
+      failedTests: [],
+      output:
+        "PASS other (/tmp/x)\nFAIL candidate-ref-restoration: the scenario stopped before its result\nFAIL agent-interrupted\n",
+    });
+  const rows = [1, 2, 3, 4, 5, 6, 7].map((n) => proof(`PAS-260${n}`, n));
+  expect(sharedCheckFailures(rows, [], NOW).map((alert) => alert.title)).toEqual([
+    "`test/proofs/candidate-ref-restoration.ts` fails Closeout for PAS-2601, PAS-2602, PAS-2603, PAS-2604, PAS-2605 and 2 more: likely broken on main, fix it in its own issue",
+  ]);
+});
+
+type Step = { state: string; failedTests?: unknown; stdout?: string };
+
+async function closeoutRun(db: Db, id: string, base: string, ago: number, step: Step) {
+  const at = NOW - ago * MINUTE;
+  await seed(
+    db,
+    (q) =>
+      q.orm.insert(q.t.workItem).values({
+        id,
+        delegationId: "delegation",
+        linearIssueId: id,
+        linearIdentifier: id.toUpperCase(),
+        title: id,
+        state: "running",
+        branchName: `paws/${id}`,
+        position: 0,
+        createdAt: at,
+      }),
+    (q) =>
+      q.orm.insert(q.t.closeoutProgress).values({
+        id,
+        itemId: id,
+        taskId: id,
+        base,
+        head: `head-${id}`,
+        policyDigest: "digest",
+        startedAt: at,
+        updatedAt: at,
+      }),
+    (q) =>
+      q.orm.insert(q.t.closeoutStep).values({
+        progressId: id,
+        stepId: "test",
+        kind: "command",
+        command: "bun test",
+        attempt: 1,
+        ordinal: 0,
+        finishedAt: at,
+        ...step,
+      }),
+  );
+}
+
+test("readAlerts raises shared_check_failure from stored steps until a newer base passes", async () => {
+  const db = await store();
+  const failedTests = { total: 1, shown: [{ ...BUDGET_TEST, message: "boom", kind: "failed" }] };
+  await closeoutRun(db, "pas-2717", "base-1", 90, { state: "failed", failedTests });
+  await closeoutRun(db, "pas-2646", "base-1", 30, { state: "failed", failedTests });
+  expect(await ids(db)).toEqual([SHARED_ID]);
+  await closeoutRun(db, "pas-2730", "base-2", 10, {
+    state: "passed",
+    stdout: `${BUDGET_TEST.file}:\n(pass) spends the budget`,
+  });
+  expect(await ids(db)).toEqual([]);
 });
