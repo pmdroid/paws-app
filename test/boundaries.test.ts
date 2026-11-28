@@ -183,7 +183,6 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "vm-hosts",
     "metrics",
     "alerts",
-    "telemetry",
   ],
   settings: [
     "runner-placement",

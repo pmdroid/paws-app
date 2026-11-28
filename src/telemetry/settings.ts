@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { envSetting, envSettingRefusal, pawsPaths, type EnvSource } from "../config";
+import { pawsPaths } from "../config";
 import { readSecretFile, removeSecret, saveSecret, secretFileExists } from "../credentials";
 import { clearExportedAlertsSteps, readSetting, updateSetting, type Db } from "../db";
 import { journalCaught } from "../journal";
@@ -198,30 +198,5 @@ export const telemetryHeader = {
   async write(home: string, value: string): Promise<void> {
     if (value === "") await removeSecret(headerPath(home));
     else await saveSecret(headerPath(home), value);
-  },
-};
-
-const sdTokenPath = (home: string) => join(pawsPaths(home).secretsDir, "prometheus-sd-token");
-
-export const prometheusSdToken = {
-  read(home: string, env: EnvSource): string | null {
-    const set = envSetting(env, "telemetry", "prometheusToken");
-    if (set !== undefined) return set;
-    try {
-      return readSecretFile(sdTokenPath(home)) || null;
-    } catch (error) {
-      journalCaught(error, "telemetry.prometheusSdToken.read", null);
-      return null;
-    }
-  },
-  state(home: string, env: EnvSource): "environment" | "set" | "notSet" {
-    if (envSetting(env, "telemetry", "prometheusToken") !== undefined) return "environment";
-    return secretFileExists(sdTokenPath(home)) ? "set" : "notSet";
-  },
-  async write(home: string, env: EnvSource, value: string): Promise<void> {
-    const refusal = envSettingRefusal(env, "telemetry");
-    if (refusal !== null) throw new TelemetrySettingsError(refusal);
-    if (value === "") await removeSecret(sdTokenPath(home));
-    else await saveSecret(sdTokenPath(home), value);
   },
 };

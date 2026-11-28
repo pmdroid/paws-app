@@ -8,7 +8,6 @@ import {
   exists,
   getTableColumns,
   gt,
-  gte,
   inArray,
   isNull,
   lte,
@@ -1561,55 +1560,14 @@ export async function availableRunnerIdentity(
   return store.run((q) => availableRunnerIdentitySteps(q, runnerId));
 }
 
-export function* noteRunnerSeenSteps(
-  q: Q,
-  runnerId: string,
-  at: number,
-  metricsUrl?: string | null,
-): Steps<void> {
+export function* noteRunnerSeenSteps(q: Q, runnerId: string, at: number): Steps<void> {
   const { runner: r } = q.t;
   const before = yield* q.one(
     q.orm.select({ lastSeenAt: r.lastSeenAt }).from(r).where(eq(r.id, runnerId)),
   );
-  const metrics =
-    metricsUrl === undefined
-      ? {}
-      : { metricsUrl, metricsReportedAt: metricsUrl === null ? null : at };
-  yield* q.exec(
-    q.orm
-      .update(r)
-      .set({ lastSeenAt: at, ...metrics })
-      .where(eq(r.id, runnerId)),
-  );
+  yield* q.exec(q.orm.update(r).set({ lastSeenAt: at }).where(eq(r.id, runnerId)));
   if (before && (before.lastSeenAt === null || at - before.lastSeenAt >= 60_000))
     yield* enqueueRunnerSetupChecksSteps(q, at, { runnerId });
-}
-
-/** Runners that are not revoked and reported a metrics URL at or after `since`. */
-export async function runnerMetricsTargets(
-  store: Db,
-  since: number,
-): Promise<{ id: string; name: string; metricsUrl: string }[]> {
-  const rows = await store.run(function* (q) {
-    const { runner: r } = q.t;
-    return yield* q.all(
-      q.orm
-        .select({ id: r.id, name: r.name, metricsUrl: r.metricsUrl })
-        .from(r)
-        .where(
-          and(
-            ne(r.status, "revoked"),
-            isNull(r.revokedAt),
-            gte(r.lastSeenAt, since),
-            gte(r.metricsReportedAt, since),
-          ),
-        )
-        .orderBy(asc(r.id)),
-    );
-  });
-  return rows.flatMap((row) =>
-    row.metricsUrl === null ? [] : [{ ...row, metricsUrl: row.metricsUrl }],
-  );
 }
 
 export async function noteRunnerSeen(store: Db, runnerId: string, at: number): Promise<void> {

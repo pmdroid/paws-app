@@ -14,11 +14,7 @@ type Status = { error: string | null } & Record<
   "metrics" | "logs" | "traces",
   { lastExportAt: number | null; failuresLastHour: number }
 >;
-type View = Settings & {
-  headerValue: "set" | "notSet";
-  prometheusToken?: "environment" | "set" | "notSet";
-  status: Status;
-};
+type View = Settings & { headerValue: "set" | "notSet"; status: Status };
 
 const PROTOCOLS = [
   ["http/protobuf", "HTTP/protobuf"],
@@ -151,7 +147,6 @@ export function createTelemetrySettings() {
   let data: View | null = null;
   let draft: Settings | null = null;
   let headerValue = "";
-  let sdToken: string | undefined;
   let busy = false;
   let message = "";
   let error = false;
@@ -198,14 +193,6 @@ export function createTelemetrySettings() {
           <div class="row"><button class="btn" type="button" data-telemetry="check">Send test</button></div>
         </div>
         <div class="card col${dim}"><h3>What to export</h3>${signals}</div>
-        <div class="card col"><h3>Prometheus runner discovery</h3>
-          <p class="sub">Prometheus reads <span class="mono">/api/prometheus/runners</span> with this token as <span class="mono">Authorization: Bearer</span>. Without a token the route is off.</p>
-          ${
-            data.prometheusToken === "environment"
-              ? `<p class="sub" data-telemetry-sd-token>Set by environment variable <span class="mono">PAWS_PROMETHEUS_SD_TOKEN</span>; remove it from the service environment to edit here.</p>`
-              : `<div class="settings-field"><label for="telemetry-prometheusToken">Token</label><input id="telemetry-prometheusToken" name="prometheusToken" type="password" autocomplete="new-password" value="${esc(sdToken ?? "")}"${data.prometheusToken === "set" ? ' placeholder="Stored as a secret"' : ""}><small class="sub" data-telemetry-sd-token>${data.prometheusToken === "set" ? "Set. Leave empty to keep it." : "Not set"}</small></div>${data.prometheusToken === "set" ? `<div class="row"><button class="btn" type="button" data-telemetry="clear-token">Clear token</button></div>` : ""}`
-          }
-        </div>
         <div class="row sticky bottom-0 z-10 border-t border-border bg-background py-3"><button class="btn" type="button" data-telemetry="discard">Discard</button><button class="btn primary" type="submit">Save</button></div>
       </fieldset></form>`
           : ""
@@ -221,7 +208,6 @@ export function createTelemetrySettings() {
     )) {
       const name = input.name;
       if (name === "headerValue") headerValue = input.value;
-      else if (name === "prometheusToken") sdToken = input.value || undefined;
       else if ((TEXT as readonly string[]).includes(name))
         draft[name as (typeof TEXT)[number]] = input.value;
       else if (name === "protocol") {
@@ -246,7 +232,6 @@ export function createTelemetrySettings() {
       traces: view.traces,
     });
     headerValue = "";
-    sdToken = undefined;
   };
   const run = async (action: "reload" | "save" | "check") => {
     if (!engine || busy) return;
@@ -254,11 +239,7 @@ export function createTelemetrySettings() {
     const payload =
       action === "reload" || !draft
         ? undefined
-        : {
-            ...draft,
-            ...(headerValue ? { headerValue } : {}),
-            ...(action === "save" && sdToken !== undefined ? { prometheusToken: sdToken } : {}),
-          };
+        : { ...draft, ...(headerValue ? { headerValue } : {}) };
     busy = true;
     error = false;
     message =
@@ -328,11 +309,6 @@ export function createTelemetrySettings() {
       reset(data);
       message = "";
       paint();
-    }
-    if (action === "clear-token") {
-      read();
-      sdToken = "";
-      void run("save");
     }
     if (action === "check") {
       read();
