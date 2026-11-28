@@ -34,6 +34,7 @@ import { prepareCommentDelivery, type PullCommentFilter } from "./pull-comments"
 import { recordReviewDeliverySteps } from "./pull-reviews";
 import { worktreeBranch } from "./sources";
 import { outsidePushDelivery, outsidePushFollowUp, outsidePushSteps } from "./outside-push";
+import { resumeToolchainWaitsSteps, toolchainMerge } from "./toolchain-merged";
 
 export const MERGE_OWNER_POLL_MS = 5_000;
 
@@ -132,6 +133,10 @@ export async function acceptGitHubDelivery(
     const moved = mainMove(delivery.event, body);
     const swept = moved ? yield* mainMovedSteps(q, { ...moved, now }) : false;
     const outside = pushed ? yield* outsidePushSteps(q, pushed, appLogin, now) : null;
+    const toolchain = toolchainMerge(delivery.event, body);
+    const resumed = toolchain
+      ? yield* resumeToolchainWaitsSteps(q, store, toolchain, delivery.deliveryId, now)
+      : [];
     const facts = deliveryFacts(delivery.event, body);
     for (const job of yield* openMergeJobsSteps(q)) {
       const payload = payloadRecord(JSON.parse(job.payload));
@@ -147,7 +152,10 @@ export async function acceptGitHubDelivery(
             (item !== null && facts.branches.has(worktreeBranch(item)));
       if (matches) yield* nudgeJobRunAtSteps(q, job.id, now);
     }
-    return { ready: review.enqueued || comment?.enqueued === true || swept, outside };
+    return {
+      ready: review.enqueued || comment?.enqueued === true || swept || resumed.length > 0,
+      outside,
+    };
   });
   if (accepted === null) return false;
   if (accepted.ready) emitJobReady(store);
