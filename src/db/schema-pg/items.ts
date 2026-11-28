@@ -550,3 +550,11 @@ export const itemBlockerCheck = pgTable("item_blocker_check", {
     .references(() => workItem.id, { onDelete: "cascade" }),
   checkedAt: bigint("checked_at", { mode: "number" }).notNull(),
 });
+
+export const runProfile = pgTable("run_profile", {
+  runId: text("run_id")
+    .primaryKey()
+    .references(() => run.id, { onDelete: "cascade" }),
+  record: jsonb().notNull(),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+});

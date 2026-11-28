@@ -290,6 +290,7 @@ import {
   acceptGitHubDelivery,
   type PullCommentFilter,
   attachOrchestrator,
+  moveRunProfileFiles,
   createLinearArtifactReader,
   itemPathId,
   repositoryAtPath,
@@ -2111,6 +2112,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         recurringEveryMs: SLACK_STATUS_EVERY_MS,
         now: Date.now(),
       });
+      await moveRunProfileFiles(store, paths.home);
       const attached = attachOrchestrator({
         store,
         instanceId: instance.id,

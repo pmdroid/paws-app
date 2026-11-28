@@ -22,13 +22,13 @@ import {
   applyWorkItemEvent,
   applyLinearCommandSteps,
   type Q,
+  saveRunProfileSteps,
 } from "../../src/db";
 import { closeStoppedPull, createFetchGitHubClient } from "../../src/github";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
 import { readyItemsSteps, syncItemDependencies } from "../../src/intake";
 import { Orchestrator, type OrchestratorOptions } from "../../src/loop";
 import { confirmFakeMergePg, workspaceAdmission } from "../fake-workspace";
-import { runDir } from "../../src/acp";
 import { guardGitHubPublication } from "../../src/loop/publication";
 import { tempStore } from "../pglite";
 
@@ -603,14 +603,11 @@ export async function probePublicationStop(
       wipCommit: "a".repeat(40),
       baseSha: "b".repeat(40),
     });
-    mkdirSync(runDir(root, ownedRun.id), { recursive: true });
-    writeFileSync(
-      join(runDir(root, ownedRun.id), "agent-profile.json"),
-      JSON.stringify({
-        candidate: { session: "producer", model: "scripted", provider: "fake" },
-        profiles: { implementer: { agent: "codex" }, reviewer: { agent: "codex" } },
-      }),
-    );
+    const profile = {
+      candidate: { session: "producer", model: "scripted", provider: "fake" },
+      profiles: { implementer: { agent: "codex" }, reviewer: { agent: "codex" } },
+    };
+    await db.run((q) => saveRunProfileSteps(q, ownedRun.id, profile, Date.now()));
     freshness = async (itemId) => !pendingEpics.has((await getWorkItem(db, itemId))!.delegationId);
     onToken = () => {
       onToken = undefined;

@@ -1,6 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { tempHome } from "./helpers";
 import { FakeClock } from "../src/core";
 import {
@@ -12,9 +11,11 @@ import {
   getWorkItem,
   type Db,
   type WorkItemRecord,
+  getRunProfileSteps,
+  saveRunProfileSteps,
 } from "../src/db";
 import { eq } from "drizzle-orm";
-import { runDir, type RunAgentOptions, type RunAgentResult } from "../src/acp";
+import { type RunAgentOptions, type RunAgentResult } from "../src/acp";
 import { useMemorySettings, writeAgentSettings } from "../src/config";
 import { readConfigText } from "./saved-settings";
 import { handleAgentSettingsRequest } from "../src/settings";
@@ -23,6 +24,15 @@ import { Orchestrator } from "../src/loop";
 import { answerQuestionSteps, findOpenQuestion } from "../src/questions";
 import { seed as seedRows, withoutForeignKeys } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
+
+type Snapshot = {
+  profiles: { implementer: { agent?: string; model?: string }; labelProblems?: unknown };
+  profileLabels?: unknown;
+  settingsSwitch?: unknown;
+  candidate?: unknown;
+};
+
+const profileOf = (db: Db, runId: string) => db.run((q) => getRunProfileSteps<Snapshot>(q, runId));
 
 const oldProfiles = {
   implementer: { agent: "claude", model: "old" },
@@ -107,11 +117,12 @@ async function fixture() {
     const queued = await insertQueuedItem(db, { id: `item-${++n}`, now: 1000 });
     const { item, run } = await beginImplementRun(db, queued.id, 1000);
     await setItem(db, item.id, { state });
-    const file = join(runDir(root, run.id), "agent-profile.json");
-    mkdirSync(runDir(root, run.id), { recursive: true });
     const candidate = { session: "prior", model: "old", provider: "anthropic" };
-    if (snapshot) writeFileSync(file, JSON.stringify({ profiles: oldProfiles, candidate }));
-    return { item, run, file, candidate };
+    if (snapshot)
+      await db.run((q) =>
+        saveRunProfileSteps(q, run.id, { profiles: oldProfiles, candidate }, 1000),
+      );
+    return { item, run, candidate };
   };
   const save = (applyToWaiting?: boolean) =>
     handleAgentSettingsRequest(
@@ -135,10 +146,10 @@ async function fixture() {
 test("saving without the toggle leaves all snapshots byte-for-byte unchanged", async () => {
   const f = await fixture();
   const waiting = await f.seed("awaiting_input");
-  const before = readFileSync(waiting.file, "utf8");
+  const before = await profileOf(f.db, waiting.run.id);
   for (const apply of [undefined, false]) {
     expect((await f.save(apply))!.status).toBe(200);
-    expect(readFileSync(waiting.file, "utf8")).toBe(before);
+    expect(await profileOf(f.db, waiting.run.id)).toEqual(before);
   }
 });
 
@@ -159,20 +170,19 @@ test("only unfinished runs without live work leases change; queued items still r
     await leaseRun(f.db, entry.run.id, entry.run.id, lease, end);
   const untouched = [executing];
   for (const s of ["completed", "merged", "cancelled", "queued"]) untouched.push(await f.seed(s));
-  const original = untouched.map((entry) => readFileSync(entry.file, "utf8"));
+  const original = await Promise.all(untouched.map((entry) => profileOf(f.db, entry.run.id)));
   const queued = await insertQueuedItem(f.db, { id: "not-started" });
   const noSnapshot = await f.seed("recovering", false);
   const response = await f.save(true);
   expect(await response!.json()).toMatchObject({ waitingRuns: 7 });
   for (const entry of [...waiting, expired, ended])
-    expect(JSON.parse(readFileSync(entry.file, "utf8"))).toMatchObject({
+    expect(await profileOf(f.db, entry.run.id)).toMatchObject({
       profiles,
       candidate: entry.candidate,
     });
-  untouched.forEach((entry, index) =>
-    expect(readFileSync(entry.file, "utf8")).toBe(original[index]!),
-  );
-  expect(existsSync(noSnapshot.file)).toBe(false);
+  for (const [index, entry] of untouched.entries())
+    expect(await profileOf(f.db, entry.run.id)).toEqual(original[index] ?? null);
+  expect(await profileOf(f.db, noSnapshot.run.id)).toBeNull();
   expect((await getWorkItem(f.db, queued.id))!.currentRunId).toBeNull();
   const internals = f.orchestrator as unknown as {
     ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
@@ -225,8 +235,8 @@ test("a retry resolves profiles from Settings, not the previous run's snapshot",
   const next = await internals.ensureRun((await getWorkItem(f.db, failed.item.id))!);
   expect(next.id).not.toBe(failed.run.id);
   expect((await getWorkItem(f.db, failed.item.id))!.currentRunId).toBe(next.id);
-  expect(internals.readProfileSnapshot(next.id)).toEqual({ profiles });
-  expect(JSON.parse(readFileSync(failed.file, "utf8"))).toEqual({
+  expect(await internals.readProfileSnapshot(next.id)).toEqual({ profiles });
+  expect(await profileOf(f.db, failed.run.id)).toEqual({
     profiles: oldProfiles,
     candidate: failed.candidate,
   });
@@ -240,17 +250,20 @@ test("a pending agent switch announcement carries to a retry's new run", async (
     ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
     readProfileSnapshot(id: string): { profiles?: unknown; settingsSwitch?: unknown } | null;
   };
-  const pending = internals.readProfileSnapshot(waiting.run.id)!.settingsSwitch;
+  const pending = (await internals.readProfileSnapshot(waiting.run.id))!.settingsSwitch;
   expect(pending).toMatchObject({ previousAgent: "claude" });
   await setRun(f.db, waiting.run.id, "lost");
   await setItem(f.db, waiting.item.id, { state: "running" });
   const next = await internals.ensureRun((await getWorkItem(f.db, waiting.item.id))!);
-  expect(internals.readProfileSnapshot(next.id)).toEqual({ profiles, settingsSwitch: pending });
+  expect(await internals.readProfileSnapshot(next.id)).toEqual({
+    profiles,
+    settingsSwitch: pending,
+  });
   // Settings moved back to the original agent: there is no switch left to announce.
   await writeAgentSettings(f.root, { defaults: oldProfiles });
   await setRun(f.db, next.id, "lost");
   const back = await internals.ensureRun((await getWorkItem(f.db, waiting.item.id))!);
-  expect(internals.readProfileSnapshot(back.id)).toEqual({ profiles: oldProfiles });
+  expect(await internals.readProfileSnapshot(back.id)).toEqual({ profiles: oldProfiles });
 });
 
 test("model-only changes preserve candidate and do not announce an agent switch", async () => {
@@ -260,7 +273,7 @@ test("model-only changes preserve candidate and do not announce an agent switch"
     defaults: { ...oldProfiles, implementer: { agent: "claude", model: "new" } },
   });
   expect(await f.orchestrator.applyAgentSettingsToWaiting()).toBe(1);
-  expect(JSON.parse(readFileSync(waiting.file, "utf8"))).toEqual({
+  expect(await profileOf(f.db, waiting.run.id)).toEqual({
     profiles: { ...oldProfiles, implementer: { agent: "claude", model: "new" } },
     candidate: waiting.candidate,
   });
@@ -324,7 +337,7 @@ test.each([false, true])(
       profile: oldProfiles.implementer,
     });
     expect(f.calls.map((call) => call.profile)).toEqual([profiles.implementer]);
-    expect(JSON.parse(readFileSync(waiting.file, "utf8"))).toMatchObject({
+    expect(await profileOf(f.db, waiting.run.id)).toMatchObject({
       profiles,
       candidate: waiting.candidate,
     });
@@ -341,7 +354,7 @@ test("automatic reconciliation waits for a live runner lease to end", async () =
     ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
   };
   await internals.ensureRun((await getWorkItem(f.db, waiting.item.id))!);
-  expect(JSON.parse(readFileSync(waiting.file, "utf8")).profiles).toEqual(oldProfiles);
+  expect((await profileOf(f.db, waiting.run.id))!.profiles).toEqual(oldProfiles);
   await seedRows(f.db, (q) =>
     q.orm
       .update(q.t.runnerWork)
@@ -349,7 +362,7 @@ test("automatic reconciliation waits for a live runner lease to end", async () =
       .where(eq(q.t.runnerWork.runId, waiting.run.id)),
   );
   await internals.ensureRun((await getWorkItem(f.db, waiting.item.id))!);
-  expect(JSON.parse(readFileSync(waiting.file, "utf8")).profiles).toEqual(profiles);
+  expect((await profileOf(f.db, waiting.run.id))!.profiles).toEqual(profiles);
 });
 
 test("a retired account order in saved settings changes no waiting run and reaches no runner", async () => {
@@ -357,14 +370,14 @@ test("a retired account order in saved settings changes no waiting run and reach
   const config = f.root;
   await writeAgentSettings(config, { defaults: oldProfiles });
   const waiting = await f.seed("paused");
-  const before = readFileSync(waiting.file, "utf8");
+  const before = await profileOf(f.db, waiting.run.id);
   const retired = useMemorySettings(
     config,
     `${readConfigText(config)}\n[agents.defaults.accounts]\nimplementer = ["01J0000000000000000000000A"]\nreviewer = ["01J0000000000000000000000X"]\n`,
   );
   cleanups.push(async () => retired.release());
   expect(await f.orchestrator.applyAgentSettingsToWaiting()).toBe(0);
-  expect(readFileSync(waiting.file, "utf8")).toBe(before);
+  expect(await profileOf(f.db, waiting.run.id)).toEqual(before);
   const internal = f.orchestrator as unknown as {
     remoteAgentForItem(id: string): (input: RunAgentOptions) => Promise<RunAgentResult>;
   };
@@ -407,25 +420,24 @@ test("Acme labels change only the next run and a failed Linear read retains its 
       projectLabels: [],
       profileLabels: { implementer },
     });
-  const snapshot = (id: string) =>
-    JSON.parse(readFileSync(join(runDir(f.root, id), "agent-profile.json"), "utf8"));
+  const snapshot = async (id: string) => (await profileOf(f.db, id)) as Snapshot;
   await setRun(f.db, failed.run.id, "lost");
   await labels("Opus");
   const opus = await internals.ensureRun(await item());
-  expect(snapshot(opus.id).profiles.implementer.model).toBe("opus");
+  expect((await snapshot(opus.id)).profiles.implementer.model).toBe("opus");
   await labels("Codex");
   expect((await internals.ensureRun(await item())).id).toBe(opus.id);
-  expect(snapshot(opus.id).profiles.implementer.model).toBe("opus");
+  expect((await snapshot(opus.id)).profiles.implementer.model).toBe("opus");
   await setRun(f.db, opus.id, "lost");
   const codex = await internals.ensureRun(await item());
-  expect(snapshot(codex.id).profiles.implementer.model).toBe("acme-codex");
+  expect((await snapshot(codex.id)).profiles.implementer.model).toBe("acme-codex");
   f.tracker.issueRepositoryHints = async () => {
     throw new Error("Linear offline");
   };
   await setRun(f.db, codex.id, "lost");
   const fallback = await internals.ensureRun(await item());
-  expect(snapshot(fallback.id).profileLabels).toEqual({ implementer: "Codex" });
-  expect(snapshot(fallback.id).profiles.implementer.model).toBe("acme-codex");
+  expect((await snapshot(fallback.id)).profileLabels).toEqual({ implementer: "Codex" });
+  expect((await snapshot(fallback.id)).profiles.implementer.model).toBe("acme-codex");
   expect(f.journal.filter((line) => line.includes("readProfileLabels"))).toHaveLength(1);
 });
 
@@ -466,8 +478,7 @@ async function labelled() {
       projectLabels: [],
       profileLabels,
     });
-  const snapshot = (id: string) =>
-    JSON.parse(readFileSync(join(runDir(f.root, id), "agent-profile.json"), "utf8"));
+  const snapshot = async (id: string) => (await profileOf(f.db, id)) as Snapshot;
   const bodies = async () =>
     (await listOutbox(f.db)).map((row) => (row.payload as { body?: string }).body ?? "");
   const lose = (id: string) => setRun(f.db, id, "lost");
@@ -478,8 +489,8 @@ test("an Implementer label starts the run with its preset and names the source o
   const f = await labelled();
   await f.label({ implementer: "Opus" });
   const run = await f.gate.ensureRun(await f.item());
-  expect(f.snapshot(run.id).profiles.implementer).toEqual(presets.Opus.implementer);
-  expect(f.snapshot(run.id).profiles.labelProblems).toBeUndefined();
+  expect((await f.snapshot(run.id)).profiles.implementer).toEqual(presets.Opus.implementer);
+  expect((await f.snapshot(run.id)).profiles.labelProblems).toBeUndefined();
   expect(await f.gate.checkProfileLabels(await f.item(), run.id)).toBe(true);
   expect(await f.gate.checkProfileLabels(await f.item(), run.id)).toBe(true);
   expect((await f.bodies()).filter((body) => body === "Implementer: Opus (label)")).toHaveLength(1);
@@ -502,7 +513,7 @@ test("a label that changes the agent is announced by the next run", async () => 
   await f.label({ implementer: "Codex" });
   await f.lose(opus.id);
   const codex = await f.gate.ensureRun(await f.item());
-  expect(f.snapshot(codex.id).settingsSwitch).toMatchObject({ previousAgent: "claude" });
+  expect((await f.snapshot(codex.id)).settingsSwitch).toMatchObject({ previousAgent: "claude" });
   await f.gate.remoteAgentForItem((await f.item()).id)({
     role: "implementer",
     runId: codex.id,
@@ -535,11 +546,11 @@ test("an unknown label asks, starts nothing, and Use the default holds for the i
   await answerQuestion(f.db, open.id, { answer: "Use the default", answeredBy: "acme-user" });
   await setItem(f.db, (await f.item()).id, { state: "running" });
   expect(await f.gate.checkProfileLabels(await f.item(), run.id)).toBe(true);
-  expect(f.snapshot(run.id).profiles.implementer).toEqual(oldProfiles.implementer);
+  expect((await f.snapshot(run.id)).profiles.implementer).toEqual(oldProfiles.implementer);
   await f.lose(run.id);
   const next = await f.gate.ensureRun(await f.item());
   expect(await f.gate.checkProfileLabels(await f.item(), next.id)).toBe(true);
-  expect(f.snapshot(next.id).profiles.implementer).toEqual(oldProfiles.implementer);
+  expect((await f.snapshot(next.id)).profiles.implementer).toEqual(oldProfiles.implementer);
 });
 
 test("I fixed the label reads the corrected label before the run goes on", async () => {
@@ -554,7 +565,7 @@ test("I fixed the label reads the corrected label before the run goes on", async
   await f.label({ implementer: "Opus" });
   await setItem(f.db, (await f.item()).id, { state: "running" });
   expect(await f.gate.checkProfileLabels(await f.item(), run.id)).toBe(true);
-  expect(f.snapshot(run.id).profiles.implementer).toEqual(presets.Opus.implementer);
+  expect((await f.snapshot(run.id)).profiles.implementer).toEqual(presets.Opus.implementer);
   expect(await f.bodies()).toContain("Implementer: Opus (label)");
 });
 
@@ -584,7 +595,7 @@ test("with no previous labels a failed Linear read uses none and journals once",
   };
   const run = await f.gate.ensureRun(await f.item());
   expect(await f.gate.checkProfileLabels(await f.item(), run.id)).toBe(true);
-  expect(f.snapshot(run.id).profiles.implementer).toEqual(oldProfiles.implementer);
+  expect((await f.snapshot(run.id)).profiles.implementer).toEqual(oldProfiles.implementer);
   expect(f.journal.filter((line) => line.includes("readProfileLabels"))).toHaveLength(1);
 });
 
@@ -593,7 +604,7 @@ test("without labels a new run saves the Settings profiles and asks nothing", as
   await f.label({});
   const run = await f.gate.ensureRun(await f.item());
   expect(await f.gate.checkProfileLabels(await f.item(), run.id)).toBe(true);
-  expect(f.snapshot(run.id).profiles).toEqual(oldProfiles);
+  expect((await f.snapshot(run.id)).profiles).toEqual(oldProfiles);
   expect(await findOpenQuestion(f.db, "acme-session")).toBeNull();
   expect((await f.bodies()).filter((body) => body.includes("(label)"))).toEqual([]);
 });
