@@ -32,6 +32,9 @@ import {
 } from "./blocker-policy";
 
 const RELEASE_LABEL = "needs runner release";
+const DEPLOY_LABEL = "needs deploy";
+
+export type RunningDeploy = (mergeSha: string, signal?: AbortSignal) => Promise<boolean | string>;
 
 export type RunnerReleases = (
   repository: string,
@@ -228,6 +231,7 @@ function* readItemBlockersSteps(q: Q, target: Target): Steps<string[]> {
   const saved = yield* snapshotSteps(q, target);
   if (!current || !saved) return [];
   const satisfied = blockerSatisfied(target, current, saved);
+  const evidence = JSON.parse(saved.externalEvidence) as Record<string, BlockerEvidence>;
   const identifiers = new Map<string, string>(JSON.parse(saved.linearIdentifiers));
   const siblings = new Map(current.siblings.map((entry) => [entry.linearIssueId, entry]));
   const unmet = new Map<string, Verdict>();
@@ -238,16 +242,18 @@ function* readItemBlockersSteps(q: Q, target: Target): Steps<string[]> {
   const named: string[] = [];
   for (const [id, verdict] of unmet)
     named.push(
-      (verdict === "release" ? "waiting for a runner release with " : "") +
-        (siblings.get(id)?.identifier ??
-          identifiers.get(id) ??
-          (yield* latestIssueIdentifierSteps(q, id)) ??
-          id),
+      verdict === "deploy"
+        ? evidence[id]!.reason
+        : (verdict === "release" ? "waiting for a runner release with " : "") +
+            (siblings.get(id)?.identifier ??
+              identifiers.get(id) ??
+              (yield* latestIssueIdentifierSteps(q, id)) ??
+              id),
     );
   return named;
 }
 
-type Verdict = "met" | "unmet" | "release";
+type Verdict = "met" | "unmet" | "release" | "deploy";
 
 function blockerSatisfied(
   target: Target,
@@ -258,6 +264,8 @@ function blockerSatisfied(
   const merged = blockerMerged(target, current, saved);
   return function* (q, id) {
     if (!(yield* merged(q, id))) return "unmet";
+    const deployed = evidence[id]?.deployed;
+    if (deployed !== undefined) return deployed ? "met" : "deploy";
     const release = evidence[id]?.release;
     if (release === undefined) return "met";
     return release !== null && (yield* itemRunnerOnReleaseSteps(q, target.itemId, release))
@@ -306,10 +314,20 @@ export async function syncItemDependencies(
     tracker: Pick<TrackerAdapter, "listDeps">;
     lifecycle: Pick<LinearIssueLifecycle, "inspect">;
     releases?: RunnerReleases;
+    deployed?: RunningDeploy;
     signal?: AbortSignal;
   },
 ): Promise<DependencyReadiness> {
-  const { itemId, workspaceId, expectedGeneration, tracker, lifecycle, releases, signal } = input;
+  const {
+    itemId,
+    workspaceId,
+    expectedGeneration,
+    tracker,
+    lifecycle,
+    releases,
+    deployed,
+    signal,
+  } = input;
   const target = { itemId, workspaceId };
   if (
     !Number.isSafeInteger(expectedGeneration) ||
@@ -350,15 +368,30 @@ export async function syncItemDependencies(
       throw new Error("Linear returned another dependency issue");
     states.set(id, issue.stateType);
     identifiers.set(id, issue.identifier ?? id);
-    if (
-      issue.stateType !== "canceled" &&
-      issue.labels?.some((label) => label.toLowerCase() === RELEASE_LABEL)
-    ) {
+    const labelled = (name: string) =>
+      issue.stateType !== "canceled" && issue.labels?.some((label) => label.toLowerCase() === name);
+    if (labelled(RELEASE_LABEL)) {
       const merge = await store.run((q) => blockerMergeSteps(q, target, initial, id));
       const release =
         merge && releases ? await releases(merge.repository, merge.mergeSha, signal) : null;
       const reason = `waiting for a runner release with ${identifiers.get(id)}`;
       evidence[id] = { satisfied: release !== null, reason, checkedAt: Date.now(), release };
+    } else if (labelled(DEPLOY_LABEL)) {
+      const merge = await store.run((q) => blockerMergeSteps(q, target, initial, id));
+      const found = !merge
+        ? "the merge commit is unknown"
+        : deployed
+          ? await deployed(merge.mergeSha, signal)
+          : "the running revision is unknown";
+      const reason =
+        `waiting for the ${identifiers.get(id)} fix to be deployed` +
+        (typeof found === "string" ? `; the deploy can't be checked: ${found}` : "");
+      evidence[id] = {
+        satisfied: found === true,
+        reason,
+        checkedAt: Date.now(),
+        deployed: found === true,
+      };
     }
   }
   signal?.throwIfAborted();

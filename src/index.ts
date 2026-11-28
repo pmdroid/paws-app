@@ -214,7 +214,7 @@ import {
   setGauge,
 } from "./metrics";
 import { doctorChecks, realProbe } from "./doctor";
-import { createDeployLagCheck, deployLagUnavailable } from "./alerts";
+import { createDeployLagCheck, deployLagUnavailable, runningDeployIncludes } from "./alerts";
 import { runInstallCli } from "./installer";
 import {
   createGitHubTokenProvider,
@@ -1743,7 +1743,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         accept: (delivery) => {
           if (delivery.event === "release")
             void reconciler
-              ?.onRelease(abort.signal)
+              ?.recheckBlocked(abort.signal)
               .catch((error) => journalCaught(error, "index.githubWebhook.release", null));
           return acceptGitHubDelivery(store, delivery, Date.now(), commentFilter, (itemId, body) =>
             orchestrator ? orchestrator.followUpRunningAgent(itemId, body) : false,
@@ -2478,6 +2478,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
               binding && githubBinding(authProvider(runtime, binding, "read", resolveApp));
             return binding && github ? { ...binding, ...github } : null;
           }),
+          deployed: (mergeSha) => runningDeployIncludes(deployLag, mergeSha),
           ...(parents ? { scopeSnapshot: parents.scopeSnapshot } : {}),
           onChanges: function* (q, changes) {
             for (const { itemId, issue } of changes.issues)
@@ -2491,6 +2492,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           },
           afterChanges: (changes) => attached.finishDelegationChanges(changes),
         });
+        void reconciler
+          .recheckBlocked(abort.signal)
+          .catch((error) => journalCaught(error, "index.reconciler.startupRecheck", null));
         publication = createPublicationReadiness({
           store,
           reconciler,

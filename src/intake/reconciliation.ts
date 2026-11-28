@@ -7,7 +7,12 @@ import type {
   LinearSubIssue,
   TrackerAdapter,
 } from "../linear";
-import { readyItemsSteps, syncItemDependencies, type RunnerReleases } from "./dependencies";
+import {
+  readyItemsSteps,
+  syncItemDependencies,
+  type RunnerReleases,
+  type RunningDeploy,
+} from "./dependencies";
 import { ulid } from "./ulid";
 import { snapshotProject } from "./project";
 import {
@@ -161,6 +166,7 @@ export function createItemReconciler(input: {
     signal?: AbortSignal,
   ) => Promise<EpicSnapshot>;
   releases?: RunnerReleases;
+  deployed?: RunningDeploy;
   now?: () => number;
 }) {
   const { store } = input;
@@ -332,6 +338,7 @@ export function createItemReconciler(input: {
           tracker,
           lifecycle,
           ...(input.releases ? { releases: input.releases } : {}),
+          ...(input.deployed ? { deployed: input.deployed } : {}),
           signal: target.signal,
         });
     }
@@ -541,7 +548,7 @@ export function createItemReconciler(input: {
     return (await relationItems("blocked")).map((item) => item.itemId);
   }
 
-  async function onRelease(signal?: AbortSignal): Promise<void> {
+  async function recheckBlocked(signal?: AbortSignal): Promise<void> {
     const targets = new Map<string, Target>();
     for (const item of await relationItems("blocked"))
       targets.set(item.delegationId, { itemId: item.itemId, workspaceId: item.workspaceId });
@@ -613,5 +620,5 @@ export function createItemReconciler(input: {
     return closing;
   }
 
-  return { reconcile, issueChanged, sweep, pollRelations, blockedItemIds, onRelease, close };
+  return { reconcile, issueChanged, sweep, pollRelations, blockedItemIds, recheckBlocked, close };
 }
