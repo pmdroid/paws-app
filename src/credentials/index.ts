@@ -10,7 +10,12 @@ export {
   decodeSecretEnvelope,
   envelopeSubkey,
 } from "./files";
-export { checkSecrets, secretFilesOnDisk, useDatabaseSecrets } from "./secret-table";
+export {
+  checkSecrets,
+  completeSecretStart,
+  secretFilesOnDisk,
+  useDatabaseSecrets,
+} from "./secret-table";
 export { clearCredentialRefreshSteps, refreshCredential } from "./refresh";
 export { loadSecretKey, storeSecretKeys } from "./key";
 export {

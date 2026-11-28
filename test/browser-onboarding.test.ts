@@ -780,6 +780,7 @@ test("a process without a Linear client starts in token-protected setup mode", a
     expect(setupUrl).toStartWith("https://localhost:8787/setup?token=");
     expect(readdirSync(join(paws.paths.home, "secrets"), { recursive: true }).sort()).toEqual([
       ".envelope-key",
+      ".last-start",
       "setup-token",
     ]);
     expect((await paws.server.fetch(new Request(setupUrl))).status).toBe(200);

@@ -5,7 +5,9 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import {
@@ -31,11 +33,14 @@ import { isOwnedSecretName, isPrunedSecretFolder } from "./names";
 const MAX_SECRET_BYTES = 1_048_576;
 const REFRESH_MS = 10_000;
 const unowned = new Set<string>();
+const RETIRED_KEEP_MS = 86_400_000;
+const START_MARKER = ".last-start";
+const keptRetired = new Map<string, string>();
 
 export async function useDatabaseSecrets(
   store: Db,
   dir: string,
-  options: { files?: readonly string[]; refreshMs?: number } = {},
+  options: { files?: readonly string[]; refreshMs?: number; deleteRetired?: { now: number } } = {},
 ): Promise<{ close(): Promise<void> }> {
   const kept = new Set(options.files);
   const copy = secretFiles(dir).filter((row) => !kept.has(row.name));
@@ -85,6 +90,12 @@ export async function useDatabaseSecrets(
     },
   });
   retireSecretFiles(dir, rows);
+  if (options.deleteRetired && existsSync(dir))
+    try {
+      deleteRetiredFolders(dir, rows, options.deleteRetired.now);
+    } catch (error) {
+      journalCaught(error, "credentials.deleteRetiredFolders", null);
+    }
   const timer = setInterval(
     () =>
       void refresh().catch((error: unknown) =>
@@ -188,6 +199,60 @@ function retireSecretFiles(dir: string, rows: ReadonlyMap<string, string>): void
     );
 }
 
+function deleteRetiredFolders(dir: string, rows: ReadonlyMap<string, string>, now: number): void {
+  const marker = join(dir, START_MARKER);
+  const previous = existsSync(marker) ? readFileSync(marker, "utf8").trim() : null;
+  writeFileSync(marker, "started\n", { mode: 0o600 });
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith(".retired-")) continue;
+    const folder = join(dir, entry.name);
+    const names = readdirSync(folder, { recursive: true, withFileTypes: true })
+      .filter((file) => !file.isDirectory())
+      .map((file) => relative(folder, join(file.parentPath, file.name)));
+    const undecrypted = names.filter((name) => {
+      const row = rows.get(name);
+      if (row === undefined) return true;
+      try {
+        openSecretAt(join(dir, name), row);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    const at = retiredAt(entry.name);
+    const reason =
+      undecrypted.length > 0
+        ? `kept, ${undecrypted.length} of its files did not decrypt from the secret table`
+        : at === null || now - at < RETIRED_KEEP_MS
+          ? "kept until it is 24 hours old"
+          : previous !== "completed"
+            ? "kept, the previous start did not complete"
+            : null;
+    if (reason !== null) {
+      keptRetired.set(folder, reason);
+      continue;
+    }
+    rmSync(folder, { recursive: true });
+    keptRetired.delete(folder);
+    journal(
+      `Deleted ${entry.name} with ${names.length} secret ${names.length === 1 ? "file" : "files"} held in the database.`,
+    );
+  }
+}
+
+function retiredAt(name: string): number | null {
+  const stamp = /^\.retired-(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)Z(?:-\d+)?$/.exec(name);
+  if (stamp === null) return null;
+  const [, y, mo, d, h, mi, s] = stamp;
+  const at = Date.parse(`${y}-${mo}-${d}T${h}:${mi}:${s}Z`);
+  return Number.isNaN(at) ? null : at;
+}
+
+export function completeSecretStart(dir: string): void {
+  const marker = join(dir, START_MARKER);
+  if (existsSync(marker)) writeFileSync(marker, "completed\n", { mode: 0o600 });
+}
+
 export function secretFilesOnDisk(dir: string): { kept: number; retired: string[] } {
   if (storedSecrets() === null || !existsSync(dir)) return { kept: 0, retired: [] };
   return {
@@ -195,7 +260,11 @@ export function secretFilesOnDisk(dir: string): { kept: number; retired: string[
     retired: readdirSync(dir, { withFileTypes: true })
       .filter((entry) => entry.isDirectory() && entry.name.startsWith(".retired-"))
       .map((entry) => entry.name)
-      .sort(),
+      .sort()
+      .map((name) => {
+        const reason = keptRetired.get(join(dir, name));
+        return reason === undefined ? name : `${name} (${reason})`;
+      }),
   };
 }
 

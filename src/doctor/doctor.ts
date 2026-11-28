@@ -484,7 +484,7 @@ function secretFileChecks({ files }: NonNullable<ProbeFacts["secrets"]>): Doctor
     checks.push(
       note(
         "secret-files-retired",
-        `retired copies in ${files.retired.join(", ")} are still usable secrets on this host; delete them after you check a restore from the database`,
+        `retired copies in ${files.retired.join(", ")} are still usable secrets on this host; Paws deletes a folder at startup once it is 24 hours old, its files decrypt from the table and the previous start completed`,
       ),
     );
   return checks;

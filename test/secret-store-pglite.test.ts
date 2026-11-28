@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -15,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { importLegacyGitHubApp, loadGitHubAppCredentials } from "../src/config";
 import {
+  completeSecretStart,
   readSecretFile,
   removeSecret,
   saveSecret,
@@ -302,6 +304,51 @@ describePglite((connect) => {
       expect(readFileSync(join(dir, name, "linear-webhook"), "utf8")).toBe("earlier");
     expect(readSecretFile(join(dir, "linear-webhook"))).toBe("marker-same");
     expect(secretFilesOnDisk(dir)).toEqual({ kept: 2, retired: [...earlier, retired!].sort() });
+  });
+
+  test("a start deletes a retired folder 24 hours old whose rows decrypt, after a completed start", async () => {
+    const { db, dir } = await setup(connect);
+    writeSecretFile(join(dir, "linear-webhook"), "marker-ok");
+    writeSecretFile(join(dir, "github-webhook"), "marker-bad");
+    const now = Date.now();
+    await (await useDatabaseSecrets(db, dir, { deleteRetired: { now } })).close();
+    const stamp = (hours: number) =>
+      `.retired-${new Date(now - hours * 3_600_000).toISOString().replace(/[-:]|\.\d+/g, "")}`;
+    const [moved] = readdirSync(dir).filter((name) => name.startsWith(".retired-"));
+    const [old, young, bad] = [stamp(25), stamp(2), stamp(26)];
+    renameSync(join(dir, moved!), join(dir, old));
+    for (const folder of [young, bad]) {
+      mkdirSync(join(dir, folder, "nested"), { recursive: true, mode: 0o700 });
+      writeFileSync(join(dir, folder, "linear-webhook"), "marker-copy", { mode: 0o600 });
+    }
+    writeFileSync(join(dir, bad, "nested", "github-webhook"), "marker-copy", { mode: 0o600 });
+    await db.run((q) => writeSecretSteps(q, "nested/github-webhook", "marker-garbage", null));
+    writeFileSync(join(dir, "outside"), "marker-outside", { mode: 0o600 });
+    const second = await useDatabaseSecrets(db, dir, { deleteRetired: { now } });
+    expect(existsSync(join(dir, old))).toBe(true);
+    expect(secretFilesOnDisk(dir).retired).toContain(
+      `${old} (kept, the previous start did not complete)`,
+    );
+    await second.close();
+
+    completeSecretStart(dir);
+    const lines: string[] = [];
+    cleanup.push(setJournalSink((line) => lines.push(line)));
+    const secrets = await useDatabaseSecrets(db, dir, { deleteRetired: { now } });
+    cleanup.push(() => secrets.close());
+    expect(existsSync(join(dir, old))).toBe(false);
+    expect(lines).toContain(`Deleted ${old} with 2 secret files held in the database.`);
+    expect(lines.join("\n")).not.toContain("marker-");
+    expect(readFileSync(join(dir, young, "linear-webhook"), "utf8")).toBe("marker-copy");
+    expect(readFileSync(join(dir, bad, "nested", "github-webhook"), "utf8")).toBe("marker-copy");
+    expect(readFileSync(join(dir, "outside"), "utf8")).toBe("marker-outside");
+    expect(existsSync(join(dir, ".envelope-key"))).toBe(true);
+    expect(secretFilesOnDisk(dir).retired).toEqual(
+      [
+        `${young} (kept until it is 24 hours old)`,
+        `${bad} (kept, 1 of its files did not decrypt from the secret table)`,
+      ].sort(),
+    );
   });
 
   test("a nested folder's own envelope key still opens its imported rows", async () => {
