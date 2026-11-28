@@ -102,6 +102,9 @@ export function* closeoutCheckRunsSteps(
         startedAt: s.startedAt,
         finishedAt: s.finishedAt,
         timedOut: s.timedOut,
+        exitCode: s.exitCode,
+        owner: r.owner,
+        repo: r.repo,
       })
       .from(s)
       .innerJoin(p, eq(p.id, s.progressId))

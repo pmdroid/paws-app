@@ -21,14 +21,23 @@ async function store(): Promise<Db> {
   return opened.db;
 }
 
-async function seedItem(db: Db, id: string, states: [string, number][], repo = "app") {
+async function seedItem(
+  db: Db,
+  id: string,
+  states: [string, number][],
+  repo: string | null = "app",
+) {
   await db.run(function* (q: Q) {
     yield* insertWorkItemSteps(q, id, START);
-    yield* q.exec(
-      q.orm
-        .insert(q.t.workItemRepository)
-        .values({ itemId: id, owner: "acme", repo, remoteUrl: `https://github.com/acme/${repo}` }),
-    );
+    if (repo)
+      yield* q.exec(
+        q.orm.insert(q.t.workItemRepository).values({
+          itemId: id,
+          owner: "acme",
+          repo,
+          remoteUrl: `https://github.com/acme/${repo}`,
+        }),
+      );
     let at = START;
     let from = "queued";
     for (const [index, [to, minutes]] of states.entries()) {
@@ -49,12 +58,18 @@ function mark(db: Db, itemId: string, kind: MergeWaitMarkKind, minutes: number) 
   );
 }
 
-async function seedCheck(db: Db, progressId: string, minutes: number, timedOut = 0) {
+async function seedCheck(
+  db: Db,
+  progressId: string,
+  minutes: number,
+  timedOut = 0,
+  check: { itemId?: string; stepId?: string; exitCode?: number | null } = {},
+) {
   await db.run(function* (q: Q) {
     yield* q.exec(
       q.orm.insert(q.t.closeoutProgress).values({
         id: progressId,
-        itemId: "item-a",
+        itemId: check.itemId ?? "item-a",
         taskId: "task",
         base: "main",
         head: "abc",
@@ -66,7 +81,7 @@ async function seedCheck(db: Db, progressId: string, minutes: number, timedOut =
     yield* q.exec(
       q.orm.insert(q.t.closeoutStep).values({
         progressId,
-        stepId: "test",
+        stepId: check.stepId ?? "test",
         kind: "command",
         state: "passed",
         command: "bun test",
@@ -75,6 +90,7 @@ async function seedCheck(db: Db, progressId: string, minutes: number, timedOut =
         startedAt: START,
         finishedAt: START + minutes * MINUTE,
         timedOut,
+        exitCode: check.exitCode ?? null,
       }),
     );
   });
@@ -225,8 +241,100 @@ describe("stage times", () => {
     await seedCheck(db, "p2", 30, 1);
     const report = await readStageTimes(db, WINDOW);
     expect(report.checks).toEqual([
-      { checkId: "test", runs: 2, timeouts: 1, medianMs: 25 * MINUTE, p95Ms: 29.5 * MINUTE },
+      {
+        checkId: "test",
+        runs: 2,
+        failures: 0,
+        timeouts: 1,
+        medianMs: 25 * MINUTE,
+        p95Ms: 29.5 * MINUTE,
+      },
     ]);
+  });
+
+  test("breaks items and Closeout checks down per repository", async () => {
+    const db = await store();
+    await seedItem(db, "item-a", [
+      ["running", 10],
+      ["verifying", 20],
+      ["merge_queue", 10],
+      ["merged", 5],
+    ]);
+    await seedItem(db, "item-b", [
+      ["running", 30],
+      ["verifying", 40],
+      ["running", 10],
+      ["verifying", 10],
+      ["failed", 10],
+    ]);
+    await seedItem(db, "item-c", [["running", 0]], "web");
+    await seedItem(db, "item-d", [], null);
+    await seedCheck(db, "p1", 10, 0, { exitCode: 0 });
+    await seedCheck(db, "p2", 20, 0, { itemId: "item-b", exitCode: 1 });
+    await seedCheck(db, "p3", 30, 1, { itemId: "item-b", exitCode: 1 });
+    await seedCheck(db, "p4", 40, 0, { itemId: "item-b", stepId: "lint", exitCode: 0 });
+    await seedCheck(db, "p5", 5, 0, { itemId: "item-c", exitCode: 2 });
+    await seedCheck(db, "p6", 7, 0, { itemId: "item-d", exitCode: 3 });
+    const report = await readStageTimes(db, { ...WINDOW, now: START + 100 * MINUTE });
+    expect(report.items.map((item) => item.itemId)).toContain("item-d");
+    expect(report.total.turns).toBe(4);
+    expect(report.checks.find((check) => check.checkId === "test")).toMatchObject({
+      runs: 5,
+      failures: 3,
+      timeouts: 1,
+    });
+    expect(report.repositories).toEqual([
+      {
+        repository: "acme/app",
+        issues: 2,
+        merged: 1,
+        medianTotalMs: 72.5 * MINUTE,
+        medianStagesMs: {
+          queued: 20 * MINUTE,
+          running: 35 * MINUTE,
+          verifying: 15 * MINUTE,
+          awaitingInput: 0,
+          mergeQueue: 2.5 * MINUTE,
+        },
+        medianMergeWaitMs: { review: 0, githubQueue: 0, unclassified: 2.5 * MINUTE },
+        medianWaitingForPersonMs: 0,
+        avgCloseoutRounds: 1.5,
+        avgTurns: 1.5,
+        checkRuns: 4,
+        checkFailures: 1,
+        checkTimeouts: 1,
+        slowestCheck: { checkId: "lint", medianMs: 40 * MINUTE },
+      },
+      {
+        repository: "acme/web",
+        issues: 1,
+        merged: 0,
+        medianTotalMs: 100 * MINUTE,
+        medianStagesMs: {
+          queued: 0,
+          running: 100 * MINUTE,
+          verifying: 0,
+          awaitingInput: 0,
+          mergeQueue: 0,
+        },
+        medianMergeWaitMs: { review: 0, githubQueue: 0, unclassified: 0 },
+        medianWaitingForPersonMs: 0,
+        avgCloseoutRounds: 0,
+        avgTurns: 1,
+        checkRuns: 1,
+        checkFailures: 1,
+        checkTimeouts: 0,
+        slowestCheck: { checkId: "test", medianMs: 5 * MINUTE },
+      },
+    ]);
+    const web = await readStageTimes(db, {
+      ...WINDOW,
+      now: START + 100 * MINUTE,
+      repository: { owner: "acme", repo: "web" },
+    });
+    expect(web.repositories.map((row) => row.repository)).toEqual(["acme/web"]);
+    expect(web.items.map((item) => item.itemId)).toEqual(["item-c"]);
+    expect(web.checks).toMatchObject([{ checkId: "test", runs: 1, failures: 1 }]);
   });
 });
 
