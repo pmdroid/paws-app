@@ -38,17 +38,17 @@ type Spend = {
 };
 
 const LIMITS: [keyof Limits, string, number, number][] = [
-  ["perMember", "Issues per member at once", 0, 50],
-  ["workspaceMax", "Workspace ceiling", 1, 500],
-  ["deleteAfterDays", "Delete after days asleep", 1, 60],
+  ["perMember", "Issues each member may run at once", 0, 50],
+  ["workspaceMax", "Issues the whole workspace may run at once", 1, 500],
+  ["deleteAfterDays", "Delete a sleeping VM after (days)", 1, 60],
 ];
 const SIZE: [string, string, number, number][] = [
   ["vmVcpus", "vCPUs per VM", 1, 32],
   ["vmMemoryGb", "Memory per VM (GB)", 1, 128],
   ["vmDiskGb", "Disk per VM (GB)", 10, 500],
-  ["reserveVcpus", "Host reserve vCPUs", 0, 64],
-  ["reserveMemoryGb", "Host reserve memory (GB)", 0, 256],
-  ["slotCap", "Slot cap", 1, 64],
+  ["reserveVcpus", "vCPUs kept for the host", 0, 64],
+  ["reserveMemoryGb", "Memory kept for the host (GB)", 0, 256],
+  ["slotCap", "Most VMs at once (blank for no limit)", 1, 64],
 ];
 const REASON: Record<string, string> = {
   cpu: "limited by vCPUs",
@@ -127,8 +127,8 @@ export function createIssueVmSettings() {
   const off = () => (busy ? " disabled" : "");
   const limitsSection = () =>
     section(
-      "Limits",
-      `${
+      "Who may use them",
+      `<p class="sub">The default for every member, and the most the whole workspace may run at once. With 0 per member, only members with extra usage get issue VMs.</p>${
         limits
           ? `<form data-limits class="col" novalidate>${LIMITS.map(([key, label, min, max]) => field(`issue-vm-${key}`, key, label, String(limits![key]), min, max)).join("")}<div class="row"><button class="btn" type="submit"${off()}>Save limits</button></div></form>`
           : ""
@@ -137,7 +137,7 @@ export function createIssueVmSettings() {
   const money = (id: string, name: string, label: string, value: number | null, hint: string) =>
     `<div class="settings-field"><label for="${id}">${label}</label><input id="${id}" name="${name}" type="number" inputmode="decimal" min="0" max="1000000" step="0.01" value="${value === null ? "" : String(value)}"><p class="sub">${hint}</p></div>`;
   const spendSection = () => {
-    if (!spend) return admin() ? section("Spend", note("spend")) : "";
+    if (!spend) return admin() ? section("Cost", note("spend")) : "";
     const { spentUsd, monthlyLimitUsd: limit, prices } = spend;
     const share = limit > 0 ? spentUsd / limit : 1;
     const text = `${usd(spentUsd)} of ${usd(limit)} spent in ${spend.month}`;
@@ -146,7 +146,10 @@ export function createIssueVmSettings() {
     const body = admin()
       ? `<form data-spend class="col" novalidate>${money("issue-vm-spend-limit", "monthlyLimitUsd", "Monthly limit (US dollars)", limit, "Cloud issue VMs stop starting once this month's spend reaches it.")}${PROVIDERS.map(([key, label]) => money(`issue-vm-price-${key}`, key, `${label} price per VM hour (US dollars)`, prices[key], prices[key] === null ? NO_PRICE : "0 to 1000000")).join("")}<div class="row"><button class="btn" type="submit"${off()}>Save spend</button></div></form>`
       : `<ul class="col" aria-label="Hourly prices">${PROVIDERS.map(([key, label]) => `<li data-price="${key}">${label}: ${price(prices[key])}</li>`).join("")}</ul>`;
-    return section("Spend", `${bar}${body}${note("spend")}`);
+    return section(
+      "Cost",
+      `<p class="sub">What cloud issue VMs cost this month. VMs on your own hosts aren't counted.</p>${bar}${body}${note("spend")}`,
+    );
   };
   const grantCell = (member: Member) =>
     member.grant
@@ -160,7 +163,7 @@ export function createIssueVmSettings() {
       )
       .join("");
     const table = members.length
-      ? `<div class="min-w-0 overflow-x-auto [overflow-wrap:normal] [&_td]:whitespace-nowrap [&_th]:whitespace-nowrap"><table aria-label="Issue VM limits per member"><thead><tr><th scope="col">Member</th><th scope="col">In use</th><th scope="col">Limit</th><th scope="col">Extra usage</th></tr></thead><tbody>${rows}</tbody></table></div>`
+      ? `<div class="min-w-0 overflow-x-auto [overflow-wrap:normal] [&_td]:whitespace-nowrap [&_th]:whitespace-nowrap"><table aria-label="Issue VM limits per member"><thead><tr><th scope="col">Member</th><th scope="col">In use</th><th scope="col">Limit</th><th scope="col">Grant</th></tr></thead><tbody>${rows}</tbody></table></div>`
       : "";
     const now = Date.now();
     const open = members.filter((member) => member.grant === null);
@@ -172,7 +175,7 @@ export function createIssueVmSettings() {
         : "";
     return section(
       "Extra usage",
-      `<p class="sub">A grant replaces a member's limit until it ends.</p>${table}${form}${note("grants")}`,
+      `<p class="sub">Give one member a higher limit until a date. Their grant replaces the default above until it ends.</p>${table}${form}${note("grants")}`,
     );
   };
   const deletesSection = () => {
@@ -198,11 +201,11 @@ export function createIssueVmSettings() {
     const shown = [...hosts.values()].filter((host) => host.vmHost);
     const others = runners.filter((runner) => hosts.get(runner.id)?.vmHost === false);
     const add = others.length
-      ? `<form data-add-host class="row"><label class="sr-only" for="vm-host-add">Runner</label><select id="vm-host-add" name="runnerId">${others.map((runner) => `<option value="${runner.id}">${esc(runner.name)}</option>`).join("")}</select><button class="btn secondary" type="submit"${off()}>Host microVMs</button></form>`
+      ? `<form data-add-host class="row"><label class="sr-only" for="vm-host-add">Runner</label><select id="vm-host-add" name="runnerId">${others.map((runner) => `<option value="${runner.id}">${esc(runner.name)}</option>`).join("")}</select><button class="btn secondary" type="submit"${off()}>Host issue VMs on this runner</button></form>`
       : "";
     return section(
       "VM hosts",
-      `<p class="sub">Each VM host runs issue VMs of one size. Leave the slot cap blank for no cap.</p>${shown.length ? shown.map(hostForm).join("") : '<p class="sub">No runner hosts microVMs yet.</p>'}${add}${note("hosts")}`,
+      `<p class="sub">Your own machines that run issue VMs. Each host gives its VMs one size, keeps some vCPUs and memory for itself, and fits as many VMs as the rest allows.</p>${shown.length ? shown.map(hostForm).join("") : '<p class="sub">No machine hosts issue VMs yet.</p>'}${add}${note("hosts")}`,
     );
   };
   const sizeText = (size: VmSize) =>
@@ -241,11 +244,11 @@ export function createIssueVmSettings() {
     return `<form data-vm-size="${key}" class="col" novalidate><h3>${label}</h3>${toggle}${fields}${save}</form>`;
   };
   const vmSection = () => {
-    if (!vm) return admin() ? section("VM sizes", note("vm"), "vm-sizes") : "";
+    if (!vm) return admin() ? section("Cloud providers", note("vm"), "vm-sizes") : "";
     const rows = VM_PROVIDERS.map(vmRow).join("");
     return section(
-      "VM sizes",
-      `<p class="sub">The size each provider gives new issue VMs. Existing VMs keep their size.</p>${admin() ? rows : `<ul class="col" aria-label="VM sizes">${rows}</ul>`}${note("vm")}`,
+      "Cloud providers",
+      `<p class="sub">Cloud services Paws may make issue VMs on. Turn a provider on to use it, and choose the size it gives new VMs. Existing VMs keep their size.</p>${admin() ? rows : `<ul class="col" aria-label="VM sizes">${rows}</ul>`}${note("vm")}`,
       "vm-sizes",
     );
   };
@@ -254,8 +257,8 @@ export function createIssueVmSettings() {
     renderMarkup(
       root,
       admin()
-        ? `${deletesSection()}${limitsSection()}${spendSection()}${grantsSection()}${vmSection()}${hostsSection()}`
-        : `${deletesSection()}${spendSection()}${grantsSection()}${vmSection()}`,
+        ? `${deletesSection()}${limitsSection()}${grantsSection()}${hostsSection()}${vmSection()}${spendSection()}`
+        : `${deletesSection()}${grantsSection()}${vmSection()}${spendSection()}`,
     );
   };
   const vmRequest = async (body?: unknown) => {
@@ -291,9 +294,12 @@ export function createIssueVmSettings() {
   };
   const loadHosts = async () => {
     const listed = await attempt("hosts", () =>
-      request<{ runners: { id: string; name: string }[] }>(engine!, "/api/runners"),
+      request<{ runners: { id: string; name: string; status?: string }[] }>(
+        engine!,
+        "/api/runners",
+      ),
     );
-    runners = listed?.runners ?? [];
+    runners = (listed?.runners ?? []).filter((runner) => runner.status !== "revoked");
     const views = await Promise.all(
       runners.map((runner) =>
         attempt("hosts", () => request<Host>(engine!, `/api/runners/${runner.id}/vm-host`)),

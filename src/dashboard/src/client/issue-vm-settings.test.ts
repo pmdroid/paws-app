@@ -254,6 +254,18 @@ test("an admin changes a host's VM size and sees the new slots", async () => {
   );
 });
 
+test("a revoked runner is neither listed as a VM host nor offered as a new one", async () => {
+  const listing = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
+    new URL(String(input)).pathname === "/api/runners"
+      ? Response.json({ runners: [{ id: RUNNER, name: "goldbox", status: "revoked" }] })
+      : listing(input, init)) as typeof fetch;
+  const root = await mount();
+  expect(root.querySelector(`[data-host="${RUNNER}"]`)).toBeNull();
+  expect(root.querySelector("[data-add-host]")).toBeNull();
+  expect(root.textContent).not.toContain("goldbox");
+});
+
 test("a member sees only their own limit and grant, read-only", async () => {
   grant = { id: "grant1", memberUserId: "user-2", limit: 4, endsAt: Date.parse("2099-02-01") };
   const root = await mount(false);
