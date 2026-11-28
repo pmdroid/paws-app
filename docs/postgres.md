@@ -24,7 +24,7 @@ The Prerequisites checks on Workspace › Integrations read the workspace, its G
 
 ## Secrets
 
-Paws keeps encrypted secrets in the database, with PGlite or an external Postgres server. On first start, Paws copies existing secret files from `~/.paws/secrets` into the database and reads them from there afterwards. With PGlite, the browser setup token stays in `~/.paws/secrets/setup-token` until setup completes. The master key stays in `PAWS_SECRET_KEY` or `~/.paws/secrets/.envelope-key`. Keep it separate from database backups.
+Paws keeps encrypted secrets in the database, with PGlite or an external Postgres server. On first start, Paws copies existing secret files from `~/.paws/secrets` into the database and reads them from there afterwards. At each start, Paws moves every secret file whose value matches its database row into `~/.paws/secrets/.retired-<UTC time>/`, and keeps a file that differs or whose row was deleted. The startup log names each file it kept. Retired copies are still usable secrets: once you've checked that a restore from the database works, delete the folder that Prerequisites names. With PGlite, the browser setup token stays in `~/.paws/secrets/setup-token` until setup completes. The master key stays in `PAWS_SECRET_KEY` or `~/.paws/secrets/.envelope-key`. Keep it separate from database backups.
 
 For a persistent master key across hosts, set `PAWS_SECRET_KEY` to the existing key's base64 value:
 
@@ -32,7 +32,7 @@ For a persistent master key across hosts, set `PAWS_SECRET_KEY` to the existing 
 base64 < ~/.paws/secrets/.envelope-key
 ```
 
-Keep that value secret and available to every Paws instance using the database. Paws copies existing encrypted secret files into the external database when it first opens them; the files remain in place. Check secret storage and decryption under Prerequisites on Workspace › Integrations before moving the service.
+Keep that value secret and available to every Paws instance using the database. Paws copies existing encrypted secret files into the external database when it first opens them, then moves the matching files aside as described above. Check secret storage and decryption under Prerequisites on Workspace › Integrations before moving the service.
 
 Paws ignores a `~/.paws/paws.db` from an earlier release and leaves it in place: see [Moving to Postgres](database-reset.md).
 

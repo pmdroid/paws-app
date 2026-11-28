@@ -68,15 +68,19 @@ test("copies an authority kept in files and never replaces an uncopied one", asy
   cleanup.push(close);
   const created = await ensureRunnerCoordinator(root);
   const authority = await Bun.file(join(root, "runner-authority.json")).text();
+  const signing = await Bun.file(join(root, "runner-command-key.pem")).text();
   const first = await useDatabaseSecrets(db, dir);
   const reused = await ensureRunnerCoordinator(root);
   expect(reused.created).toBe(false);
   expect(reused.signingKeys[0].keyId).toBe(created.signingKeys[0].keyId);
   const row = (await db.run(secretRowsSteps)).find((r) => r.name.endsWith("authority.json"));
   expect(row?.ciphertext).toBe(authority);
+  expect(existsSync(join(root, "runner-authority.json"))).toBe(false);
   for (const name of ["runner-authority.json", "runner-command-key.pem"])
     await removeSecret(join(root, name));
   await first.close();
+  await Bun.write(join(root, "runner-authority.json"), authority);
+  await Bun.write(join(root, "runner-command-key.pem"), signing);
   const second = await useDatabaseSecrets(db, dir);
   cleanup.push(() => second.close());
   await expect(ensureRunnerCoordinator(root)).rejects.toThrow("will not replace them");

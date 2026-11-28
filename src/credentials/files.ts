@@ -60,6 +60,10 @@ function tableName(path: string): string | null {
     : name;
 }
 
+export function isTableSecretFile(path: string): boolean {
+  return tableName(path) !== null;
+}
+
 export function uncopiedSecretFile(path: string): boolean {
   const name = tableName(path);
   return name !== null && !table!.rows.has(name) && existsSync(path);

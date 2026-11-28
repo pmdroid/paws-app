@@ -109,6 +109,22 @@ test("doctor reports where secrets are read from and fails when the key does not
   });
 });
 
+test("doctor warns about secret files still on disk and names the retired copies", () => {
+  const ready = probe(true);
+  ready.facts.secrets = { where: "the database secret table", count: 3, failed: [], stored: [] };
+  expect(doctorChecks(ready).some((item) => item.name.startsWith("secret-files"))).toBe(false);
+  ready.facts.secrets.files = { kept: 2, retired: [".retired-20261128T101500Z"] };
+  const checks = doctorChecks(ready);
+  expect(checks.find((item) => item.name === "secret-files")).toMatchObject({
+    ok: false,
+    detail: "2 secret files still on disk besides the table",
+  });
+  expect(checks.find((item) => item.name === "secret-files-retired")).toMatchObject({
+    note: true,
+    detail: expect.stringContaining("retired copies in .retired-20261128T101500Z are still usable"),
+  });
+});
+
 test("doctor has no settings-overrides check", () => {
   for (const ready of [probe(true), probe(false)])
     expect(doctorChecks(ready).find((item) => item.name === "settings-overrides")).toBeUndefined();
