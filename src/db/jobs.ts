@@ -449,10 +449,14 @@ function claimJobQuery(q: Q, options: ClaimOptions) {
       attempts: drizzleSql`${job.attempts} + 1`,
     })
     .where(
-      eq(
-        job.id,
-        drizzleSql`(SELECT candidate.id FROM job AS candidate WHERE ${claimWhere(q, now, options.queues, options.mergeParallel)}
+      and(
+        eq(
+          job.id,
+          drizzleSql`(SELECT candidate.id FROM job AS candidate WHERE ${claimWhere(q, now, options.queues, options.mergeParallel)}
           ORDER BY candidate.priority ASC, candidate.run_at ASC, candidate.id ASC LIMIT 1)`,
+        ),
+        lte(job.runAt, now),
+        claimable(q, now),
       ),
     )
     .returning();
@@ -460,8 +464,15 @@ function claimJobQuery(q: Q, options: ClaimOptions) {
 
 export function* claimNextJobSteps(q: Q, options: ClaimOptions = {}) {
   if (options.queues !== undefined && options.queues.length === 0) return null;
-  const row = yield* q.one(claimJobQuery(q, options));
-  return row === undefined ? null : mapJob(q, row);
+  return yield* q.transaction(function* (tx) {
+    yield* tx.exec(
+      tx.orm
+        .select({ lock: drizzleSql`pg_advisory_xact_lock(hashtextextended(${"job-claim"}, 0))` })
+        .from(drizzleSql`(SELECT 1) AS lock_scope`),
+    );
+    const row = yield* tx.one(claimJobQuery(tx, options));
+    return row === undefined ? null : mapJob(tx, row);
+  });
 }
 
 export async function claimNextJob(store: Db, options: ClaimOptions = {}): Promise<Job | null> {

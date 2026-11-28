@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { sql } from "drizzle-orm";
 import { FakeClock, systemClock } from "../core";
-import { sampleHostOperations } from "../host-operation";
+import { activeHostOperations, sampleHostOperations } from "../host-operation";
 import {
   enqueueJob,
   JobLoop,
@@ -26,7 +26,10 @@ function onClaim(db: Db, hook: () => void): Db {
       const steps = body(q);
       let next = steps.next();
       while (!next.done) {
-        const step = next.value;
+        const step =
+          next.value.kind === "transaction"
+            ? { ...next.value, body: watch(next.value.body) }
+            : next.value;
         const query = "query" in step ? (step.query as { toSQL?(): { sql: string } }) : {};
         if (query.toSQL?.().sql.startsWith(CLAIM_SQL)) hook();
         let value: unknown;
@@ -561,11 +564,16 @@ test("production run attributes a blocked claim to loop.tick", async () => {
   const { db, close } = await tempStore();
   const controller = new AbortController();
   let blocked = false;
-  const wrapped = onClaim(db, () => {
-    if (blocked) return;
-    blocked = true;
-    clock.advance(11_000);
-  });
+  const wrapped = {
+    ...db,
+    run: (body) => {
+      if (!blocked && activeHostOperations() === "loop.tick") {
+        blocked = true;
+        clock.advance(11_000);
+      }
+      return db.run(body);
+    },
+  } as Db;
   sampleHostOperations();
   let operation = "idle";
   try {
