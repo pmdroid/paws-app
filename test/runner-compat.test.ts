@@ -36,3 +36,24 @@ test("a runner that sends a heartbeat field Paws does not know fails", async () 
   expect(failures.length).toBeGreaterThan(0);
   expect(failures[0]).toContain("rejected fields: newerHostField");
 }, 60_000);
+
+test("a runner reports its VM disks, and retries once without them when Paws refuses the field", async () => {
+  const accepted = await checkRunnerCompatibility({
+    pawsTree: tree,
+    runnerTree: tree,
+    root: temporaryRoot(),
+  });
+  expect(compatibilityFailures(accepted)).toEqual([]);
+  expect(accepted.issueVmBodies).toEqual([["running", "sleepCheck", "disks"]]);
+  const refused = await checkRunnerCompatibility({
+    pawsTree: tree,
+    runnerTree: tree,
+    root: temporaryRoot(),
+    refusedIssueVmField: "disks",
+  });
+  expect(compatibilityFailures(refused)).toEqual([]);
+  expect(refused.issueVmBodies).toEqual([
+    ["running", "sleepCheck", "disks"],
+    ["running", "sleepCheck"],
+  ]);
+}, 120_000);

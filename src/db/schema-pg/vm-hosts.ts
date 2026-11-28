@@ -1,4 +1,4 @@
-import { bigint, check, integer, pgTable, text } from "drizzle-orm/pg-core";
+import { bigint, check, integer, jsonb, pgTable, text } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { runner } from "./runners";
 
@@ -26,3 +26,11 @@ export const vmHost = pgTable(
     check("vm_host_slot_cap", sql`slot_cap IS NULL OR slot_cap BETWEEN 1 AND 64`),
   ],
 );
+
+export const vmHostDiskReport = pgTable("vm_host_disk_report", {
+  runnerId: text("runner_id")
+    .primaryKey()
+    .references(() => vmHost.runnerId, { onDelete: "cascade" }),
+  disks: jsonb().$type<string[]>().notNull(),
+  reportedAt: bigint("reported_at", { mode: "number" }).notNull(),
+});

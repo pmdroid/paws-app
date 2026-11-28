@@ -351,6 +351,13 @@
       "when": 1795822541870,
       "tag": "0049_secret_version",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1795824023647,
+      "tag": "0050_vm_host_disk_report",
+      "breakpoints": true
     }
   ]
 }
