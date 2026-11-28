@@ -811,6 +811,7 @@ import {
 import type { RuntimeList } from "../runtimes";
 import { createRuntimeLists } from "./runtime-lists";
 import { startFreshBudgetSteps } from "./time-budget";
+import { toolchainPullContext } from "./toolchain-pull";
 import { HOST_DISK_FULL_THOUGHT, hostDiskFullThoughtKeySteps } from "./disk-full";
 import { questionEffects } from "./question-effects";
 import {
@@ -7693,8 +7694,16 @@ export class Orchestrator {
           await this.flush();
           return { answer: PUSH_CONFLICT_RESTARTED };
         }
+        const repository = await this.repositoryForItem(item);
+        const toolchain = await toolchainPullContext({
+          question: request.question,
+          item,
+          repository,
+          github: repository ? this.githubForRepository(repository) : null,
+          ...(this.options.journal ? { journal: this.options.journal } : {}),
+        });
         await this.store.transaction((q) =>
-          this.recordAgentQuestionSteps(q, item, runId, sessionId, request),
+          this.recordAgentQuestionSteps(q, item, runId, sessionId, request, toolchain),
         );
         this.askedRuns.add(runId);
         await this.flush();
@@ -7712,6 +7721,7 @@ export class Orchestrator {
     runId: string,
     sessionId: string,
     request: Parameters<AskTeamHook["ask"]>[0],
+    toolchain: string | null = null,
   ): Steps<void> {
     yield* askSteps(
       q,
@@ -7721,16 +7731,20 @@ export class Orchestrator {
       {
         reason: ASK_TEAM_REASON,
         options: request.options ?? [],
+        ...(toolchain === null ? {} : { context: toolchain }),
         now: this.now(),
         amend: function* (reads, question) {
           const suggestions = yield* suggestDecisionsSteps(reads, question.id, question.body);
           if (suggestions.length === 0) return null;
           return {
-            context: suggestions
-              .map(
+            context: [
+              toolchain,
+              ...suggestions.map(
                 (decision) =>
                   `Saved decision: ${decision.statement}\nSource: ${decision.sourceUrl}\nConfirm: ${decision.value}`,
-              )
+              ),
+            ]
+              .filter(Boolean)
               .join("\n\n"),
             options: [
               ...question.options,
