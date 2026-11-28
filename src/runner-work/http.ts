@@ -1,4 +1,4 @@
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import { join } from "node:path";
 import { z } from "zod";
 import {
@@ -10,6 +10,7 @@ import {
   RunnerInstalledRuntimesSchema,
   RunnerInstalledSkillsSchema,
   RunnerSkillSchema,
+  runnerMetricsTarget,
   withRejectedFields,
   withoutJournalTime,
 } from "../runner-protocol";
@@ -39,6 +40,7 @@ const heartbeat = RunnerHostStatusSchema.extend({
     .max(256)
     .nullable()
     .optional(),
+  metrics: z.unknown().optional(),
 });
 const grant = z.strictObject({ commandId: id, generation });
 const event = z.strictObject({
@@ -50,6 +52,7 @@ const event = z.strictObject({
 
 /** `skillsRoot` holds registered bundles at `<name>/<version>/skill.tar.gz`. */
 export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: string } = {}) {
+  const ignoredMetrics = new Set<string>();
   return async (request: Request, runnerId: string): Promise<Response | null> => {
     const path = new URL(request.url).pathname;
     try {
@@ -68,8 +71,14 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
           liveAfter,
           accounts,
           conversationConcurrency,
+          metrics,
           ...host
         } = heartbeat.parse(await body(request));
+        const target = metrics === undefined ? null : runnerMetricsTarget(metrics);
+        if (metrics !== undefined && target === null && !ignoredMetrics.has(runnerId)) {
+          ignoredMetrics.add(runnerId);
+          journal(`runner ${runnerId} reported a metrics URL Paws ignores`);
+        }
         return json(
           await work.heartbeat(
             runnerId,
@@ -85,6 +94,7 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
             liveAfter,
             accounts,
             conversationConcurrency,
+            target === null ? null : `http://${target}/metrics`,
           ),
         );
       }

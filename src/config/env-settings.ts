@@ -26,6 +26,7 @@ export const ENV_SETTINGS = {
     secretAccessKey: "PAWS_S3_SECRET_ACCESS_KEY",
     sessionToken: "PAWS_S3_SESSION_TOKEN",
   },
+  telemetry: { prometheusToken: "PAWS_PROMETHEUS_SD_TOKEN" },
 } as const;
 
 export type EnvSettingGroup = keyof typeof ENV_SETTINGS;

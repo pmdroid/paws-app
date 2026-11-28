@@ -6,6 +6,7 @@ import { storedSecrets, useDatabaseSecrets } from "../src/credentials";
 import { handleTelemetrySettingsRequest } from "../src/settings";
 import {
   createTelemetry,
+  prometheusSdToken,
   readTelemetrySettings,
   type ExporterConfig,
   type ExporterLoaders,
@@ -60,9 +61,11 @@ describePglite((connect) => {
     const fake = fakeLoaders(401);
     const telemetry = createTelemetry({ version: "v1", instanceId: "h", exporters: fake.loaders });
     const audits: string[] = [];
+    const env: Record<string, string | undefined> = {};
     const call = async (request: Request, role = "admin") =>
       (await handleTelemetrySettingsRequest(request, {
         home,
+        env,
         store: handle.db,
         telemetry,
         csrfToken: "csrf",
@@ -110,6 +113,16 @@ describePglite((connect) => {
       await call(send("POST", { headerValue: "other" }, `${url}/check`));
       expect(fake.configs.at(-1)!.headers).toEqual({ Authorization: "other" });
       expect((await readTelemetrySettings(handle.db)).endpoint).toBe("https://otel.example.com");
+      const token = await call(send("PUT", { prometheusToken: "sd-s3cret" }));
+      expect(await token.json()).toMatchObject({ prometheusToken: "set" });
+      expect(prometheusSdToken.read(home, env)).toBe("sd-s3cret");
+      expect(audits.at(-1)).toEndWith("header value kept, Prometheus token replaced");
+      env.PAWS_PROMETHEUS_SD_TOKEN = "from-env";
+      expect(await (await call(new Request(url))).json()).toMatchObject({
+        prometheusToken: "environment",
+      });
+      expect((await call(send("PUT", { prometheusToken: "other" }))).status).toBe(409);
+      expect(prometheusSdToken.read(home, env)).toBe("from-env");
     } finally {
       await telemetry.shutdown();
       await secrets.close();

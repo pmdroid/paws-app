@@ -18,7 +18,13 @@ import {
 import { createRunnerControl, createRunnerHttp } from "../src/runner-control";
 import { createRunnerHostSampler } from "../src/runner-daemon";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
-import { miseVersionFromOutput, releaseVersionFromPath } from "../src/runner-protocol";
+import { setJournalSink } from "../src/journal";
+import {
+  miseVersionFromOutput,
+  releaseVersionFromPath,
+  runnerMetricsTarget,
+} from "../src/runner-protocol";
+import { handlePrometheusRunnersRequest } from "../src/telemetry";
 import { createRunnerWork, createRunnerWorkHttp } from "../src/runner-work";
 import {
   issueWorkspaceBootstrap,
@@ -197,6 +203,75 @@ test("a heartbeat stores host metrics and the runner list returns them", async (
   expect(await versions()).toEqual([{ runnerVersion: "1.4.0", miseVersion: "2026.10.18" }]);
   expect((await runner.heartbeat({ runnerVersion: "1.4.0" }))!.status).toBe(200);
   expect(await versions()).toEqual([{ runnerVersion: "1.4.0", miseVersion: null }]);
+});
+
+test("a heartbeat stores a valid metrics URL and Prometheus discovery lists the runner", async () => {
+  const runner = await fixture();
+  const home = temporary();
+  const sd = (env: Record<string, string>, authorization?: string) =>
+    handlePrometheusRunnersRequest(
+      new Request("https://paws.invalid/api/prometheus/runners", {
+        headers: authorization === undefined ? {} : { authorization },
+      }),
+      { home, env, store: runner.db, now: runner.now() },
+    );
+  const env = { PAWS_PROMETHEUS_SD_TOKEN: "sd-token" };
+  const targets = async () => (await (await sd(env, "Bearer sd-token")).json()) as unknown[];
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  try {
+    for (const url of ["https://10.0.0.2:9100/metrics", "http://8.8.8.8:9100/metrics", "nope"])
+      expect((await runner.heartbeat({ metrics: { url } }))!.status).toBe(200);
+    expect((await runner.heartbeat({ metrics: "nope" }))!.status).toBe(200);
+  } finally {
+    restore();
+  }
+  expect(lines.filter((line) => line.includes("metrics URL"))).toHaveLength(1);
+  expect(await targets()).toEqual([]);
+  expect(
+    (await runner.heartbeat({ metrics: { url: "http://100.101.2.3:9100/metrics" } }))!.status,
+  ).toBe(200);
+  expect(await targets()).toEqual([
+    { targets: ["100.101.2.3:9100"], labels: { runner: "Host VM", runner_id: runner.runnerId } },
+  ]);
+  expect((await sd({})).status).toBe(404);
+  expect((await sd(env)).status).toBe(401);
+  expect((await sd(env, "Bearer wrong")).status).toBe(401);
+  runner.advance(10 * 60_000 + 1);
+  expect(await targets()).toEqual([]);
+  expect(
+    (await runner.heartbeat({ metrics: { url: "http://100.101.2.3:9100/metrics" } }))!.status,
+  ).toBe(200);
+  expect(await targets()).toHaveLength(1);
+  expect((await runner.heartbeat({}))!.status).toBe(200);
+  expect(await targets()).toEqual([]);
+  await runner.heartbeat({ metrics: { url: "http://100.101.2.3:9100/metrics" } });
+  await seed(runner.db, (q) =>
+    q.orm
+      .update(q.t.runner)
+      .set({ status: "revoked", revokedAt: runner.now() })
+      .where(eq(q.t.runner.id, runner.runnerId)),
+  );
+  expect(await targets()).toEqual([]);
+});
+
+test("only an http /metrics URL on a private or Tailscale address is a target", () => {
+  expect(runnerMetricsTarget({ url: "http://192.168.1.4:9100/metrics" })).toBe("192.168.1.4:9100");
+  expect(runnerMetricsTarget({ url: "http://172.20.0.1/metrics" })).toBe("172.20.0.1:80");
+  expect(runnerMetricsTarget({ url: "http://[fd7a:115c:a1e0::1]:9100/metrics" })).toBe(
+    "[fd7a:115c:a1e0::1]:9100",
+  );
+  for (const url of [
+    "http://100.128.0.1:9100/metrics",
+    "http://172.32.0.1:9100/metrics",
+    "http://10.0.0.1:9100/stats",
+    "http://10.0.0.1:0/metrics",
+    "http://user:pw@10.0.0.1:9100/metrics",
+    "http://10.0.0.1:9100/metrics?x=1",
+    "http://example.com:9100/metrics",
+  ])
+    expect(runnerMetricsTarget({ url })).toBeNull();
+  expect(runnerMetricsTarget({ url: "http://10.0.0.1/metrics", extra: 1 })).toBeNull();
 });
 
 test("the runner list says who a runner starts agents as", async () => {
