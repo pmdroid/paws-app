@@ -307,6 +307,26 @@ test("doctor warns when Linear may have disabled the webhook and says how to re-
   expect(formatDoctor(doctorChecks(ready))).not.toContain("linear-webhook-delivery");
 });
 
+test("doctor reads the GitHub App key and webhook secret the resolver picks", () => {
+  const saved = probe(true);
+  saved.facts.githubDoctor = { ...githubReady(), privateKeyPath: null, privateKeyReadable: true };
+  saved.facts.githubWebhookSecret = true;
+  const checks = doctorChecks(saved);
+  expect(checks.find((item) => item.name === "github-app")).toMatchObject({
+    ok: true,
+    detail: "app 99 configured (key saved in Settings)",
+  });
+  expect(checks.map((item) => item.name)).toContain("github-webhook");
+  const unusable = probe(true);
+  unusable.facts.githubDoctor = { ...githubReady(), privateKeyReadable: false };
+  expect(doctorChecks(unusable).find((item) => item.name === "github-app")).toMatchObject({
+    ok: false,
+    detail: "GitHub App private key is not a usable key",
+  });
+  saved.facts.githubDoctor = { ...githubReady(), privateKeyPath: null, privateKeyReadable: false };
+  expect(doctorChecks(saved).find((item) => item.name === "github-app")?.ok).toBe(false);
+});
+
 test("doctor shows whether GitHub webhook deliveries arrive", () => {
   const waiting = probe(true);
   waiting.env.GITHUB_WEBHOOK_SECRET = "github-secret";

@@ -60,7 +60,10 @@ test("with [database] url the runtime reads secrets kept only in the database", 
   process.env.PAWS_SECRET_KEY = randomBytes(32).toString("base64");
   try {
     const secrets = await useDatabaseSecrets(server.store, join(home, "secrets"));
-    await saveSecret(join(home, "secrets", "github-webhook"), "whsec-from-database");
+    await saveSecret(
+      join(home, "secrets", "github-browser-app.json"),
+      JSON.stringify({ webhookSecret: "whsec-from-database" }),
+    );
     await secrets.close();
     const paws = await start(home, { PAWS_DATABASE_URL: server.url });
     try {
@@ -68,7 +71,7 @@ test("with [database] url the runtime reads secrets kept only in the database", 
     } finally {
       await paws.stop();
     }
-    expect(existsSync(join(home, "secrets", "github-webhook"))).toBe(false);
+    expect(existsSync(join(home, "secrets", "github-browser-app.json"))).toBe(false);
   } finally {
     if (previous === undefined) delete process.env.PAWS_SECRET_KEY;
     else process.env.PAWS_SECRET_KEY = previous;

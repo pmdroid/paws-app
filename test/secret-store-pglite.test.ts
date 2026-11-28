@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadGitHubAppCredentials } from "../src/config";
+import { importLegacyGitHubApp, loadGitHubAppCredentials } from "../src/config";
 import {
   readSecretFile,
   removeSecret,
@@ -81,12 +81,12 @@ test("doctor reports undecryptable secret files before it loads the runtime", as
   const home = mkdtempSync(join(tmpdir(), "paws-secret-store-"));
   cleanup.push(() => rmSync(home, { recursive: true, force: true }));
   withSecretKey(randomBytes(32).toString("base64"));
-  writeSecretFile(join(home, "secrets", "github-webhook"), "whsec");
+  writeSecretFile(join(home, "secrets", "github-browser-app.json"), "{}");
   withSecretKey(randomBytes(32).toString("base64"));
   const store = await tempStore();
   cleanup.push(() => store.close());
   await expect(realProbe({ PAWS_HOME: home }, store.db)).rejects.toThrow(
-    `missing secrets: PAWS_SECRET_KEY does not decrypt github-webhook in files in ${join(home, "secrets")}`,
+    `missing secrets: PAWS_SECRET_KEY does not decrypt github-browser-app.json in files in ${join(home, "secrets")}`,
   );
 });
 
@@ -146,7 +146,11 @@ describePglite((connect) => {
     const { db, home, dir } = await setup(connect);
     withSecretKey(randomBytes(32).toString("base64"));
     await install(db, dir);
-    await saveSecret(join(dir, "github-app.pem"), "-----BEGIN PRIVATE KEY-----");
+    const key = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({
+      type: "pkcs8",
+      format: "pem",
+    }) as string;
+    await saveSecret(join(dir, "github-app.pem"), key);
     await saveSecret(
       join(dir, "github-app.json"),
       JSON.stringify({
@@ -157,9 +161,11 @@ describePglite((connect) => {
       }),
     );
     expect(existsSync(join(dir, ".envelope-key"))).toBe(false);
+    expect(loadGitHubAppCredentials(home, {})).toBeNull();
+    await importLegacyGitHubApp(home, {});
     const app = loadGitHubAppCredentials(home, {});
     expect(app?.appId).toBe("1");
-    expect(readSecretFile(app!.privateKeyPath, false)).toBe("-----BEGIN PRIVATE KEY-----");
+    expect(app?.privateKeyPem).toBe(key);
     withSecretKey(randomBytes(32).toString("base64"));
     expect(() => readSecretFile(join(dir, "github-app.pem"), false)).toThrow(
       "Could not decrypt Paws credentials",

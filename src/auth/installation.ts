@@ -1,7 +1,6 @@
 import { journalCaught } from "../journal";
 import { loadGitHubAppCredentials } from "../config";
 import { isTransient } from "../core";
-import { readSecretFile } from "../credentials";
 import {
   createFetchGitHubClient,
   GitHubTokenError,
@@ -30,9 +29,7 @@ export function createGitHubInstallationCheck(options: {
       if (!app?.installationId || !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repository))
         return false;
       const [owner, repo] = repository.split("/") as [string, string];
-      const privateKeyPem =
-        app.privateKeyPem ??
-        readSecretFile("privateKeyPath" in app ? app.privateKeyPath : "", false);
+      const privateKeyPem = app.privateKeyPem;
       if (!privateKeyPem) return false;
       const client = createFetchGitHubClient((url, init) =>
         (options.fetch ?? fetch)(String(url), { ...init, signal }),
