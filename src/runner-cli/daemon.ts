@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, renameSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
+  createRunnerHostMetricsReporter,
   isIdentityRejected,
   issueVmDisks,
   reconcileIssueVms,
@@ -139,6 +140,7 @@ export async function runPairedDaemon(
     concurrency: () => daemon.capacity(),
   });
   const storage = createRunnerStorageReporter({ root, daemon });
+  const hostMetrics = createRunnerHostMetricsReporter({ daemon });
   let health: Awaited<ReturnType<typeof openRunnerHealthRuntime>> | undefined;
   let retro: Awaited<ReturnType<typeof openRunnerRetroRuntime>> | undefined;
   let stopping: Promise<void> | undefined;
@@ -149,6 +151,7 @@ export async function runPairedDaemon(
         health?.stop(),
         retro?.stop(),
         storage.stop(),
+        hostMetrics.stop(),
       ]);
       if (results.some((result) => result.status === "rejected"))
         throw new Error("Runner shutdown failed");
@@ -212,6 +215,7 @@ export async function runPairedDaemon(
         if (!signal.aborted) await health.tick();
         if (!signal.aborted) await retro.tick();
         if (!signal.aborted) await storage.tick();
+        if (!signal.aborted) hostMetrics.tick();
         if (!signal.aborted) await cleanups.tick();
       } catch (error) {
         if (!isIdentityRejected(error)) journalCaught(error, "daemon.runPairedDaemon.tick", null);
