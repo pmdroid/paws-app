@@ -1,7 +1,9 @@
 import argparse
 import importlib.util
 import json
+import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -15,6 +17,9 @@ spec.loader.exec_module(installer)
 UNITS = ("paws-runner.service",)
 RETIRED = ("paws-runner-broker.socket", "paws-runner-broker.service")
 RESTART = installer.STATE / "debian-services.json"
+EXPORTER = "prometheus-node-exporter.service"
+EXPORTER_ARGS = 'ARGS="--web.listen-address=127.0.0.1:9100"'
+EXPORTER_LINE = re.compile(r"\s*ARGS\s*=(.*)")
 
 
 def active_services():
@@ -62,8 +67,67 @@ def admit():
         sys.exit(str(error))
 
 
+def tailscale_ipv4():
+    try:
+        result = subprocess.run(["/usr/bin/tailscale", "ip", "-4"], env=installer.release.COMMAND_ENV, stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    return set(result.stdout.decode(errors="replace").split()) if result.returncode == 0 else set()
+
+
+def exporter_previous(lines, addresses):
+    found = [index for index, line in enumerate(lines) if EXPORTER_LINE.fullmatch(line.rstrip("\n"))]
+    if not found:
+        return None, "missing"
+    if len(found) > 1:
+        return None, None
+    value = EXPORTER_LINE.fullmatch(lines[found[0]].rstrip("\n")).group(1).strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1].strip()
+    if value == "":
+        return found[0], "default"
+    match = re.fullmatch(r"--web\.listen-address=(\d+\.\d+\.\d+\.\d+):9100", value)
+    if match and match.group(1) in addresses():
+        return found[0], "tailscale"
+    return None, None
+
+
+def bind_node_exporter(root=pathlib.Path("/"), command=None, addresses=tailscale_ipv4):
+    if not any((root / folder / EXPORTER).exists() for folder in ("usr/lib/systemd/system", "lib/systemd/system")):
+        return None
+    defaults = root / "etc/default/prometheus-node-exporter"
+    try:
+        content = defaults.read_bytes()
+        mode = os.stat(defaults).st_mode & 0o7777
+    except FileNotFoundError:
+        content, mode = b"", 0o644
+    lines = content.decode("utf-8", errors="surrogateescape").splitlines(keepends=True)
+    index, previous = exporter_previous(lines, addresses)
+    if previous is None:
+        return None
+    if index is None:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines.append(EXPORTER_ARGS + "\n")
+    else:
+        lines[index] = EXPORTER_ARGS + "\n"
+    defaults.parent.mkdir(parents=True, exist_ok=True)
+    temporary = defaults.with_name(".paws-" + defaults.name)
+    temporary.write_bytes("".join(lines).encode("utf-8", errors="surrogateescape"))
+    temporary.chmod(mode)
+    os.replace(temporary, defaults)
+    (command or installer.release.command)(["/usr/bin/systemctl", "restart", "--", EXPORTER])
+    event = {"event": "node_exporter_bound", "address": "127.0.0.1:9100", "previous": previous}
+    print(json.dumps(event), file=sys.stderr)
+    return event
+
+
 def configure():
     docker = installer.docker_access_choice()
+    try:
+        bind_node_exporter()
+    except (OSError, ValueError) as error:
+        print(json.dumps({"event": "node_exporter_skipped", "reason": " ".join(str(error).split())[:300]}), file=sys.stderr)
     if installer.active_executions():
         print(json.dumps(installer.defer_configure(docker)))
         return

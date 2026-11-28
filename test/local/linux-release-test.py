@@ -1327,6 +1327,7 @@ class DockerAccess(unittest.TestCase):
             mock.patch.object(installer, "STATE", state.parent),
             mock.patch.object(deb, "active_services", lambda: ["paws-runner.service"]),
             mock.patch.object(deb, "enabled_services", lambda: []),
+            mock.patch.object(deb, "bind_node_exporter", lambda: None),
             mock.patch.object(installer.release, "verify_release", lambda arguments, root: ({"version": "1.0.0"}, None, "key")),
             mock.patch.object(installer.release, "command", command),
             mock.patch.object(installer, "prepare_agents", lambda artifact: None),
@@ -1534,6 +1535,7 @@ class DockerAccess(unittest.TestCase):
             mock.patch.object(installer, "STATE", state.parent),
             mock.patch.object(deb, "active_services", lambda: ["paws-runner.service"]),
             mock.patch.object(deb, "enabled_services", lambda: []),
+            mock.patch.object(deb, "bind_node_exporter", lambda: None),
             mock.patch.object(installer, "write_atomic", lambda path, content, mode: path.write_bytes(content)),
             mock.patch.object(installer.release, "verify_release", lambda arguments, root: ({"version": "1.0.0"}, None, "key")),
             mock.patch.object(installer.release, "command", command),
@@ -1835,6 +1837,8 @@ class RunnerUpgrade(unittest.TestCase):
         for name in ("deb-control.py", "install.py", "release.py"):
             self.assertEqual(built[name], (deploy / name).read_text())
         self.assertEqual((built["prerm"], built["postinst"]), (package.prerm(), package.postinst()))
+        self.assertIn("\nRecommends: prometheus-node-exporter\n", built["control"])
+        self.assertNotIn("prometheus-node-exporter", built["control"].split("\nDepends: ")[1].split("\n")[0])
 
     def test_dpkg_reconfigure_runs_the_installed_deb_control_from_the_dpkg_info_folder(self):
         """dpkg-reconfigure runs prerm upgrade, preinst upgrade and postinst configure from /var/lib/dpkg/info,
@@ -1870,6 +1874,7 @@ class RunnerUpgrade(unittest.TestCase):
             mock.patch.object(self.deb, "RESTART", self.state / "debian-services.json"),
             mock.patch.object(self.deb, "active_services", lambda: ["paws-runner.service"]),
             mock.patch.object(self.deb, "enabled_services", lambda: ["paws-runner.service"]),
+            mock.patch.object(self.deb, "bind_node_exporter", lambda: None),
             mock.patch.object(installer, "root_directory", lambda path, mode=0o755: path.mkdir(parents=True, exist_ok=True)),
             mock.patch.object(installer, "lock_install", lambda: os.open(self.state / "install.lock", os.O_RDWR | os.O_CREAT, 0o600)),
             mock.patch.object(installer, "lock_agents", lambda: os.open(self.state / "agents.lock", os.O_RDWR | os.O_CREAT, 0o600)),
@@ -2567,6 +2572,73 @@ class ControlPlaneRpmTests(unittest.TestCase):
             self.assertNotIn("systemctl stop paws.service", run("pre", "2"))
             self.assertEqual(run("preun", "0"), ["systemctl disable paws.service"])
             self.assertEqual(run("postun", "1"), [])
+
+
+class NodeExporter(unittest.TestCase):
+    DEFAULT = b'# Set the command-line arguments to pass to the server.\n# Due to shell escaping, to pass backslashes for regexes, you need to double\n# them (\\\\d for \\d).\nARGS=""\n'
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="paws-node-exporter-")
+        self.root = pathlib.Path(self.temporary.name)
+        self.defaults = self.root / "etc/default/prometheus-node-exporter"
+        self.defaults.parent.mkdir(parents=True)
+        unit = self.root / "lib/systemd/system/prometheus-node-exporter.service"
+        unit.parent.mkdir(parents=True)
+        unit.write_text("[Service]\n")
+        self.calls = []
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def bind(self):
+        with contextlib.redirect_stderr(io.StringIO()) as journal:
+            event = load("deb-control").bind_node_exporter(self.root, lambda arguments: self.calls.append(arguments), lambda: {"100.101.102.103"})
+        return event, journal.getvalue()
+
+    def assertBound(self, expected, previous):
+        event, journal = self.bind()
+        self.assertEqual(self.defaults.read_bytes(), expected)
+        self.assertEqual(self.calls, [["/usr/bin/systemctl", "restart", "--", "prometheus-node-exporter.service"]])
+        self.assertEqual(event, {"event": "node_exporter_bound", "address": "127.0.0.1:9100", "previous": previous})
+        self.assertEqual(json.loads(journal), event)
+
+    def test_a_missing_file_gets_the_loopback_address(self):
+        self.assertBound(b'ARGS="--web.listen-address=127.0.0.1:9100"\n', "missing")
+
+    def test_a_file_without_args_keeps_its_lines_and_gets_the_loopback_address(self):
+        self.defaults.write_bytes(b"# comment\nOTHER=1")
+        self.assertBound(b'# comment\nOTHER=1\nARGS="--web.listen-address=127.0.0.1:9100"\n', "missing")
+
+    def test_the_distro_default_args_are_rewritten_in_place(self):
+        self.defaults.write_bytes(self.DEFAULT)
+        self.defaults.chmod(0o640)
+        self.assertBound(self.DEFAULT.replace(b'ARGS=""', b'ARGS="--web.listen-address=127.0.0.1:9100"'), "default")
+        self.assertEqual(stat.S_IMODE(self.defaults.stat().st_mode), 0o640)
+
+    def test_the_hand_installed_tailscale_address_is_rewritten(self):
+        for line in (b'ARGS="--web.listen-address=100.101.102.103:9100"\n', b"  ARGS = '--web.listen-address=100.101.102.103:9100'\n"):
+            self.calls.clear()
+            self.defaults.write_bytes(b"# hand install\n" + line)
+            self.assertBound(b'# hand install\nARGS="--web.listen-address=127.0.0.1:9100"\n', "tailscale")
+
+    def test_custom_args_are_left_byte_for_byte(self):
+        for content in (
+            b'ARGS="--web.listen-address=100.64.0.9:9100"\n',
+            b'ARGS="--web.listen-address=100.101.102.103:9200"\n',
+            b'ARGS="--web.listen-address=127.0.0.1:9100"\n',
+            b'ARGS="--collector.systemd"\r\n# trailing',
+            b'ARGS=""\nARGS="--collector.systemd"\n',
+        ):
+            self.defaults.write_bytes(content)
+            self.assertEqual(self.bind(), (None, ""))
+            self.assertEqual(self.defaults.read_bytes(), content)
+        self.assertEqual(self.calls, [])
+
+    def test_nothing_changes_when_the_exporter_is_not_installed(self):
+        (self.root / "lib/systemd/system/prometheus-node-exporter.service").unlink()
+        self.assertEqual(self.bind(), (None, ""))
+        self.assertFalse(self.defaults.exists())
+        self.assertEqual(self.calls, [])
 
 
 if __name__ == "__main__":
