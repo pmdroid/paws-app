@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 import {
   copySecretRowsSteps,
   readSecretSteps,
@@ -10,17 +10,12 @@ import {
   type SecretRow,
 } from "../db";
 import { journal, journalCaught } from "../journal";
-import {
-  isStoredSecretName,
-  openSecretAt,
-  SECRET_PREFIX,
-  sealSecret,
-  storedSecrets,
-  useSecretTable,
-} from "./files";
+import { openSecretAt, SECRET_PREFIX, sealSecret, storedSecrets, useSecretTable } from "./files";
+import { isOwnedSecretName, isPrunedSecretFolder } from "./names";
 
 const MAX_SECRET_BYTES = 1_048_576;
 const REFRESH_MS = 10_000;
+const unowned = new Set<string>();
 
 export async function useDatabaseSecrets(
   store: Db,
@@ -93,17 +88,37 @@ export async function useDatabaseSecrets(
 
 export function secretFiles(dir: string): SecretRow[] {
   if (!existsSync(dir)) return [];
-  return readdirSync(dir, { recursive: true, withFileTypes: true }).flatMap((entry) => {
-    const path = join(entry.parentPath, entry.name);
-    if (!entry.isFile() || entry.name.startsWith(".") || entry.name.endsWith(".tmp")) return [];
-    if (!isStoredSecretName(relative(dir, path)) || statSync(path).size > MAX_SECRET_BYTES)
-      return [];
-    const text = readFileSync(path, "utf8");
-    const ciphertext = text.startsWith(SECRET_PREFIX)
-      ? text
-      : sealSecret(entry.parentPath, entry.name, text);
-    return [{ name: relative(dir, path), ciphertext }];
-  });
+  const skipped = new Set(
+    [
+      "PAWS_TLS_KEY_PATH",
+      "PAWS_TLS_CERT_PATH",
+      "PAWS_RUNNER_TLS_KEY_PATH",
+      "PAWS_RUNNER_TLS_CERT_PATH",
+    ]
+      .map((name) => process.env[name]?.trim())
+      .filter((path): path is string => !!path)
+      .map((path) => resolve(path)),
+  );
+  const walk = (folder: string): SecretRow[] =>
+    readdirSync(folder, { withFileTypes: true }).flatMap((entry) => {
+      const path = join(folder, entry.name);
+      const name = relative(dir, path);
+      if (skipped.has(resolve(path))) return [];
+      if (entry.isDirectory()) return isPrunedSecretFolder(name) ? [] : walk(path);
+      if (!entry.isFile() || entry.name.startsWith(".") || entry.name.endsWith(".tmp")) return [];
+      if (!isOwnedSecretName(name)) {
+        if (!unowned.has(resolve(path))) journal(`not imported: ${name}`);
+        unowned.add(resolve(path));
+        return [];
+      }
+      if (statSync(path).size > MAX_SECRET_BYTES) return [];
+      const text = readFileSync(path, "utf8");
+      const ciphertext = text.startsWith(SECRET_PREFIX)
+        ? text
+        : sealSecret(folder, entry.name, text);
+      return [{ name, ciphertext }];
+    });
+  return walk(dir);
 }
 
 export function checkSecrets(dir: string) {
