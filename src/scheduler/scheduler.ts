@@ -73,7 +73,7 @@ const TICK = JOB_KIND.schedulerTick;
 const RUNNER_SEEN_MS = 60_000;
 const CLOSEOUT_SLOT_WAIT_MS = 30 * 60_000;
 const SKIP_JOURNAL_MS = 60 * 60_000;
-const skipJournaled = new Map<string, number>();
+const skipJournaled = new WeakMap<Db, Map<string, number>>();
 type Item = SchedulerItem;
 type Admission = {
   itemId: string;
@@ -847,18 +847,9 @@ async function admit(
       let reason: string | null = (yield* overlapping(waiter, occupants)) ? "overlap" : null;
       if (!reason && !startable.has(waiter.id)) {
         const vm = yield* vmFor(waiter.id);
-        startable.set(
-          waiter.id,
-          vm
-            ? "wait" in vm
-              ? "slot"
-              : null
-            : (yield* openRunner(waiter.id)) !== null
-              ? null
-              : (yield* verdictsFor(waiter.id))?.pinnedRunnerId
-                ? "pin"
-                : "slot",
-        );
+        const open = vm ? !("wait" in vm) : (yield* openRunner(waiter.id)) !== null;
+        const pin = !open && !vm && (yield* verdictsFor(waiter.id))?.pinnedRunnerId;
+        startable.set(waiter.id, open ? null : pin ? "pin" : "slot");
       }
       reason ??= startable.get(waiter.id) ?? null;
       memo.reasons.set(waiter.id, reason);
@@ -889,14 +880,15 @@ async function admit(
     );
     const overlaps = new Map<string, Overlap>();
     const unheld: Item[] = [];
+    const deferred: Item[] = [];
     for (const item of candidates) {
       if (held.some((entry) => entry.itemId === item.id)) continue;
       const overlap = yield* overlapping(item, occupants);
-      if (overlap && !overlap.start) overlaps.set(item.id, overlap);
-      else unheld.push(item);
+      if (overlap) overlaps.set(item.id, overlap);
+      if (!overlap || overlap.start) (overlap ? deferred : unheld).push(item);
     }
     skips.clear();
-    const order = fairOrder(unheld, running, cap);
+    const order = fairOrder([...unheld, ...deferred], running, cap);
     // Only checked while runners exist, so a workspace without runners behaves as before.
     const ownerHasRunner = slots === null ? undefined : options.ownerHasRunner;
     const setup = new Set<string>();
@@ -1100,13 +1092,14 @@ async function admit(
       skips,
     };
   });
+  const journaled = skipJournaled.get(store) ?? new Map<string, number>();
+  skipJournaled.set(store, journaled);
   for (const [pair, reason] of result.skips) {
-    if ((skipJournaled.get(pair) ?? -Infinity) > now - SKIP_JOURNAL_MS) continue;
-    skipJournaled.set(pair, now);
+    if ((journaled.get(pair) ?? -Infinity) > now - SKIP_JOURNAL_MS) continue;
+    journaled.set(pair, now);
     journal(`overlap_waiter_skipped ${pair} waiter_reason=${reason}`);
   }
-  for (const [pair, at] of skipJournaled)
-    if (at <= now - SKIP_JOURNAL_MS) skipJournaled.delete(pair);
+  for (const [pair, at] of journaled) if (at <= now - SKIP_JOURNAL_MS) journaled.delete(pair);
   if (result.armed) emitJobReady(store);
   if (options.log) for (const line of result.changes) options.log(line);
   await options.onWaiting?.(result.waiting);
