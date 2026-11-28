@@ -398,9 +398,9 @@ describePglite((connect) => {
     await install(db, dir);
     await removeSecret(join(dir, "tailscale-authkey"));
     const tombstone = { value: null, version: 2 };
-    expect(await db.run((q) => readSecretSteps(q, "tailscale-authkey"))).toEqual(tombstone);
+    expect(await db.run((q) => readSecretSteps(q, "tailscale-authkey"))).toMatchObject(tombstone);
     await install(db, dir);
-    expect(await db.run((q) => readSecretSteps(q, "tailscale-authkey"))).toEqual(tombstone);
+    expect(await db.run((q) => readSecretSteps(q, "tailscale-authkey"))).toMatchObject(tombstone);
     expect(readSecretFile(join(dir, "tailscale-authkey"))).toBeNull();
   });
 

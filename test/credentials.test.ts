@@ -74,7 +74,7 @@ test("an existing install's token file is imported once and sealed in the databa
     writeFileSync(path, token, { mode: 0o600 });
     expect(await importCredentialFile(db, dir, "linear", path)).toBe(true);
     expect(await readCredential(db, dir, "linear")).toBe(token);
-    const rows = JSON.stringify(await db.run((q) => q.all(q.orm.select().from(q.t.credential))));
+    const rows = JSON.stringify(await db.run((q) => q.all(q.orm.select().from(q.t.secret))));
     for (const secret of ["acme-access", "acme-refresh"]) expect(rows).not.toContain(secret);
     expect(readFileSync(path, "utf8")).toBe(token);
 

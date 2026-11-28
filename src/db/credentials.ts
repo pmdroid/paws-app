@@ -1,41 +1,9 @@
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, like, ne, sql } from "drizzle-orm";
 import { type Q } from "./db";
 
 export type CredentialKey = { kind: "linear" | "slack"; workspace: string };
 
-export function* readCredentialCiphertextSteps(q: Q, key: CredentialKey) {
-  const { credential } = q.t;
-  const row = yield* q.one(
-    q.orm
-      .select({ ciphertext: credential.ciphertext })
-      .from(credential)
-      .where(and(eq(credential.kind, key.kind), eq(credential.workspace, key.workspace))),
-  );
-  return row?.ciphertext ?? null;
-}
-
-export type CredentialWrite = { now?: number; onlyIfMissing?: boolean };
-
-export function* writeCredentialCiphertextSteps(
-  q: Q,
-  key: CredentialKey,
-  ciphertext: string,
-  options: CredentialWrite = {},
-) {
-  const { credential } = q.t;
-  const updatedAt = options.now ?? Date.now();
-  const insert = q.orm
-    .insert(credential)
-    .values({ kind: key.kind, workspace: key.workspace, ciphertext, updatedAt });
-  const written = options.onlyIfMissing
-    ? insert.onConflictDoNothing()
-    : insert.onConflictDoUpdate({
-        target: [credential.kind, credential.workspace],
-        set: { ciphertext, updatedAt },
-      });
-  const rows = yield* q.all(written.returning({ kind: credential.kind }));
-  return rows.length > 0;
-}
+export type CredentialWrite = { onlyIfMissing?: boolean };
 
 export type SecretRow = { name: string; ciphertext: string };
 
@@ -70,12 +38,17 @@ export function* readSecretSteps(q: Q, name: string) {
   const { secret } = q.t;
   const row = yield* q.one(
     q.orm
-      .select({ ciphertext: secret.ciphertext, version: secret.version })
+      .select({
+        ciphertext: secret.ciphertext,
+        version: secret.version,
+        updatedAt: secret.updatedAt,
+      })
       .from(secret)
       .where(eq(secret.name, name)),
   );
   if (!row) return null;
-  return { value: row.ciphertext === "" ? null : row.ciphertext, version: row.version };
+  const value = row.ciphertext === "" ? null : row.ciphertext;
+  return { value, version: row.version, updatedAt: row.updatedAt };
 }
 
 export function* writeSecretSteps(
@@ -118,47 +91,63 @@ export function* copySecretRowsSteps(q: Q, rows: readonly SecretRow[], now: numb
   return copied.length;
 }
 
-export function* credentialRowsSteps(q: Q, kind: CredentialKey["kind"]) {
-  const { credential } = q.t;
-  return yield* q.all(q.orm.select().from(credential).where(eq(credential.kind, kind)));
+export function* secretsNamedSteps(q: Q, prefix: string) {
+  const { secret } = q.t;
+  return yield* q.all(
+    q.orm
+      .select()
+      .from(secret)
+      .where(and(like(secret.name, `${prefix}%`), ne(secret.ciphertext, ""))),
+  );
 }
 
-export function* replaceCredentialCiphertextSteps(
+export function* replaceSecretSteps(
   q: Q,
-  key: CredentialKey,
-  ciphertext: string,
+  name: string,
+  ciphertext: string | null,
   expected: number,
+  now = Date.now(),
 ) {
-  const { credential } = q.t;
-  const updatedAt = Math.max(Date.now(), expected + 1);
+  const { secret } = q.t;
+  if (ciphertext === null && expected === 0) return null;
+  const set = { ciphertext: ciphertext ?? "", updatedAt: now, version: sql`${secret.version} + 1` };
   const rows = yield* q.all(
     expected === 0
       ? q.orm
-          .insert(credential)
-          .values({ ...key, ciphertext, updatedAt })
-          .onConflictDoNothing()
-          .returning({ updatedAt: credential.updatedAt })
+          .insert(secret)
+          .values({ name, ciphertext: ciphertext!, updatedAt: now })
+          .onConflictDoUpdate({ target: secret.name, set, setWhere: eq(secret.ciphertext, "") })
+          .returning({ version: secret.version })
       : q.orm
-          .update(credential)
-          .set({ ciphertext, updatedAt })
-          .where(and(match(q, key), eq(credential.updatedAt, expected)))
-          .returning({ updatedAt: credential.updatedAt }),
+          .update(secret)
+          .set(set)
+          .where(
+            and(eq(secret.name, name), eq(secret.version, expected), ne(secret.ciphertext, "")),
+          )
+          .returning({ version: secret.version }),
   );
-  return rows[0]?.updatedAt ?? null;
+  return rows[0]?.version ?? null;
 }
 
-export function* deleteCredentialCiphertextSteps(q: Q, key: CredentialKey, expected: number) {
+export function* legacyCredentialRowsSteps(q: Q) {
+  const { credential } = q.t;
+  return yield* q.all(q.orm.select().from(credential).where(ne(credential.ciphertext, "")));
+}
+
+export function* clearCredentialCiphertextSteps(q: Q, key: CredentialKey, ciphertext: string) {
   const { credential } = q.t;
   const rows = yield* q.all(
     q.orm
-      .delete(credential)
-      .where(and(match(q, key), eq(credential.updatedAt, expected)))
+      .update(credential)
+      .set({ ciphertext: "" })
+      .where(
+        and(
+          eq(credential.kind, key.kind),
+          eq(credential.workspace, key.workspace),
+          eq(credential.ciphertext, ciphertext),
+        ),
+      )
       .returning({ kind: credential.kind }),
   );
   return rows.length > 0;
-}
-
-function match(q: Q, key: CredentialKey) {
-  const { credential } = q.t;
-  return and(eq(credential.kind, key.kind), eq(credential.workspace, key.workspace));
 }

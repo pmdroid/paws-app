@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createLinearAuth, readStoredToken, writeStoredToken } from "../src/linear";
-import { claimNextJob, completeJob, listJobs, type Db } from "../src/db";
+import { claimNextJob, completeJob, listJobs, secretsNamedSteps, type Db } from "../src/db";
 import { refreshCredential } from "../src/credentials";
 import { tempHome } from "./helpers";
 import { pgliteServer, tempStore } from "./pglite";
@@ -234,7 +234,7 @@ test("a killed refresh process replays the consumed Linear token after restart a
     expect(jobs.map((job) => ({ status: job.status, attempts: job.attempts }))).toEqual([
       { status: "done", attempts: 2 },
     ]);
-    const credentials = await db.run((q) => q.all(q.orm.select().from(q.t.credential)));
+    const credentials = await db.run((q) => secretsNamedSteps(q, "oauth-linear-"));
     expect(credentials).toHaveLength(1);
     const artifacts = [
       JSON.stringify(credentials),
