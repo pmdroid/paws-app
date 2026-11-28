@@ -127,9 +127,9 @@ export const WORKSPACE_PAGES = [
     id: "issue-vms",
     name: "Issue VMs",
     description:
-      "How many issue VMs each member and the workspace may run, extra usage for members, each provider's VM size, and the size of each VM host's microVMs.",
+      "An issue VM is a machine of its own for one delegated issue. Paws makes it when the issue starts, lets it sleep while the issue waits, and deletes it after it has slept for the days set below. Set who may use them, where they run and what they may cost.",
 
-    sections: ["Limits", "Extra usage", "VM sizes", "VM hosts"],
+    sections: ["Who may use them", "Extra usage", "VM hosts", "Cloud providers", "Cost"],
   },
   {
     id: "runner-vms",
