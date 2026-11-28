@@ -1193,6 +1193,7 @@ try {
             {
               id: "agent-summary-runner",
               name: "build-box",
+              ownerUserId: "member",
               codingAgents: ["claude", "codex", "grok"].map((agent) => ({
                 agent,
                 current: "1",
