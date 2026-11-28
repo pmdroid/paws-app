@@ -916,11 +916,13 @@ async function admit(
       const pin = (yield* verdictsFor(item.id))?.pinnedRunnerId;
       if (pin) pinnedQueue.set(pin, (pinnedQueue.get(pin) ?? 0) + 1);
     }
-    for (const { item, capped } of order) {
-      if (capped || setup.has(item.id)) {
-        outcomes.set(item.id, capped ? "cap" : "setup");
-        continue;
-      }
+    for (const { item, capped } of order)
+      if (capped || setup.has(item.id)) outcomes.set(item.id, capped ? "cap" : "setup");
+    const retried = new Set<string>();
+    const attempts = [...order];
+    for (const attempt of attempts) {
+      const { item, capped } = attempt;
+      if (capped || setup.has(item.id)) continue;
       yield* claimPinned(item);
       const vm = yield* vmFor(item.id);
       if (vm && "wait" in vm) {
@@ -942,9 +944,12 @@ async function admit(
       // Work admitted earlier in this tick runs too.
       const overlap = yield* overlapping(item, occupants);
       if (overlap) {
-        overlaps.set(item.id, overlap);
+        if (overlap.start || !overlaps.get(item.id)?.start) overlaps.set(item.id, overlap);
+        if (overlap.start && !retried.has(item.id)) attempts.push(attempt);
+        retried.add(item.id);
         continue;
       }
+      overlaps.delete(item.id);
       if (vm) choices.set(item.id, vm.runnerId);
       else if (!(yield* takeSlot(item.id))) {
         outcomes.set(item.id, "slot");

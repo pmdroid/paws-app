@@ -4,6 +4,7 @@ import {
   insertQueuedItem,
   listItemHolds,
   listOverlapHoldAges,
+  putWorkspaceUser,
   recordConfirmedRemoteMerge,
   recordRebaseReturn,
   setJournalSink,
@@ -575,52 +576,7 @@ test("an older waiter blocked by a dependency does not hold a newer item on the 
   }
 });
 
-test("an older waiter without a free runner slot does not hold a newer item that has one", async () => {
-  const { db, close } = await tempStore();
-  try {
-    const { pair } = await workspaceWithRunners(db);
-    const full = await pair("full", 1, null);
-    const open = await pair("open", 1, null);
-    await heldBehindHolder(db);
-    await item(db, "other", ["src/other.ts"]);
-    const runner = (id: string, name: string) => ({
-      id,
-      name,
-      rejection: null,
-      hostConfig: null,
-    });
-    const verdicts = (itemId: string): ItemRunnerVerdicts => ({
-      repository: "owner/repo",
-      agent: "claude",
-      runners: itemId === "b" ? [runner(open, "open")] : [runner(full, "full")],
-    });
-    const journaled: string[] = [];
-    const restore = setJournalSink((line) => journaled.push(line));
-    try {
-      const pass = (now: number) =>
-        workspaceDispatch(db, {
-          now,
-          itemRunners: (_q: Q, itemId: string) => syncSteps(() => verdicts(itemId)),
-        });
-      expect(await pass(NOW + 2)).toEqual(["other"]);
-      await setState(db, "holder", "merged");
-      expect(await pass(NOW + 3)).toEqual(["b"]);
-      expect(await pass(NOW + 4)).toEqual([]);
-    } finally {
-      restore();
-    }
-    expect(journaled.filter((line) => line.startsWith("overlap_waiter_skipped"))).toEqual([
-      "overlap_waiter_skipped item=b waiter=a waiter_reason=slot",
-    ]);
-    expect((await listItemHolds(db)).map((hold) => [hold.itemId, hold.blockers])).toEqual([
-      ["a", ["b"]],
-    ]);
-  } finally {
-    await close();
-  }
-});
-
-test("an older waiter whose last runner slot goes to earlier work in the same pass does not hold a newer item", async () => {
+test("an older waiter whose last runner slot goes to earlier work does not hold a newer item that has a slot", async () => {
   const { db, close } = await tempStore();
   try {
     const { pair } = await workspaceWithRunners(db);
@@ -638,14 +594,53 @@ test("an older waiter whose last runner slot goes to earlier work in the same pa
           : { id: full, name: "full", rejection: null, hostConfig: null },
       ],
     });
-    expect(
-      await workspaceDispatch(db, {
-        now: NOW + 2,
-        itemRunners: (_q: Q, itemId: string) => syncSteps(() => runners(itemId)),
-      }),
-    ).toEqual(["other", "b"]);
+    const journaled: string[] = [];
+    const restore = setJournalSink((line) => journaled.push(line));
+    try {
+      const pass = (now: number) =>
+        workspaceDispatch(db, {
+          now,
+          itemRunners: (_q: Q, itemId: string) => syncSteps(() => runners(itemId)),
+        });
+      expect(await pass(NOW + 2)).toEqual(["other", "b"]);
+      expect(await pass(NOW + 3)).toEqual([]);
+    } finally {
+      restore();
+    }
+    expect(journaled.filter((line) => line.startsWith("overlap_waiter_skipped"))).toEqual([
+      "overlap_waiter_skipped item=b waiter=a waiter_reason=slot",
+    ]);
+    expect((await listItemHolds(db)).map((hold) => [hold.itemId, hold.blockers])).toEqual([
+      ["a", ["b"]],
+    ]);
+  } finally {
+    await close();
+  }
+});
+
+test("an older waiter whose owner is at its cap does not hold a newer item from another owner", async () => {
+  const { db, close } = await tempStore();
+  try {
+    await heldBehindHolder(db);
+    await setState(db, "holder", "merged");
+    await item(db, "busy", ["src/other.ts"]);
+    await setState(db, "busy", "running");
+    for (const id of ["x", "y"])
+      await putWorkspaceUser(db, {
+        id,
+        linearUserId: `linear-${id}`,
+        name: id,
+        email: `${id}@example.invalid`,
+      });
+    for (const [id, owner] of [
+      ["busy", "x"],
+      ["a", "x"],
+      ["b", "y"],
+    ])
+      await exec(db, sql`UPDATE work_item SET owner_user_id=${owner} WHERE id=${id}`);
+    expect(await workspaceDispatch(db, { now: NOW + 2, ownerCap: 1 })).toEqual(["b"]);
     expect((await listItemHolds(db)).map((hold) => [hold.itemId, hold.reason])).toEqual([
-      ["a", "slot"],
+      ["a", "cap"],
     ]);
   } finally {
     await close();
