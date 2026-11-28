@@ -27,6 +27,7 @@ const OWNED_SECRET_NAMES = new Set([
 ]);
 
 const OWNED_SECRET_FAMILIES = [
+  /^agent-auth-device-[A-Za-z0-9-]+$/,
   /^github-connect-[A-Za-z0-9-]+$/,
   /^github-user-grant-[0-9a-f]{64}\.grant$/,
 ];

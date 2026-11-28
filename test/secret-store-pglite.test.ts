@@ -241,6 +241,7 @@ describePglite((connect) => {
     writeFileSync(join(identity, "runner-command-key.pem"), marker, { mode: 0o600 });
     writeFileSync(join(dir, `github-user-grant-${"a".repeat(64)}.grant`), marker);
     writeFileSync(join(dir, "github-connect-01M8FK62JP"), marker);
+    writeFileSync(join(dir, "agent-auth-device-01M8FK62JP"), marker);
     writeFileSync(join(dir, ".retired-20261127", "linear-webhook"), marker);
     writeFileSync(join(identity, ".certificate-x", "key.pem"), marker);
     writeFileSync(join(dir, "linear-oauth.json.pre-postgres-20261113T0107"), marker);
@@ -260,6 +261,7 @@ describePglite((connect) => {
 
     const first = await install(db, dir);
     expect((await db.run(secretRowsSteps)).map((row) => row.name).sort()).toEqual([
+      "agent-auth-device-01M8FK62JP",
       "github-connect-01M8FK62JP",
       `github-user-grant-${"a".repeat(64)}.grant`,
       "runner-identity/runner-command-key.pem",
