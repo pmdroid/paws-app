@@ -8,11 +8,9 @@ export {
   TelemetrySettingsError,
   checkHeaderValue,
   parseTelemetrySettings,
-  prometheusSdToken,
   readTelemetrySettings,
   saveTelemetrySettings,
   telemetryHeader,
 } from "./settings";
 export type { TelemetryProtocol, TelemetrySettings } from "./settings";
-export { handlePrometheusRunnersRequest, PROMETHEUS_RUNNERS_PATH } from "./prometheus";
 export { TRACES_EXPORT_EVERY_MS, TRACES_EXPORT_JOB, exportItemTraces } from "./traces";

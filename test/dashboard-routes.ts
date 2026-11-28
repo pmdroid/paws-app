@@ -466,11 +466,6 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     }),
   ),
   api("POST", "/api/runner-enrollments", "delegated", "src/runner-control"),
-  api("GET", "/api/prometheus/runners", "canonical", "src/telemetry", {
-    sample: "/api/prometheus/runners",
-    anonymous: 404,
-    member: 404,
-  }),
   ...[
     ["GET", "/api/auth/session", 401],
     ["POST", "/api/auth/logout", undefined],

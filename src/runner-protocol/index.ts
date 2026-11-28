@@ -148,8 +148,6 @@ export { RUNNER_TOKEN_MAX_LENGTH, RunnerTokenSchema, isRunnerToken } from "./tok
 
 export {
   RunnerHostStatusSchema,
-  RunnerMetricsSchema,
-  runnerMetricsTarget,
   RUNNER_AGENT_USERS,
   type RunnerAgentUser,
   RunnerStrayProcessSchema,

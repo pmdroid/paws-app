@@ -1,11 +1,9 @@
-import type { EnvSource } from "../config";
 import type { Db } from "../db";
 import { journalCaught } from "../journal";
 import {
   TelemetrySettingsError,
   checkHeaderValue,
   parseTelemetrySettings,
-  prometheusSdToken,
   readTelemetrySettings,
   saveTelemetrySettings,
   telemetryHeader,
@@ -19,7 +17,6 @@ export const TELEMETRY_CHECK_PATH = "/api/settings/telemetry/check";
 
 export type TelemetrySettingsOptions = {
   home: string;
-  env: EnvSource;
   store: Db;
   telemetry: Telemetry;
   csrfToken: string;
@@ -44,7 +41,6 @@ export async function handleTelemetrySettingsRequest(
     json({
       ...(await readTelemetrySettings(options.store)),
       headerValue: telemetryHeader.set(options.home) ? "set" : "notSet",
-      prometheusToken: prometheusSdToken.state(options.home, options.env),
       status: options.telemetry.status(),
     });
   if (request.method === "GET") return view();
@@ -57,17 +53,12 @@ export async function handleTelemetrySettingsRequest(
   if (!isRecord(body)) return json({ error: "Expected a JSON object of at most 128 KiB" }, 400);
   let settings;
   let headerValue: string | undefined;
-  let sdToken: string | undefined;
   try {
-    const { headerValue: header, prometheusToken, ...rest } = body;
+    const { headerValue: header, ...rest } = body;
     settings = parseTelemetrySettings(rest, await readTelemetrySettings(options.store));
     headerValue = header === undefined ? undefined : checkHeaderValue(header);
-    sdToken = prometheusToken === undefined ? undefined : checkHeaderValue(prometheusToken);
-    if (request.method === "PUT" && sdToken !== undefined)
-      await prometheusSdToken.write(options.home, options.env, sdToken);
   } catch (error) {
-    if (error instanceof TelemetrySettingsError)
-      return json({ error: error.message }, sdToken === undefined ? 400 : 409);
+    if (error instanceof TelemetrySettingsError) return json({ error: error.message }, 400);
     throw error;
   }
   if (request.method === "POST")
@@ -83,11 +74,9 @@ export async function handleTelemetrySettingsRequest(
   }
   await options.telemetry.apply(settings, telemetryHeader.read(options.home));
   const secret = headerValue === undefined ? "kept" : headerValue === "" ? "cleared" : "replaced";
-  const sd =
-    sdToken === undefined ? "" : `, Prometheus token ${sdToken === "" ? "cleared" : "replaced"}`;
   await options.audit(
     "settings.telemetry",
-    `Set OTLP export ${settings.enabled ? "on" : "off"}${settings.endpoint === "" ? "" : ` to ${settings.endpoint} (${settings.protocol})`}, header value ${secret}${sd}`,
+    `Set OTLP export ${settings.enabled ? "on" : "off"}${settings.endpoint === "" ? "" : ` to ${settings.endpoint} (${settings.protocol})`}, header value ${secret}`,
   );
   return view();
 }

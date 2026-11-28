@@ -34,8 +34,6 @@ The Closeout policy of each repository, `.agents/closeout.yaml` on `origin/main`
 
 [Workspace access](workspace-access.md), [runner enrollment](runner-enrollment.md) and [Slack](slack.md) describe the variables for a public dashboard, the runner listener and Slack.
 
-`PAWS_PROMETHEUS_SD_TOKEN` turns on `GET /api/prometheus/runners`: Prometheus HTTP service discovery of the metrics endpoint each runner reports, for runners seen in the last 10 minutes and not revoked. Prometheus sends the token as `Authorization: Bearer <token>`. Without the variable, an admin sets, replaces or clears the token under **Prometheus runner discovery** in Workspace › Telemetry. The variable wins; the page then shows it as set by the environment and can't change it. With neither, the route answers 404.
-
 ### `paws install secrets`
 
 Install the control plane from the package ([README](../README.md#install-the-control-plane-from-the-package)).

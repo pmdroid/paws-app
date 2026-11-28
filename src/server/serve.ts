@@ -6,7 +6,6 @@ import type { DoctorCheck } from "../doctor";
 import { recordDuration } from "../metrics";
 import { observeRequest, type RequestMetrics } from "./request-metrics";
 import { ALERTS_PATH, readAlerts, type DeployLagCheck } from "../alerts";
-import { handlePrometheusRunnersRequest, PROMETHEUS_RUNNERS_PATH } from "../telemetry";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
 import { createGitHubStatusCache, type GitHubStatusCache } from "./github-status-cache";
@@ -507,14 +506,6 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       headers: { "cache-control": "no-store" },
     });
   }
-  if (path === PROMETHEUS_RUNNERS_PATH) {
-    const env = secrets.statusEnv ?? process.env;
-    return handlePrometheusRunnersRequest(request, {
-      home: loadRuntime(env).env.home,
-      env,
-      store: secrets.store,
-    });
-  }
   if (path === "/api/runner-enrollments" && secrets.runnerHostEnrollment !== undefined)
     return secrets.runnerHostEnrollment(request);
   if (secrets.workspaceAccess === null && !path.startsWith("/webhooks")) {
@@ -953,7 +944,6 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     const store = secrets.store;
     return (await handleTelemetrySettingsRequest(request, {
       home: loadRuntime(secrets.statusEnv ?? process.env).env.home,
-      env: secrets.statusEnv ?? process.env,
       store,
       telemetry: secrets.telemetry,
       csrfToken,

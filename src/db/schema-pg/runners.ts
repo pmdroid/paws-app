@@ -33,8 +33,6 @@ export const runner = pgTable(
     terminationsSince: bigint("terminations_since", { mode: "number" }),
     fixSlots: integer("fix_slots").default(1).notNull(),
     isolation: text().default("none").notNull(),
-    metricsUrl: text("metrics_url"),
-    metricsReportedAt: bigint("metrics_reported_at", { mode: "number" }),
   },
   (table) => [
     foreignKey({
