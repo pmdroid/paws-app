@@ -13,7 +13,12 @@ import {
   writeAgentCredentialCiphertextSteps,
 } from "../src/db";
 import type { WorkspacePrincipal } from "../src/workspace";
-import { describePglite, seed, withoutForeignKeys } from "./pglite-fixtures";
+import {
+  describePglite,
+  sealedCredentialSecret,
+  seed,
+  withoutForeignKeys,
+} from "./pglite-fixtures";
 import { seedRunner } from "./runner-rows";
 
 const RUNNER = "01JRUNNER0000000000000000A";
@@ -310,15 +315,18 @@ describePglite((connect) => {
       ).toBe(200);
       expect((await send("PUT", `/${work.id}/extra-usage`, { extraUsage: true })).status).toBe(200);
       expect((await send("POST", `/${home.id}/sign-in`)).status).toBe(400);
-      await seed(db, (q) =>
-        q.orm.insert(q.t.agentAccountCredential).values({
-          accountId: home.id,
-          agent: "claude",
-          ciphertext: "sealed",
-          version: 1,
-          updatedAt: NOW - 60_000,
-          runnerId: "R2",
-        }),
+      await seed(
+        db,
+        (q) =>
+          q.orm.insert(q.t.agentAccountCredential).values({
+            accountId: home.id,
+            agent: "claude",
+            ciphertext: "",
+            version: 1,
+            updatedAt: NOW - 60_000,
+            runnerId: "R2",
+          }),
+        sealedCredentialSecret(home.id, NOW - 60_000),
       );
       await db.transaction((q) =>
         saveProviderUsageSteps(
