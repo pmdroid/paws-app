@@ -28,8 +28,7 @@ import {
   releaseIdleSessionItemSteps,
   runnerTaskSlotsSteps,
   runPendingJobNowSteps,
-  runnerOccupancySteps,
-  runnerSlotsHeldBetweenCommandsSteps,
+  runnerFleetOccupancySteps,
   unassignedRunnerReservationsSteps,
   schedulerRunnerSlotsSteps,
   saveItemSchedulingSteps,
@@ -296,39 +295,43 @@ export function hintedPaths(brief: string | null): string[] {
   }
 }
 
-function* taskSlots(
-  q: Q,
-  now: number,
-  excludeRunId = "",
-): Steps<{
+type TaskSlots = {
   total: number;
   busy: number;
   open: Map<string, number>;
   fix: Map<string, number>;
-} | null> {
+  openExcluding: (runId: string) => Map<string, number>;
+};
+
+function* taskSlots(q: Q, now: number): Steps<TaskSlots | null> {
   const runners = yield* runnerTaskSlotsSteps(q, now, now - RUNNER_SEEN_MS);
   if (!runners.length) return null;
   const reservations = yield* unassignedRunnerReservationsSteps(q, now, "");
-  const occupancy = [];
-  for (const runner of runners) {
-    const { capacity, occupied } = yield* runnerOccupancySteps(q, runner.id, now, excludeRunId);
-    const between = yield* runnerSlotsHeldBetweenCommandsSteps(q, runner.id, now, excludeRunId);
-    occupancy.push({
-      id: runner.id,
-      capacity,
-      used: occupied + between + (reservations.get(runner.id) ?? 0),
-    });
-  }
+  const fleet = yield* runnerFleetOccupancySteps(
+    q,
+    runners.map((runner) => runner.id),
+    now,
+  );
+  const openExcluding = (runId: string) =>
+    new Map(
+      runners.map(({ id }) => {
+        const runner = fleet.get(id)!;
+        const used =
+          runner.occupied -
+          runner.leasedRunIds.filter((leased) => leased === runId).length +
+          (runner.holderRunIds.includes(runId) ? 0 : runner.holderRunIds.length) +
+          (reservations.get(id) ?? 0);
+        return [id, runner.capacity - Math.min(used, runner.capacity)];
+      }),
+    );
+  const open = openExcluding("");
+  const total = runners.reduce((sum, { id }) => sum + fleet.get(id)!.capacity, 0);
   return {
-    total: occupancy.reduce((total, runner) => total + runner.capacity, 0),
-    busy: occupancy.reduce((busy, runner) => busy + Math.min(runner.used, runner.capacity), 0),
-    open: new Map(
-      occupancy.map((runner) => [
-        runner.id,
-        runner.capacity - Math.min(runner.used, runner.capacity),
-      ]),
-    ),
+    total,
+    busy: total - [...open.values()].reduce((sum, free) => sum + free, 0),
+    open,
     fix: new Map(runners.map((runner) => [runner.id, runner.fixSlots])),
+    openExcluding,
   };
 }
 
@@ -672,17 +675,16 @@ async function admit(
     if (slots)
       for (const item of candidates) {
         if (!item.currentRunId) continue;
-        const excluding = yield* taskSlots(q, now, item.currentRunId);
-        if (excluding)
-          credits.set(
-            item.id,
-            new Map(
-              [...slots.open].map(([id, open]) => [
-                id,
-                Math.min(1, Math.max(0, (excluding.open.get(id) ?? 0) - open)),
-              ]),
-            ),
-          );
+        const excluding = slots.openExcluding(item.currentRunId);
+        credits.set(
+          item.id,
+          new Map(
+            [...slots.open].map(([id, open]) => [
+              id,
+              Math.min(1, Math.max(0, (excluding.get(id) ?? 0) - open)),
+            ]),
+          ),
+        );
       }
     const credit = (itemId: string, runnerId: string) => credits.get(itemId)?.get(runnerId) ?? 0;
     const answers = new Map<string, ItemRunnerVerdicts | null>();

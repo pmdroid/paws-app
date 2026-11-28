@@ -37,6 +37,7 @@ import { dispatch } from "../src/scheduler";
 import { workspaceAdmission } from "./fake-workspace";
 import { workspaceWithRunners, REPOSITORY, NOW } from "./runner-slot-fixture";
 import { tempStore } from "./pglite";
+import { queriesDuring } from "./query-log";
 import { json, reportFixtureBindings, seed } from "./pglite-fixtures";
 
 const closeStores: (() => Promise<void>)[] = [];
@@ -870,4 +871,26 @@ test("unpinned work takes a freed slot when no pinned item waits for it", async 
   expect(
     (await schedulerRunnerSlots(db, NOW)).find((row) => row.itemId === "early")?.runnerId,
   ).toBe(agentbox);
+});
+
+test("resumable candidates add no runner occupancy reads to an admission pass", async () => {
+  const statements = async (resumable: boolean) => {
+    const db = await database();
+    const { pair, queue, pass } = await workspaceWithRunners(db);
+    for (const name of ["one", "two", "three"]) await pair(name, 1, [REPOSITORY]);
+    for (const id of ["a", "b", "c", "d", "e"]) {
+      await queue(id);
+      if (!resumable) continue;
+      const run = await insertRun(db, { itemId: id, now: NOW, status: "ended" });
+      await setCurrentRun(db, id, run.id);
+    }
+    const seen = await queriesDuring(db, () => pass());
+    return {
+      occupancy: seen.filter((query) => /retro_dispatch|runner_reservation|fix_slots/.test(query))
+        .length,
+      holds: (await listItemHolds(db)).length,
+    };
+  };
+  const fresh = await statements(false);
+  expect(await statements(true)).toEqual(fresh);
 });
