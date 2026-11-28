@@ -62,6 +62,22 @@ export default {
             },
           ],
   async run(proof) {
+    const replay = Bun.spawn(
+      [
+        "bun",
+        "test",
+        "test/runner-handover-resume.test.ts",
+        "--timeout=20000",
+        "--test-name-pattern",
+        "^replayed questions attach to the open answer without asking or cancelling again$",
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const replayed = Promise.all([
+      replay.exited,
+      new Response(replay.stdout).text(),
+      new Response(replay.stderr).text(),
+    ]);
     const root = mkdtempSync(join(tmpdir(), "acme-toolchain-proof-"));
     const source = join(root, "source");
     const bin = join(root, "bin");
@@ -153,32 +169,6 @@ export default {
         QUESTION.includes('rust = "stable"'),
       QUESTION,
     );
-    // Exercise the remote event replay path with its real runner store and command harness.
-    const replay = Bun.spawn(
-      [
-        "bun",
-        "test",
-        "test/runner-handover-resume.test.ts",
-        "--timeout=20000",
-        "--test-name-pattern",
-        "replay",
-      ],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-    const [exit, stdout, stderr] = await Promise.all([
-      replay.exited,
-      new Response(replay.stdout).text(),
-      new Response(replay.stderr).text(),
-    ]);
-    proof.expect(
-      "runner question replay asks once and answers every journal sequence in order",
-      exit === 0,
-      {
-        stdout,
-        stderr,
-      },
-    );
-
     // Relay the worker's actual question through the scripted local tracker fixture.
     await proof.delegate();
     const asked = await proof.waitFor(
@@ -273,6 +263,12 @@ export default {
       "the item is merged, not failed",
       merged && (await proof.itemState()) === "merged",
       await proof.itemState(),
+    );
+    const [exit, stdout, stderr] = await replayed;
+    proof.expect(
+      "runner question replay asks once and answers every journal sequence in order",
+      exit === 0,
+      { stdout, stderr },
     );
   },
 } satisfies Proof;
