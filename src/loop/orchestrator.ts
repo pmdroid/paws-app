@@ -1094,8 +1094,11 @@ export class Orchestrator {
     this.riskDisplayReader.refreshSettings();
   }
 
+  private readonly settingsBaseline: string | null;
+
   constructor(private readonly options: OrchestratorOptions) {
     this.store = options.store;
+    this.settingsBaseline = this.agentSettingsKey();
     this.riskDisplayReader = new RiskDisplayReader({
       store: this.store,
       readSettings: () => this.readMergePolicy(),
@@ -8666,7 +8669,7 @@ export class Orchestrator {
     let config: ReturnType<typeof loadSettings> | null = null;
     let merge: MergeSettings | null = null;
     try {
-      await this.applyAgentSettingsToWaiting();
+      await this.reconcileWaitingProfiles();
       const loaded = loadSettings(this.options.pawsRoot);
       merge = readMergeSettings(loaded);
       if (ownerHasRunner || this.options.itemRunners) config = loaded;
@@ -9012,7 +9015,7 @@ export class Orchestrator {
     if (item.currentRunId !== null && !fresh) {
       const existing = await this.store.run((q) => getRunSteps(q, item.currentRunId!));
       if (existing && (existing.status === "active" || existing.status === "ended")) {
-        await this.applyAgentSettingsToWaiting();
+        await this.reconcileWaitingProfiles();
         await this.store.run((q) => markRunSteps(q, existing.id, "active", this.now()));
         await this.claimRun(existing.id);
         return existing;
@@ -9023,7 +9026,7 @@ export class Orchestrator {
         existing?.status === "lost" &&
         (await this.store.run((q) => takeRunnerSetupResumeSteps(q, item.id, existing.id)))
       ) {
-        await this.applyAgentSettingsToWaiting();
+        await this.reconcileWaitingProfiles();
         await this.store.run((q) => markRunSteps(q, existing.id, "active", this.now()));
         await this.claimRun(existing.id);
         return existing;
@@ -9703,7 +9706,7 @@ export class Orchestrator {
     return async (options: RunAgentOptions) => {
       await this.assertJobCurrent(itemId);
       const resolveProfiles = async () => {
-        await this.applyAgentSettingsToWaiting();
+        await this.reconcileWaitingProfiles();
         const currentRunId = (await this.store.run((q) => getWorkItemSteps(q, itemId)))
           ?.currentRunId;
         if (!currentRunId)
@@ -11687,6 +11690,21 @@ export class Orchestrator {
 
   private async writeProfileSnapshot(runId: string, snapshot: ProfileSnapshot): Promise<void> {
     await this.store.run((q) => saveRunProfileSteps(q, runId, snapshot, this.now()));
+  }
+
+  private agentSettingsKey(): string | null {
+    try {
+      return JSON.stringify(readAgentSettings(loadSettings(this.options.pawsRoot)));
+    } catch (error) {
+      journalCaught(error, "orchestrator.agentSettingsKey", null, undefined, this.options.journal);
+      return null;
+    }
+  }
+
+  private async reconcileWaitingProfiles(): Promise<number> {
+    const key = this.agentSettingsKey();
+    if (key !== null && key === this.settingsBaseline) return 0;
+    return this.applyAgentSettingsToWaiting();
   }
 
   async applyAgentSettingsToWaiting(): Promise<number> {

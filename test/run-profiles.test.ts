@@ -18,6 +18,8 @@ import { runDir } from "../src/acp";
 import { useMemorySettings, writeAgentSettings } from "../src/config";
 import { Orchestrator, moveRunProfileFiles } from "../src/loop";
 import { tempStore } from "./pglite";
+import { seed } from "./pglite-fixtures";
+import { eq } from "drizzle-orm";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -91,10 +93,19 @@ test("a second worker with a fresh home recovers the saved identity after the de
   const a = worker(db, one);
   const run = await a.ensureRun((await getWorkItem(db, queued.id))!);
   await a.saveCandidate(run.id, candidate);
+  await seed(db, (q) =>
+    q.orm.update(q.t.workItem).set({ state: "running" }).where(eq(q.t.workItem.id, queued.id)),
+  );
   const b = worker(db, two);
+  expect((await b.ensureRun((await getWorkItem(db, queued.id))!)).id).toBe(run.id);
   expect(await b.profileSnapshot(run.id)).toEqual(first);
   expect(await b.candidateFor(run.id)).toEqual(candidate);
   expect(existsSync(join(runDir(two, run.id), "agent-profile.json"))).toBe(false);
+  const edited = { ...first, implementer: { agent: "claude", model: "edited" } } as const;
+  await writeAgentSettings(two, { defaults: edited });
+  await b.ensureRun((await getWorkItem(db, queued.id))!);
+  expect(await b.profileSnapshot(run.id)).toEqual(edited);
+  expect(await b.candidateFor(run.id)).toEqual(candidate);
 });
 
 test("a legacy snapshot moves into the database as written, settings changes included", async () => {
