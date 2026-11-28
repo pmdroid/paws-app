@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { count, eq } from "drizzle-orm";
+import { count, eq, sql } from "drizzle-orm";
 import type { AcpEvent } from "../src/acp";
 import { PawsShutdown } from "../src/core";
 import {
@@ -53,7 +53,7 @@ const TRANSCRIPT = Buffer.from(
   })}\n`,
 );
 
-async function fixture() {
+async function fixture(pollIntervalMs: number | null = 5) {
   const root = mkdtempSync(join(tmpdir(), "paws-response-restart-"));
   const path = join(root, "pglite");
   await copyMigratedPglite(path);
@@ -117,6 +117,7 @@ async function fixture() {
 
   const keys = generateKeyPairSync("ed25519");
   let downloads = 0;
+  let reads = 0;
   await boundPlacementAccounts(db);
   function open() {
     const work = createRunnerWork({
@@ -127,6 +128,8 @@ async function fixture() {
     });
     boundHeartbeat(db, work);
     const results = createRunnerResults({ store: db, work });
+    const read = results.read.bind(results);
+    results.read = (...args) => (reads++, read(...args));
     const health = createRunnerHealth({ store: db, work });
     boundResultSubmissions(db, results, health);
     const backend = createRemoteAgentRunner({
@@ -135,7 +138,7 @@ async function fixture() {
       results,
       health,
       placement: createRunnerPlacement({ store: db }),
-      pollIntervalMs: 5,
+      pollIntervalMs: pollIntervalMs ?? undefined,
       async fetchCandidate() {
         throw new Error("A response task has no candidate");
       },
@@ -229,6 +232,7 @@ async function fixture() {
     runnerWork,
     consumed,
     downloads: () => downloads,
+    reads: () => reads,
     get db() {
       return db;
     },
@@ -414,6 +418,62 @@ test("an answer task whose runner lease ran past its grace resumes from the star
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
     expect(await getWorkItem(f.db, f.item.id)).toMatchObject({ recoveryAttempts: 1 });
+  } finally {
+    await f.close();
+  }
+}, 60_000);
+
+async function started(f: Awaited<ReturnType<typeof fixture>>) {
+  const run = f.services.backend.forItem(f.item.id)(f.options(new AbortController().signal));
+  await f.until(() => f.tasks.length === 1);
+  return { run, command: f.tasks[0]! };
+}
+
+test("a notified run reads on each committed event and result, not every 250 ms", async () => {
+  const f = await fixture(null);
+  try {
+    const { run, command } = await started(f);
+    await f.say(command, 1, "Woken.");
+    await f.until(async () => (await f.consumed()) === 1);
+    await f.finish(command);
+    expect(await run).toMatchObject({ stopReason: "end_turn" });
+    expect(messages(f.events)).toEqual(["Woken."]);
+  } finally {
+    await f.close();
+  }
+}, 60_000);
+
+test("a run whose notification is missed completes on the 5 s check with few reads", async () => {
+  const f = await fixture(null);
+  try {
+    const { run, command } = await started(f);
+    await f.db.orm.execute(sql`ALTER TABLE runner_result DISABLE TRIGGER runner_result_notifies`);
+    const before = f.reads();
+    await f.finish(command);
+    expect(await run).toMatchObject({ stopReason: "end_turn" });
+    expect(f.reads() - before).toBeLessThanOrEqual(4);
+  } finally {
+    await f.close();
+  }
+}, 60_000);
+
+test("a result committed while Paws is down completes the reattached run", async () => {
+  const f = await fixture(null);
+  try {
+    const shutdown = new AbortController();
+    const first = f.services.backend
+      .forItem(f.item.id)(f.options(shutdown.signal))
+      .catch((error: unknown) => error);
+    await f.until(() => f.tasks.length === 1);
+    shutdown.abort(new PawsShutdown());
+    await first;
+    await prepareShutdown(f.db);
+    await f.finish(f.tasks[0]!);
+    await f.restart();
+    await recoverOnStartup(f.db);
+    const resumed = f.services.backend.forItem(f.item.id)(f.options(new AbortController().signal));
+    expect(await resumed).toMatchObject({ stopReason: "end_turn" });
+    expect(f.tasks).toHaveLength(1);
   } finally {
     await f.close();
   }
