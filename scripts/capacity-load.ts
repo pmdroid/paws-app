@@ -42,7 +42,7 @@ const WS = "ws-capacity";
 
 type Role = { viewers: true } | { name: string; origin: string; db: string };
 type Tally = { reads: number; linear: number; schedulerMs: number[] };
-type Seen = { latencies: number[]; timeouts: number; errors: number; denied: number };
+type Seen = { latencies: number[]; timeouts: number; errors: number; denied: number[] };
 type Message =
   | { type: "ready" }
   | { type: "start"; itemId: string; key: string; at: number }
@@ -74,9 +74,9 @@ else if ("viewers" in role) viewers();
 else await worker(role.name, role.origin, role.db);
 
 function viewers() {
-  const seen: Seen = { latencies: [], timeouts: 0, errors: 0, denied: 0 };
+  const seen: Seen = { latencies: [], timeouts: 0, errors: 0, denied: [] };
   const polling = { on: true };
-  const poll = async (target: { urls: string[]; cookie: string }) => {
+  const poll = async (target: { urls: string[]; cookie: string }, viewer: number) => {
     for (await pause(Math.random() * POLL_MS); polling.on; await pause(POLL_MS)) {
       const began = performance.now();
       const init = { headers: { cookie: target.cookie }, signal: AbortSignal.timeout(5_000) };
@@ -86,7 +86,7 @@ function viewers() {
         );
         await response.arrayBuffer();
         seen.latencies.push(performance.now() - began);
-        if (response.status === 401 || response.status === 403) seen.denied++;
+        if (response.status === 401 || response.status === 403) seen.denied.push(viewer);
         else if (!response.ok) seen.errors++;
       } catch (error) {
         if ((error as Error).name === "TimeoutError") seen.timeouts++;
@@ -345,7 +345,7 @@ async function main() {
   }));
   const report: Record<string, number | boolean | string>[] = [];
   let delegated = 0;
-  for (const runs of STEPS) {
+  for (const [index, runs] of STEPS.entries()) {
     const backlog: { n: number; oldestMs: number }[] = [];
     const sampling = { on: true };
     const viewing = await spawn("viewers", { viewers: true });
@@ -378,33 +378,35 @@ async function main() {
     const reads = totals.reads;
     await pause(QUIET_MS);
     const quietReads = totals.reads - reads;
-    await member(db, 1, false);
+    await member(db, index + 1, false);
+    const revoked = pause(2 * POLL_MS);
     workers[1]!.kill("SIGTERM");
     await workers[1]!.exited;
     workers[1] = await pawsWorker(1);
     const restartedAll = await until(() => active.size >= runs, 120_000);
     for (const each of workers) each.send({ type: "release" } satisfies Command);
     const settled = startedAll && restartedAll && (await until(() => active.size === 0, 60_000));
+    await revoked;
     sampling.on = false;
     seen = null;
     viewing.send({ type: "stop" } satisfies Command);
     await until(() => seen !== null, 30_000);
     viewing.kill();
     await sampler;
-    const dashboard: Seen = seen ?? { latencies: [], timeouts: VIEWERS, errors: 0, denied: 0 };
+    const dashboard: Seen = seen ?? { latencies: [], timeouts: VIEWERS, errors: 0, denied: [] };
     const tail = backlog.slice(-5);
     const step = {
       ...{ activeRuns: runs, viewers: VIEWERS, dashboardRequests: dashboard.latencies.length },
       dashboardP95Ms: Math.round(p95(dashboard.latencies)),
       dashboardTimeouts: dashboard.timeouts,
       dashboardErrors: dashboard.errors,
-      revokedViewerDenied: dashboard.denied > 0,
-      oldestRunnableJobMs: Math.max(0, ...tail.map((each) => each.oldestMs)),
+      revokedViewerDenied: dashboard.denied.includes(index + 1),
+      oldestRunnableJobMs: Math.max(0, ...backlog.map((each) => each.oldestMs)),
       runnableBacklog: tail.map((each) => each.n).join(" "),
       delegationToStartP95Ms: Math.round(
         p95([...delegatedAt].map(([key, at]) => (startedAt.get(key) ?? Date.now()) - at)),
       ),
-      schedulerTransactionP95Ms: Math.round(p95(totals.schedulerMs.splice(0))),
+      schedulerPassP95Ms: Math.round(p95(totals.schedulerMs.splice(0))),
       readsPerQuietRunPerMinute: Math.round((quietReads / runs) * (60_000 / QUIET_MS)),
       linearCalls: totals.linear,
       providerThrottled: Math.max(0, totals.linear - LINEAR_HOURLY),
