@@ -1575,6 +1575,85 @@ async function nextReview(runnerId: string) {
   return undefined;
 }
 
+function toolchainQuestionResult(command: RunCommand, candidateSha: string) {
+  return {
+    executionId: workspaceId(),
+    commandId: command.id,
+    account: command.account,
+    role: "implementer" as const,
+    stopReason: "end_turn" as const,
+    cancelled: false,
+    timedOut: false,
+    authRequired: false,
+    agentExited: false,
+    candidateSha,
+  };
+}
+
+test("a turn that ended on a missing-toolchain question is accepted once and frees its slot", async () => {
+  const { db, runners } = context;
+  const record = await context.item();
+  await setRunner(db, runners.b, { status: "paused" });
+  const { running } = context.turn(record, [], async (request) => {
+    await insertQuestion(db, {
+      itemId: record.id,
+      runId: record.runId,
+      sessionId: record.sessionKey,
+      body: request.question,
+      status: "open",
+    });
+    return { answer: "Question posted to the team. End your turn now." };
+  });
+  const onA = (await context.next(runners.a)) as RunCommand;
+  await context.events(onA, runners.a, [
+    { type: "question", text: "Cargo.toml needs cargo.", options: [] },
+  ]);
+  await until(async () => (await questionAnswers(db, onA.runId)).length > 0);
+  await setWorkItem(db, record.id, { state: "awaiting_input" });
+  const access = {
+    runnerId: runners.a,
+    runId: onA.runId,
+    generation: onA.generation,
+    token: await context.grant(onA, runners.a),
+  };
+  const result = toolchainQuestionResult(onA, context.base);
+  expect(await context.results.submit({ ...access, result })).toEqual({ duplicate: false });
+  expect(await context.results.submit({ ...access, result })).toEqual({ duplicate: true });
+  expect(await running).toMatchObject({ stopReason: "end_turn", agentExited: false });
+  const work = await db.run((q) =>
+    q.one(
+      q.orm
+        .select({ endedAt: q.t.runnerWork.endedAt })
+        .from(q.t.runnerWork)
+        .where(eq(q.t.runnerWork.runId, onA.runId)),
+    ),
+  );
+  expect(work?.endedAt).not.toBeNull();
+  expect((await getWorkItem(db, record.id))?.state).toBe("awaiting_input");
+  expect(await openedQuestion(db, onA.runId)).toBeTruthy();
+});
+
+test("a candidate without the agent is refused when the turn did not end on a question", async () => {
+  const { db, runners } = context;
+  const record = await context.item();
+  await setRunner(db, runners.b, { status: "paused" });
+  context.turn(record, []);
+  const onA = (await context.next(runners.a)) as RunCommand;
+  const access = {
+    runnerId: runners.a,
+    runId: onA.runId,
+    generation: onA.generation,
+    token: await context.grant(onA, runners.a),
+  };
+  const result = toolchainQuestionResult(onA, context.base);
+  await expect(context.results.submit({ ...access, result })).rejects.toThrow(
+    "Runner result command binding is invalid.",
+  );
+  await expect(
+    context.results.submit({ ...access, result: { ...result, sessionId: "claude-session" } }),
+  ).rejects.toThrow("Runner result command binding is invalid.");
+});
+
 test("a review after the session's account was removed starts fresh on the remaining account", async () => {
   const { db, runners } = context;
   const record = await context.item();
