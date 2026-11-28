@@ -13,7 +13,7 @@ import {
   type ToolchainQuestion,
 } from "../runner-protocol";
 
-const TOOLCHAIN_BRANCH = "paws/toolchain";
+export const TOOLCHAIN_BRANCH = "paws/toolchain";
 const TOOLCHAIN_TITLE = "Declare the tools Paws runners need";
 
 export function addToolchainEntries(
