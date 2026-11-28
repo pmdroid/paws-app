@@ -62,7 +62,7 @@ describe("linear oauth", () => {
     });
     expect(await auth.hasToken()).toBe(true);
     const sealed = async () =>
-      JSON.stringify(await db.run((q) => q.all(q.orm.select().from(q.t.credential))));
+      JSON.stringify(await db.run((q) => q.all(q.orm.select().from(q.t.secret))));
     for (const secret of ["access-1", "refresh-1"]) expect(await sealed()).not.toContain(secret);
     const access = await auth.ensureFresh();
     expect(access).toBe("access-2");

@@ -107,7 +107,7 @@ test("Slack OAuth uses bot scopes, exact HTTPS redirect and single-use state, th
   });
   expect(await readSlackToken(db, dir)).toEqual(token);
   expect(readSlackApp(dir)).toBeNull();
-  const sealed = JSON.stringify(await db.run((q) => q.all(q.orm.select().from(q.t.credential))));
+  const sealed = JSON.stringify(await db.run((q) => q.all(q.orm.select().from(q.t.secret))));
   for (const secret of [grant.access_token, env.SLACK_CLIENT_SECRET, env.SLACK_SIGNING_SECRET])
     expect(sealed).not.toContain(secret);
   await expect(fetch(`http://127.0.0.1:${port}/oauth/slack/callback`)).rejects.toThrow();

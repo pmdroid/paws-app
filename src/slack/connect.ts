@@ -1,7 +1,6 @@
 import {
   auditWorkspaceAccessSteps,
   claimGithubOAuthSteps,
-  deleteCredentialCiphertextSteps,
   completeGithubOAuthSteps,
   failGithubOAuthSteps,
   githubOAuthStateExistsSteps,
@@ -23,6 +22,7 @@ import {
 import { dashboardUrl } from "../dashboard-links";
 import { envSetting, envSettingRefusal, settingSources } from "../config";
 import { journalCaught } from "../journal";
+import { removeScopedCredentialSteps } from "../credentials";
 import {
   createSlackAuth,
   installedSlackTokenSteps,
@@ -185,7 +185,7 @@ export function createSlackConnect(options: {
         userId: principal.userId,
         sessionHash,
         secretId: "slack",
-        expectedGeneration: current?.updatedAt ?? 0,
+        expectedGeneration: current?.version ?? 0,
         intent: JSON.stringify({ kind: "slack", ...from }),
         expiresAt: now() + 10 * 60_000,
       });
@@ -237,7 +237,7 @@ export function createSlackConnect(options: {
       if (!(yield* adminSteps(q, principal))) return "forbidden";
       const current = yield* installedSlackTokenSteps(q, home, principal.workspaceId);
       const expected = claimed.expected_generation;
-      if ((current?.updatedAt ?? 0) !== expected) return "conflict";
+      if ((current?.version ?? 0) !== expected) return "conflict";
       if (current && (current.teamId !== token.teamId || current.appId !== token.appId))
         return "different_team";
       const team = yield* slackTeamOwnerSteps(q, home, token.teamId, principal.workspaceId);
@@ -268,7 +268,7 @@ export function createSlackConnect(options: {
         // A lost race after the team claim rolls the whole adoption back.
         if (
           !(yield* saveInstalledSlackTokenSteps(q, home, principal.workspaceId, token, 0)) ||
-          !(yield* deleteCredentialCiphertextSteps(q, login.key, login.updatedAt))
+          !(yield* removeScopedCredentialSteps(q, login.key, login.version))
         )
           throw new SlackAdoptRace();
         yield* markSlackInstallationSteps(q, principal.workspaceId, now());
@@ -302,10 +302,9 @@ export function createSlackConnect(options: {
     const ended = await store.transaction(function* (q) {
       const current = yield* installedSlackTokenSteps(q, home, principal.workspaceId);
       const key = { kind: "slack" as const, workspace: principal.workspaceId };
-      if (!current || !(yield* deleteCredentialCiphertextSteps(q, key, current.updatedAt)))
-        return null;
+      if (!current || !(yield* removeScopedCredentialSteps(q, key, current.version))) return null;
       const team = yield* slackTeamOwnerSteps(q, home, current.teamId);
-      if (team.owner) yield* deleteCredentialCiphertextSteps(q, team.key, team.owner.updatedAt);
+      if (team.owner) yield* removeScopedCredentialSteps(q, team.key, team.owner.version);
       yield* auditSteps(q, principal, "slack.disconnected", `slack:${current.teamId}`);
       return current;
     });

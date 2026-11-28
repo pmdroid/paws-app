@@ -4,8 +4,8 @@ import { rmSync } from "node:fs";
 import { eq } from "drizzle-orm";
 import {
   consumeWorkspaceBootstrap,
-  deleteCredentialCiphertextSteps,
   putWorkspaceUser,
+  secretsNamedSteps,
   syncWorkspaceMember,
 } from "../src/db";
 import {
@@ -23,7 +23,7 @@ import {
   slackSigningSecret,
 } from "../src/slack";
 import { startServer } from "../src/server";
-import { writeCredential } from "../src/credentials";
+import { removeScopedCredentialSteps, writeCredential } from "../src/credentials";
 import { pawsPaths } from "../src/config";
 import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
@@ -160,6 +160,11 @@ async function fixture(appEnv: Record<string, string | undefined> = env) {
     return handleSlackWebhook(request, secret, Date.now(), revoke);
   }
   const audit = () => db.run((q) => q.all(q.orm.select().from(q.t.workspaceAccessAudit)));
+  const secretRows = async () =>
+    (await db.run((q) => secretsNamedSteps(q, "oauth-slack-"))).map((row) => ({
+      ...row,
+      workspace: row.name.slice("oauth-slack-".length).replace(/^team-/, "team:"),
+    }));
   return {
     db,
     home,
@@ -168,11 +173,7 @@ async function fixture(appEnv: Record<string, string | undefined> = env) {
     refreshed,
     failRefresh: (value: boolean) => (refreshFails = value),
     owners: async () =>
-      (
-        await db.run((q) =>
-          q.all(q.orm.select().from(q.t.credential).where(eq(q.t.credential.kind, "slack"))),
-        )
-      )
+      (await secretRows())
         .map((row) => row.workspace)
         .filter((name) => name.startsWith("team:"))
         .sort(),
@@ -186,11 +187,7 @@ async function fixture(appEnv: Record<string, string | undefined> = env) {
     status: async (user: string) =>
       (await (await call(user, "/api/workspaces/slack")).json()) as View,
     credentials: async (owners = false) =>
-      (
-        await db.run((q) =>
-          q.all(q.orm.select().from(q.t.credential).where(eq(q.t.credential.kind, "slack"))),
-        )
-      ).filter((row) => owners || !row.workspace.startsWith("team:")),
+      (await secretRows()).filter((row) => owners || !row.workspace.startsWith("team:")),
     login: (token: Partial<Record<string, string | null>> = {}) =>
       writeCredential(
         db,
@@ -385,10 +382,10 @@ test("concurrent reconnects commit once, and a stale disconnect keeps the newer 
     f.finish("alice", b, { team: "T111111" }),
   ]);
   expect(results.map((to) => to.split("slack=")[1]).sort()).toEqual(["conflict", "connected"]);
-  const stale = (await f.credentials())[0]!.updatedAt;
+  const stale = (await f.credentials())[0]!.version;
   await f.again("alice", { team: "T111111" });
   const key = { kind: "slack" as const, workspace: "ws1" };
-  expect(await f.db.run((q) => deleteCredentialCiphertextSteps(q, key, stale))).toBe(false);
+  expect(await f.db.run((q) => removeScopedCredentialSteps(q, key, stale))).toBe(false);
   expect(await f.credentials()).toHaveLength(1);
 });
 
@@ -494,7 +491,7 @@ test("a rotating token refreshes for its own workspace, and a failed refresh ask
   expect((await f.status("dave")).reconnect).toBeNull();
   expect(f.refreshed).toEqual(["xoxe-T111111"]);
   const after = Object.fromEntries((await f.credentials()).map((row) => [row.workspace, row]));
-  expect(after.ws1!.updatedAt).toBeGreaterThan(before.ws1!.updatedAt);
+  expect(after.ws1!.version).toBeGreaterThan(before.ws1!.version);
   expect(after.ws2).toEqual(before.ws2!);
   expect(after.ws3).toEqual(before.ws3!);
   expect((await f.status("alice")).connection!.teamId).toBe("T111111");

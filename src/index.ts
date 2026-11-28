@@ -56,6 +56,7 @@ import {
 import {
   envelopeSubkey,
   importCredentialFile,
+  moveCredentialGrants,
   loadSecretKey,
   readSecretFile,
   storeSecretKeys,
@@ -3262,6 +3263,7 @@ async function withDatabaseSecrets(
     const secrets = await useDatabaseSecrets(opened.store, secretsDir, {
       files: url === null ? [SETUP_TOKEN_FILE] : [],
     });
+    await moveCredentialGrants(opened.store, secretsDir);
     return {
       store: opened.store,
       close: async () => {

@@ -2,12 +2,11 @@ import { afterEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import {
   consumeBrowserInstallationSteps,
-  readCredentialCiphertextSteps,
   readSettingSteps,
   resolveDashboardAliasSteps,
   saveBrowserInstallationSteps,
   updateSettingSteps,
-  writeCredentialCiphertextSteps,
+  replaceSecretSteps,
   type Db,
 } from "../src/db";
 import { describePglite, insertWorkItemSteps, type PgliteTestDb } from "./pglite-fixtures";
@@ -24,23 +23,18 @@ async function connect(open: () => Promise<PgliteTestDb>): Promise<Db> {
 }
 
 describePglite((open) => {
-  test("credentials are written, replaced or kept", async () => {
+  test("versioned secrets are inserted, replaced, removed and inserted again", async () => {
     const db = await connect(open);
-    const key = { kind: "linear" as const, workspace: "org" };
-    expect(await db.run((q) => readCredentialCiphertextSteps(q, key))).toBeNull();
-    expect(await db.run((q) => writeCredentialCiphertextSteps(q, key, "one", { now: 1 }))).toBe(
-      true,
-    );
-    expect(
-      await db.run((q) =>
-        writeCredentialCiphertextSteps(q, key, "two", { now: 2, onlyIfMissing: true }),
-      ),
-    ).toBe(false);
-    expect(await db.run((q) => readCredentialCiphertextSteps(q, key))).toBe("one");
-    expect(await db.run((q) => writeCredentialCiphertextSteps(q, key, "three", { now: 3 }))).toBe(
-      true,
-    );
-    expect(await db.run((q) => readCredentialCiphertextSteps(q, key))).toBe("three");
+    const put = (value: string | null, expected: number) =>
+      db.run((q) => replaceSecretSteps(q, "oauth-linear-installation", value, expected, 5));
+    expect(await put(null, 0)).toBeNull();
+    expect(await put("one", 0)).toBe(1);
+    expect(await put("two", 0)).toBeNull();
+    expect(await put("two", 2)).toBeNull();
+    expect(await put("two", 1)).toBe(2);
+    expect(await put(null, 2)).toBe(3);
+    expect(await put(null, 3)).toBeNull();
+    expect(await put("four", 0)).toBe(4);
   });
 
   test("settings change from their stored value", async () => {

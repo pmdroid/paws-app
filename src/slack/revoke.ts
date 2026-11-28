@@ -1,4 +1,5 @@
-import { auditWorkspaceAccessSteps, deleteCredentialCiphertextSteps, type Db } from "../db";
+import { removeScopedCredentialSteps } from "../credentials";
+import { auditWorkspaceAccessSteps, type Db } from "../db";
 import { installedSlackTokenSteps, slackTeamOwnerSteps } from "./oauth";
 import type { SlackRevocation } from "./webhook";
 
@@ -25,9 +26,9 @@ export function createSlackRevocation(options: { store: Db; home: string; now?: 
         if (revocation.botUserIds && !revocation.botUserIds.includes(current.botUserId))
           return null;
         const key = { kind: "slack" as const, workspace: workspaceId };
-        if (!(yield* deleteCredentialCiphertextSteps(q, key, current.updatedAt))) return null;
+        if (!(yield* removeScopedCredentialSteps(q, key, current.version))) return null;
       }
-      if (!(yield* deleteCredentialCiphertextSteps(q, team.key, team.owner.updatedAt)))
+      if (!(yield* removeScopedCredentialSteps(q, team.key, team.owner.version)))
         throw new Error("The Slack team owner changed during revocation.");
       yield* auditWorkspaceAccessSteps(q, {
         workspaceId,

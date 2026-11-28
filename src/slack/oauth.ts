@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { envSetting, pawsPaths } from "../config";
 import {
   readCredentialSteps,
+  readScopedCredentialSteps,
   readSecretFile,
   refreshCredential,
   replaceScopedCredentialSteps,
@@ -25,7 +26,11 @@ export type SlackToken = {
   appId?: string | null;
   teamName?: string | null;
 };
-export type InstalledSlackToken = SlackToken & { workspaceId: string; updatedAt: number };
+export type InstalledSlackToken = SlackToken & {
+  workspaceId: string;
+  updatedAt: number;
+  version: number;
+};
 export type SlackFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
 export function readSlackApp(home: string): SlackApp | null {
@@ -61,6 +66,7 @@ export function* installedSlackTokensSteps(q: Q, home: string): Steps<InstalledS
       ...parseJson<SlackToken>(row.value)!,
       workspaceId: row.workspace,
       updatedAt: row.updatedAt,
+      version: row.version,
     }));
 }
 
@@ -73,18 +79,17 @@ export function* loginSlackTokenSteps(q: Q, home: string) {
   const row = rows.find((item) => item.workspace === "installation");
   if (!row) return null;
   const key = { kind: "slack" as const, workspace: row.workspace };
-  return { key, token: parseJson<SlackToken>(row.value)!, updatedAt: row.updatedAt };
+  return { key, token: parseJson<SlackToken>(row.value)!, version: row.version };
 }
 
 export function* slackTeamOwnerSteps(q: Q, home: string, teamId: string, claimFor?: string) {
   const dir = pawsPaths(home).secretsDir;
   const key = { kind: "slack" as const, workspace: `team:${teamId}` };
-  const owner = (yield* scopedCredentialsSteps(q, dir, "slack")).find(
-    (row) => row.workspace === key.workspace,
-  );
+  const owner = (yield* readScopedCredentialSteps(q, dir, key)) ?? undefined;
   if (owner || !claimFor) return { key, owner };
-  const claimed = yield* replaceScopedCredentialSteps(q, dir, key, claimFor, 0);
-  return { key, owner: claimed === null ? undefined : { value: claimFor, updatedAt: claimed } };
+  if ((yield* replaceScopedCredentialSteps(q, dir, key, claimFor, 0)) === null)
+    return { key, owner: undefined };
+  return { key, owner: (yield* readScopedCredentialSteps(q, dir, key)) ?? undefined };
 }
 
 export function* saveInstalledSlackTokenSteps(
@@ -172,7 +177,7 @@ export function createSlackAuth(input: {
   function* write(q: Q, token: SlackToken): Steps<boolean> {
     if (workspaceId === undefined) return yield* writeSlackTokenSteps(q, home, token);
     const current = yield* installedSlackTokenSteps(q, home, workspaceId);
-    const expected = current?.updatedAt;
+    const expected = current?.version;
     if (expected === undefined || current?.teamId !== token.teamId)
       throw new Error("Slack credentials changed during refresh.");
     if (!(yield* saveInstalledSlackTokenSteps(q, home, workspaceId, token, expected)))
