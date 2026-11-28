@@ -3,6 +3,7 @@
 Two dashboards for the OpenTelemetry data Paws exports (Workspace › Telemetry):
 
 - `paws-overview.json`: item moves, merged and failed items, questions, waiting jobs and outbox, event-loop lag, job run and wait times, memory, CPU, and a log of the latest item moves.
+- `paws-runner-fleet.json`: every runner side by side from the `runner-node` scrape job: a table of vCPUs, memory, CPU, memory and root disk use and uptime, then CPU, memory, load per vCPU, root disk, network, disk I/O and memory pressure over time.
 - `paws-integrations.json`: Linear and GitHub rate limits, GitHub and Linear call times, runner API requests by status and route, outbox wait and delivery, and database transactions.
 
 Metrics are read from Prometheus. Item moves are read from Loki as `paws.item.transition` log events.
