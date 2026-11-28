@@ -35,6 +35,8 @@ export class OutboxDispatcher {
   private readonly pending = new Map<Promise<void>, OutboxRow>();
   /** Ticks still claiming. `idle()` waits for them so it covers what they claim. */
   private readonly claiming = new Set<Promise<unknown>>();
+  private running: Promise<OutboxRow[]> | null = null;
+  private again: Promise<OutboxRow[]> | null = null;
   private readonly active = new Map<number, { row: OutboxRow; controller: AbortController }>();
   private readonly wakes = new Set<number>();
   private waker: (() => void) | null = null;
@@ -71,7 +73,27 @@ export class OutboxDispatcher {
   }
 
   tick(): Promise<OutboxRow[]> {
+    if (this.running === null) return this.watch(this.start());
+    if (this.again === null) {
+      const next = () => this.start();
+      this.again = this.watch(this.running.then(next, next));
+    }
+    return this.again;
+  }
+
+  private start(): Promise<OutboxRow[]> {
+    this.again = null;
     const claim = this.claim();
+    this.running = claim;
+    void claim
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.running === claim) this.running = null;
+      });
+    return claim;
+  }
+
+  private watch(claim: Promise<OutboxRow[]>): Promise<OutboxRow[]> {
     const settled = claim.catch(() => undefined);
     this.claiming.add(settled);
     void settled.finally(() => this.claiming.delete(settled));
