@@ -2,8 +2,10 @@ import {
   alertFactsSteps,
   inboxBacklogSteps,
   metricMinutesSteps,
+  orphanedBlockerFactsSteps,
   type AlertJobRow,
   type Db,
+  type OrphanedBlockerRow,
 } from "../db";
 import { deployLagAlerts, type DeployLagCheck } from "./deploy-lag";
 
@@ -21,6 +23,7 @@ export const IDLE_FREE_SLOTS = 2;
 export const IDLE_WINDOW_MS = 30 * MINUTE_MS;
 export const INTAKE_BACKLOG_WARNING_MS = 10 * MINUTE_MS;
 export const INTAKE_BACKLOG_CRITICAL_MS = 30 * MINUTE_MS;
+export const ORPHANED_BLOCKER_MS = 30 * MINUTE_MS;
 
 export type AlertSeverity = "critical" | "warning" | "info";
 
@@ -151,6 +154,29 @@ function intakeBacklog(backlog: { depth: number; oldestAt: number }, now: number
   ];
 }
 
+export function orphanedBlockers(rows: readonly OrphanedBlockerRow[], now: number): Alert[] {
+  const groups = new Map<string, { row: OrphanedBlockerRow; blocked: string[]; since: number }>();
+  for (const row of rows) {
+    const since = Math.max(row.heldSince, row.endedAt);
+    if (now - since < ORPHANED_BLOCKER_MS) continue;
+    const found = groups.get(row.blocker) ?? { row, blocked: [], since };
+    if (!found.blocked.includes(row.blocked)) found.blocked.push(row.blocked);
+    groups.set(row.blocker, { ...found, since: Math.min(found.since, since) });
+  }
+  return [...groups.values()].map(({ row, blocked, since }) => {
+    const listed = [...blocked].sort().slice(0, 5).join(", ");
+    const more = blocked.length - 5;
+    return {
+      id: `orphaned_blocker:${row.blocker}`,
+      severity: "warning",
+      title: `${row.blocker} has no live Paws item (${row.state} ${new Date(row.endedAt).toISOString().slice(11, 16)}) and blocks ${listed}${more > 0 ? ` and ${more} more` : ""}`,
+      detail: `${blocked.length === 1 ? "1 queued item waits" : `${blocked.length} queued items wait`} on ${row.blocker}, whose latest Paws item is ${row.state}. Delegate ${row.blocker} again or remove the blocking relation.`,
+      since,
+      count: blocked.length,
+    };
+  });
+}
+
 export async function readAlerts(
   db: Db,
   now = Date.now(),
@@ -168,6 +194,7 @@ export async function readAlerts(
     }),
   );
   const backlog = await db.run((q) => inboxBacklogSteps(q, now));
+  const orphans = await db.run((q) => orphanedBlockerFactsSteps(q));
   return [
     ...runnerHttp4xx(metrics),
     ...repeatedFailures(facts.jobs),
@@ -175,6 +202,7 @@ export async function readAlerts(
     ...deadOutbox(facts.deadOutbox),
     ...idleCapacity(facts, now),
     ...intakeBacklog(backlog, now),
+    ...orphanedBlockers(orphans, now),
     ...(deployLag ? await deployLagAlerts(deployLag, now) : []),
   ].sort((a, b) => b.since - a.since);
 }

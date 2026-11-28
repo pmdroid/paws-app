@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { readAlerts } from "../src/alerts";
+import { orphanedBlockers, readAlerts } from "../src/alerts";
 import { insertInboxEvent, insertMetricMinutesSteps, type Db, type Q } from "../src/db";
 import { seed, withoutForeignKeys } from "./pglite-fixtures";
 import { tempStore } from "./pglite";
@@ -246,4 +246,91 @@ test("intake_backlog warns after 10 minutes of unhandled intake and turns critic
   expect(await readAlerts(db, NOW)).toEqual([
     expect.objectContaining({ id: "intake_backlog", severity: "critical", count: 4 }),
   ]);
+});
+
+const CANCELLED_AT = Date.UTC(2026, 10, 26, 4, 56, 0);
+
+function orphan(blocked: string, heldMinutes: number) {
+  return {
+    blocker: "PAS-2609",
+    state: "cancelled",
+    endedAt: CANCELLED_AT,
+    blocked,
+    heldSince: NOW - heldMinutes * MINUTE,
+  };
+}
+
+test("orphaned_blocker fires after 30 minutes held by a blocker whose latest item is cancelled", () => {
+  expect(orphanedBlockers([orphan("PAS-2610", 31)], NOW)).toEqual([
+    expect.objectContaining({
+      id: "orphaned_blocker:PAS-2609",
+      severity: "warning",
+      title: "PAS-2609 has no live Paws item (cancelled 04:56) and blocks PAS-2610",
+      count: 1,
+    }),
+  ]);
+  expect(orphanedBlockers([orphan("PAS-2610", 29)], NOW)).toEqual([]);
+});
+
+test("orphaned_blocker sends one alert per blocker and lists at most 5 blocked items", () => {
+  const two = orphanedBlockers([orphan("PAS-2610", 40), orphan("PAS-2611", 35)], NOW);
+  expect(two.map((alert) => alert.title)).toEqual([
+    "PAS-2609 has no live Paws item (cancelled 04:56) and blocks PAS-2610, PAS-2611",
+  ]);
+  const seven = orphanedBlockers(
+    [1, 2, 3, 4, 5, 6, 7].map((n) => orphan(`PAS-270${n}`, 40)),
+    NOW,
+  );
+  expect(seven[0]!.title).toEndWith("PAS-2704, PAS-2705 and 2 more");
+});
+
+async function blockedBy(db: Db, blockerState: string) {
+  const item = (id: string, issue: string, state: string, createdAt: number) =>
+    seed(db, (q) =>
+      q.orm.insert(q.t.workItem).values({
+        id,
+        delegationId: "delegation",
+        linearIssueId: issue,
+        linearIdentifier: issue.toUpperCase(),
+        title: issue,
+        state,
+        branchName: `paws/${id}`,
+        position: 0,
+        createdAt,
+      }),
+    );
+  await item("item-old", "pas-2609", "cancelled", NOW - 300 * MINUTE);
+  await item("item-new", "pas-2609", blockerState, NOW - 200 * MINUTE);
+  await item("item-held", "pas-2610", "queued", NOW - 100 * MINUTE);
+  await seed(
+    db,
+    (q) =>
+      q.orm.insert(q.t.workItemEvent).values({
+        itemId: "item-new",
+        version: 1,
+        at: CANCELLED_AT,
+        fromState: "running",
+        toState: blockerState,
+        event: "cancelled",
+      }),
+    (q) =>
+      q.orm
+        .insert(q.t.taskBlock)
+        .values({ blockerLinearIssueId: "pas-2609", blockedLinearIssueId: "pas-2610" }),
+    (q) =>
+      q.orm
+        .insert(q.t.itemHold)
+        .values({ itemId: "item-held", reason: "blocked", blockers: ["PAS-2609"] }),
+  );
+}
+
+test("readAlerts raises orphaned_blocker only while the blocker's latest item is not open", async () => {
+  for (const [state, expected] of [
+    ["cancelled", ["orphaned_blocker:PAS-2609"]],
+    ["running", []],
+  ]) {
+    const db = await store();
+    await blockedBy(db, state as string);
+    expect(await ids(db)).toEqual(expected as string[]);
+  }
 });
