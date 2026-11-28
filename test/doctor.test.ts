@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { GROK_AGENT_ARGS, GROK_LOGIN_MESSAGE } from "../src/acp";
 import type { FakeResult } from "../src/acp/testing/script";
 import { emptyConfigFile, useSettingsStore } from "../src/config";
+import { saveSecret, useDatabaseSecrets } from "../src/credentials";
 import {
   appEventsFact,
   doctorChecks,
@@ -707,3 +708,35 @@ function redFacts(override: Partial<ProbeFacts>): ProbeFacts {
     ...override,
   };
 }
+
+test("doctor reports the Linear client from the same source Paws resolves", async () => {
+  const home = mkdtempSync(join(tmpdir(), "paws-doctor-linear-client-"));
+  const { db, close } = await tempStore();
+  const secrets = await useDatabaseSecrets(db, join(home, "secrets"));
+  try {
+    const env = { HOME: home, PAWS_HOME: home, PATH: process.env.PATH ?? "" };
+    const clientCheck = async (extra: Record<string, string>) =>
+      doctorChecks(await realProbe({ ...env, ...extra }, db)).find(
+        (item) => item.name === "linear-client",
+      );
+    expect(await clientCheck({})).toMatchObject({ ok: false, detail: "no Linear OAuth client" });
+    await saveSecret(
+      join(home, "secrets/linear-browser-client.json"),
+      JSON.stringify({ clientId: "settings-id", clientSecret: "settings-marker" }),
+    );
+    expect(await clientCheck({})).toMatchObject({ ok: true, detail: "OAuth client from settings" });
+    expect(
+      await clientCheck({ LINEAR_CLIENT_ID: "env-id", LINEAR_CLIENT_SECRET: "env-marker" }),
+    ).toMatchObject({ ok: true, detail: "OAuth client from environment" });
+    const mismatched = await clientCheck({ LINEAR_CLIENT_SECRET: "env-marker" });
+    expect(mismatched?.ok).toBe(false);
+    expect(mismatched?.detail).toContain(
+      "LINEAR_CLIENT_SECRET is set in the environment, but the client id comes from Settings",
+    );
+    expect(mismatched?.detail).not.toContain("marker");
+  } finally {
+    await secrets.close();
+    await close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});

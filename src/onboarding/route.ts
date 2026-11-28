@@ -1,4 +1,3 @@
-import { webhookFileDigest } from "./setup-runtime";
 import { readWebhookBody } from "../webhook-body";
 import { journalCaught } from "../journal";
 import { createHash, createHmac } from "node:crypto";
@@ -139,11 +138,7 @@ export function createBrowserOnboarding(options: {
           await saveSecret(join(secretsDir, "linear-setup-pending"), "pending");
           await saveSecret(
             clientFile,
-            JSON.stringify({
-              clientId: values[0],
-              clientSecret: values[1],
-              webhookFileDigest: webhookFileDigest(secretsDir),
-            }),
+            JSON.stringify({ clientId: values[0], clientSecret: values[1] }),
           );
           await saveSecret(join(secretsDir, "linear-webhook"), values[2]!);
           options.clientId = values[0]!;

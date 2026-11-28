@@ -32,6 +32,7 @@ import {
 import { createFetchGitHubClient, mintInstallationToken, signAppJwt } from "../github";
 import { checkDeveloperLogin, grokLoginStatus, type GrokLoginStatus } from "../install";
 import { createLinearClient, readStoredToken } from "../linear";
+import { resolveLinearClient, type LinearClientResolution } from "../onboarding";
 import { doctorAgentProfiles } from "./agents";
 import { slackConnectionsSteps, type SlackCapabilities } from "../slack";
 
@@ -96,6 +97,7 @@ export type ProbeFacts = {
     /** One next step when the policy did not load. */
     fix: string | null;
   };
+  linearClient?: Pick<LinearClientResolution, "client" | "webhook" | "error"> | null;
   linear: {
     attempted: boolean;
     reachable: boolean;
@@ -148,6 +150,14 @@ export async function realProbeFacts(env: EnvSource, store: Db): Promise<ProbeFa
     codexLogin,
     closeout: await closeoutPolicyFact(runtime, repos),
     linear,
+    linearClient: await readPawsDb(store, async (db) => {
+      const { client, webhook, error } = await resolveLinearClient(
+        db,
+        pawsPaths(runtime.env.home).secretsDir,
+        env,
+      );
+      return { client, webhook, error };
+    }),
     ...(await vmProviderKeyFacts(runtime.env.home, runtime.file.vmSizes, store)),
     tailscaleAuthKey: tailscaleAuthKeyStatus(runtime.env.home),
   };
