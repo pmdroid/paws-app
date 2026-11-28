@@ -8,6 +8,7 @@ import {
   consumeWorkspaceBootstrap,
   JobLoop,
   listRunnerOverview,
+  listWorkspaceAudit,
   putVmProviderCheckSteps,
   putWorkspaceUser,
   syncWorkspaceMember,
@@ -92,6 +93,7 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
     };
   };
   const member = await person("Ada Lovelace");
+  const admin: WorkspacePrincipal = { ...member, userId: ownerUserId, role: "admin" };
   const inactive = await person("Watcher", false);
   const control = createRunnerControl({
     store: db,
@@ -149,6 +151,15 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
     if (response === null) throw new Error(`${path} was not handled`);
     return { status: response.status, body: (await response.json()) as Record<string, unknown> };
   };
+  const create = async (who: WorkspacePrincipal, extra: Record<string, unknown> = {}) => {
+    const answer = await call(admin, "POST", "/api/runners/vm", {
+      memberUserId: who.userId,
+      ...extra,
+    });
+    const row = await findMemberVm(db, who);
+    const vm = vmsOf(answer.body ?? {})?.find((view) => view.id === row?.id);
+    return { ...answer, vm: vm! };
+  };
   const drive = async (until: (row: MemberVm) => boolean, who = member) => {
     for (let index = 0; index < 500; index++) {
       const row = (await findMemberVm(db, who))!;
@@ -162,7 +173,9 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
     clock,
     workspace,
     member,
+    admin,
     inactive,
+    create,
     person,
     bootstrap,
     exeDev,
@@ -185,7 +198,7 @@ describe("member VM routes", () => {
     const f = await fixture();
     f.setAvailable(false);
     expect(await f.call(f.member, "GET")).toEqual({ status: 200, body: { available: false } });
-    expect(await f.call(f.member, "POST")).toEqual({ status: 200, body: { available: false } });
+    expect(await f.create(f.member)).toMatchObject({ status: 200, body: { available: false } });
     expect(await findMemberVm(f.db, f.member)).toBeNull();
   });
 
@@ -232,7 +245,7 @@ describe("member VM routes", () => {
   test("Create VM writes the configured provider into the row, and a later change leaves it", async () => {
     const f = await fixture();
     f.setProvider("boat");
-    expect((await f.call(f.member, "POST")).status).toBe(200);
+    expect((await f.create(f.member)).status).toBe(200);
     const row = (await findMemberVm(f.db, f.member))!;
     expect(row.provider).toBe("boat");
     f.setProvider("instabox");
@@ -244,7 +257,7 @@ describe("member VM routes", () => {
     const f = await fixture();
     f.setProvider("boat");
     f.setOff(["boat"]);
-    expect(await f.call(f.member, "POST")).toEqual({
+    expect(await f.create(f.member)).toMatchObject({
       status: 409,
       body: { error: "boat is turned off on Settings › Runner VMs." },
     });
@@ -266,7 +279,7 @@ describe("member VM routes", () => {
         }),
       );
     await check("rejected");
-    expect(await f.call(f.member, "POST")).toEqual({
+    expect(await f.create(f.member)).toMatchObject({
       status: 409,
       body: {
         error: "exe.dev rejected its key at 04:12 UTC; replace it on Settings › Runner VMs.",
@@ -274,18 +287,18 @@ describe("member VM routes", () => {
     });
     expect(await findMemberVm(f.db, f.member)).toBeNull();
     await check("unreachable");
-    expect((await f.call(f.member, "POST")).status).toBe(200);
+    expect((await f.create(f.member)).status).toBe(200);
     expect((await findMemberVm(f.db, f.member))!.provider).toBe("exe-dev");
     f.setProvider("boat");
     const other = await f.person("Grace Hopper");
-    expect((await f.call(other, "POST")).status).toBe(200);
+    expect((await f.create(other)).status).toBe(200);
     expect((await findMemberVm(f.db, other))!.provider).toBe("boat");
   });
 
   test("a configured pool becomes --pool on new, and no pool is a bare new", async () => {
     const pooled = await fixture({ size: { cpu: 4, pool: "build" } });
     pooled.exeDev.addPool("build");
-    await pooled.call(pooled.member, "POST");
+    await pooled.create(pooled.member);
     expect((await pooled.drive((row) => row.step !== "create")).failure).toBeNull();
     expect(pooled.exeDev.calls.find((call) => call.operation === "createVm")).toEqual({
       operation: "createVm",
@@ -294,7 +307,7 @@ describe("member VM routes", () => {
     });
 
     const bare = await fixture();
-    await bare.call(bare.member, "POST");
+    await bare.create(bare.member);
     await bare.drive((row) => row.step !== "create");
     expect(bare.exeDev.calls.find((call) => call.operation === "createVm")).toEqual({
       operation: "createVm",
@@ -318,9 +331,9 @@ describe("member VM routes", () => {
         ],
       },
     });
-    expect((await f.call(f.member, "POST", "/api/runners/vm", { pool: "a b" })).status).toBe(400);
+    expect((await f.create(f.member, { pool: "a b" })).status).toBe(400);
     expect(await findMemberVm(f.db, f.member)).toBeNull();
-    const started = vmOf((await f.call(f.member, "POST", "/api/runners/vm", { pool: "gpu" })).body);
+    const started = (await f.create(f.member, { pool: "gpu" })).vm;
     expect(started.pool).toBe("gpu");
     await f.drive((row) => row.step !== "create");
     expect(f.exeDev.placement.get("ada-lovelace-paws")).toBe("gpu");
@@ -328,7 +341,7 @@ describe("member VM routes", () => {
 
   test("an unknown pool fails Create VM with exe.dev's words on the Runners page", async () => {
     const f = await fixture({ size: { pool: "gone" } });
-    await f.call(f.member, "POST");
+    await f.create(f.member);
     const failed = await f.drive((row) => row.failure !== null);
     expect(failed.step).toBe("create");
     const shown = vmOf((await f.call(f.member, "GET")).body);
@@ -338,14 +351,14 @@ describe("member VM routes", () => {
     expect(states(shown)[0]).toBe("create:failed");
   });
 
-  test("Move to pool runs pool adopt for the owner and shows exe.dev's refusal", async () => {
+  test("Move to pool runs pool adopt for an admin and shows exe.dev's refusal", async () => {
     const f = await fixture();
     f.exeDev.addPool("build");
-    const { id } = vmOf((await f.call(f.member, "POST")).body);
+    const { id } = (await f.create(f.member)).vm;
     await f.drive((row) => row.step !== "create");
-    const moved = await f.call(f.member, "POST", "/api/runners/vm/pool", { id, pool: "build" });
+    const moved = await f.call(f.admin, "POST", "/api/runners/vm/pool", { id, pool: "build" });
     expect(moved.status).toBe(200);
-    expect(vmOf(moved.body).pool).toBe("build");
+    expect(vmsOf(moved.body).find((vm) => vm.id === id)?.pool).toBe("build");
     expect(f.exeDev.calls).toContainEqual({
       operation: "adoptVm",
       vm: "ada-lovelace-paws",
@@ -353,9 +366,9 @@ describe("member VM routes", () => {
     });
 
     f.exeDev.fail("adoptVm", "unauthorized", { status: 403 });
-    const denied = await f.call(f.member, "POST", "/api/runners/vm/pool", { id, pool: "build" });
+    const denied = await f.call(f.admin, "POST", "/api/runners/vm/pool", { id, pool: "build" });
     expect(denied.status).toBe(403);
-    const unknown = await f.call(f.member, "POST", "/api/runners/vm/pool", { id, pool: "gpu" });
+    const unknown = await f.call(f.admin, "POST", "/api/runners/vm/pool", { id, pool: "gpu" });
     expect(unknown).toEqual({
       status: 502,
       body: {
@@ -366,10 +379,9 @@ describe("member VM routes", () => {
       (await f.call(f.inactive, "POST", "/api/runners/vm/pool", { id, pool: "build" })).status,
     ).toBe(403);
     expect(
-      (await f.call(f.member, "POST", "/api/runners/vm/pool", { id: "nope", pool: "build" }))
-        .status,
+      (await f.call(f.admin, "POST", "/api/runners/vm/pool", { id: "nope", pool: "build" })).status,
     ).toBe(404);
-    expect((await f.call(f.member, "POST", "/api/runners/vm/pool", { id })).status).toBe(400);
+    expect((await f.call(f.admin, "POST", "/api/runners/vm/pool", { id })).status).toBe(400);
     expect((await f.call(f.member, "POST", "/api/runners/vm/pools")).status).toBe(405);
   });
 
@@ -380,7 +392,7 @@ describe("member VM routes", () => {
       body: { available: true, vm: null, vms: [] },
     });
 
-    const started = vmOf((await f.call(f.member, "POST")).body);
+    const started = (await f.create(f.member)).vm;
     expect(started.vmName).toBe("ada-lovelace-paws");
     expect(states(started)).toEqual([
       "create:running",
@@ -406,7 +418,10 @@ describe("member VM routes", () => {
     expect(failed.failure).toContain("the installer could not be copied");
 
     f.clock.advance(3_000);
-    const retried = vmOf((await f.call(f.member, "POST", "/api/runners/vm/retry")).body);
+    expect(
+      (await f.call(f.admin, "POST", "/api/runners/vm/retry", { id: started.id })).status,
+    ).toBe(200);
+    const retried = vmOf((await f.call(f.member, "GET")).body);
     expect(retried.failure).toBeNull();
     expect(states(retried)).toEqual([
       "create:done",
@@ -455,11 +470,11 @@ describe("member VM routes", () => {
       );
       return f.drive((row) => row.step === "ready", pascal);
     };
-    expect(vmOf((await f.call(pascal, "POST")).body).vmName).toBe("pascal-paws");
+    expect((await f.create(pascal)).vm.vmName).toBe("pascal-paws");
     const first = await ready();
     expect((await f.call(pascal, "GET")).body.vm).toBeNull();
 
-    const second = vmOf((await f.call(pascal, "POST")).body);
+    const second = (await f.create(pascal)).vm;
     expect(second.vmName).toBe("pascal-paws-2");
     expect(vmOf((await f.call(pascal, "GET")).body).id).toBe(second.id);
     const other = await ready();
@@ -476,9 +491,9 @@ describe("member VM routes", () => {
 
   test("retry takes a VM id, defaults to the newest unfinished VM, and the sixth VM is refused", async () => {
     const f = await fixture();
-    const older = vmOf((await f.call(f.member, "POST")).body);
+    const older = (await f.create(f.admin)).vm;
     f.clock.advance(1);
-    const newer = vmOf((await f.call(f.member, "POST")).body);
+    const newer = (await f.create(f.admin)).vm;
     await seed(f.db, (q) =>
       q.orm
         .update(q.t.memberVm)
@@ -488,7 +503,7 @@ describe("member VM routes", () => {
     const failures = (body: Record<string, unknown>) =>
       Object.fromEntries(vmsOf(body).map((vm) => [vm.id, vm.failure]));
 
-    const byDefault = (await f.call(f.member, "POST", "/api/runners/vm/retry")).body;
+    const byDefault = (await f.call(f.admin, "POST", "/api/runners/vm/retry")).body;
     expect(vmOf(byDefault).id).toBe(newer.id);
     expect(failures(byDefault)).toEqual({ [older.id]: "exe.dev broke", [newer.id]: null });
 
@@ -498,22 +513,62 @@ describe("member VM routes", () => {
         .set({ failure: "exe.dev broke" })
         .where(eq(q.t.memberVm.step, "create")),
     );
-    const byId = await f.call(f.member, "POST", "/api/runners/vm/retry", { id: older.id });
+    const byId = await f.call(f.admin, "POST", "/api/runners/vm/retry", { id: older.id });
     expect(failures(byId.body)).toEqual({ [older.id]: null, [newer.id]: "exe.dev broke" });
-    const missing = await f.call(f.member, "POST", "/api/runners/vm/retry", { id: "nope" });
+    const missing = await f.call(f.admin, "POST", "/api/runners/vm/retry", { id: "nope" });
     expect(missing.status).toBe(404);
-    expect((await f.call(f.member, "POST", "/api/runners/vm/retry", { id: 7 })).status).toBe(400);
+    expect((await f.call(f.admin, "POST", "/api/runners/vm/retry", { id: 7 })).status).toBe(400);
 
-    for (let index = 0; index < 3; index++) await f.call(f.member, "POST");
-    expect(await f.call(f.member, "POST")).toEqual({
+    for (let index = 0; index < 3; index++) await f.create(f.admin);
+    expect(await f.create(f.admin)).toMatchObject({
       status: 403,
       body: { error: "You already have 5 VMs. Delete one on its runner page first." },
     });
   });
 
+  test("an admin creates a VM for a chosen member, and every member POST is refused with an audit row", async () => {
+    const f = await fixture();
+    const missing = await f.call(f.admin, "POST", "/api/runners/vm", {});
+    expect(missing.status).toBe(400);
+    const gone = await f.call(f.admin, "POST", "/api/runners/vm", {
+      memberUserId: f.inactive.userId,
+    });
+    expect(gone).toEqual({
+      status: 400,
+      body: { error: "memberUserId must name an active workspace member." },
+    });
+    expect(await findMemberVm(f.db, f.inactive)).toBeNull();
+    const { vm } = await f.create(f.member);
+    expect(vm.userId).toBe(f.member.userId);
+    expect(await findMemberVm(f.db, f.admin)).toBeNull();
+    expect(vmsOf((await f.call(f.member, "GET")).body).map((view) => view.id)).toEqual([vm.id]);
+    for (const [path, body] of [
+      ["/api/runners/vm", { memberUserId: f.member.userId }],
+      ["/api/runners/vm/pool", { id: vm.id, pool: "build" }],
+      ["/api/runners/vm/retry", { id: vm.id }],
+      ["/api/runners/vm/delete", { id: vm.id }],
+    ] as const)
+      expect(await f.call(f.member, "POST", path, body)).toEqual({
+        status: 403,
+        body: { error: "Only workspace admins create or change runner VMs" },
+      });
+    const audit = (await listWorkspaceAudit(f.db, f.workspace.id, Number.MAX_SAFE_INTEGER)).entries
+      .filter((row) => row.action === "member_vm.refused")
+      .reverse()
+      .map((row) => ({ userId: row.actorId, subject: row.subject }));
+    expect(audit.map((row) => row.subject)).toEqual([
+      "Refused /api/runners/vm for a non-admin",
+      "Refused /api/runners/vm/pool for a non-admin",
+      "Refused /api/runners/vm/retry for a non-admin",
+      "Refused /api/runners/vm/delete for a non-admin",
+    ]);
+    expect(new Set(audit.map((row) => row.userId))).toEqual(new Set([f.member.userId]));
+    expect((await findMemberVm(f.db, f.member))!.deleteStep).toBeNull();
+  });
+
   test("retry without a VM is refused", async () => {
     const f = await fixture();
-    const response = await f.call(f.member, "POST", "/api/runners/vm/retry");
+    const response = await f.call(f.admin, "POST", "/api/runners/vm/retry");
     expect(response.status).toBe(409);
     expect(response.body.error).toBe("This member has no VM to retry.");
   });

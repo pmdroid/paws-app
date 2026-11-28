@@ -1,4 +1,5 @@
 import {
+  auditWorkspaceAccessSteps,
   memberVmByIdSteps,
   memberVmsForMemberSteps,
   setMemberVmPoolSteps,
@@ -16,7 +17,7 @@ import {
   type ExeDevVmSize,
   type VmProviderId,
 } from "../provisioning";
-import type { WorkspacePrincipal } from "../workspace";
+import { isWorkspaceAdmin, type WorkspacePrincipal } from "../workspace";
 import {
   listDeletableMemberVms,
   mayDeleteMemberVmSteps,
@@ -202,11 +203,11 @@ const ROUTES = new Set([
 const MAX_BODY = 4096;
 
 /**
- * `GET /api/runners/vm`, `POST /api/runners/vm` (with an optional `{ pool }`), `POST
+ * `GET /api/runners/vm`, `POST /api/runners/vm` (`{ memberUserId, pool? }`), `POST
  * /api/runners/vm/retry`, `/delete`, `GET /api/runners/vm/pools` (exe.dev's `pool list`) and
  * `POST /api/runners/vm/pool` (`pool adopt`). The server checks the workspace session and CSRF
- * before this runs; this refuses inactive members. Without an exe.dev token every route answers
- * `{ available: false }`.
+ * before this runs; this refuses inactive members, and every POST from a non-admin. Without an
+ * exe.dev token every route answers `{ available: false }`.
  */
 export function createMemberVmHttp(options: {
   store: Db;
@@ -252,6 +253,18 @@ export function createMemberVmHttp(options: {
         },
         403,
       );
+    if (method === "POST" && !isWorkspaceAdmin(current.role)) {
+      await store.run((q) =>
+        auditWorkspaceAccessSteps(q, {
+          workspaceId: principal.workspaceId,
+          userId: principal.userId,
+          action: "member_vm.refused",
+          subject: `Refused ${path} for a non-admin`,
+          now: now(),
+        }),
+      );
+      return json({ error: "Only workspace admins create or change runner VMs" }, 403);
+    }
     const available = await Promise.resolve()
       .then(() => options.available())
       .catch((caughtError3) => {
@@ -276,11 +289,25 @@ export function createMemberVmHttp(options: {
       if (method === "POST" && path === "/api/runners/vm") {
         const body = await createBody(request);
         if (body === null)
-          return json({ error: "Send an optional exe.dev pool name as JSON." }, 400);
+          return json(
+            { error: "Send the member's memberUserId and an optional exe.dev pool as JSON." },
+            400,
+          );
+        const owner = await store.run((q) =>
+          workspaceMemberSteps(q, principal.workspaceId, body.memberUserId),
+        );
+        if (!workspaceMemberUsable(owner))
+          return json({ error: "memberUserId must name an active workspace member." }, 400);
         const provider = options.provider?.() ?? "exe-dev";
         const usable = (await options.usable?.(provider)) ?? { usable: true };
         if (!usable.usable) return json({ error: usable.reason }, 409);
-        await startMemberVm(store, { ...member, ...body, provider, now: at });
+        await startMemberVm(store, {
+          workspaceId: member.workspaceId,
+          userId: body.memberUserId,
+          ...(body.pool === undefined ? {} : { pool: body.pool }),
+          provider,
+          now: at,
+        });
       } else if (pools !== undefined && path === "/api/runners/vm/pool") {
         const body = await poolBody(request);
         if (body === null)
@@ -300,7 +327,10 @@ export function createMemberVmHttp(options: {
       } else if (path === "/api/runners/vm/retry") {
         const body = await retryBody(request);
         if (body === null) return json({ error: "Send an optional VM id as JSON." }, 400);
-        await retryMemberVm(store, { ...member, ...body, now: at });
+        const row =
+          body.id === undefined ? null : await store.run((q) => memberVmByIdSteps(q, body.id!));
+        const userId = row?.workspaceId === member.workspaceId ? row.userId : member.userId;
+        await retryMemberVm(store, { ...member, userId, ...body, now: at });
       } else if (path === "/api/runners/vm/delete") {
         const body = await deleteBody(request);
         if (body === null)
@@ -351,13 +381,16 @@ async function memberName(store: Db, userId: string): Promise<string | null> {
   return (await store.run((q) => workspaceUserContactSteps(q, userId)))?.name ?? null;
 }
 
-/** Create VM's body: none, `{}` or `{ pool }`. */
-async function createBody(request: Request): Promise<{ pool?: string } | null> {
-  if (!request.headers.get("content-type")?.startsWith("application/json")) return {};
-  const record = await jsonRecord(request, ["pool"]);
+async function createBody(
+  request: Request,
+): Promise<{ memberUserId: string; pool?: string } | null> {
+  const record = await jsonRecord(request, ["memberUserId", "pool"]);
   if (record === null) return null;
-  if (record.pool === undefined) return {};
-  return isExeDevPoolName(record.pool) ? { pool: record.pool } : null;
+  const { memberUserId, pool } = record;
+  if (typeof memberUserId !== "string" || memberUserId.length === 0 || memberUserId.length > 80)
+    return null;
+  if (pool === undefined) return { memberUserId };
+  return isExeDevPoolName(pool) ? { memberUserId, pool } : null;
 }
 
 async function retryBody(request: Request): Promise<{ id?: string } | null> {

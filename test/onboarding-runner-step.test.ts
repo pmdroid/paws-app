@@ -23,6 +23,7 @@ import {
   findMemberVm,
   MEMBER_VM_POLL_MS,
   registerMemberVmJob,
+  startMemberVm,
   type MemberVm,
 } from "../src/member-vm";
 import { createOnboardingReadiness } from "../src/onboarding-readiness";
@@ -361,7 +362,7 @@ test("a missing account links to Agent accounts", async () => {
   expect(link?.textContent).toBe("Open Agent accounts");
 });
 
-test("Create VM creates the member's VM, its steps update without a reload, and readiness lets the held item start", async () => {
+test("a member's Create VM is refused, an admin's VM for them shows its steps, and readiness lets the held item start", async () => {
   const f = await fixture();
   const ready = await f.heldItem();
   expect(await ready()).toBe(false);
@@ -369,7 +370,9 @@ test("Create VM creates the member's VM, its steps update without a reload, and 
   expect(page.buttons()).toEqual(["create-vm", "add-host"]);
   await page.click("create-vm");
   expect(f.requests).toContain("POST /api/runners/vm");
-  expect((await findMemberVm(f.db, f.member))?.step).toBe("create");
+  expect(await findMemberVm(f.db, f.member)).toBeNull();
+  await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+  await page.poll();
   // The same document now shows the VM's steps; the page polls faster while it sets up.
   expect(page.runner()?.getAttribute("data-runner")).toBe("setting-up");
   const states = () =>
@@ -438,9 +441,9 @@ test("Create VM creates the member's VM, its steps update without a reload, and 
   expect(new Set(f.requests)).toEqual(new Set(["POST /api/runners/vm", "GET /onboard/link"]));
 });
 
-test("a failed VM step shows its error and Retry resumes from it", async () => {
+test("a failed VM step shows its error and a member's Retry is refused", async () => {
   const f = await fixture();
-  await f.fetch("/api/runners/vm", { method: "POST", headers: { "x-paws-csrf": CSRF } });
+  await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
   await seed(f.db, (q) => q.orm.update(q.t.memberVm).set({ failure: "npm ci failed" }));
   const page = await f.open();
   expect(page.runner()?.getAttribute("data-runner")).toBe("failed");
@@ -448,8 +451,7 @@ test("a failed VM step shows its error and Retry resumes from it", async () => {
   expect(page.buttons()).toEqual(["retry-vm"]);
   await page.click("retry-vm");
   expect(f.requests).toContain("POST /api/runners/vm/retry");
-  expect((await findMemberVm(f.db, f.member))?.failure).toBeNull();
-  expect(page.runner()?.getAttribute("data-runner")).toBe("setting-up");
+  expect((await findMemberVm(f.db, f.member))?.failure).toBe("npm ci failed");
 });
 
 test("Add a host shows the one command with a single-use token that a reload never shows again", async () => {
