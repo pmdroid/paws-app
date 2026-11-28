@@ -395,6 +395,7 @@ import {
   STORAGE_CLEANUP_TICK_MS,
   createStorageCleanup,
 } from "./storage-cleanup";
+import { createRunnerHostMetrics } from "./runner-host-metrics";
 import {
   createImprovementsHttp,
   startImprovementDeliveries,
@@ -1282,6 +1283,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     removeCloseoutLog: (key) => removeEvidenceFile(store, closeoutLogs, key),
     runners: async () => runner?.work,
   });
+  const runnerHostMetrics = createRunnerHostMetrics({ store });
   const runnerReady =
     runnerConfig === null
       ? Promise.resolve(undefined)
@@ -1315,7 +1317,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           retros: () => retroDispatcher?.fetch,
           storageReports: async (request, runnerId) =>
             (await storageUsage.fetch(request, runnerId)) ??
-            storageCleanup.fetch(request, runnerId),
+            (await storageCleanup.fetch(request, runnerId)) ??
+            runnerHostMetrics.fetch(request, runnerId),
           issueVms: (request, runnerId) => handleVmHostRunnerRequest(request, runnerId, store),
           observeRequest: (labels, ms) => recordDuration("http.request", labels, ms),
           slackReplyAuthority: (q, input) => slackReplyAllowedSteps(q, paths.home, input),

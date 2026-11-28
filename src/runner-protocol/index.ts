@@ -277,3 +277,9 @@ export {
   type RunnerRetroSlot,
   type RunnerRetroSlotRelease,
 } from "./retro";
+
+export {
+  RUNNER_HOST_METRICS_INTERVAL_MS,
+  RunnerHostMetricsSchema,
+  type RunnerHostMetrics,
+} from "./host-metrics";
