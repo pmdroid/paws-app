@@ -1269,7 +1269,7 @@ export async function executeRunnerCommand(
     const said = redactAgentText(message, [...(githubRead?.tokens() ?? []), ...secrets])
       .replace(/\s+/g, " ")
       .trim()
-      .slice(0, 500)
+      .slice(0, /attribution rejected/.test(message) ? 2000 : 500)
       .replace(/[^.!?]$/, "$&.");
     const kept = said.replace(/[.!?]$/, "") === cause.replace(/[.!?]$/, "") ? "" : said;
     return `Run failed during ${name}: ${[

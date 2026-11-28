@@ -107,7 +107,7 @@ import {
 } from "./runner-repository";
 import { acceptedResumeNeedsTurn, mergeAcceptedWork, settleRejectedPush } from "./accepted-work";
 import { restartForPushConflict } from "./push-conflict";
-import { attributionReturnHandoff } from "./attribution-return";
+import { attributionRejectionLines, attributionReturnHandoff } from "./attribution-return";
 import { arrivalsPrompt, arrivalsThought, branchMovedHandoff } from "./branch-arrivals";
 import {
   NOTHING_TO_PUBLISH_OPTIONS,
@@ -9195,6 +9195,8 @@ export class Orchestrator {
       `${current.linearIdentifier} failed (${reason}): ${text}`,
       ...(cause === undefined ? [] : [cause]),
     );
+    for (const line of attributionRejectionLines(text, current.id, current.currentRunId))
+      (this.options.journal ?? journal)(line);
     text = boundRunnerError(text);
     if (
       current.state === "running" ||
