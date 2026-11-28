@@ -892,9 +892,10 @@ async function admit(
     for (const item of candidates) {
       if (held.some((entry) => entry.itemId === item.id)) continue;
       const overlap = yield* overlapping(item, occupants);
-      if (overlap) overlaps.set(item.id, overlap);
+      if (overlap && !overlap.start) overlaps.set(item.id, overlap);
       else unheld.push(item);
     }
+    skips.clear();
     const order = fairOrder(unheld, running, cap);
     // Only checked while runners exist, so a workspace without runners behaves as before.
     const ownerHasRunner = slots === null ? undefined : options.ownerHasRunner;

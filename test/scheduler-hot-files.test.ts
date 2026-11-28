@@ -619,3 +619,35 @@ test("an older waiter without a free runner slot does not hold a newer item that
     await close();
   }
 });
+
+test("an older waiter whose last runner slot goes to earlier work in the same pass does not hold a newer item", async () => {
+  const { db, close } = await tempStore();
+  try {
+    const { pair } = await workspaceWithRunners(db);
+    const full = await pair("full", 1, null);
+    const open = await pair("open", 1, null);
+    await heldBehindHolder(db);
+    await item(db, "other", ["src/other.ts"]);
+    await setState(db, "holder", "merged");
+    const runners = (itemId: string): ItemRunnerVerdicts => ({
+      repository: "owner/repo",
+      agent: "claude",
+      runners: [
+        itemId === "b"
+          ? { id: open, name: "open", rejection: null, hostConfig: null }
+          : { id: full, name: "full", rejection: null, hostConfig: null },
+      ],
+    });
+    expect(
+      await workspaceDispatch(db, {
+        now: NOW + 2,
+        itemRunners: (_q: Q, itemId: string) => syncSteps(() => runners(itemId)),
+      }),
+    ).toEqual(["other", "b"]);
+    expect((await listItemHolds(db)).map((hold) => [hold.itemId, hold.reason])).toEqual([
+      ["a", "slot"],
+    ]);
+  } finally {
+    await close();
+  }
+});
