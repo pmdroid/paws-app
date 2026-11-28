@@ -60,8 +60,7 @@ async function workspace() {
   const read = createOnboardingReadiness(db);
   return {
     db,
-    read: (projectLeadIds: string[] = []) =>
-      read({ workspaceId: "ws", userId: "me", teamId: "team", projectLeadIds, now: NOW }),
+    read: () => read({ workspaceId: "ws", userId: "me", teamId: "team", now: NOW }),
   };
 }
 
@@ -173,11 +172,11 @@ test("a member whose only runner is another member's issue VM runner still needs
     isolation: "issue_vm",
     agents: { claude: { ready: 1 }, codex: { ready: 1 } },
   });
-  expect(await w.read(["lead"])).toEqual(NEEDED);
+  expect(await w.read()).toEqual(NEEDED);
   await runner(w.db, "stopped", { owner: "lead", isolation: "issue_vm", seenAgoMs: 10 * 60_000 });
-  expect(await w.read(["lead"])).toEqual(NEEDED);
+  expect(await w.read()).toEqual(NEEDED);
   await runner(w.db, "mine");
-  expect(await w.read(["lead"])).toEqual({
+  expect(await w.read()).toEqual({
     runner: { state: "ready", id: "mine", name: "mine-host" },
     agents: WAITING,
     memberVm: false,

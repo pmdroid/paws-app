@@ -275,7 +275,6 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
             workspaceId: done.workspaceId,
             userId: owner.userId,
             teamId: done.teamId,
-            projectLeadIds: done.projectLeadIds,
             now: now(),
           })) ?? {
             runner: { state: "needed" },
