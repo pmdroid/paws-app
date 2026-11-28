@@ -3,7 +3,7 @@
 Two dashboards for the OpenTelemetry data Paws exports (Workspace › Telemetry):
 
 - `paws-overview.json`: item moves, merged and failed items, questions, waiting jobs and outbox, event-loop lag, job run and wait times, memory, CPU, and a log of the latest item moves.
-- `paws-runner-fleet.json`: every runner side by side from the `runner-node` scrape job: a table of vCPUs, memory, CPU, memory and root disk use and uptime, then CPU, memory, load per vCPU, root disk, network, disk I/O and memory pressure over time.
+- `paws-runner-fleet.json`: every runner side by side from the `paws_runner_host_*` gauges: a table of vCPUs, memory, and CPU, memory and root disk use, then CPU, memory, load per vCPU, root disk, network, disk I/O and memory pressure over time.
 - `paws-integrations.json`: Linear and GitHub rate limits, GitHub and Linear call times, runner API requests by status and route, outbox wait and delivery, and database transactions.
 
 Metrics are read from Prometheus. Item moves are read from Loki as `paws.item.transition` log events.
@@ -24,31 +24,9 @@ docker run -d --name grafana-lgtm --restart unless-stopped \
 
 The OTLP ports listen only on the local machine. Publish port 3000 only on an address you trust, such as a Tailscale address.
 
-## Scrape runner machine metrics
+## Runner machine metrics
 
-Install the node exporter on each runner and let it listen only on the runner's Tailscale address, never on all interfaces:
-
-```sh
-ip=$(tailscale ip -4 | head -1)
-echo "ARGS=\"--web.listen-address=$ip:9100\"" | sudo tee /etc/default/prometheus-node-exporter
-sudo apt-get install -y -o Dpkg::Options::=--force-confold prometheus-node-exporter
-sudo systemctl restart prometheus-node-exporter
-```
-
-Writing `/etc/default/prometheus-node-exporter` before installing keeps the package from starting on `0.0.0.0`.
-
-Add the runners to a copy of the stack's Prometheus configuration (`docker exec grafana-lgtm cat /otel-lgtm/prometheus.yaml > prometheus.yaml`), appending:
-
-```yaml
-scrape_configs:
-  - job_name: runner-node
-    scrape_interval: 30s
-    static_configs:
-      - targets: ["<runner Tailscale IP>:9100"]
-        labels: { runner: <runner name> }
-```
-
-Then start the stack with `-v "$PWD/prometheus.yaml:/otel-lgtm/prometheus.yaml:ro"` added to the `docker run` command. Import the community "Node Exporter Full" dashboard (grafana.com ID 1860) for per-runner CPU, memory, disk and network.
+A runner with the node exporter sends its CPU, memory, root disk, load, network, disk I/O and memory pressure to Paws every 30 seconds. The runner package installs the node exporter and binds it to `127.0.0.1`. Paws exports the values with its own metrics once Telemetry export is on, as `paws_runner_host_*` gauges with a `runner` label, so Prometheus needs no extra configuration.
 
 ## Connect Paws
 
