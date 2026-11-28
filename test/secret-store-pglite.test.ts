@@ -1,6 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadGitHubAppCredentials } from "../src/config";
@@ -218,6 +226,57 @@ describePglite((connect) => {
     expect((await db.run(secretRowsSteps)).map((row) => row.name)).toEqual(["linear-webhook"]);
     expect(readFileSync(join(dir, "runner-identity", "inputs", "blob"), "utf8")).toBe("run data");
     await store.close();
+  });
+
+  test("the import copies only owned names, prunes retired and scratch folders and follows no symlinks", async () => {
+    const { db, dir } = await setup(connect);
+    const identity = join(dir, "runner-identity");
+    for (const folder of [
+      identity,
+      join(dir, ".retired-20261127"),
+      join(identity, ".certificate-x"),
+    ])
+      mkdirSync(folder, { recursive: true, mode: 0o700 });
+    const marker = "synthetic-marker";
+    writeFileSync(join(identity, "runner-command-key.pem"), marker, { mode: 0o600 });
+    writeFileSync(join(dir, `github-user-grant-${"a".repeat(64)}.grant`), marker);
+    writeFileSync(join(dir, "github-connect-01M8FK62JP"), marker);
+    writeFileSync(join(dir, "agent-auth-device-01M8FK62JP"), marker);
+    writeFileSync(join(dir, ".retired-20261127", "linear-webhook"), marker);
+    writeFileSync(join(identity, ".certificate-x", "key.pem"), marker);
+    writeFileSync(join(dir, "linear-oauth.json.pre-postgres-20261113T0107"), marker);
+    writeFileSync(join(dir, "public-tls.key"), marker);
+    mkdirSync(join(dir, "elsewhere"), { mode: 0o700 });
+    writeFileSync(join(dir, "elsewhere", "github-webhook"), marker);
+    symlinkSync(join(dir, "elsewhere", "github-webhook"), join(dir, "github-webhook"));
+    symlinkSync(join(dir, ".retired-20261127"), join(dir, "linear-inputs-link"));
+    const previous = process.env.PAWS_TLS_KEY_PATH;
+    process.env.PAWS_TLS_KEY_PATH = join(dir, "public-tls.key");
+    cleanup.push(() => {
+      if (previous === undefined) delete process.env.PAWS_TLS_KEY_PATH;
+      else process.env.PAWS_TLS_KEY_PATH = previous;
+    });
+    const lines: string[] = [];
+    cleanup.push(setJournalSink((line) => lines.push(line)));
+
+    const first = await install(db, dir);
+    expect((await db.run(secretRowsSteps)).map((row) => row.name).sort()).toEqual([
+      "agent-auth-device-01M8FK62JP",
+      "github-connect-01M8FK62JP",
+      `github-user-grant-${"a".repeat(64)}.grant`,
+      "runner-identity/runner-command-key.pem",
+    ]);
+    expect(readSecretFile(join(identity, "runner-command-key.pem"))).toBe(marker);
+    expect(lines.filter((line) => line.startsWith("not imported: ")).sort()).toEqual([
+      "not imported: elsewhere/github-webhook",
+      "not imported: linear-oauth.json.pre-postgres-20261113T0107",
+    ]);
+    expect(lines.join("\n")).not.toContain(marker);
+    await first.close();
+    lines.length = 0;
+    await install(db, dir);
+    expect(lines).toEqual([]);
+    expect(existsSync(join(dir, "linear-oauth.json.pre-postgres-20261113T0107"))).toBe(true);
   });
 
   test("a plaintext secret file is imported encrypted, and a key another instance stored wins", async () => {
