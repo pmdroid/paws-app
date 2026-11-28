@@ -34,8 +34,6 @@ export type OnboardingReadinessReader = (input: {
   userId: string;
   /** The Linear team of the issue. */
   teamId: string;
-  /** Linear user ids of the leads of the issue's Linear projects, who may share a runner. */
-  projectLeadIds: readonly string[];
   now: number;
 }) => OnboardingReadiness | Promise<OnboardingReadiness>;
 

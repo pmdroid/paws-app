@@ -215,7 +215,6 @@ async function fixture({
         workspaceId: workspace.id,
         userId,
         teamId: "team",
-        projectLeadIds: [],
         now: clock.now(),
       }),
       github: null,
