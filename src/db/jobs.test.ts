@@ -28,7 +28,7 @@ import {
   type Db,
 } from "./index";
 import { json, seed } from "../../test/pglite-fixtures";
-import { pgliteServer, tempStore } from "../../test/pglite";
+import { pgliteServer, serverPostgres, tempStore } from "../../test/pglite";
 
 const stores: { close(): Promise<void> }[] = [];
 
@@ -586,6 +586,78 @@ for (const operation of ["complete", "fail", "extend"] as const) {
     );
   });
 }
+
+async function racingQueue(clock = new FakeClock(1_000)) {
+  const base = process.env.PAWS_TEST_DATABASE_URL;
+  if (!base) return await queue(clock);
+  const server = await serverPostgres(base, 4);
+  stores.push(server);
+  return { db: server.store, clock };
+}
+
+async function race(db: Db, clock: FakeClock, queues: string[], options = {}) {
+  return await Promise.all(
+    ["a", "b"].map((workerId) =>
+      claimNextJob(db, { workerId, leaseMs: 5_000, now: clock.now(), queues, ...options }),
+    ),
+  );
+}
+
+describe("concurrent claims", () => {
+  test("two connections racing for one due job: exactly one receives it", async () => {
+    const { db, clock } = await racingQueue();
+    for (let trial = 0; trial < 50; trial += 1) {
+      await enqueueJob(db, { queue: "tick", jobKey: `race-${trial}`, now: clock.now() });
+      const claimed = (await race(db, clock, ["tick"])).filter((job) => job !== null);
+      expect(claimed).toHaveLength(1);
+      expect(await completeJob(db, claimed[0]!, clock.now())).toBe(true);
+    }
+  });
+
+  test("two independent jobs both progress", async () => {
+    const { db, clock } = await racingQueue();
+    for (const key of ["one", "two"]) await enqueueJob(db, { queue: "tick", jobKey: key, now: 0 });
+    const claimed = await race(db, clock, ["tick"]);
+    expect(new Set(claimed.map((job) => job?.id)).size).toBe(2);
+    for (const job of claimed) expect(await completeJob(db, job!, clock.now())).toBe(true);
+  });
+
+  test("jobs for the same item hold one lease under the race", async () => {
+    const { db, clock } = await racingQueue();
+    for (const key of ["first", "second"])
+      await enqueueJob(db, {
+        queue: JOB_KIND.reverify,
+        jobKey: key,
+        payload: { itemId: "eng-1" },
+        now: clock.now(),
+      });
+    expect((await race(db, clock, [JOB_KIND.reverify])).filter(Boolean)).toHaveLength(1);
+  });
+
+  test("merge jobs of one lane stay within [merge] parallel under the race", async () => {
+    const { db, clock } = await racingQueue();
+    for (const id of ["eng-1", "eng-2", "eng-3"]) {
+      await insertQueuedItem(db, { id, now: clock.now() });
+      await bindRepo(db, id, "acme", "one");
+      await holdMergeQueuePlace(db, clock, id, "project-a");
+      await enqueueMerge(db, clock, id);
+    }
+    expect((await race(db, clock, [JOB_KIND.merge])).filter(Boolean)).toHaveLength(1);
+    const more = await race(db, clock, [JOB_KIND.merge], { mergeParallel: 2 });
+    expect(more.filter(Boolean)).toHaveLength(1);
+  });
+
+  test("after a lease expires, the replacement finishes and the stale owner cannot complete", async () => {
+    const { db, clock } = await racingQueue();
+    await enqueueJob(db, { queue: "tick", now: clock.now() });
+    const [stale] = (await race(db, clock, ["tick"])).filter((job) => job !== null);
+    clock.advance(5_000);
+    const [replacement] = (await race(db, clock, ["tick"])).filter((job) => job !== null);
+    expect(replacement?.id).toBe(stale?.id);
+    expect(await completeJob(db, stale!, clock.now())).toBe(false);
+    expect(await completeJob(db, replacement!, clock.now())).toBe(true);
+  });
+});
 
 describe("leased job writes", () => {
   test("parking a leased job keeps the earlier run_at, sets the payload, and frees the lease", async () => {
