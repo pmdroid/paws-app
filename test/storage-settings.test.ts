@@ -89,6 +89,7 @@ async function roundTrip() {
       hasSecretAccessKey: true,
       hasSessionToken: true,
       source: "settings",
+      sources: expect.any(Object),
       restartRequired: true,
     },
   });
@@ -97,6 +98,7 @@ async function roundTrip() {
     hasSecretAccessKey: true,
     hasSessionToken: true,
     source: "settings",
+    sources: expect.any(Object),
   });
   const kept = await call(send("PUT", { ...s3, region: "us-east-1" }));
   expect(kept.body).toMatchObject({ region: "us-east-1", hasSecretAccessKey: true });
@@ -122,6 +124,7 @@ describePglite((connect) => {
 });
 
 test("with PAWS_S3_* set GET reports the environment and PUT gets 409", async () => {
+  expect((await call(send("PUT", { ...s3, secretAccessKey: "saved-secret" }))).status).toBe(200);
   process.env.PAWS_S3_BUCKET = "env-bucket";
   process.env.PAWS_S3_SECRET_ACCESS_KEY = "env-secret";
   const get = await call(send("GET"));
@@ -130,12 +133,43 @@ test("with PAWS_S3_* set GET reports the environment and PUT gets 409", async ()
     bucket: "env-bucket",
     hasSecretAccessKey: true,
     source: "environment",
+    sources: {
+      bucket: { source: "environment", variable: "PAWS_S3_BUCKET" },
+      secretAccessKey: { source: "environment", variable: "PAWS_S3_SECRET_ACCESS_KEY" },
+      region: { source: "settings" },
+    },
   });
   expect(JSON.stringify(get.body)).not.toContain("env-secret");
   expect(await call(send("PUT", { kind: "local" }))).toEqual({
     status: 409,
-    body: { error: "Storage is set by PAWS_S3_* environment variables on this host." },
+    body: {
+      error:
+        "Set by environment variable PAWS_S3_BUCKET; remove it from the service environment to edit here",
+    },
   });
+  const put = await call(send("PUT", s3));
+  expect(put.status).toBe(409);
+  expect(put.body.error).toContain("PAWS_S3_BUCKET");
+  const after = await call(send("GET"));
+  expect(after.body).toMatchObject({
+    bucket: "env-bucket",
+    region: s3.region,
+    sources: {
+      bucket: { source: "environment", variable: "PAWS_S3_BUCKET" },
+      region: { source: "settings" },
+      secretAccessKey: { source: "environment", variable: "PAWS_S3_SECRET_ACCESS_KEY" },
+    },
+  });
+  expect(JSON.stringify([put.body, after.body])).not.toContain("env-secret");
+  expect(loadRunnerTranscriptS3(home)?.bucket).toBe("env-bucket");
+  expect((await call(send("PUT", { ...s3, bucket: "env-bucket" }))).status).toBe(200);
+  delete process.env.PAWS_S3_BUCKET;
+  delete process.env.PAWS_S3_SECRET_ACCESS_KEY;
+  expect((await call(send("GET"))).body).toMatchObject({
+    bucket: "paws-objects",
+    hasSecretAccessKey: true,
+  });
+  expect(loadRunnerTranscriptS3(home)?.bucket).toBe("paws-objects");
 });
 
 test("the check writes, reads and deletes one object and reports an S3 failure", async () => {
@@ -205,7 +239,7 @@ describePglite((connect) => {
 });
 
 describePglite((connect) => {
-  test("rejected combined storage updates preserve retention", async () => {
+  test("invalid storage keeps retention; env-set storage is refused while retention saves", async () => {
     const { db: store, close } = await connect();
     cleanup.push(close);
     expect(
@@ -221,8 +255,8 @@ describePglite((connect) => {
     expect(
       (await call(send("PUT", { kind: "local", closeoutLogRetentionDays: 0 }), { store })).status,
     ).toBe(409);
-    expect((await call(send("GET"), { store })).body.closeoutLogRetentionDays).toBe(14);
-    expect(audits).toEqual([]);
+    expect((await call(send("GET"), { store })).body.closeoutLogRetentionDays).toBe(0);
+    expect(audits).toEqual(["settings.storage: Set Closeout log retention: keep forever"]);
     expect((await call(send("PUT", { closeoutLogRetentionDays: 0 }), { store })).status).toBe(200);
   });
 });

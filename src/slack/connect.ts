@@ -21,6 +21,7 @@ import {
   type WorkspacePrincipal,
 } from "../workspace";
 import { dashboardUrl } from "../dashboard-links";
+import { envSetting, envSettingRefusal, settingSources } from "../config";
 import { journalCaught } from "../journal";
 import {
   createSlackAuth,
@@ -28,6 +29,7 @@ import {
   loginSlackTokenSteps,
   slackTeamOwnerSteps,
   requestSlackToken,
+  readSlackApp,
   resolveSlackApp,
   markSlackInstallationSteps,
   saveInstalledSlackTokenSteps,
@@ -128,7 +130,11 @@ export function createSlackConnect(options: {
     if (url.pathname === ADOPT && request.method === "POST") return adopt(principal);
     if (url.pathname === APP && request.method === "GET") {
       const app = resolveSlackApp(home, env);
-      return json({ configured: app !== null, clientId: app?.clientId ?? null });
+      return json({
+        configured: app !== null,
+        clientId: app?.clientId ?? null,
+        sources: settingSources(env, "slack", readSlackApp(home) ?? {}),
+      });
     }
     if (url.pathname === APP && request.method === "PUT") return saveApp(principal, request);
     return json({ error: "Method not allowed." }, 405);
@@ -279,14 +285,17 @@ export function createSlackConnect(options: {
 
   async function saveApp(principal: WorkspacePrincipal, request: Request) {
     const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
-    const app = Object.fromEntries(
-      APP_FIELDS.map((name) => [name, typeof body?.[name] === "string" ? body[name].trim() : ""]),
-    ) as SlackApp;
-    if (!APP_FIELDS.every((name) => /^\S{1,512}$/.test(app[name])))
+    const value = (name: string) => (typeof body?.[name] === "string" ? body[name].trim() : "");
+    const editable = APP_FIELDS.filter((name) => envSetting(env, "slack", name) === undefined);
+    const refusal = envSettingRefusal(env, "slack", APP_FIELDS.filter(value));
+    if (refusal !== null && !editable.some((name) => value(name)))
+      return json({ error: refusal }, 409);
+    const app = Object.fromEntries(editable.map((name) => [name, value(name)]));
+    if (!editable.every((name) => /^\S{1,512}$/.test(app[name]!)))
       return json({ error: "Enter the client ID, client secret and signing secret." }, 400);
-    await saveSlackApp(home, app);
+    await saveSlackApp(home, { ...readSlackApp(home), ...app } as SlackApp);
     await store.run((q) => auditSteps(q, principal, "slack.app_saved"));
-    return json({ ok: true });
+    return refusal === null ? json({ ok: true }) : json({ error: refusal }, 409);
   }
 
   async function disconnect(principal: WorkspacePrincipal) {

@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { envSetting } from "./env-settings";
 
 export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 8787;
@@ -24,11 +25,11 @@ export function loadEnv(source: EnvSource = process.env): PawsEnv {
     host: optional(source, "PAWS_HOST") ?? DEFAULT_HOST,
     port: readPort(source["PAWS_PORT"]),
     publicUrl: optional(source, "PAWS_PUBLIC_URL"),
-    linearWebhookSecret: optional(source, "LINEAR_WEBHOOK_SECRET"),
-    githubAppId: optional(source, "GITHUB_APP_ID"),
+    linearWebhookSecret: envSetting(source, "linear", "webhookSecret") ?? null,
+    githubAppId: envSetting(source, "github", "appId") ?? null,
     githubAppInstallationId: optional(source, "GITHUB_APP_INSTALLATION_ID"),
-    githubAppPrivateKeyPath: optional(source, "GITHUB_APP_PRIVATE_KEY_PATH"),
-    githubWebhookSecret: optional(source, "GITHUB_WEBHOOK_SECRET"),
+    githubAppPrivateKeyPath: envSetting(source, "github", "privateKeyPath") ?? null,
+    githubWebhookSecret: envSetting(source, "github", "webhookSecret") ?? null,
   };
 }
 

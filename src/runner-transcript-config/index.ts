@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { constants, closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
+import { ENV_SETTINGS, envSetting, envSettingRefusal, settingSources } from "../config";
 import {
   decodeSecretEnvelope,
   openSecretAt,
@@ -21,14 +22,6 @@ import {
 const FILE = "runner-transcript-storage.json";
 const MAX_BYTES = 65_536;
 const FAILURE = "Runner transcript storage configuration is missing or invalid.";
-const ENV = {
-  bucket: "PAWS_S3_BUCKET",
-  endpoint: "PAWS_S3_ENDPOINT",
-  region: "PAWS_S3_REGION",
-  accessKeyId: "PAWS_S3_ACCESS_KEY_ID",
-  secretAccessKey: "PAWS_S3_SECRET_ACCESS_KEY",
-  sessionToken: "PAWS_S3_SESSION_TOKEN",
-};
 const secret = (max: number) =>
   z
     .string()
@@ -64,11 +57,19 @@ const s3Schema = z
     sessionToken: secret(16_384).optional(),
   })
   .strict();
-const schema = z.union([z.strictObject({ kind: z.literal("local") }), s3Schema]);
+const localSchema = z.strictObject({ kind: z.literal("local") });
+const schema = z.union([localSchema, s3Schema]);
+const storedSchema = z.union([localSchema, s3Schema.partial()]);
 
-const fromEnvironment = () => Object.values(ENV).some((name) => process.env[name] !== undefined);
-const environmentConfig = () =>
-  Object.fromEntries(Object.entries(ENV).map(([key, name]) => [key, process.env[name]]));
+const FIELDS = Object.keys(ENV_SETTINGS.storage) as (keyof typeof ENV_SETTINGS.storage)[];
+const environmentConfig = (): Record<string, string> =>
+  Object.fromEntries(
+    FIELDS.flatMap((key) => {
+      const value = envSetting(process.env, "storage", key);
+      return value === undefined ? [] : [[key, value]];
+    }),
+  );
+const fromEnvironment = () => Object.keys(environmentConfig()).length > 0;
 
 /** The transcript S3 bucket from `PAWS_S3_*` or the stored configuration, or null when transcripts are stored locally. */
 export function loadRunnerTranscriptS3(home: string): { client: S3Client; bucket: string } | null {
@@ -79,8 +80,15 @@ export function loadRunnerTranscriptS3(home: string): { client: S3Client; bucket
   }
 }
 
+function savedFields(home: string): Partial<z.infer<typeof s3Schema>> {
+  const text = storedText(home);
+  const stored = text === null ? {} : parseStorage(text);
+  return "kind" in stored ? {} : stored;
+}
+
 function currentText(home: string): string | null {
-  return fromEnvironment() ? JSON.stringify(environmentConfig()) : storedText(home);
+  if (!fromEnvironment()) return storedText(home);
+  return JSON.stringify({ ...savedFields(home), ...environmentConfig() });
 }
 
 function storedText(home: string): string | null {
@@ -109,16 +117,15 @@ function s3From(plain: string | null) {
 }
 
 export class RunnerStorageSettingsError extends Error {}
+export class RunnerStorageEnvironmentError extends RunnerStorageSettingsError {}
 
 export function runnerStorageSettings(home: string) {
   const environment = fromEnvironment();
-  const text = environment ? null : storedText(home);
-  const parsed = text === null ? null : parseStorage(text);
-  const config: Partial<z.infer<typeof s3Schema>> | null = environment
-    ? environmentConfig()
-    : parsed === null || "kind" in parsed
-      ? null
-      : parsed;
+  const text = storedText(home);
+  const current = currentText(home);
+  const parsed = current === null ? null : (JSON.parse(current) as Record<string, string>);
+  const config: Partial<z.infer<typeof s3Schema>> | null =
+    parsed === null || "kind" in parsed ? null : parsed;
   return {
     kind: config === null ? ("local" as const) : ("s3" as const),
     bucket: config?.bucket ?? null,
@@ -127,6 +134,7 @@ export function runnerStorageSettings(home: string) {
     accessKeyId: config?.accessKeyId ?? null,
     hasSecretAccessKey: config?.secretAccessKey !== undefined,
     hasSessionToken: config?.sessionToken !== undefined,
+    sources: settingSources(process.env, "storage", savedFields(home)),
     source: environment
       ? ("environment" as const)
       : text === null
@@ -158,6 +166,7 @@ function submittedText(home: string, input: unknown): string {
           ...fields,
           secretAccessKey: secretAccessKey ?? stored.secretAccessKey,
           sessionToken: sessionToken === null ? undefined : (sessionToken ?? stored.sessionToken),
+          ...environmentConfig(),
         };
   const result = (kind === "local" ? schema : s3Schema).safeParse(config);
   if (!result.success) throw invalid(result.error);
@@ -176,12 +185,26 @@ function invalid(error: z.ZodError) {
 }
 
 export async function saveRunnerStorageSettings(home: string, input: unknown): Promise<boolean> {
-  if (fromEnvironment())
-    throw new RunnerStorageSettingsError(
-      "Storage is set by PAWS_S3_* environment variables on this host.",
-    );
+  const submitted = (input ?? {}) as Record<string, unknown>;
+  const changed = FIELDS.filter(
+    (key) =>
+      submitted.kind === "local" ||
+      (submitted[key] !== undefined && submitted[key] !== envSetting(process.env, "storage", key)),
+  );
+  const refusal = envSettingRefusal(process.env, "storage", changed);
+  if (refusal !== null && submitted.kind === "local")
+    throw new RunnerStorageEnvironmentError(refusal);
   const text = submittedText(home, input);
-  if (text !== storedText(home)) await saveStorage(home, text);
+  const environment = environmentConfig();
+  const previous = savedFields(home) as Record<string, unknown>;
+  const kept = Object.entries(JSON.parse(text)).filter(([key]) => !(key in environment));
+  const held = Object.keys(environment).filter((key) => previous[key] !== undefined);
+  const saved = JSON.stringify({
+    ...Object.fromEntries(kept),
+    ...Object.fromEntries(held.map((key) => [key, previous[key]])),
+  });
+  if (saved !== storedText(home)) await saveStorage(home, saved);
+  if (refusal !== null) throw new RunnerStorageEnvironmentError(refusal);
   return startedWith !== undefined && storageKey(text) !== startedWith;
 }
 
@@ -246,7 +269,7 @@ export function loadRunnerTranscriptObjects(home: string) {
 
 function parseStorage(text: string) {
   if (Buffer.byteLength(text) > MAX_BYTES) throw new Error();
-  return schema.parse(JSON.parse(text));
+  return storedSchema.parse(JSON.parse(text));
 }
 
 export function configureRunnerTranscriptStorage(home: string, text: string): void {

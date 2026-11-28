@@ -80,7 +80,9 @@ export {
   startupSettings,
 } from "./runtime";
 export type { PawsRole, RuntimeConfig } from "./runtime";
-export { loadGitHubAppCredentials } from "./github-app";
+export { gitHubAppSources, loadGitHubAppCredentials } from "./github-app";
+export { ENV_SETTINGS, envSetting, envSettingRefusal, settingSources } from "./env-settings";
+export type { EnvSettingField, EnvSettingGroup, SettingSource } from "./env-settings";
 export type { GitHubAppCredentials } from "./github-app";
 
 export {

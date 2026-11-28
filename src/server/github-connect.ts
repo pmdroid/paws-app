@@ -37,8 +37,14 @@ import {
   GitHubSetupRefusedError,
   type ActiveGitHubApp,
 } from "../auth";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadGitHubAppCredentials } from "../config";
+import {
+  envSetting,
+  envSettingRefusal,
+  gitHubAppSources,
+  loadGitHubAppCredentials,
+} from "../config";
 import { saveSecret, storedSecrets } from "../credentials";
 import {
   GitHubHttpError,
@@ -138,8 +144,7 @@ export function createHostedGitHubConnect(options: {
       return denied();
     if (url.pathname !== CALLBACK && !(await administrator())) return denied();
     if (url.pathname === APP) {
-      const configured = () =>
-        Boolean(options.env.GITHUB_APP_ID || loadGitHubAppCredentials(options.home, options.env));
+      const configured = () => loadGitHubAppCredentials(options.home, options.env) !== null;
       const reply = (body: unknown, status = 200) =>
         Response.json(body, { status, headers: { "cache-control": "no-store" } });
       if (request.method === "GET")
@@ -149,6 +154,7 @@ export function createHostedGitHubConnect(options: {
           webhookUrl: origin + "/webhooks/github",
           permissions: INSTALLATION_PERMISSIONS,
           events: GITHUB_APP_EVENTS,
+          sources: gitHubAppSources(options.home, options.env),
         });
       if (
         request.method !== "POST" ||
@@ -160,23 +166,38 @@ export function createHostedGitHubConnect(options: {
       if (configured()) return reply({ error: "The GitHub App is already configured." }, 409);
       if (storedSecrets() === null)
         return reply({ error: "The database secret store is unavailable." }, 503);
+      const fields = ["appId", "privateKeyPem", "webhookSecret", "clientId", "clientSecret"];
+      const envField = (field: string) =>
+        (field === "privateKeyPem" ? "privateKeyPath" : field) as "appId";
+      const fromEnv = (field: string) => envSetting(options.env, "github", envField(field));
       let input: Record<string, string>;
+      let saved: Record<string, string>;
+      let refusal: string | null;
       try {
         const body = await readWorkspaceJson(request);
-        const fields = ["appId", "privateKeyPem", "webhookSecret", "clientId", "clientSecret"];
         if (
           !body ||
           typeof body !== "object" ||
           Array.isArray(body) ||
-          Object.keys(body).length !== fields.length ||
-          fields.some(
-            (field) =>
-              typeof (body as Record<string, unknown>)[field] !== "string" ||
-              !(body as Record<string, string>)[field]!.trim(),
-          )
+          Object.keys(body).some((key) => !fields.includes(key)) ||
+          fields.some((field) => {
+            const value = (body as Record<string, unknown>)[field];
+            return fromEnv(field) && value === undefined
+              ? false
+              : typeof value !== "string" || !value.trim();
+          })
         )
           throw new Error();
-        input = body as Record<string, string>;
+        const submitted = body as Record<string, string>;
+        refusal = envSettingRefusal(
+          options.env,
+          "github",
+          fields.filter((field) => submitted[field] !== undefined).map(envField),
+        );
+        saved = Object.fromEntries(fields.flatMap((f) => (fromEnv(f) ? [] : [[f, submitted[f]!]])));
+        input = Object.fromEntries(fields.map((f) => [f, fromEnv(f) ?? submitted[f]!]));
+        if (fromEnv("privateKeyPem"))
+          input.privateKeyPem = readFileSync(input.privateKeyPem!, "utf8");
         if (!/^[1-9][0-9]{0,19}$/.test(input.appId!)) throw new Error();
       } catch {
         return reply(
@@ -212,10 +233,10 @@ export function createHostedGitHubConnect(options: {
         if (error instanceof GitHubHttpError && error.status < 500)
           return reply(
             {
-              error: error.message
-                .replaceAll(input.privateKeyPem!, "[redacted]")
-                .replaceAll(input.clientSecret!, "[redacted]")
-                .replaceAll(input.webhookSecret!, "[redacted]"),
+              error: [input.privateKeyPem!, input.clientSecret!, input.webhookSecret!].reduce(
+                (text, secret) => text.replaceAll(secret, "[redacted]"),
+                error.message,
+              ),
             },
             400,
           );
@@ -226,13 +247,13 @@ export function createHostedGitHubConnect(options: {
       await saveSecret(
         join(options.home, "secrets", "github-browser-app.json"),
         JSON.stringify({
-          ...input,
+          ...saved,
           privateKeyPath: join(options.home, "secrets", "github-app.pem"),
           installationId: null,
         }),
         true,
       );
-      return reply({ configured: true });
+      return refusal === null ? reply({ configured: true }) : reply({ error: refusal }, 409);
     }
     if (request.method !== "GET") cache.clear(access!.principal.workspaceId);
     if (url.pathname === START && request.method === "GET") {

@@ -7,6 +7,7 @@ import { loadEnv, type EnvSource, type PawsEnv } from "./env";
 import { emptyConfigFile, loadSettings, type PawsConfigFile } from "./file";
 import { pawsPaths } from "./paths";
 import { loadGitHubAppCredentials } from "./github-app";
+import { envSetting } from "./env-settings";
 import { checkDatabaseUrl } from "./database";
 import { parseRepositoryList } from "./repositories";
 
@@ -115,8 +116,8 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     linearAccessToken: optional(source, "LINEAR_ACCESS_TOKEN"),
     linearRefreshToken: optional(source, "LINEAR_REFRESH_TOKEN"),
     linearTokenFile: join(env.home, "secrets/linear-oauth.json"),
-    linearClientId: optional(source, "LINEAR_CLIENT_ID") ?? secrets.clientId,
-    linearClientSecret: optional(source, "LINEAR_CLIENT_SECRET") ?? secrets.clientSecret,
+    linearClientId: envSetting(source, "linear", "clientId") ?? secrets.clientId,
+    linearClientSecret: envSetting(source, "linear", "clientSecret") ?? secrets.clientSecret,
     linearOrganizationId: optional(source, "LINEAR_ORGANIZATION_ID"),
     repos,
     publicUrl: optional(source, "PAWS_PUBLIC_URL"),
