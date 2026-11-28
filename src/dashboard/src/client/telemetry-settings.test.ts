@@ -14,6 +14,7 @@ const view = {
   items: { enabled: true, scope: "all", includeRepositoryAndRunner: true },
   traces: { enabled: false, which: "all", detail: "stages_and_checks", slowHours: 4 },
   headerValue: "set",
+  prometheusToken: "notSet",
   status: {
     error: null,
     metrics: { lastExportAt: null, failuresLastHour: 2 },
@@ -37,7 +38,12 @@ test("loads, saves without replacing the stored header, and shows the test resul
       return Response.json(
         String(url).endsWith("/check")
           ? { ok: false, status: 401, error: "Unauthorized" }
-          : { ...view, ...bodies.at(-1), headerValue: "set" },
+          : {
+              ...view,
+              ...bodies.at(-1),
+              headerValue: "set",
+              prometheusToken: bodies.at(-1)?.prometheusToken ? "set" : "notSet",
+            },
       );
     }) as typeof fetch;
     const root = window.document.createElement("div") as unknown as HTMLElement;
@@ -75,6 +81,18 @@ test("loads, saves without replacing the stored header, and shows the test resul
     expect(root.querySelector('[role="alert"]')?.textContent).toBe(
       "Test export failed (401): Unauthorized",
     );
+    expect(bodies.at(-1)).not.toHaveProperty("prometheusToken");
+    root.querySelector<HTMLInputElement>("#telemetry-prometheusToken")!.value = "sd-secret";
+    root.querySelector<HTMLButtonElement>('button[type="submit"]')!.click();
+    await settleReactWork();
+    expect(bodies.at(-1)).toMatchObject({ prometheusToken: "sd-secret" });
+    expect(root.querySelector("[data-telemetry-sd-token]")?.textContent).toBe(
+      "Set. Leave empty to keep it.",
+    );
+    root.querySelector<HTMLButtonElement>('[data-telemetry="clear-token"]')!.click();
+    await settleReactWork();
+    expect(bodies.at(-1)).toMatchObject({ prometheusToken: "" });
+    expect(root.querySelector('[data-telemetry="clear-token"]')).toBeNull();
   } finally {
     await settleReactWork();
     globalThis.fetch = realFetch;
