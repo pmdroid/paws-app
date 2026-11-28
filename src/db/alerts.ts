@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, max, or, sql } from "drizzle-orm";
-import { type Q } from "./db";
+import { type Q, type Steps } from "./db";
 import { jsonItemId } from "./jobs";
+import { jsonText } from "./json-text";
 import { activeRunnerIdsSteps, runnerOccupancySteps } from "./runner-capacity";
 
 export type AlertWindows = { jobs: number; testTimeouts: number; deadOutbox: number };
@@ -81,6 +82,82 @@ export function* alertFactsSteps(q: Q, now: number, since: AlertWindows) {
     lastQueuedAt: (lastQueued?.at ?? null) === null ? null : Number(lastQueued!.at),
     freeSlots,
   };
+}
+
+export type OrphanedBlockerRow = {
+  blocker: string;
+  state: string;
+  endedAt: number;
+  blocked: string;
+  heldSince: number;
+};
+
+export function* orphanedBlockerFactsSteps(q: Q): Steps<OrphanedBlockerRow[]> {
+  const { itemHold, taskBlock, workItem, workItemEvent } = q.t;
+  const holds = yield* q.all(
+    q.orm
+      .select({
+        id: workItem.id,
+        issueId: workItem.linearIssueId,
+        identifier: workItem.linearIdentifier,
+        createdAt: workItem.createdAt,
+        blockers: jsonText(q, itemHold.blockers),
+      })
+      .from(itemHold)
+      .innerJoin(workItem, eq(workItem.id, itemHold.itemId))
+      .where(and(eq(itemHold.reason, "blocked"), eq(workItem.state, "queued"))),
+  );
+  if (holds.length === 0) return [];
+  const edges = yield* q.all(
+    q.orm
+      .select()
+      .from(taskBlock)
+      .where(inArray(taskBlock.blockedLinearIssueId, [...new Set(holds.map((h) => h.issueId))])),
+  );
+  if (edges.length === 0) return [];
+  const latest = new Map<string, { id: string; identifier: string; state: string }>();
+  for (const row of yield* q.all(
+    q.orm
+      .select({
+        id: workItem.id,
+        issueId: workItem.linearIssueId,
+        identifier: workItem.linearIdentifier,
+        state: workItem.state,
+      })
+      .from(workItem)
+      .where(
+        inArray(workItem.linearIssueId, [...new Set(edges.map((e) => e.blockerLinearIssueId))]),
+      )
+      .orderBy(desc(workItem.createdAt), desc(workItem.id)),
+  ))
+    if (!latest.has(row.issueId)) latest.set(row.issueId, row);
+  const lastAt = function* (itemId: string, state: string) {
+    const row = yield* q.one(
+      q.orm
+        .select({ at: max(workItemEvent.at) })
+        .from(workItemEvent)
+        .where(and(eq(workItemEvent.itemId, itemId), eq(workItemEvent.toState, state))),
+    );
+    return row?.at == null ? null : Number(row.at);
+  };
+  const rows: OrphanedBlockerRow[] = [];
+  for (const hold of holds) {
+    const named = new Set(JSON.parse(hold.blockers) as string[]);
+    for (const edge of edges) {
+      const blocker = latest.get(edge.blockerLinearIssueId);
+      const ended = blocker?.state === "cancelled" || blocker?.state === "failed";
+      if (edge.blockedLinearIssueId !== hold.issueId || !ended || !named.has(blocker.identifier))
+        continue;
+      rows.push({
+        blocker: blocker.identifier,
+        state: blocker.state,
+        endedAt: (yield* lastAt(blocker.id, blocker.state)) ?? 0,
+        blocked: hold.identifier,
+        heldSince: (yield* lastAt(hold.id, "queued")) ?? Number(hold.createdAt),
+      });
+    }
+  }
+  return rows;
 }
 
 export function* admittedRunnerVersionsSteps(q: Q) {

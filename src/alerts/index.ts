@@ -1,4 +1,4 @@
-export { ALERTS_PATH, readAlerts } from "./alerts";
+export { ALERTS_PATH, orphanedBlockers, readAlerts } from "./alerts";
 export type { Alert, AlertSeverity } from "./alerts";
 export {
   createDeployLagCheck,
