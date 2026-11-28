@@ -1036,6 +1036,8 @@ export class Orchestrator {
   private readonly stopEvents = new Map<string, Promise<void>>();
   private readonly sessionEvents = new Map<string, Promise<void | boolean>>();
   private readonly linearEvents = new Set<Promise<unknown>>();
+  private executionPass: Promise<void> | null = null;
+  private executionAgain = false;
   private readonly heldFlushes = new Set<ReturnType<typeof setTimeout>>();
   private readonly intakeReads = new Map<
     string,
@@ -1151,9 +1153,29 @@ export class Orchestrator {
     return reads;
   }
 
-  onLinearEvent(event: AcceptedLinearEvent): Promise<void | boolean> {
+  onLinearEvent(
+    event: AcceptedLinearEvent,
+    options: { awaitAdmission?: boolean } = {},
+  ): Promise<void | boolean> {
     if (this.shuttingDown) return Promise.reject(new Error("Paws is shutting down"));
-    return this.track(this.receiveLinearEvent(event));
+    return this.track(this.receiveLinearEvent(event, options.awaitAdmission !== false));
+  }
+
+  requestExecution(): void {
+    if (this.shuttingDown) return;
+    if (this.executionPass !== null) {
+      this.executionAgain = true;
+      return;
+    }
+    const site = "orchestrator.requestExecution";
+    this.executionPass = this.reconcileExecution()
+      .catch((error: unknown) => journalCaught(error, site, null, undefined, this.options.journal))
+      .finally(() => {
+        this.executionPass = null;
+        if (!this.executionAgain) return;
+        this.executionAgain = false;
+        this.requestExecution();
+      });
   }
 
   private track<T>(work: Promise<T>): Promise<T> {
@@ -1163,7 +1185,10 @@ export class Orchestrator {
     return work;
   }
 
-  private async receiveLinearEvent(event: AcceptedLinearEvent): Promise<void | boolean> {
+  private async receiveLinearEvent(
+    event: AcceptedLinearEvent,
+    awaitAdmission: boolean,
+  ): Promise<void | boolean> {
     const comment = linearCommentOf(event);
     if (comment !== null) return this.receiveLinearComment(comment);
     const decision = await this.options.authorizeLinearEvent?.(event);
@@ -1258,13 +1283,14 @@ export class Orchestrator {
         const questionDelegationId = open
           ? (await this.store.run((q) => getWorkItemSteps(q, open.itemId)))?.delegationId
           : null;
-        await this.handleLinearEvent(event);
+        await this.handleLinearEvent(event, awaitAdmission);
         const promptedSession = event.sessionId;
         if (event.action === "prompted" && promptedSession) {
           const delegationId =
             (await this.store.run((q) => workItemForSessionSteps(q, promptedSession)))
               ?.delegationId ?? questionDelegationId;
-          if (delegationId) await this.reconcileExecution();
+          if (delegationId && awaitAdmission) await this.reconcileExecution();
+          else if (delegationId) this.requestExecution();
         }
       });
     this.sessionEvents.set(key, done);
@@ -1450,6 +1476,7 @@ export class Orchestrator {
     this.heldFlushes.clear();
     await Promise.allSettled([
       ...this.linearEvents,
+      ...(this.executionPass === null ? [] : [this.executionPass]),
       ...this.sessionEvents.values(),
       ...this.stopEvents.values(),
     ]);
@@ -1493,7 +1520,10 @@ export class Orchestrator {
     );
   }
 
-  private async handleLinearEvent(event: AcceptedLinearEvent): Promise<void> {
+  private async handleLinearEvent(
+    event: AcceptedLinearEvent,
+    awaitAdmission = true,
+  ): Promise<void> {
     if (this.shuttingDown) throw new Error("Paws is shutting down");
     if (event.action === "prompted") {
       const question =
@@ -1571,7 +1601,11 @@ export class Orchestrator {
         : await this.store.transaction((q) => recordLinearSessionEventSteps(q, event, this.now()));
     const taskKey = session ? await sessionTaskKey(this.store, session) : null;
     if (session?.stoppedAt !== null && session?.stoppedAt !== undefined) return;
-    if (session && !startFresh && (await this.resumeRedelegatedItem(event.issueId, session)))
+    if (
+      session &&
+      !startFresh &&
+      (await this.resumeRedelegatedItem(event.issueId, session, awaitAdmission))
+    )
       return;
     let result: IntakeResult;
     try {
@@ -1605,7 +1639,8 @@ export class Orchestrator {
           );
         }
       }
-      await this.dispatch();
+      if (awaitAdmission) await this.dispatch();
+      else this.requestExecution();
     }
     await this.flush();
   }
@@ -9947,6 +9982,7 @@ export class Orchestrator {
   private async resumeRedelegatedItem(
     issueId: string,
     session: StoredLinearSession,
+    awaitAdmission: boolean,
   ): Promise<boolean> {
     const elsewhere = await this.store.run((q) =>
       issueOpenInOtherSessionSteps(q, issueId, session.sessionId),
@@ -10001,7 +10037,8 @@ export class Orchestrator {
       return true;
     });
     if (resumed) emitJobReady(this.store);
-    if (resumed) await this.reconcileExecution();
+    if (resumed && awaitAdmission) await this.reconcileExecution();
+    else if (resumed) this.requestExecution();
     await this.flush();
     return resumed;
   }

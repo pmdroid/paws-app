@@ -853,7 +853,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
 
   const followUp = async (event: AcceptedLinearEvent): Promise<void | boolean> => {
     if (orchestrator === null) throw new Error("loop is not attached");
-    const accepted = await orchestrator.onLinearEvent(event);
+    const accepted = await orchestrator.onLinearEvent(event, { awaitAdmission: false });
     const known = event.sessionId ? orchestrator.takeIntakeReads(event.sessionId) : undefined;
     if (accepted !== false && reconciler && event.sessionId) {
       const sessionId = event.sessionId;
@@ -871,7 +871,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             signal: abort.signal,
             known: event.action === "created" ? known : undefined,
           });
-        await orchestrator.reconcileExecution();
+        orchestrator.requestExecution();
       }
     }
     return accepted;
