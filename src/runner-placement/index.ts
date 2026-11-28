@@ -19,6 +19,7 @@ export type EligibleRunnerReason =
   | "own"
   | "issue-vm"
   | "not-yours"
+  | "vm-host"
   | "outdated"
   | "offline"
   | "paused"
