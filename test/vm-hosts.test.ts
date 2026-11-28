@@ -1,5 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { listWorkspaceAuditSteps, recordRunnerHostStatusSteps, type Db } from "../src/db";
+import {
+  insertIssueVmSteps,
+  listWorkspaceAuditSteps,
+  recordRunnerHostStatusSteps,
+  type Db,
+} from "../src/db";
 import { handleVmHostRequest, vmHostSlots, type VmHostView } from "../src/vm-hosts";
 import type { WorkspacePrincipal } from "../src/workspace";
 import { withoutForeignKeys } from "./pglite-fixtures";
@@ -85,10 +90,17 @@ async function store(): Promise<Db> {
   return db;
 }
 
-const principal = (role: string, workspaceId = "acme") =>
-  ({ workspaceId, userId: "ada", role, authenticatedAt: 0, teamIds: [] }) as WorkspacePrincipal;
+const principal = (role: string, workspaceId = "acme", userId = "ada") =>
+  ({ workspaceId, userId, role, authenticatedAt: 0, teamIds: [] }) as WorkspacePrincipal;
 
-function call(db: Db, method: string, role = "admin", body?: unknown, workspaceId = "acme") {
+function call(
+  db: Db,
+  method: string,
+  role = "admin",
+  body?: unknown,
+  workspaceId = "acme",
+  userId = "ada",
+) {
   return handleVmHostRequest(
     new Request(url, {
       method,
@@ -96,7 +108,7 @@ function call(db: Db, method: string, role = "admin", body?: unknown, workspaceI
         ? {}
         : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
     }),
-    { db, principal: principal(role, workspaceId), now: () => 5 },
+    { db, principal: principal(role, workspaceId, userId), now: () => 5 },
   ) as Promise<Response>;
 }
 
@@ -150,4 +162,57 @@ test("members are refused, out-of-range values are refused and other workspaces 
   expect((await call(db, "GET")).status).toBe(200);
   expect((await call(db, "GET", "admin", undefined, "other")).status).toBe(404);
   expect((await call(db, "POST")).status).toBe(405);
+});
+
+test("only an admin's own idle runner becomes a VM host; any admin resizes one", async () => {
+  const db = await store();
+  const refused = await call(db, "PUT", "admin", {}, "acme", "grace");
+  expect(refused.status).toBe(409);
+  expect(await refused.json()).toEqual({ error: "Only your own idle runner can become a VM host" });
+  expect(((await (await call(db, "GET")).json()) as VmHostView).vmHost).toBe(false);
+
+  await db.run((q) =>
+    q.exec(
+      q.orm.insert(q.t.runnerWork).values({
+        runId: "run-1",
+        runnerId: RUNNER,
+        workspaceId: "acme",
+        generation: 1,
+        runnerFence: 0,
+        commandId: "command-1",
+        leaseUntil: Number.MAX_SAFE_INTEGER,
+      }),
+    ),
+  );
+  const busy = await call(db, "PUT", "admin", {});
+  expect(busy.status).toBe(409);
+  expect(await busy.json()).toEqual({
+    error: "Wait for this runner's work to finish, or drain it first",
+  });
+  await db.run((q) => q.exec(q.orm.update(q.t.runnerWork).set({ endedAt: 1 })));
+
+  expect((await call(db, "PUT", "admin", {})).status).toBe(200);
+  const resized = await call(db, "PUT", "admin", { vmVcpus: 4 }, "acme", "grace");
+  expect(resized.status).toBe(200);
+  expect(((await resized.json()) as VmHostView).settings.vmVcpus).toBe(4);
+
+  await db.run((q) =>
+    insertIssueVmSteps(q, {
+      workspaceId: "acme",
+      itemId: "item-1",
+      memberUserId: "ada",
+      provider: "host",
+      hostRunnerId: RUNNER,
+      now: 1,
+    }),
+  );
+  expect((await call(db, "DELETE")).status).toBe(409);
+  expect(((await (await call(db, "GET")).json()) as VmHostView).vmHost).toBe(true);
+
+  const audit = JSON.stringify(
+    await db.run((q) => listWorkspaceAuditSteps(q, "acme", Number.MAX_SAFE_INTEGER)),
+  );
+  expect(audit).toContain(`Refused VM host ${RUNNER}: Only your own idle runner`);
+  expect(audit).toContain(`Refused VM host ${RUNNER}: Wait for this runner's work`);
+  expect(audit).toContain(`Refused VM host ${RUNNER}: Delete this host's issue VMs`);
 });

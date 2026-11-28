@@ -25,6 +25,7 @@ export function* vmHostMachineSteps(q: Q, workspaceId: string, runnerId: string)
     q.orm
       .select({
         runnerId: runner.id,
+        ownerUserId: runner.ownerUserId,
         cpuCount: status.cpuCount,
         memoryTotalBytes: status.memoryTotalBytes,
       })
@@ -34,7 +35,9 @@ export function* vmHostMachineSteps(q: Q, workspaceId: string, runnerId: string)
   );
   if (!row) return null;
   const host = yield* q.one(q.orm.select().from(vmHost).where(eq(vmHost.runnerId, runnerId)));
-  return { ...row, host: (host ?? null) as VmHostRow | null } as VmHostMachine;
+  return { ...row, host: (host ?? null) as VmHostRow | null } as VmHostMachine & {
+    ownerUserId: string;
+  };
 }
 
 export function* saveVmHostSteps(
