@@ -1251,6 +1251,8 @@ export async function probeRunnerBackend(
     void beforeExpiry.catch(() => undefined);
     const acceptedCommand = await next();
     if (acceptedCommand.type !== "run") throw new Error("Expected an implementation run");
+    acceptedShutdown.abort(new PawsShutdown());
+    await beforeExpiry.catch(() => undefined);
     await results.submit({
       runnerId,
       runId: acceptedCommand.runId,
@@ -1265,8 +1267,6 @@ export async function probeRunnerBackend(
       ).token,
       result: { ...result(acceptedCommand), candidateSha: head },
     });
-    acceptedShutdown.abort(new PawsShutdown());
-    await beforeExpiry.catch(() => undefined);
     now += 60_001;
     const fetchedBeforeExpiry = fetched;
     const recovered = await backend
