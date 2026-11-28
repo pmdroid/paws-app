@@ -12,8 +12,34 @@ type StageItem = {
   state?: string;
   stagesMs: Record<StageKey, number>;
 };
-type Check = { checkId: string; runs: number; timeouts: number; medianMs: number; p95Ms: number };
-type Data = { from: number; to: number; series: Series[]; items: StageItem[]; checks: Check[] };
+type Check = {
+  checkId: string;
+  runs: number;
+  failures?: number;
+  timeouts: number;
+  medianMs: number;
+  p95Ms: number;
+};
+type Repository = {
+  repository: string;
+  issues: number;
+  merged: number;
+  medianTotalMs: number | null;
+  medianStagesMs: Partial<Record<StageKey, number | null>>;
+  medianWaitingForPersonMs: number | null;
+  avgCloseoutRounds: number | null;
+  checkRuns: number;
+  checkFailures: number;
+  slowestCheck: { checkId: string; medianMs: number } | null;
+};
+type Data = {
+  from: number;
+  to: number;
+  series: Series[];
+  items: StageItem[];
+  checks: Check[];
+  repositories?: Repository[];
+};
 type Level = "ok" | "warn" | "bad";
 
 export const PERFORMANCE_RANGES = {
@@ -194,12 +220,52 @@ function bar(value: number, top: number, level: Level | null): string {
   return `<svg viewBox="0 0 100 8" width="100%" height="8" preserveAspectRatio="none" class="min-w-16"><rect x="0" y="0" width="${width.toFixed(1)}" height="8" rx="2" class="${level ? LEVEL_FILL[level] : "fill-muted-foreground"}"></rect></svg>`;
 }
 
-function table(head: string[], rows: string[][]): string {
-  return `<div class="overflow-x-auto [&_td]:[overflow-wrap:normal] [&_th]:whitespace-nowrap"><table class="run-table"><thead><tr>${head.map((cell) => `<th>${cell}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+function table(head: string[], rows: string[][], rowAttrs: string[] = []): string {
+  return `<div class="overflow-x-auto [&_td]:[overflow-wrap:normal] [&_th]:whitespace-nowrap"><table class="run-table"><thead><tr>${head.map((cell) => `<th>${cell}</th>`).join("")}</tr></thead><tbody>${rows.map((row, index) => `<tr${rowAttrs[index] ?? ""}>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
 
-function section(id: string, title: string, body: string): string {
-  return `<section class="overview-section" aria-labelledby="perf-${id}" data-perf-section="${id}"><h2 id="perf-${id}">${title}</h2>${body}</section>`;
+function section(id: string, title: string, body: string, note = false): string {
+  return `<section class="overview-section" aria-labelledby="perf-${id}" data-perf-section="${id}"><h2 id="perf-${id}">${title}</h2>${note ? '<p class="sub" data-perf-workspace-note>For the whole workspace</p>' : ""}${body}</section>`;
+}
+
+const maybeMs = (ms: number | null | undefined) =>
+  `<span class="mono">${ms == null ? "—" : formatMs(ms)}</span>`;
+
+function repositoryTable(repositories: Repository[]): string {
+  const rows = repositories.map((row) => [
+    `<button class="btn sm min-h-11 mono" type="button" data-perf-pick="${esc(row.repository)}">${esc(row.repository)}</button>`,
+    `<span class="mono">${row.issues}</span>`,
+    `<span class="mono">${row.merged}</span>`,
+    maybeMs(row.medianTotalMs),
+    maybeMs(row.medianStagesMs.verifying),
+    `<span class="mono">${row.avgCloseoutRounds === null ? "—" : row.avgCloseoutRounds.toFixed(1)}</span>`,
+    `<span class="mono">${row.checkFailures} of ${row.checkRuns} runs</span>`,
+    maybeMs(row.medianWaitingForPersonMs),
+    row.slowestCheck
+      ? `<span class="mono">${esc(row.slowestCheck.checkId)} ${formatMs(row.slowestCheck.medianMs)}</span>`
+      : "—",
+  ]);
+  return section(
+    "repositories",
+    "By repository",
+    rows.length
+      ? table(
+          [
+            "Repository",
+            "Issues",
+            "Merged",
+            "Median total",
+            "Median Closeout",
+            "Closeout rounds",
+            "Check failures",
+            "Waiting for a person",
+            "Slowest check",
+          ],
+          rows,
+          repositories.map((row) => ` data-perf-repository="${esc(row.repository)}"`),
+        )
+      : EMPTY,
+  );
 }
 
 function callRows(series: Series[], label: string, top = 15): string[][] {
@@ -250,7 +316,12 @@ export function renderPerformance(view: {
   data: Data | null;
   loading: boolean;
   error: string | null;
+  repository?: string | null;
+  repositories?: string[];
 }): string {
+  const picked = view.repository ?? null;
+  const names = [...new Set([...(view.repositories ?? []), ...(picked ? [picked] : [])])].sort();
+  const repositoryPicker = `<label class="sr-only" for="perf-repository">Repository</label><select id="perf-repository" class="min-h-11" data-perf-repository${view.loading ? " disabled" : ""}><option value=""${picked ? "" : " selected"}>All repositories</option>${names.map((name) => `<option value="${esc(name)}"${name === picked ? " selected" : ""}>${esc(name)}</option>`).join("")}</select>`;
   const picker = `<nav class="segmented" aria-label="Time range">${Object.entries(
     PERFORMANCE_RANGES,
   )
@@ -259,7 +330,7 @@ export function renderPerformance(view: {
         `<button class="btn${view.range === id ? " on" : ""}" type="button" data-perf-range="${id}" aria-pressed="${view.range === id}"${view.loading ? " disabled" : ""}>${range.label}</button>`,
     )
     .join("")}</nav>`;
-  const head = `<div class="between">${picker}${view.loading ? '<span class="sub" role="status">Loading…</span>' : ""}</div>`;
+  const head = `<div class="between"><div class="row">${picker}${repositoryPicker}</div>${view.loading ? '<span class="sub" role="status">Loading…</span>' : ""}</div>`;
   if (view.error)
     return `${head}<p class="settings-message err" role="alert">${esc(view.error)}</p>`;
   const data = view.data;
@@ -289,6 +360,7 @@ export function renderPerformance(view: {
     .map((check) => [
       `<span class="mono">${esc(check.checkId)}</span>`,
       `<span class="mono">${check.runs}</span>`,
+      `<span class="mono">${check.failures ?? 0} of ${check.runs}</span>`,
       `<span class="mono">${formatMs(check.medianMs)}</span>`,
       bar(check.medianMs, data.checks[0]!.medianMs, null),
       `<span class="mono">${formatMs(check.p95Ms)}</span>`,
@@ -304,11 +376,11 @@ export function renderPerformance(view: {
     ]);
   const work = section(
     "work",
-    "Where an issue's time goes",
+    picked ? `Where an issue's time goes in ${esc(picked)}` : "Where an issue's time goes",
     `<h3>Median per stage, merged issues</h3>${merged.length ? stageBar(medians) : EMPTY}${table(
       ["Stage", "Median"],
       medians.map((stage) => [stage.label, `<span class="mono">${formatMs(stage.ms)}</span>`]),
-    )}<h3>Slowest Closeout checks</h3>${slowChecks.length ? table(["Check", "Runs", "Median", "", "p95", "Timeouts"], slowChecks) : EMPTY}<h3>Slowest issues</h3>${slowItems.length ? table(["Issue", "Total"], slowItems) : EMPTY}`,
+    )}<h3>Slowest Closeout checks</h3>${slowChecks.length ? table(["Check", "Runs", "Failures", "Median", "", "p95", "Timeouts"], slowChecks) : EMPTY}<h3>Slowest issues</h3>${slowItems.length ? table(["Issue", "Total"], slowItems) : EMPTY}`,
   );
 
   const operations = [...groups(named(data, "host.operation"), "operation")]
@@ -331,6 +403,7 @@ export function renderPerformance(view: {
       formatMs,
       100,
     )}${lineChart("Process CPU", cpu, data, percent)}${lineChart("Memory (RSS)", memory, data, megabytes)}<h3>What blocked the loop longest</h3>${operations.length ? table(["Operation", "Longest", "Times"], operations) : EMPTY}`,
+    picked !== null,
   );
 
   const queueRows = (["job", "outbox"] as const).flatMap((kind) => {
@@ -357,6 +430,7 @@ export function renderPerformance(view: {
     queueRows.length
       ? table(["Queue", "Waiting now", "Oldest", "Wait p95", "State"], queueRows)
       : EMPTY,
+    picked !== null,
   );
 
   const remaining = (name: string) => {
@@ -371,8 +445,10 @@ export function renderPerformance(view: {
     "services",
     "Linear, GitHub and the dashboard",
     `<h3>Linear</h3><p class="sub">Rate limit left: <span class="mono">${remaining("linear.rate_remaining")}</span></p>${linear.length ? table(callHead, linear) : EMPTY}<h3>GitHub</h3><p class="sub">Rate limit left: <span class="mono">${remaining("github.rate_remaining")}</span></p>${github.length ? table(callHead, github) : EMPTY}<h3>Dashboard routes</h3>${routes.length ? table(["Route", "Requests", "p95", "", "Errors"], routes) : EMPTY}`,
+    picked !== null,
   );
-  return `${head}${tiles}${work}${responsiveness}${queues}${services}`;
+  const byRepository = picked ? "" : repositoryTable(data.repositories ?? []);
+  return `${head}${tiles}${byRepository}${work}${responsiveness}${queues}${services}`;
 }
 
 export function createPerformance() {
@@ -383,9 +459,15 @@ export function createPerformance() {
   let loading = false;
   let error: string | null = null;
   let generation = 0;
+  let repository: string | null = null;
+  const known = new Set<string>();
 
   const paint = () => {
-    if (root) renderMarkup(root, renderPerformance({ range, data, loading, error }));
+    if (root)
+      renderMarkup(
+        root,
+        renderPerformance({ range, data, loading, error, repository, repositories: [...known] }),
+      );
   };
   const get = async <T>(path: string): Promise<T> => {
     const response = await fetch(new URL(path, engine!), {
@@ -410,7 +492,9 @@ export function createPerformance() {
         get<{ from: number; to: number; series: Series[] }>(
           `/api/metrics?names=${NAMES.join(",")}&step=${step}&${window}`,
         ),
-        get<{ items: StageItem[]; checks: Check[] }>(`/api/metrics/stages?${window}`),
+        get<{ items: StageItem[]; checks: Check[]; repositories?: Repository[] }>(
+          `/api/metrics/stages?${window}${repository ? `&repository=${encodeURIComponent(repository)}` : ""}`,
+        ),
       ]);
       if (started !== generation) return;
       data = {
@@ -419,7 +503,9 @@ export function createPerformance() {
         series: metrics.series,
         items: stages.items,
         checks: stages.checks,
+        repositories: stages.repositories ?? [],
       };
+      for (const row of data.repositories ?? []) known.add(row.repository);
     } catch (cause) {
       if (started !== generation) return;
       error = cause instanceof Error ? cause.message : "Metrics could not be read.";
@@ -427,7 +513,23 @@ export function createPerformance() {
     loading = false;
     paint();
   };
+  const pick = (next: string | null) => {
+    if (next === repository) return;
+    repository = next;
+    const url = new URL(window.location.href);
+    if (next) url.searchParams.set("repository", next);
+    else url.searchParams.delete("repository");
+    window.history.replaceState(window.history.state, "", url);
+    void load();
+  };
+  const change = (event: Event) => {
+    const target = event.target as HTMLSelectElement;
+    if (target.matches?.("select[data-perf-repository]")) pick(target.value || null);
+  };
   const click = (event: Event) => {
+    const row = (event.target as Element).closest<HTMLElement>("[data-perf-pick]")?.dataset
+      .perfPick;
+    if (row) return pick(row);
     const choice = (event.target as Element).closest<HTMLElement>("[data-perf-range]")?.dataset
       .perfRange;
     if (!choice || !(choice in PERFORMANCE_RANGES) || choice === range) return;
@@ -438,10 +540,13 @@ export function createPerformance() {
     mount(next: HTMLElement, nextEngine: string | null) {
       if (root === next && engine === nextEngine) return;
       root?.removeEventListener("click", click);
+      root?.removeEventListener("change", change);
       root = next;
       engine = nextEngine;
       data = null;
+      repository = new URL(window.location.href).searchParams.get("repository") || null;
       root.addEventListener("click", click);
+      root.addEventListener("change", change);
       if (engine) void load();
       else paint();
     },
