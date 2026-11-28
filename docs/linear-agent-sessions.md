@@ -6,6 +6,8 @@ Each issue has its own agent session. A parent issue's sub-issues run in depende
 
 An issue blocked by another one starts once the blocker's pull request merges. Label the blocker `needs runner release` when its change ships in the runner: the blocked issue then also waits for a GitHub release of the blocker's repository that contains the merge, and for a runner that may work on the blocked issue's repository to report that version or newer. Until then it shows `waiting for a runner release with` and the blocker's identifier.
 
+Label the blocker `needs deploy` when its change is a fix to Paws itself: the blocked issue then waits until the running Paws contains the blocker's merge commit, and shows `waiting for the` identifier `fix to be deployed`. Paws checks again each time it starts and whenever it rereads the dependencies. When Paws can't read its own revision or repository, the issue keeps waiting and the message says why the deploy can't be checked. This only holds and releases blocked issues: a failed issue doesn't restart by itself.
+
 While the agent works, the session shows what it is doing now, such as the file it is reading or editing or that it is running a command.
 
 ## Answer a question

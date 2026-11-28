@@ -43,6 +43,7 @@ export type BlockerEvidence = {
   checkedAt: number;
   merge?: MergeEvidence;
   release?: string | null;
+  deployed?: boolean;
 };
 
 export async function readExternalBlockerEvidence(

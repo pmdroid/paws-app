@@ -1,6 +1,14 @@
 import { expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
-import { bindLinearSessionTask, recordLinearInstallation, saveTaskMode, type Db } from "../src/db";
+import { createDeployLagCheck, runningDeployIncludes } from "../src/alerts";
+import {
+  bindLinearSessionTask,
+  recordLinearInstallation,
+  registerInstance,
+  saveTaskMode,
+  stopInstance,
+  type Db,
+} from "../src/db";
 import {
   blockingIssuesSteps,
   intakeDelegatedIssue,
@@ -105,13 +113,14 @@ async function fixture() {
   const itemId = intake.items[0]!.id;
   const target = { workspaceId: "workspace", itemId };
   const releases = createFakeRunnerReleases();
-  const refresh = async () =>
+  const refresh = async (extra: Partial<Parameters<typeof syncItemDependencies>[1]> = {}) =>
     syncItemDependencies(db, {
       ...target,
       expectedGeneration: (await db.run((q) => readyItemsSteps(q, target))).generation,
       tracker,
       lifecycle,
       releases: releases.lookup,
+      ...extra,
     });
   return {
     db,
@@ -443,6 +452,53 @@ test("A merged blocker without the release label releases its dependent", async 
     await f.refresh();
     expect(await f.ready()).toBe(true);
     expect(f.releases.calls).toEqual([]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("A 'needs deploy' blocker holds its dependent until the running Paws contains the merge", async () => {
+  const f = await fixture();
+  try {
+    await releaseBlocker(f, "Needs deploy");
+    const contains = new Set<string>();
+    const check = createDeployLagCheck(f.db, {
+      name: "owner/repo",
+      defaultBranch: async () => "main",
+      missing: async () => null,
+      contains: async (base, sha) => contains.has(`${base}:${sha}`),
+      latestRelease: async () => null,
+    });
+    const deployed = (sha: string) => runningDeployIncludes(check, sha);
+    const register = (version: string) =>
+      registerInstance(f.db, { role: "all", host: "h", version, now: Date.now() });
+    const old = await register("git:old");
+    contains.add(`new:${"c".repeat(40)}`);
+    await f.refresh({ deployed });
+    expect(await f.ready()).toBe(false);
+    expect(await f.db.run((q) => blockingIssuesSteps(q, f.target.itemId))).toEqual([
+      "waiting for the DEP-3 fix to be deployed",
+    ]);
+    await stopInstance(f.db, old.id, Date.now());
+    await register("git:new");
+    await f.refresh({ deployed });
+    expect(await f.ready()).toBe(true);
+  } finally {
+    await f.close();
+  }
+});
+
+test("A 'needs deploy' blocker holds when the source repository is unknown", async () => {
+  const f = await fixture();
+  try {
+    await releaseBlocker(f, "needs deploy");
+    await registerInstance(f.db, { role: "all", host: "h", version: "git:new", now: Date.now() });
+    const check = createDeployLagCheck(f.db, null);
+    await f.refresh({ deployed: (sha) => runningDeployIncludes(check, sha) });
+    expect(await f.ready()).toBe(false);
+    expect(await f.db.run((q) => blockingIssuesSteps(q, f.target.itemId))).toEqual([
+      "waiting for the DEP-3 fix to be deployed; the deploy can't be checked: the running checkout has no GitHub origin remote",
+    ]);
   } finally {
     await f.close();
   }
