@@ -48,6 +48,7 @@ export {
   type RepositoryBinding,
 } from "./orchestrator";
 export { itemPathId, worktreeBranch } from "./sources";
+export { moveRunProfileFiles } from "./run-profile-files";
 export { askCloseoutHelp, type CloseoutHelp, type CloseoutHelpCheck } from "./closeout-help";
 export { questionEffects, verifyAgainSteps } from "./question-effects";
 export { POLICY_BLOCK_CHECK_JOB, POLICY_BLOCK_CHECK_MS } from "./policy-block";

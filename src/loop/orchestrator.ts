@@ -143,6 +143,7 @@ import {
   workItemForSessionSteps,
 } from "../db";
 import { journal, journalCaught } from "../journal";
+import { isDeepStrictEqual } from "node:util";
 import { rerunItemCi } from "./ci-rerun";
 import { LINEAR_TOOLS_NOTE, linearToolScope, linearToolsFor } from "./linear-tools";
 import { notebookBrief, notebookToolsFor } from "./notebook-tools";
@@ -323,6 +324,9 @@ import {
   RunnerCommandRejectedError,
 } from "../core";
 import {
+  getRunProfileSteps,
+  keepRunProfileSteps,
+  saveRunProfileSteps,
   listWaitingProfileRunsSteps,
   syncSteps,
   applyLinearCommand,
@@ -1090,8 +1094,11 @@ export class Orchestrator {
     this.riskDisplayReader.refreshSettings();
   }
 
+  private readonly settingsBaseline: string | null;
+
   constructor(private readonly options: OrchestratorOptions) {
     this.store = options.store;
+    this.settingsBaseline = this.agentSettingsKey();
     this.riskDisplayReader = new RiskDisplayReader({
       store: this.store,
       readSettings: () => this.readMergePolicy(),
@@ -4287,7 +4294,7 @@ export class Orchestrator {
       try {
         const remote = Boolean(this.options.remoteExecution);
         const early = remote ? await this.adoptBranchArrivals(item, controller.signal) : "";
-        if (!this.readProfileSnapshot(run.id)?.candidate)
+        if (!(await this.readProfileSnapshot(run.id))?.candidate)
           await this.preflight(item, run.id, profiles, controller.signal, activity.onEvent);
         const arrived = remote ? early : await this.adoptBranchArrivals(item, controller.signal);
         if (arrived) prompt = `${arrived}\n\n${prompt}`;
@@ -4587,7 +4594,7 @@ export class Orchestrator {
         at.repo,
         base,
         head,
-        this.candidateFor(run.id),
+        await this.candidateFor(run.id),
         turnPasses(
           await this.agentCloseoutWithOutput(run.id),
           await this.store.run((q) => pullRequestDraftSavedAtSteps(q, item.id)),
@@ -4941,7 +4948,6 @@ export class Orchestrator {
     let ownedRunId: string | null = null;
     try {
       const now = () => this.now();
-      const snapshotOf = (runId: string) => this.readProfileSnapshot(runId);
       const holder = (q: Q, current: WorkItemRecord) =>
         this.verificationHolderSteps(q, current, false);
       const ownerInstance = this.options.instanceId ?? null;
@@ -4958,11 +4964,8 @@ export class Orchestrator {
           throw new Error("Verification belongs to an obsolete task");
         const prior = current.currentRunId ? yield* getRunSteps(q, current.currentRunId) : null;
         if (!prior || prior.itemId !== current.id) throw new Error("Verification run is missing");
-        const snapshot = snapshotOf(prior.id);
-        if (
-          !snapshot?.candidate ||
-          JSON.stringify(snapshot.candidate) !== JSON.stringify(candidate)
-        )
+        const snapshot = yield* getRunProfileSteps<ProfileSnapshot>(q, prior.id);
+        if (!snapshot?.candidate || !sameJson(snapshot.candidate, candidate))
           throw new Error("Verification candidate identity changed");
         if (prior.status === "active") {
           if ((yield* holder(q, current)) === "process") {
@@ -4996,17 +4999,10 @@ export class Orchestrator {
           ownerInstance,
         });
         ownedRunId = run.id;
+        yield* saveRunProfileSteps(q, run.id, snapshot, now());
         yield* setCurrentRunSteps(q, current.id, run.id);
         return (yield* getWorkItemSteps(q, current.id))!;
       });
-      if (ownedRunId && ownedRunId !== priorRunId) {
-        mkdirSync(runDir(this.options.pawsRoot, ownedRunId), { recursive: true, mode: 0o700 });
-        writeFileSync(
-          join(runDir(this.options.pawsRoot, ownedRunId), "agent-profile.json"),
-          readFileSync(join(runDir(this.options.pawsRoot, priorRunId!), "agent-profile.json")),
-          { mode: 0o600 },
-        );
-      }
       const operationLive = this.live.get(`operation:${item.id}`);
       if (ownedRunId && operationLive) this.live.set(ownedRunId, operationLive);
       const runId = item.currentRunId!;
@@ -5024,8 +5020,8 @@ export class Orchestrator {
             (yield* getRunSteps(q, runId))?.status === "active"
           );
         });
-        const identity = this.readProfileSnapshot(runId)?.candidate;
-        if (!owned || JSON.stringify(identity) !== JSON.stringify(candidate))
+        const identity = (await this.readProfileSnapshot(runId))?.candidate;
+        if (!owned || !sameJson(identity, candidate))
           throw new Error("Verification belongs to an obsolete candidate or run");
       };
       const assertCurrent = async () => {
@@ -8673,7 +8669,7 @@ export class Orchestrator {
     let config: ReturnType<typeof loadSettings> | null = null;
     let merge: MergeSettings | null = null;
     try {
-      await this.applyAgentSettingsToWaiting();
+      await this.reconcileWaitingProfiles();
       const loaded = loadSettings(this.options.pawsRoot);
       merge = readMergeSettings(loaded);
       if (ownerHasRunner || this.options.itemRunners) config = loaded;
@@ -8735,7 +8731,10 @@ export class Orchestrator {
   }
 
   private async implementerAgent(item: WorkItemRecord, config: ReturnType<typeof loadSettings>) {
-    return implementerAgentFor(config, this.knownProfileLabels(item));
+    return implementerAgentFor(
+      config,
+      await this.store.run((q) => this.knownProfileLabelsSteps(q, item)),
+    );
   }
 
   private *itemSessionSteps(q: Q, itemId: string): Steps<string | null> {
@@ -8754,7 +8753,7 @@ export class Orchestrator {
       ? yield* itemRunners(
           q,
           itemId,
-          resolveAgentProfiles(config, this.knownProfileLabels(item)).implementer,
+          resolveAgentProfiles(config, yield* this.knownProfileLabelsSteps(q, item)).implementer,
           this.now(),
         )
       : null;
@@ -8771,17 +8770,17 @@ export class Orchestrator {
     return yield* ownerHasRunner(
       q,
       itemId,
-      implementerAgentFor(config, this.knownProfileLabels(item)),
+      implementerAgentFor(config, yield* this.knownProfileLabelsSteps(q, item)),
       this.now(),
     );
   }
 
   /** The labels read for this queue entry, or else the ones the last run used. */
-  private knownProfileLabels(item: WorkItemRecord): ProfileLabels | undefined {
-    return (
-      this.keptAdmissionLabels(item)?.labels ??
-      (item.currentRunId ? this.readProfileSnapshot(item.currentRunId)?.profileLabels : undefined)
-    );
+  private *knownProfileLabelsSteps(q: Q, item: WorkItemRecord): Steps<ProfileLabels | undefined> {
+    const kept = this.keptAdmissionLabels(item);
+    if (kept) return kept.labels;
+    if (!item.currentRunId) return undefined;
+    return (yield* getRunProfileSteps<ProfileSnapshot>(q, item.currentRunId))?.profileLabels;
   }
 
   private admissionLabelsFile(itemId: string): string {
@@ -8836,7 +8835,7 @@ export class Orchestrator {
 
   private async readAdmissionLabels(item: WorkItemRecord): Promise<void> {
     try {
-      const previous = item.currentRunId ? this.readProfileSnapshot(item.currentRunId) : null;
+      const previous = item.currentRunId ? await this.readProfileSnapshot(item.currentRunId) : null;
       const labels = await this.forItem({ itemId: item.id }, () =>
         this.readProfileLabels(item, previous?.profileLabels, previous?.defaultRoles),
       );
@@ -9016,7 +9015,7 @@ export class Orchestrator {
     if (item.currentRunId !== null && !fresh) {
       const existing = await this.store.run((q) => getRunSteps(q, item.currentRunId!));
       if (existing && (existing.status === "active" || existing.status === "ended")) {
-        await this.applyAgentSettingsToWaiting();
+        await this.reconcileWaitingProfiles();
         await this.store.run((q) => markRunSteps(q, existing.id, "active", this.now()));
         await this.claimRun(existing.id);
         return existing;
@@ -9027,7 +9026,7 @@ export class Orchestrator {
         existing?.status === "lost" &&
         (await this.store.run((q) => takeRunnerSetupResumeSteps(q, item.id, existing.id)))
       ) {
-        await this.applyAgentSettingsToWaiting();
+        await this.reconcileWaitingProfiles();
         await this.store.run((q) => markRunSteps(q, existing.id, "active", this.now()));
         await this.claimRun(existing.id);
         return existing;
@@ -9035,7 +9034,7 @@ export class Orchestrator {
     }
     // A new run, including a retry, uses the profiles saved in Settings now (PAS-831).
     const config = loadSettings(this.options.pawsRoot);
-    const previous = item.currentRunId ? this.readProfileSnapshot(item.currentRunId) : null;
+    const previous = item.currentRunId ? await this.readProfileSnapshot(item.currentRunId) : null;
     const defaultRoles = previous?.defaultRoles;
     const profileLabels = await this.readProfileLabels(item, previous?.profileLabels, defaultRoles);
     const profiles = withoutLabelProblems(resolveAgentProfiles(config, profileLabels));
@@ -9061,12 +9060,13 @@ export class Orchestrator {
             previous.profiles.implementer.agent !== profiles.implementer.agent
           ? { id: randomUUID(), previousAgent: previous.profiles.implementer.agent }
           : undefined;
-    mkdirSync(runDir(this.options.pawsRoot, run.id), { recursive: true, mode: 0o700 });
-    writeFileSync(
-      join(runDir(this.options.pawsRoot, run.id), "agent-profile.json"),
-      JSON.stringify({ profiles, profileLabels, defaultRoles, settingsSwitch }),
-      { mode: 0o600 },
-    );
+    await this.writeProfileSnapshot(run.id, {
+      profiles,
+      profileLabels,
+      defaultRoles,
+      settingsSwitch,
+      basis: this.agentSettingsKey(),
+    });
     await this.store.run((q) => setCurrentRunSteps(q, item.id, run.id));
     return run;
   }
@@ -9109,7 +9109,7 @@ export class Orchestrator {
    * whether the run may go on. "Use the default" drops that role's label for this item.
    */
   private async checkProfileLabels(item: WorkItemRecord, runId: string): Promise<boolean> {
-    const saved = this.readProfileSnapshot(runId);
+    const saved = await this.readProfileSnapshot(runId);
     if (!saved) return true;
     const config = loadSettings(this.options.pawsRoot);
     let resolved = resolveAgentProfiles(config, saved.profileLabels);
@@ -9135,7 +9135,6 @@ export class Orchestrator {
     }
     const problems = resolved.labelProblems ?? [];
     if (answered || problems.length > 0) saved.profiles = withoutLabelProblems(resolved);
-    const snapshot = join(runDir(this.options.pawsRoot, runId), "agent-profile.json");
     if (problems.length > 0) {
       const body = profileLabelQuestion(
         problems,
@@ -9159,11 +9158,11 @@ export class Orchestrator {
         yield* closeActiveRunSteps(q, runId, now);
         return asked.id;
       });
-      writeFileSync(snapshot, JSON.stringify(saved), { mode: 0o600 });
+      await this.writeProfileSnapshot(runId, saved);
       await this.flush();
       return false;
     }
-    if (answered) writeFileSync(snapshot, JSON.stringify(saved), { mode: 0o600 });
+    if (answered) await this.writeProfileSnapshot(runId, saved);
     const sources = Object.entries(saved.profileLabels ?? {}).map(
       ([role, label]) => `${role === "implementer" ? "Implementer" : "Reviewer"}: ${label} (label)`,
     );
@@ -9708,7 +9707,7 @@ export class Orchestrator {
     return async (options: RunAgentOptions) => {
       await this.assertJobCurrent(itemId);
       const resolveProfiles = async () => {
-        await this.applyAgentSettingsToWaiting();
+        await this.reconcileWaitingProfiles();
         const currentRunId = (await this.store.run((q) => getWorkItemSteps(q, itemId)))
           ?.currentRunId;
         if (!currentRunId)
@@ -11644,7 +11643,7 @@ export class Orchestrator {
   ): Promise<CandidateIdentity | null> {
     const runId = item.currentRunId ?? item.id;
     try {
-      return this.candidateFor(runId);
+      return await this.candidateFor(runId);
     } catch (error) {
       journalCaught(
         error,
@@ -11680,63 +11679,57 @@ export class Orchestrator {
     }
   }
 
-  private candidateFor(runId: string): CandidateIdentity {
-    const saved = this.readProfileSnapshot(runId);
+  private async candidateFor(runId: string): Promise<CandidateIdentity> {
+    const saved = await this.readProfileSnapshot(runId);
     if (!saved?.candidate) throw new Error(NO_SESSION_MODEL);
     return saved.candidate;
   }
 
-  private readProfileSnapshot(runId: string): {
-    profiles: AgentProfiles;
-    profileLabels?: ProfileLabels;
-    profileQuestion?: string;
-    defaultRoles?: ProfileRole[];
-    candidate?: AgentIdentity;
-    settingsSwitch?: { id: string; previousAgent: AgentProfile["agent"] };
-  } | null {
+  private async readProfileSnapshot(runId: string): Promise<ProfileSnapshot | null> {
+    return this.store.run((q) => getRunProfileSteps<ProfileSnapshot>(q, runId));
+  }
+
+  private async writeProfileSnapshot(runId: string, snapshot: ProfileSnapshot): Promise<void> {
+    await this.store.run((q) => saveRunProfileSteps(q, runId, snapshot, this.now()));
+  }
+
+  private agentSettingsKey(): string | null {
     try {
-      return JSON.parse(
-        readFileSync(join(runDir(this.options.pawsRoot, runId), "agent-profile.json"), "utf8"),
-      );
+      return JSON.stringify(readAgentSettings(loadSettings(this.options.pawsRoot)));
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        journalCaught(
-          error,
-          "orchestrator.readProfileSnapshot.parse",
-          null,
-          "optional file may be absent",
-          this.options.journal,
-        );
-        return null;
-      }
-      throw error;
+      journalCaught(error, "orchestrator.agentSettingsKey", null, undefined, this.options.journal);
+      return null;
     }
   }
 
-  async applyAgentSettingsToWaiting(): Promise<number> {
+  private async reconcileWaitingProfiles(): Promise<number> {
+    const key = this.agentSettingsKey();
+    return this.applyAgentSettingsToWaiting(
+      key !== null && key === this.settingsBaseline ? key : undefined,
+    );
+  }
+
+  async applyAgentSettingsToWaiting(onlyBasis?: string): Promise<number> {
     const config = loadSettings(this.options.pawsRoot);
+    const basis = this.agentSettingsKey();
     let changedRuns = 0;
     const now = this.now();
     for (const run of await this.store.run((q) => listWaitingProfileRunsSteps(q, now))) {
-      const saved = this.readProfileSnapshot(run.id);
+      const saved = await this.readProfileSnapshot(run.id);
       if (!saved) continue;
+      if (onlyBasis !== undefined && saved.basis !== onlyBasis) continue;
       const profiles = withoutLabelProblems(resolveAgentProfiles(config, saved.profileLabels));
-      if (JSON.stringify(saved.profiles) === JSON.stringify(profiles)) continue;
+      if (sameJson(saved.profiles, profiles)) continue;
       // Keep the original agent through repeated saves before the next turn.
       const previousAgent = saved.settingsSwitch?.previousAgent ?? saved.profiles.implementer.agent;
       const settingsSwitch =
         previousAgent !== profiles.implementer.agent
           ? { id: randomUUID(), previousAgent }
           : undefined;
-      writeFileSync(
-        join(runDir(this.options.pawsRoot, run.id), "agent-profile.json"),
-        JSON.stringify({ ...saved, profiles, settingsSwitch }),
-        { mode: 0o600 },
-      );
+      await this.writeProfileSnapshot(run.id, { ...saved, profiles, settingsSwitch, basis });
       changedRuns += 1;
-      const reviewers = (entry: AgentProfiles) =>
-        JSON.stringify([entry.reviewer, entry.reviewerFallback]);
-      if (reviewers(saved.profiles) !== reviewers(profiles))
+      const reviewers = (entry: AgentProfiles) => [entry.reviewer, entry.reviewerFallback];
+      if (!sameJson(reviewers(saved.profiles), reviewers(profiles)))
         await this.store.run((q) => releaseReviewerFaultHoldsSteps(q, run.itemId, this.now()));
     }
     return changedRuns;
@@ -11749,7 +11742,7 @@ export class Orchestrator {
   ): Promise<void> {
     const item = await this.store.run((q) => getWorkItemSteps(q, itemId));
     if (!item?.currentRunId) return;
-    const saved = this.readProfileSnapshot(item.currentRunId);
+    const saved = await this.readProfileSnapshot(item.currentRunId);
     if (!saved?.settingsSwitch || saved.profiles.implementer.agent !== profile.agent) return;
     const posted = await this.post(
       item,
@@ -11759,11 +11752,7 @@ export class Orchestrator {
     );
     if (posted === undefined) return;
     delete saved.settingsSwitch;
-    writeFileSync(
-      join(runDir(this.options.pawsRoot, item.currentRunId), "agent-profile.json"),
-      JSON.stringify(saved),
-      { mode: 0o600 },
-    );
+    await this.writeProfileSnapshot(item.currentRunId, saved);
   }
 
   private async profileSnapshot(runId: string): Promise<AgentProfiles> {
@@ -11786,26 +11775,27 @@ export class Orchestrator {
   }
 
   private async storedProfiles(runId: string): Promise<AgentProfiles> {
-    const saved = this.readProfileSnapshot(runId);
+    const saved = await this.readProfileSnapshot(runId);
     if (saved) return saved.profiles;
-    const config = loadSettings(this.options.pawsRoot);
-    const profiles = resolveAgentProfiles(config);
-    mkdirSync(runDir(this.options.pawsRoot, runId), { recursive: true, mode: 0o700 });
-    writeFileSync(
-      join(runDir(this.options.pawsRoot, runId), "agent-profile.json"),
-      JSON.stringify({ profiles }),
-      { mode: 0o600 },
+    const profiles = resolveAgentProfiles(loadSettings(this.options.pawsRoot));
+    const kept = await this.store.transaction((q) =>
+      keepRunProfileSteps<ProfileSnapshot>(
+        q,
+        runId,
+        { profiles, basis: this.agentSettingsKey() },
+        this.now(),
+      ),
     );
-    return profiles;
+    return kept?.profiles ?? profiles;
   }
 
   private async saveCandidate(runId: string, candidate: AgentIdentity): Promise<void> {
     const profiles = await this.profileSnapshot(runId);
-    writeFileSync(
-      join(runDir(this.options.pawsRoot, runId), "agent-profile.json"),
-      JSON.stringify({ ...this.readProfileSnapshot(runId), profiles, candidate }),
-      { mode: 0o600 },
-    );
+    await this.writeProfileSnapshot(runId, {
+      ...(await this.readProfileSnapshot(runId)),
+      profiles,
+      candidate,
+    });
   }
 
   private async preflight(
@@ -11815,7 +11805,7 @@ export class Orchestrator {
     signal: AbortSignal,
     onRemoteEvent: (event: AcpEvent) => void,
   ): Promise<void> {
-    const originalProfiles = JSON.stringify(profiles);
+    const originalProfiles = structuredClone(profiles);
     const repository = await this.repositoryForItem(item);
     if (repository === null) throw new Error("The work item has no repository");
     if (!this.mirrorsOff())
@@ -11933,8 +11923,8 @@ export class Orchestrator {
           `reviewer preparation failed: Closeout ${check.id} requires a different reviewer model; choose another reviewer profile`,
         );
     }
-    const latest = this.readProfileSnapshot(runId);
-    if (latest && JSON.stringify(latest.profiles) !== originalProfiles) {
+    const latest = await this.readProfileSnapshot(runId);
+    if (latest && !sameJson(latest.profiles, originalProfiles)) {
       Object.assign(profiles, latest.profiles);
       return;
     }
@@ -11944,11 +11934,10 @@ export class Orchestrator {
         ? profiles.reviewer
         : profiles.reviewerFallback;
     if (preparedReviewer) preparedReviewer.model ??= identities[1]!.model;
-    writeFileSync(
-      join(runDir(this.options.pawsRoot, runId), "agent-profile.json"),
-      JSON.stringify({ ...this.readProfileSnapshot(runId), profiles }),
-      { mode: 0o600 },
-    );
+    await this.writeProfileSnapshot(runId, {
+      ...(await this.readProfileSnapshot(runId)),
+      profiles,
+    });
   }
 
   /** The Closeout policy and the runtime list, both read from origin/main and never the work tree. */
@@ -12941,6 +12930,22 @@ type LiveOperation = {
   progress: string | null;
   done: Promise<void>;
   finish(): void;
+};
+
+function sameJson(a: unknown, b: unknown): boolean {
+  const plain = (value: unknown) =>
+    value === undefined ? value : JSON.parse(JSON.stringify(value));
+  return isDeepStrictEqual(plain(a), plain(b));
+}
+
+type ProfileSnapshot = {
+  profiles: AgentProfiles;
+  profileLabels?: ProfileLabels;
+  profileQuestion?: string;
+  defaultRoles?: ProfileRole[];
+  candidate?: AgentIdentity;
+  settingsSwitch?: { id: string; previousAgent: AgentProfile["agent"] };
+  basis?: string | null;
 };
 
 type Deferred<T> = T | ((q: Q) => Steps<T>);

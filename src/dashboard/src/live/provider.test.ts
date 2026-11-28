@@ -34,6 +34,7 @@ import {
   saveRiskFix,
   type Db,
   type Q,
+  saveRunProfileSteps,
 } from "../../../db";
 import { seed } from "../../../../test/pglite-fixtures";
 import { tempStore } from "../../../../test/pglite";
@@ -379,17 +380,13 @@ describe("live status provider", () => {
       await seed(db, (q) =>
         q.orm.update(q.t.run).set({ agent: "codex" }).where(eq(q.t.run.id, run.id)),
       );
-      const dir = join(home, "runs", run.id);
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(
-        join(dir, "agent-profile.json"),
-        JSON.stringify({
-          profiles: {
-            implementer: { agent: "codex", model: "model-a" },
-            reviewer: { agent: reviewer, model: "model-b" },
-          },
-        }),
-      );
+      const profile = {
+        profiles: {
+          implementer: { agent: "codex", model: "model-a" },
+          reviewer: { agent: reviewer, model: "model-b" },
+        },
+      };
+      await db.run((q) => saveRunProfileSteps(q, run.id, profile, 3));
     }
     const server = startStatusServer({
       port: 0,
@@ -424,16 +421,13 @@ describe("live status provider", () => {
     homes.push(home);
     const item = await insertQueuedItem(db, { id: "ENG-1", title: "Review", now: 1 });
     const { run } = await beginImplementRun(db, item.id, 2);
-    const dir = join(home, "runs", run.id);
-    mkdirSync(dir, { recursive: true });
     for (const snapshot of [
       undefined,
-      "{",
-      "null",
-      "{}",
-      JSON.stringify({ profiles: { reviewer: { agent: "unexpected-secret" } } }),
+      {},
+      { profiles: null },
+      { profiles: { reviewer: { agent: "unexpected-secret" } } },
     ]) {
-      if (snapshot !== undefined) writeFileSync(join(dir, "agent-profile.json"), snapshot);
+      if (snapshot !== undefined) await db.run((q) => saveRunProfileSteps(q, run.id, snapshot, 3));
       const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues/ENG-1"), {
         store: db,
         closeoutHome: home,

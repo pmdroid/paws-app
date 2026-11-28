@@ -1,16 +1,15 @@
 import { execFile } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
-import { runDir } from "../src/acp";
 import { useMemorySettings, writeAgentSettings, type AgentProfiles } from "../src/config";
 import { JOB_KIND, type Clock } from "../src/core";
-import { JobLoop, OutboxDispatcher, listJobs, listWorkItems } from "../src/db";
+import { JobLoop, OutboxDispatcher, getRunProfileSteps, listJobs, listWorkItems } from "../src/db";
 import { createFakeCloseoutGate, type CloseoutVerdict } from "../src/closeout";
 import { createFakeGitHub } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
@@ -142,9 +141,9 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
     ).toHaveLength(1);
 
     const run = items[0]!.currentRunId!;
-    const { profiles } = JSON.parse(
-      readFileSync(path.join(runDir(layout.pawsRoot, run), "agent-profile.json"), "utf8"),
-    ) as { profiles: AgentProfiles };
+    const { profiles } = (await db.run((q) =>
+      getRunProfileSteps<{ profiles: AgentProfiles }>(q, run),
+    ))!;
     await writeAgentSettings(configPath, {
       defaults: { ...profiles, reviewer: { agent: "codex", model: "a-working-reviewer" } },
     });

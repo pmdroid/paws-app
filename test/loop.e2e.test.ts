@@ -2228,7 +2228,9 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
       await tickWithRestarts(jobs, orchestrator, db);
       const item = (await listWorkItems(db))[0]!;
       const initialRun = item.currentRunId!;
-      await rm(path.join(layout.pawsRoot, "runs", initialRun, "agent-profile.json"));
+      await write(db, (q) =>
+        q.orm.delete(q.t.runProfile).where(eq(q.t.runProfile.runId, initialRun)),
+      );
       await write(db, (q) => q.orm.delete(q.t.job).where(eq(q.t.job.queue, JOB_KIND.merge)));
       await setState(db, item.id, savedState);
       const beforeHandoff = launched.length;
@@ -2326,9 +2328,9 @@ test("a verifying candidate with no commit and no session model restarts impleme
     const item = (await listWorkItems(db))[0]!;
     // The implementation run died before it committed: the candidate is main, with no session model.
     const emptyCandidate = async () => {
-      await rm(path.join(layout.pawsRoot, "runs", item.currentRunId!, "agent-profile.json"), {
-        force: true,
-      });
+      await write(db, (q) =>
+        q.orm.delete(q.t.runProfile).where(eq(q.t.runProfile.runId, item.currentRunId!)),
+      );
       const worktree = worktreePath(layout.pawsRoot, await taskPath(db, "ENG-32"));
       const base = Bun.spawnSync(["git", "-C", worktree, "merge-base", "HEAD", "origin/main"])
         .stdout.toString()

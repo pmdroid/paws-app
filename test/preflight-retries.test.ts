@@ -2,11 +2,18 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { expect, test } from "bun:test";
-import { runAgent, runDir, type RunAgentOptions } from "../src/acp";
+import { runAgent, type RunAgentOptions } from "../src/acp";
 import { reviewRequirements } from "../src/closeout";
 import { useMemorySettings, writeAgentSettings } from "../src/config";
 import { JOB_KIND, MAX_TRANSIENT_RETRIES, systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, listJobs, listOutbox, listWorkItems } from "../src/db";
+import {
+  JobLoop,
+  OutboxDispatcher,
+  getRunProfileSteps,
+  listJobs,
+  listOutbox,
+  listWorkItems,
+} from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
 import { RemotePreparationTimeout } from "../src/runner-backend";
@@ -283,9 +290,7 @@ async function runPreflight(fault: {
     return {
       ...(runId
         ? {
-            snapshot: JSON.parse(
-              readFileSync(path.join(runDir(layout.pawsRoot, runId), "agent-profile.json"), "utf8"),
-            ),
+            snapshot: (await db.run((q) => getRunProfileSteps(q, runId))) ?? undefined,
           }
         : {}),
       state: await stateOfPg(db, "ENG-7"),

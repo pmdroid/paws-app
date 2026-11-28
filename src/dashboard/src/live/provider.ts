@@ -27,7 +27,6 @@ import { journalCaught } from "../journal";
  *   follows that job's status.
  */
 
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
   CiRerun,
@@ -68,6 +67,7 @@ import {
   runAgentSetupsSteps,
   runnerWorkActiveForRunsSteps,
   runRunnerNamesSteps,
+  listRunProfilesSteps,
   usagePausesSteps,
   describeLinearWebhookWarning,
   getCandidateRiskSteps,
@@ -1053,7 +1053,7 @@ async function readIssueScope(
   const itemsByIssue = latestByLinearIssue(visible, facts);
   const openQuestions = await store.run(listOpenQuestionsSteps);
   const env = options.env ?? process.env;
-  const runs = await runsFor(records, rows, generatedAt, store, options.pawsHome ?? env.PAWS_HOME);
+  const runs = await runsFor(records, rows, generatedAt, store);
   const queue = new Map((await listQueuePositions(store)).map((entry) => [entry.itemId, entry]));
   const queues = await store.run((q) => listMergeQueuesSteps(q));
   const merging = mergePlaces(queues, visible);
@@ -1711,7 +1711,6 @@ async function runsFor(
   rows: readonly OutboxRow[],
   generatedAt: string,
   store: Db,
-  pawsHome: string | undefined,
 ): Promise<StatusRun[]> {
   const byItem = new Map(records.map((record) => [record.id, record]));
   const attempts = new Map<string, StoredRun[]>();
@@ -1732,6 +1731,10 @@ async function runsFor(
       pauses: yield* usagePausesSteps(q, ids),
       setups: yield* runAgentSetupsSteps(q, ids),
       runners: yield* runRunnerNamesSteps(q, ids),
+      profiles: yield* listRunProfilesSteps<{ profiles?: { reviewer?: { agent?: string } } }>(
+        q,
+        ids,
+      ),
     };
   });
   const runs: StatusRun[] = [];
@@ -1750,7 +1753,7 @@ async function runsFor(
     const paused = record.currentRunId === current.id ? reads.pauses.get(current.id) : undefined;
     const pause = paused === undefined ? null : usagePauseOf(paused, generatedAt);
     const setup = reads.setups.get(current.id) ?? null;
-    const reviewer = runReviewer(pawsHome, current.id);
+    const reviewer = runReviewer(reads.profiles.get(current.id)?.profiles?.reviewer?.agent);
     const runner = reads.runners.get(current.id) ?? null;
     runs.push({
       id: first.id,
@@ -1789,20 +1792,13 @@ export function usagePauseOf(pause: UsagePause, generatedAt: string): StatusUsag
   return { agent: agentName(pause.agent), resumeAt: iso(pause.resumeAt, generatedAt) };
 }
 
-function runReviewer(pawsHome: string | undefined, runId: string): string {
-  if (!pawsHome || !/^[A-Za-z0-9_-]+$/.test(runId)) return "Unknown";
-  try {
-    const snapshot = JSON.parse(
-      readFileSync(join(pawsHome, "runs", runId, "agent-profile.json"), "utf8"),
-    );
-    const reviewer = snapshot?.profiles?.reviewer?.agent;
-    return ["claude", "codex", "grok", "opencode"].includes(reviewer)
-      ? agentName(reviewer)
-      : "Unknown";
-  } catch (caughtError1) {
-    journalCaught(caughtError1, "provider.runReviewer.parse", null);
-    return "Unknown";
-  }
+function runReviewer(reviewer: string | undefined): string {
+  return reviewer === "claude" ||
+    reviewer === "codex" ||
+    reviewer === "grok" ||
+    reviewer === "opencode"
+    ? agentName(reviewer)
+    : "Unknown";
 }
 
 async function blockedBy(

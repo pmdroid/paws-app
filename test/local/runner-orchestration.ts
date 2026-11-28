@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { and, eq, isNull } from "drizzle-orm";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { runAgent, type RunAgentOptions } from "../../src/acp";
 import { useMemorySettings } from "../../src/config";
@@ -32,6 +32,8 @@ import {
   saveCheckpoint,
   type WorkItemRecord,
   syncSteps,
+  getRunProfileSteps,
+  saveRunProfileSteps,
 } from "../../src/db";
 import { createFakeTracker, LinearRateLimitError } from "../../src/linear";
 import { findOpenQuestion } from "../../src/questions";
@@ -172,7 +174,8 @@ export async function probeRunnerOrchestration(
     let implementationCount = 0;
     let reverifying = false;
     let originalRunId = "";
-    let originalProfile = Buffer.alloc(0);
+    let originalProfile: unknown = null;
+    const profileOf = (runId: string) => db.run((q) => getRunProfileSteps(q, runId));
     let reviewRunId = "";
     let replacementRunId = "";
     let reclaimedJobId = 0;
@@ -697,10 +700,7 @@ export async function probeRunnerOrchestration(
                 assert.equal((await getRun(db, item.currentRunId!))?.kind, "recheck");
                 reviewRunId = item.currentRunId!;
                 if (implementationCount === 2)
-                  assert.deepEqual(
-                    readFileSync(join(home, "runs", reviewRunId, "agent-profile.json")),
-                    originalProfile,
-                  );
+                  assert.deepEqual(await profileOf(reviewRunId), originalProfile);
                 if (scenario === "reverify-lease") await reclaim(options.signal);
                 if (scenario === "error")
                   throw new Error("fixture remote verification unavailable");
@@ -717,12 +717,11 @@ export async function probeRunnerOrchestration(
                     await setCurrentRun(db, item.id, replacement.id);
                   }
                   if (scenario === "stale") {
-                    const path = join(home, "runs", reviewRunId, "agent-profile.json");
-                    const snapshot = JSON.parse(readFileSync(path, "utf8")) as {
+                    const snapshot = (await profileOf(reviewRunId)) as {
                       candidate: { model: string };
                     };
                     snapshot.candidate.model = "unexpected-candidate";
-                    writeFileSync(path, JSON.stringify(snapshot));
+                    await db.run((q) => saveRunProfileSteps(q, reviewRunId, snapshot, clock.now()));
                   }
                 }
               }
@@ -943,7 +942,7 @@ export async function probeRunnerOrchestration(
       }
       if (!unavailable) {
         originalRunId = item.currentRunId!;
-        originalProfile = readFileSync(join(home, "runs", originalRunId, "agent-profile.json"));
+        originalProfile = await profileOf(originalRunId);
         let foreignRunId = originalRunId;
         if (crashed) {
           if (scenario === "crashed-review") {
@@ -955,10 +954,8 @@ export async function probeRunnerOrchestration(
                 now: clock.now(),
               })
             ).id;
-            mkdirSync(join(home, "runs", foreignRunId), { mode: 0o700 });
-            writeFileSync(join(home, "runs", foreignRunId, "agent-profile.json"), originalProfile, {
-              mode: 0o600,
-            });
+            const runId = foreignRunId;
+            await db.run((q) => saveRunProfileSteps(q, runId, originalProfile, clock.now()));
             await setCurrentRun(db, item.id, foreignRunId);
           } else await markRun(db, originalRunId, "active", Date.now());
           assert.deepEqual(await recoverOnStartup(db), [{ type: "reverify" }]);
@@ -1188,10 +1185,7 @@ export async function probeRunnerOrchestration(
           assert.equal((await getRun(db, foreignRunId))?.status, "lost");
           assert.equal((await getRun(db, reviewRunId))?.status, "ended");
           assert.equal((await getRun(db, reviewRunId))?.kind, "recheck");
-          assert.deepEqual(
-            readFileSync(join(home, "runs", reviewRunId, "agent-profile.json")),
-            originalProfile,
-          );
+          assert.deepEqual(await profileOf(reviewRunId), originalProfile);
           assert.equal(witnessCalls, 0);
           assert.equal((await listRuns(db, item.id)).length, scenario === "crashed-review" ? 3 : 2);
           assert.equal((await listJobs(db)).find((job) => job.id === reverifyId)?.status, "done");
@@ -1218,10 +1212,7 @@ export async function probeRunnerOrchestration(
             assert.equal(verified.state, "merge_queue");
             assert(laterDispatches > 0);
             assert.equal(witnessCalls, 0);
-            assert.deepEqual(
-              readFileSync(join(home, "runs", reviewRunId, "agent-profile.json")),
-              originalProfile,
-            );
+            assert.deepEqual(await profileOf(reviewRunId), originalProfile);
           } else if (scenario === "error") assert.equal(verified.state, "awaiting_input");
           else if (scenario === "cancelled") assert.equal(verified.state, "cancelled");
           else {
