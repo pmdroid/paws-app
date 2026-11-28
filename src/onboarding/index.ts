@@ -6,4 +6,4 @@ export {
   type LinearClientResolution,
   type LinearSecretSource,
 } from "./setup-runtime";
-export { forgetSetupToken, setupLink, setupToken } from "./setup-token";
+export { forgetSetupToken, SETUP_TOKEN_FILE, setupLink, setupToken } from "./setup-token";

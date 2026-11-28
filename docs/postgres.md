@@ -18,13 +18,13 @@ The URL holds the password, so it is a secret: keep the environment file that se
 
 ## Starting Paws
 
-Paws applies database updates automatically at startup. PGlite allows one process per directory, so Paws holds `~/.paws/pglite` while it runs, recorded in `~/.paws/pglite.lock` with its process id, and refuses to start when another live process holds it. `paws login slack` needs `PAWS_DATABASE_URL`.
+Paws applies database updates automatically at startup. PGlite allows one process per directory, so Paws holds `~/.paws/pglite` while it runs, recorded in `~/.paws/pglite.lock` with its process id, and refuses to start when another live process holds it. While Paws runs on PGlite, `paws login slack` and `paws runner-storage` refuse to start: use Settings, or stop Paws first. `paws setup-link` works while Paws runs.
 
 The Prerequisites checks on Workspace › Integrations read the workspace, its GitHub App and the values saved on the Settings page from the same database.
 
 ## Secrets
 
-With an external Postgres server, Paws keeps encrypted secrets in the database. With PGlite, secrets stay under `~/.paws/secrets`. Keep the master key separate from database backups.
+Paws keeps encrypted secrets in the database, with PGlite or an external Postgres server. On first start, Paws copies existing secret files from `~/.paws/secrets` into the database and reads them from there afterwards. With PGlite, the browser setup token stays in `~/.paws/secrets/setup-token` until setup completes. The master key stays in `PAWS_SECRET_KEY` or `~/.paws/secrets/.envelope-key`. Keep it separate from database backups.
 
 For a persistent master key across hosts, set `PAWS_SECRET_KEY` to the existing key's base64 value:
 
