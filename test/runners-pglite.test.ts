@@ -460,6 +460,8 @@ describePglite((connect) => {
       expiresAt: NOW + 100,
       adminRepositories: null,
       issueVmId: null,
+      kind: "personal",
+      vmHostSettings: null,
     };
     expect(await db.run((q) => findRunnerEnrollmentSteps(q, "token", NOW))).toEqual(enrollment);
     expect(await db.run((q) => findRunnerEnrollmentSteps(q, "token", NOW + 100))).toBeNull();

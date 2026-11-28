@@ -32,6 +32,7 @@ import {
 } from "./runner-capacity";
 import type { RunnerAgentUser } from "../runner-protocol";
 import type { RunnerSessionMove } from "./runner-session-moves";
+import type { VmHostSettings } from "./vm-hosts";
 import { listSkillsSteps, runnerSkillStatesSteps, type RunnerSkillView } from "./skills";
 import { listRunnerRuntimesSteps, type RunnerRuntimeStatus } from "./runner-runtimes";
 import { listRunnerAgentsSteps, type RunnerAgentView } from "./runner-agents";
@@ -608,7 +609,11 @@ type RunnerEnrollmentRequest = {
   adminRepositories?: readonly string[];
   /** The issue VM this token enrolls; minting one replaces the VM's earlier unused tokens. */
   issueVmId?: string;
+  kind?: RunnerEnrollmentKind;
+  vmHostSettings?: VmHostSettings;
 };
+
+export type RunnerEnrollmentKind = "personal" | "vm_host";
 
 export async function createRunnerEnrollment(
   store: Db,
@@ -654,6 +659,9 @@ export function* createRunnerEnrollmentSteps(q: Q, input: RunnerEnrollmentReques
       adminRepositories:
         input.adminRepositories === undefined ? null : jsonValue(q, input.adminRepositories),
       issueVmId: input.issueVmId ?? null,
+      kind: input.kind ?? "personal",
+      vmHostSettings:
+        input.vmHostSettings === undefined ? null : jsonValue(q, input.vmHostSettings),
     }),
   );
 }
@@ -666,6 +674,8 @@ type RunnerEnrollment = {
   expiresAt: number;
   adminRepositories: string | null;
   issueVmId: string | null;
+  kind: string;
+  vmHostSettings: string | null;
 };
 
 /**
@@ -695,6 +705,8 @@ export function* findRunnerEnrollmentSteps(
         expiresAt: enrollment.expiresAt,
         adminRepositories: jsonText(q, enrollment.adminRepositories),
         issueVmId: enrollment.issueVmId,
+        kind: enrollment.kind,
+        vmHostSettings: jsonText(q, enrollment.vmHostSettings),
       })
       .from(enrollment)
       .innerJoin(
@@ -766,6 +778,17 @@ export function* enrollRunnerSteps(q: Q, input: RunnerEnrollInput): Steps<Runner
   if (used.length !== 1) throw new Error("Runner enrollment is invalid or expired.");
   if (enrollment.issueVmId !== null)
     yield* setIssueVmRunnerSteps(q, { id: enrollment.issueVmId, runnerId: input.runnerId });
+  if (enrollment.kind === "vm_host")
+    yield* q.exec(
+      q.orm.insert(q.t.vmHost).values({
+        ...(enrollment.vmHostSettings === null
+          ? {}
+          : (JSON.parse(enrollment.vmHostSettings) as VmHostSettings)),
+        runnerId: input.runnerId,
+        updatedAt: input.now,
+        updatedBy: enrollment.userId,
+      }),
+    );
   yield* auditWorkspaceAccessSteps(q, {
     workspaceId: enrollment.workspaceId,
     userId: enrollment.userId,
@@ -860,6 +883,17 @@ export async function updateRunnerStatus(store: Db, input: RunnerStatusUpdate): 
   return fingerprints;
 }
 
+function* enrolledAsVmHostSteps(q: Q, runnerId: string): Steps<boolean> {
+  const { runnerEnrollment: enrollment } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: enrollment.id })
+      .from(enrollment)
+      .where(and(eq(enrollment.runnerId, runnerId), eq(enrollment.kind, "vm_host"))),
+  );
+  return row !== undefined;
+}
+
 export function* updateRunnerStatusSteps(q: Q, input: RunnerStatusUpdate): Steps<string[]> {
   const { memberVm, runner, runnerCertificate } = q.t;
   const revoked = input.status === "revoked";
@@ -882,7 +916,8 @@ export function* updateRunnerStatusSteps(q: Q, input: RunnerStatusUpdate): Steps
   );
   if (changed.length !== 1) throw new Error("Runner is unavailable.");
   if (input.status === "active") {
-    yield* bindSignedInAccountsToRunnerSteps(q, input.runnerId, input.now);
+    if (!(yield* enrolledAsVmHostSteps(q, input.runnerId)))
+      yield* bindSignedInAccountsToRunnerSteps(q, input.runnerId, input.now);
     yield* wakeRunnerSlotWaitsSteps(q, input.runnerId, input.now);
   }
   const certificates = yield* q.all(

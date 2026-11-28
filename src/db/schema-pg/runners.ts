@@ -503,9 +503,12 @@ export const runnerEnrollment = pgTable(
     runnerId: text("runner_id").references(() => runner.id),
     adminRepositories: jsonb("admin_repositories"),
     issueVmId: text("issue_vm_id"),
+    kind: text().default("personal").notNull(),
+    vmHostSettings: jsonb("vm_host_settings"),
   },
   (table) => [
     unique().on(table.tokenHash),
+    check("runner_enrollment_kind", sql`kind IN ('personal','vm_host')`),
     index("runner_enrollment_expiry")
       .on(table.expiresAt)
       .where(sql`used_at IS NULL`),
