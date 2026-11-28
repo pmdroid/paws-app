@@ -13,7 +13,7 @@ test("signed background model discovery persists isolated ACP choices and per-mo
       assert(passed, name);
       observations.push(name);
     });
-    assert.equal(observations.length, 11);
+    assert.equal(observations.length, 12);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

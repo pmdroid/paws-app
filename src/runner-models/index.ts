@@ -5,8 +5,8 @@ import {
   insertAgentModelProbeSteps,
   lastAgentModelProbeAtSteps,
   pendingAgentModelProbesSteps,
-  runnerHasOpenWorkSteps,
   runnerHealthCommandOutstandingSteps,
+  runnerOccupancySteps,
   runnerStandingSteps,
   saveAgentModelCatalogSteps,
   workspaceMemberSteps,
@@ -129,7 +129,8 @@ export function createRunnerModels(options: {
         standing.lastSeenAt <= now() - 60_000
       )
         continue;
-      if (yield* runnerHasOpenWorkSteps(q, source.runnerId, now())) continue;
+      const { capacity, occupied } = yield* runnerOccupancySteps(q, source.runnerId, now());
+      if (occupied >= capacity) continue;
       if (yield* runnerHealthCommandOutstandingSteps(q, source.runnerId, now())) continue;
       const due = yield* dueSteps(q, source);
       if (due === undefined) continue;
