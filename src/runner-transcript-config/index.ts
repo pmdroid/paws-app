@@ -357,7 +357,17 @@ export function configureRunnerTranscriptStorage(home: string, text: string): vo
   }
 }
 
-export async function runRunnerTranscriptStorageCli(args: string[], home: string): Promise<number> {
+function cliFailed(): number {
+  journalCaught(FAILURE, "runner-transcript-config.runRunnerTranscriptStorageCli", null);
+  return 1;
+}
+
+export async function runRunnerTranscriptStorageCli(
+  args: string[],
+  home: string,
+  store: (work: () => Promise<number>) => Promise<number> = (work) => work(),
+): Promise<number> {
+  let text: string;
   try {
     if (args.length !== 1 || args[0] !== "configure") throw new Error();
     const chunks: Buffer[] = [];
@@ -368,14 +378,17 @@ export async function runRunnerTranscriptStorageCli(args: string[], home: string
       if (size > MAX_BYTES) throw new Error();
       chunks.push(bytes);
     }
-    await saveStorage(home, Buffer.concat(chunks).toString("utf8"));
-    console.log("Runner transcript storage configured.");
-    return 0;
+    text = Buffer.concat(chunks).toString("utf8");
+    parseStorage(text);
   } catch {
-    journalCaught(FAILURE, "runner-transcript-config.runRunnerTranscriptStorageCli", null);
-
-    return 1;
+    return cliFailed();
   }
+  return store(() =>
+    saveStorage(home, text).then(() => {
+      console.log("Runner transcript storage configured.");
+      return 0;
+    }, cliFailed),
+  );
 }
 
 function withSecrets<T>(home: string, create: boolean, action: (directory: string) => T): T | null {

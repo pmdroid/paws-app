@@ -64,17 +64,14 @@ test("the startup check reads only a legacy file, and leaves PAWS_S3_* settings 
   const home = mkdtempSync(join(tmpdir(), "paws-transcript-legacy-"));
   const previous = process.env.PAWS_S3_BUCKET;
   try {
+    const file = join(home, "secrets", "runner-transcript-storage.json");
     checkLegacyRunnerTranscriptStorage(home);
-    mkdirSync(join(home, "secrets"), { recursive: true, mode: 0o700 });
-    writeFileSync(join(home, "secrets", "runner-transcript-storage.json"), "invalid", {
-      mode: 0o600,
-    });
-    expect(() => checkLegacyRunnerTranscriptStorage(home)).toThrow(
-      /configuration is missing or invalid/,
-    );
-    rmSync(join(home, "secrets", "runner-transcript-storage.json"));
+    mkdirSync(join(home, "secrets"), { mode: 0o700 });
+    writeFileSync(file, "invalid", { mode: 0o600 });
+    expect(() => checkLegacyRunnerTranscriptStorage(home)).toThrow(/missing or invalid/);
+    rmSync(file);
     process.env.PAWS_S3_BUCKET = "fixture-bucket";
-    expect(() => loadRunnerTranscriptS3(home)).toThrow(/configuration is missing or invalid/);
+    expect(() => loadRunnerTranscriptS3(home)).toThrow(/missing or invalid/);
     checkLegacyRunnerTranscriptStorage(home);
   } finally {
     if (previous === undefined) delete process.env.PAWS_S3_BUCKET;

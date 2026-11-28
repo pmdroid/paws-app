@@ -3,6 +3,7 @@ import { S3Client } from "bun";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { pawsPaths } from "../../src/config";
+import { migratedHome } from "../helpers";
 import { openPawsStore, secretRowsSteps } from "../../src/db";
 import { startPaws } from "../../src/index";
 import { createFakeRunnerTranscriptObjects } from "../../src/runner-transcripts";
@@ -61,7 +62,7 @@ async function cli(root: string, text: string, target = join(root, "home"), args
 
 export async function probeRunnerTranscriptStorage(root: string, observe: Observe) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const home = join(root, "home");
+  const home = await migratedHome(join(root, "home"));
   const created = await cli(root, JSON.stringify(config));
   assert.equal(created.code, 0, created.error);
   assert.equal(created.output.trim(), "Runner transcript storage configured.");
@@ -369,7 +370,7 @@ export async function probeRunnerTranscriptAdapters(root: string, observe: Obser
     );
     assert(!existsSync(join(target, "secrets", "runner-transcript-storage.json")));
   }
-  const localHome = join(root, "local-home");
+  const localHome = await migratedHome(join(root, "local-home"));
   assert.equal((await cli(root, '{"kind":"local"}', localHome)).code, 0);
   const local = loadRunnerTranscriptObjects(localHome);
   await local.write("restart", Buffer.from("persistent transcript"));

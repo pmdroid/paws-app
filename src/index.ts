@@ -3327,10 +3327,8 @@ if (import.meta.main || compiled()) {
   if (command === "runner") process.exit(await runRunnerCli(argv.slice(1)));
   if (command === "runner-storage")
     process.exit(
-      await withSecretStore(
-        process.env,
-        () => runRunnerTranscriptStorageCli(argv.slice(1), loadEnv(process.env).home),
-        "Storage",
+      await runRunnerTranscriptStorageCli(argv.slice(1), loadEnv(process.env).home, (work) =>
+        withSecretStore(process.env, work, "Storage"),
       ),
     );
   if (command === "--help" || command === "-h" || command === "help") {

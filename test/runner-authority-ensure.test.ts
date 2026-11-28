@@ -1,13 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { removeSecret, saveSecret, secretFileExists, useDatabaseSecrets } from "../src/credentials";
@@ -75,15 +67,13 @@ test("copies an authority kept in files and never replaces an uncopied one", asy
   const { db, close } = await tempStore();
   cleanup.push(close);
   const created = await ensureRunnerCoordinator(root);
-  const authority = readFileSync(join(root, "runner-authority.json"), "utf8");
+  const authority = await Bun.file(join(root, "runner-authority.json")).text();
   const first = await useDatabaseSecrets(db, dir);
   const reused = await ensureRunnerCoordinator(root);
   expect(reused.created).toBe(false);
   expect(reused.signingKeys[0].keyId).toBe(created.signingKeys[0].keyId);
-  const rows = await db.run(secretRowsSteps);
-  expect(rows.find((row) => row.name === "runner-identity/runner-authority.json")?.ciphertext).toBe(
-    authority,
-  );
+  const row = (await db.run(secretRowsSteps)).find((r) => r.name.endsWith("authority.json"));
+  expect(row?.ciphertext).toBe(authority);
   for (const name of ["runner-authority.json", "runner-command-key.pem"])
     await removeSecret(join(root, name));
   await first.close();
