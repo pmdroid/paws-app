@@ -64,6 +64,9 @@ export function* workspaceVmHostsSteps(q: Q, workspaceId: string, now?: number) 
     q.orm
       .select({
         runnerId: runner.id,
+        name: runner.name,
+        status: runner.status,
+        ownerUserId: runner.ownerUserId,
         cpuCount: status.cpuCount,
         memoryTotalBytes: status.memoryTotalBytes,
         host: vmHost,
@@ -81,7 +84,12 @@ export function* workspaceVmHostsSteps(q: Q, workspaceId: string, now?: number) 
       )
       .orderBy(runner.id),
   );
-  return rows as (VmHostMachine & { host: VmHostRow })[];
+  return rows as (VmHostMachine & {
+    host: VmHostRow;
+    name: string;
+    status: string;
+    ownerUserId: string;
+  })[];
 }
 
 export function* recordVmHostDisksSteps(

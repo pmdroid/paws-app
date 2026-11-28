@@ -421,6 +421,10 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
       member: 403,
     }),
   ),
+  api("GET", "/api/vm-hosts", "canonical", "src/vm-hosts", {
+    sample: "/api/vm-hosts",
+    member: 200,
+  }),
   ...[
     ["POST", "/api/runners/enrollments"],
     ["GET", "/api/runners/usage"],

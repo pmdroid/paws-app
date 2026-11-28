@@ -34,6 +34,7 @@ const ROUTES = `
 /api/improvements/:id/recovery /api/improvements/:id/deliveries/:delivery/retry
 /api/improvements/:id/deliveries/:delivery/cancel
 /api/improvements/:id/deliveries/:delivery/destination /api/runners /api/runners/:id/vm-host
+/api/vm-hosts
 /api/runners/enrollments /api/runners/usage /api/runners/models
 /api/runners/coding-agents/update-all /api/runners/:id/coding-agents/:agent/update
 /api/runners/:id/status /api/runners/:id/health /api/runners/:id/concurrency
