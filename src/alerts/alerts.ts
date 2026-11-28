@@ -1,4 +1,10 @@
-import { alertFactsSteps, metricMinutesSteps, type AlertJobRow, type Db } from "../db";
+import {
+  alertFactsSteps,
+  inboxBacklogSteps,
+  metricMinutesSteps,
+  type AlertJobRow,
+  type Db,
+} from "../db";
 import { deployLagAlerts, type DeployLagCheck } from "./deploy-lag";
 
 export const ALERTS_PATH = "/api/alerts";
@@ -13,6 +19,8 @@ export const TEST_TIMEOUT_WINDOW_MS = 2 * 60 * MINUTE_MS;
 export const DEAD_OUTBOX_WINDOW_MS = 60 * MINUTE_MS;
 export const IDLE_FREE_SLOTS = 2;
 export const IDLE_WINDOW_MS = 30 * MINUTE_MS;
+export const INTAKE_BACKLOG_WARNING_MS = 10 * MINUTE_MS;
+export const INTAKE_BACKLOG_CRITICAL_MS = 30 * MINUTE_MS;
 
 export type AlertSeverity = "critical" | "warning" | "info";
 
@@ -127,6 +135,22 @@ function idleCapacity(
   ];
 }
 
+function intakeBacklog(backlog: { depth: number; oldestAt: number }, now: number): Alert[] {
+  const age = now - backlog.oldestAt;
+  if (backlog.depth === 0 || age <= INTAKE_BACKLOG_WARNING_MS) return [];
+  const minutes = Math.floor(age / MINUTE_MS);
+  return [
+    {
+      id: "intake_backlog",
+      severity: age >= INTAKE_BACKLOG_CRITICAL_MS ? "critical" : "warning",
+      title: `Linear intake is ${minutes} minutes behind`,
+      detail: `${backlog.depth} Linear events wait for intake; the oldest arrived ${minutes} minutes ago.`,
+      since: backlog.oldestAt,
+      count: backlog.depth,
+    },
+  ];
+}
+
 export async function readAlerts(
   db: Db,
   now = Date.now(),
@@ -143,12 +167,14 @@ export async function readAlerts(
       deadOutbox: now - DEAD_OUTBOX_WINDOW_MS,
     }),
   );
+  const backlog = await db.run((q) => inboxBacklogSteps(q, now));
   return [
     ...runnerHttp4xx(metrics),
     ...repeatedFailures(facts.jobs),
     ...testTimeouts(facts.testTimeouts),
     ...deadOutbox(facts.deadOutbox),
     ...idleCapacity(facts, now),
+    ...intakeBacklog(backlog, now),
     ...(deployLag ? await deployLagAlerts(deployLag, now) : []),
   ].sort((a, b) => b.since - a.since);
 }

@@ -61,7 +61,7 @@ async function inboxRow(db: Db, sessionId: string) {
   ))!;
 }
 
-test("a burst of 20 sessions while every runner slot is busy and Linear rate-limits is queued two at a time", async () => {
+test("a burst of 20 sessions while every runner slot is busy and Linear rate-limits is queued six at a time", async () => {
   const home = tempHome();
   const root = join(home, "paws");
   mkdirSync(root);
@@ -189,7 +189,7 @@ test("a burst of 20 sessions while every runner slot is busy and Linear rate-lim
       states: ["queued"],
       errors: [],
       questions: [],
-      mostActive: 2,
+      mostActive: 6,
       rateLimited: true,
     });
   } finally {
@@ -404,7 +404,7 @@ test("a rate limit that asks for no wait still does not restart the intake at on
   }
 });
 
-test("every arrival posts its first activity at once while both intake slots are busy", async () => {
+test("every arrival posts its first activity at once while every intake slot is busy", async () => {
   const { db, close } = await tempStore();
   const store = createInboxStore(db);
   const fake = createFakeTracker([]);
@@ -424,12 +424,12 @@ test("every arrival posts its first activity at once while both intake slots are
     },
   });
   try {
-    for (let n = 0; n < 5; n++) {
+    for (let n = 0; n < 9; n++) {
       const event = created(n);
       await store.commit(event);
       queue.arrive(event);
     }
-    while (started.length < 2) await Bun.sleep(1);
+    while (started.length < 6) await Bun.sleep(1);
     const acknowledged = fake.progress
       .filter((update) => update.body === "Picked up this issue.")
       .map((update) => update.sessionId);
@@ -437,9 +437,9 @@ test("every arrival posts its first activity at once while both intake slots are
     release();
     await queue.idle();
     expect({ acknowledged, whileBusy, started, unhandled: await unhandled(db) }).toEqual({
-      acknowledged: ["s0", "s1", "s2", "s3", "s4"],
-      whileBusy: ["s0", "s1"],
-      started: ["s0", "s1", "s2", "s3", "s4"],
+      acknowledged: ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"],
+      whileBusy: ["s0", "s1", "s2", "s3", "s4", "s5"],
+      started: ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"],
       unhandled: 0,
     });
   } finally {
