@@ -7,7 +7,7 @@ import {
   checkpointStart,
   commitCoauthorTrailers,
   commitIdentityEnv,
-  validateCommitAttribution,
+  commitAttributionCheck,
 } from "../core";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -650,6 +650,7 @@ export function createRunnerRepositories(options: {
               .trim()
               .split("\n")
               .filter(Boolean);
+            const check = commitAttributionCheck(command.commitPolicy);
             for (const commit of commits) {
               const metadata = (
                 await invoke(
@@ -671,13 +672,9 @@ export function createRunnerRepositories(options: {
                 ["--git-dir", mirror, "--no-replace-objects", "show", "-s", "--format=%B", commit],
                 signal,
               );
-              validateCommitAttribution(
-                command.commitPolicy,
-                metadata,
-                commitCoauthorTrailers(message),
-                commit,
-              );
+              check.add(metadata, commitCoauthorTrailers(message), commit);
             }
+            check.assert();
           }
           if (command.inputFiles?.length) {
             const changed = (

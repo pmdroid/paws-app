@@ -40,39 +40,94 @@ export function commitPolicyMessage(message: string, policy: GitCommitPolicy): s
 export const COAUTHOR_REJECTION =
   "Candidate attribution rejected: Co-authored-by trailers must match the consenting identities in the run policy.";
 
-export function validateCommitAttribution(
+export const IDENTITY_REJECTION =
+  "Candidate attribution rejected: every new commit must use the authorized App bot as author and committer.";
+
+type CommitIdentityViolation = {
+  commit: string;
+  author: string;
+  committer: string;
+  failed: ("author" | "committer")[];
+};
+
+function commitIdentityViolation(
   policy: GitCommitPolicy,
-  metadata: readonly string[],
-  trailers: readonly string[],
-  commit?: string,
-): void {
+  metadata: readonly (string | undefined)[],
+  commit = "",
+): CommitIdentityViolation | null {
   const identity = appBotCommitIdentity(policy.bot);
   const names = [identity.name, policy.bot.login];
-  const [author, authorEmail, committer, committerEmail] = metadata;
-  if (
-    metadata.length !== 4 ||
-    !names.includes(author!) ||
-    !names.includes(committer!) ||
-    authorEmail !== identity.email ||
-    committerEmail !== identity.email
-  )
-    throw new Error(
-      "Candidate attribution rejected: every new commit must use the authorized App bot as author and committer. Repair metadata before verification; no candidate was rewritten.",
+  const [author = "", authorEmail = "", committer = "", committerEmail = ""] = metadata;
+  const bot = (name: string, email: string) =>
+    metadata.length === 4 && names.includes(name) && email === identity.email;
+  const failed = [
+    ...(bot(author, authorEmail) ? [] : ["author" as const]),
+    ...(bot(committer, committerEmail) ? [] : ["committer" as const]),
+  ];
+  if (failed.length === 0) return null;
+  return {
+    commit: commit.slice(0, 12),
+    author: `${author} <${authorEmail}>`,
+    committer: `${committer} <${committerEmail}>`,
+    failed,
+  };
+}
+
+function commitIdentityRejection(violations: readonly CommitIdentityViolation[]): string {
+  const named = violations
+    .slice(0, 5)
+    .map(
+      (v) =>
+        `commit=${v.commit || "unknown"} author=${v.author} committer=${v.committer} failed=${v.failed.join(",")}`,
     );
+  const more = violations.length - named.length;
+  return `${IDENTITY_REJECTION} Rejected ${named.join("; ")}${more > 0 ? `; and ${more} more` : ""}. Repair metadata before verification; no candidate was rewritten.`;
+}
+
+function commitTrailerRejection(
+  policy: GitCommitPolicy,
+  trailers: readonly string[],
+  commit?: string,
+): string | null {
   const expected = policyCoauthors(policy)
     .map((human) => `${human.name} <${human.email}>`)
     .sort();
   const found = [...new Set(trailers)].sort();
-  if (JSON.stringify(found) === JSON.stringify(expected)) return;
+  if (JSON.stringify(found) === JSON.stringify(expected)) return null;
   const extra = found.filter((trailer) => !expected.includes(trailer));
   const missing = expected.filter((trailer) => !found.includes(trailer));
   const problems = [
     extra.length ? `has unexpected Co-authored-by: ${extra.join(", ")}` : "",
     missing.length ? `is missing Co-authored-by: ${missing.join(", ")}` : "",
   ].filter(Boolean);
-  throw new Error(
-    `${COAUTHOR_REJECTION} ${commit ? `Commit ${commit.slice(0, 12)}` : "A commit"} ${problems.join(" and ")}; expected ${expected.length ? expected.join(", ") : "no Co-authored-by trailers"}. No candidate was rewritten.`,
-  );
+  return `${COAUTHOR_REJECTION} ${commit ? `Commit ${commit.slice(0, 12)}` : "A commit"} ${problems.join(" and ")}; expected ${expected.length ? expected.join(", ") : "no Co-authored-by trailers"}. No candidate was rewritten.`;
+}
+
+export function commitAttributionCheck(policy: GitCommitPolicy) {
+  const identities: CommitIdentityViolation[] = [];
+  let trailer: string | null = null;
+  return {
+    add(metadata: readonly (string | undefined)[], trailers: readonly string[], commit?: string) {
+      const identity = commitIdentityViolation(policy, metadata, commit);
+      if (identity) identities.push(identity);
+      else trailer ??= commitTrailerRejection(policy, trailers, commit);
+    },
+    assert() {
+      if (identities.length > 0) throw new Error(commitIdentityRejection(identities));
+      if (trailer !== null) throw new Error(trailer);
+    },
+  };
+}
+
+export function validateCommitAttribution(
+  policy: GitCommitPolicy,
+  metadata: readonly (string | undefined)[],
+  trailers: readonly string[],
+  commit?: string,
+): void {
+  const check = commitAttributionCheck(policy);
+  check.add(metadata, trailers, commit);
+  check.assert();
 }
 
 export function policyPullRequestCredit(policy: GitCommitPolicy): string {

@@ -1,7 +1,7 @@
 import {
   commitCoauthorTrailers,
   policyCoauthors,
-  validateCommitAttribution,
+  commitAttributionCheck,
   type GitCommitPolicy,
 } from "../core";
 import { execFile } from "node:child_process";
@@ -36,6 +36,7 @@ export async function validateGitHubCandidateAttribution(
   if (typeof total !== "number" || !Number.isSafeInteger(total) || total < 0)
     throw new Error("GitHub returned no candidate commit count");
   let validated = 0;
+  const check = commitAttributionCheck(policy);
   let page = comparison;
   for (let number = 1; validated < total; number++) {
     if (number > 1) page = await get(`/compare/${base}...${head}?per_page=100&page=${number}`);
@@ -52,8 +53,7 @@ export async function validateGitHubCandidateAttribution(
       const commit = entry.commit;
       if (!commit || typeof commit.message !== "string")
         throw new Error("GitHub returned incomplete commit attribution");
-      validateCommitAttribution(
-        policy,
+      check.add(
         [
           commit.author?.name,
           commit.author?.email,
@@ -66,6 +66,7 @@ export async function validateGitHubCandidateAttribution(
     }
   }
   if (validated !== total) throw new Error("GitHub returned an inconsistent candidate range");
+  check.assert();
 }
 
 export async function gitHubCommitPatchIds(

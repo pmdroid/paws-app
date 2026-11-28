@@ -2,7 +2,7 @@ import {
   assertDescendsFromAny,
   commitCoauthorTrailers,
   policyCoauthors,
-  validateCommitAttribution,
+  commitAttributionCheck,
   type GitCommitPolicy,
 } from "../core";
 import { git } from "./git";
@@ -39,6 +39,7 @@ export async function validateCandidateAttribution(
     .split("\n")
     .filter(Boolean);
   const adopted = new Set(adoptedPatchIds);
+  const check = commitAttributionCheck(policy);
   for (const sha of commits) {
     if (adopted.size > 0 && adopted.has((await commitPatchId(tree, sha, env, signal)) ?? ""))
       continue;
@@ -46,8 +47,9 @@ export async function validateCandidateAttribution(
       .trimEnd()
       .split("\n");
     const message = await invoke(["show", "-s", "--format=%B", sha]);
-    validateCommitAttribution(policy, metadata, commitCoauthorTrailers(message), sha);
+    check.add(metadata, commitCoauthorTrailers(message), sha);
   }
+  check.assert();
 }
 
 export async function commitPatchIds(
