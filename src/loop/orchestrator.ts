@@ -11717,7 +11717,7 @@ export class Orchestrator {
     for (const run of await this.store.run((q) => listWaitingProfileRunsSteps(q, now))) {
       const saved = await this.readProfileSnapshot(run.id);
       if (!saved) continue;
-      if (onlyBasis !== undefined && saved.basis != null && saved.basis !== onlyBasis) continue;
+      if (onlyBasis !== undefined && saved.basis !== onlyBasis) continue;
       const profiles = withoutLabelProblems(resolveAgentProfiles(config, saved.profileLabels));
       if (sameJson(saved.profiles, profiles)) continue;
       // Keep the original agent through repeated saves before the next turn.

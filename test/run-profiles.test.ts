@@ -123,7 +123,13 @@ test("a legacy snapshot moves into the database as written, settings changes inc
   expect(await moveRunProfileFiles(db, root)).toBe(1);
   expect(await profileOf(db, run.id)).toEqual(saved);
   expect(existsSync(file)).toBe(false);
-  expect(await worker(db, root).profileSnapshot(run.id)).toEqual(changed);
+  await seed(db, (q) =>
+    q.orm.update(q.t.workItem).set({ state: "running" }).where(eq(q.t.workItem.id, run.itemId)),
+  );
+  const resumed = worker(db, root);
+  expect((await resumed.ensureRun((await getWorkItem(db, run.itemId))!)).id).toBe(run.id);
+  expect(await resumed.profileSnapshot(run.id)).toEqual(changed);
+  expect(await profileOf(db, run.id)).toEqual(saved);
   expect(await moveRunProfileFiles(db, root)).toBe(0);
 });
 
