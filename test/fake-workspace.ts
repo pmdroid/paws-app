@@ -7,6 +7,7 @@ import {
   recordLinearInstallationSteps,
   type Db,
   type Q,
+  type ReadinessInputs,
   type Steps,
 } from "../src/db";
 import { and, asc, desc, eq, inArray, isNotNull, notExists, notInArray, sql } from "drizzle-orm";
@@ -30,10 +31,13 @@ export function workspaceAdmission(store: Db, options: AdmissionOptions = {}): I
       await store.run((q) => joinFakeWorkspaceSteps(q, id, byItem));
       return check(id);
     };
-  const joinedSteps = <R>(check: (q: Q, id: string) => Steps<R>, byItem: boolean) =>
-    function* (q: Q, id: string): Steps<R> {
-      yield* joinFakeWorkspaceSteps(q, id, byItem);
-      return yield* check(q, id);
+  const joinedSteps = <R>(
+    check: (q: Q, id: string, inputs?: ReadinessInputs) => Steps<R>,
+    byItem: boolean,
+  ) =>
+    function* (q: Q, id: string, inputs?: ReadinessInputs): Steps<R> {
+      if (!inputs) yield* joinFakeWorkspaceSteps(q, id, byItem);
+      return yield* check(q, id, inputs);
     };
   return {
     canDispatchDelegation: joined(admission.canDispatchDelegation, false),
@@ -43,6 +47,10 @@ export function workspaceAdmission(store: Db, options: AdmissionOptions = {}): I
       canDispatchDelegation: joinedSteps(admission.steps.canDispatchDelegation, false),
       canStart: joinedSteps(admission.steps.canStart, true),
       canMerge: joinedSteps(admission.steps.canMerge, true),
+      *readiness(q: Q, itemIds: readonly string[]): Steps<ReadinessInputs> {
+        for (const id of itemIds) yield* joinFakeWorkspaceSteps(q, id, true);
+        return yield* admission.steps.readiness!(q, itemIds);
+      },
     },
   };
 }

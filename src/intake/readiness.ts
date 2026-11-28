@@ -7,15 +7,27 @@ import {
   type Q,
   type Steps,
   type Db,
+  type ReadinessInputs,
 } from "../db";
 import { canAdvanceItemSteps, itemBlockersSteps, readyItemsSteps } from "./dependencies";
 
 export type ReadinessPhase = "start" | "merge";
 export type ReadinessHold = "reconciling" | "snapshot" | "cancelled" | "blocked";
 
-export function* delegationReadinessSteps(q: Q, delegationId: string): Steps<ReadinessHold | null> {
+export function* delegationReadinessSteps(
+  q: Q,
+  delegationId: string,
+  inputs?: ReadinessInputs,
+): Steps<ReadinessHold | null> {
+  const known = inputs?.delegations.get(delegationId);
+  if (known) return known.reconciling ? "reconciling" : known.withoutSnapshot ? "snapshot" : null;
   if (yield* delegationHasReconciliationWorkSteps(q, delegationId)) return "reconciling";
   return (yield* delegationHasItemWithoutSnapshotSteps(q, delegationId)) ? "snapshot" : null;
+}
+
+function* workspaceSteps(q: Q, delegationId: string, inputs?: ReadinessInputs) {
+  const known = inputs?.delegations.get(delegationId);
+  return known ? known.workspaceId : yield* delegationWorkspaceIdSteps(q, delegationId);
 }
 
 export function itemReadiness(
@@ -30,12 +42,13 @@ export function* itemReadinessSteps(
   q: Q,
   itemId: string,
   phase: ReadinessPhase,
+  inputs?: ReadinessInputs,
 ): Steps<ReadinessHold | null> {
-  const item = yield* readItemDelegationSteps(q, itemId);
+  const item = inputs?.items.get(itemId) ?? (yield* readItemDelegationSteps(q, itemId));
   if (!item || item.cancelRequested) return "cancelled";
-  const workspaceId = yield* delegationWorkspaceIdSteps(q, item.delegationId);
+  const workspaceId = yield* workspaceSteps(q, item.delegationId, inputs);
   if (workspaceId === undefined) return "blocked";
-  const target = { itemId, workspaceId };
+  const target = { itemId, workspaceId, inputs };
   try {
     const ready =
       phase === "start"
@@ -52,13 +65,16 @@ export function* itemReadinessSteps(
  * Identifiers of the issues that keep `itemId` held as "blocked". Empty only when readiness holds
  * it for something other than a blocker, which is an inconsistency for the caller to report.
  */
-export function* blockingIssuesSteps(q: Q, itemId: string): Steps<string[]> {
-  const delegationId = (yield* readItemDelegationSteps(q, itemId))?.delegationId;
-  const workspaceId =
-    delegationId === undefined ? undefined : yield* delegationWorkspaceIdSteps(q, delegationId);
+export function* blockingIssuesSteps(
+  q: Q,
+  itemId: string,
+  inputs?: ReadinessInputs,
+): Steps<string[]> {
+  const item = inputs?.items.get(itemId) ?? (yield* readItemDelegationSteps(q, itemId));
+  const workspaceId = item ? yield* workspaceSteps(q, item.delegationId, inputs) : undefined;
   if (workspaceId === undefined) return [];
   try {
-    return yield* itemBlockersSteps(q, { itemId, workspaceId });
+    return yield* itemBlockersSteps(q, { itemId, workspaceId, inputs });
   } catch (caughtError1) {
     journalCaught(caughtError1, "readiness.blockingIssues.itemBlockers", itemId);
     return [];
