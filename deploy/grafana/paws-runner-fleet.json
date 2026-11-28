@@ -45,7 +45,7 @@
             "type": "prometheus",
             "uid": "${prometheus}"
           },
-          "expr": "count by (runner) (node_cpu_seconds_total{job=\"runner-node\",mode=\"idle\"})",
+          "expr": "max by (runner) (paws_runner_host_cpu_count)",
           "instant": true,
           "format": "table"
         },
@@ -55,7 +55,7 @@
             "type": "prometheus",
             "uid": "${prometheus}"
           },
-          "expr": "node_memory_MemTotal_bytes{job=\"runner-node\"}",
+          "expr": "max by (runner) (paws_runner_host_memory_total_bytes)",
           "instant": true,
           "format": "table"
         },
@@ -65,7 +65,7 @@
             "type": "prometheus",
             "uid": "${prometheus}"
           },
-          "expr": "100 * (1 - avg by (runner) (rate(node_cpu_seconds_total{job=\"runner-node\",mode=\"idle\"}[5m])))",
+          "expr": "100 * max by (runner) (paws_runner_host_cpu_busy_ratio)",
           "instant": true,
           "format": "table"
         },
@@ -75,7 +75,7 @@
             "type": "prometheus",
             "uid": "${prometheus}"
           },
-          "expr": "100 * (1 - node_memory_MemAvailable_bytes{job=\"runner-node\"} / node_memory_MemTotal_bytes{job=\"runner-node\"})",
+          "expr": "100 * max by (runner) (paws_runner_host_memory_used_bytes) / max by (runner) (paws_runner_host_memory_total_bytes)",
           "instant": true,
           "format": "table"
         },
@@ -85,17 +85,7 @@
             "type": "prometheus",
             "uid": "${prometheus}"
           },
-          "expr": "100 * (1 - node_filesystem_avail_bytes{job=\"runner-node\",mountpoint=\"/\"} / node_filesystem_size_bytes{job=\"runner-node\",mountpoint=\"/\"})",
-          "instant": true,
-          "format": "table"
-        },
-        {
-          "refId": "F",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${prometheus}"
-          },
-          "expr": "time() - node_boot_time_seconds{job=\"runner-node\"}",
+          "expr": "100 * max by (runner) (paws_runner_host_root_used_bytes) / max by (runner) (paws_runner_host_root_size_bytes)",
           "instant": true,
           "format": "table"
         }
@@ -120,8 +110,7 @@
               "Value #B": "Memory",
               "Value #C": "CPU %",
               "Value #D": "Memory %",
-              "Value #E": "Disk / %",
-              "Value #F": "Up"
+              "Value #E": "Disk / %"
             }
           }
         }
@@ -273,18 +262,6 @@
                 }
               }
             ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Up"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "s"
-              }
-            ]
           }
         ]
       },
@@ -340,7 +317,7 @@
             "type": "prometheus",
             "uid": "${prometheus}"
           },
-          "expr": "100 * (1 - avg by (runner) (rate(node_cpu_seconds_total{job=\"runner-node\",mode=\"idle\"}[$__rate_interval])))",
+          "expr": "100 * max by (runner) (paws_runner_host_cpu_busy_ratio)",
           "legendFormat": "{{runner}}"
         }
       ],
@@ -388,7 +365,7 @@
             "type": "prometheus",
             "uid": "${prometheus}"
           },
-          "expr": "100 * (1 - node_memory_MemAvailable_bytes{job=\"runner-node\"} / node_memory_MemTotal_bytes{job=\"runner-node\"})",
+          "expr": "100 * max by (runner) (paws_runner_host_memory_used_bytes) / max by (runner) (paws_runner_host_memory_total_bytes)",
           "legendFormat": "{{runner}}"
         }
       ],
@@ -434,7 +411,7 @@
             "type": "prometheus",
             "uid": "${prometheus}"
           },
-          "expr": "node_load1{job=\"runner-node\"} / on (runner) count by (runner) (node_cpu_seconds_total{job=\"runner-node\",mode=\"idle\"})",
+          "expr": "max by (runner) (paws_runner_host_load1) / max by (runner) (paws_runner_host_cpu_count)",
           "legendFormat": "{{runner}}"
         }
       ],
@@ -482,7 +459,7 @@
             "type": "prometheus",
             "uid": "${prometheus}"
           },
-          "expr": "100 * (1 - node_filesystem_avail_bytes{job=\"runner-node\",mountpoint=\"/\"} / node_filesystem_size_bytes{job=\"runner-node\",mountpoint=\"/\"})",
+          "expr": "100 * max by (runner) (paws_runner_host_root_used_bytes) / max by (runner) (paws_runner_host_root_size_bytes)",
           "legendFormat": "{{runner}}"
         }
       ],
@@ -528,7 +505,7 @@
             "type": "prometheus",
             "uid": "${prometheus}"
           },
-          "expr": "sum by (runner) (rate(node_network_receive_bytes_total{job=\"runner-node\",device!~\"lo|veth.*|docker.*|br-.*|pawsvm.*\"}[$__rate_interval]))",
+          "expr": "max by (runner) (paws_runner_host_network_receive_bytes_per_second)",
           "legendFormat": "{{runner}}"
         }
       ],
@@ -574,7 +551,7 @@
             "type": "prometheus",
             "uid": "${prometheus}"
           },
-          "expr": "sum by (runner) (rate(node_network_transmit_bytes_total{job=\"runner-node\",device!~\"lo|veth.*|docker.*|br-.*|pawsvm.*\"}[$__rate_interval]))",
+          "expr": "max by (runner) (paws_runner_host_network_transmit_bytes_per_second)",
           "legendFormat": "{{runner}}"
         }
       ],
@@ -620,7 +597,7 @@
             "type": "prometheus",
             "uid": "${prometheus}"
           },
-          "expr": "sum by (runner) (rate(node_disk_io_time_seconds_total{job=\"runner-node\"}[$__rate_interval]))",
+          "expr": "max by (runner) (paws_runner_host_disk_busy_ratio)",
           "legendFormat": "{{runner}}"
         }
       ],
@@ -666,7 +643,7 @@
             "type": "prometheus",
             "uid": "${prometheus}"
           },
-          "expr": "rate(node_pressure_memory_waiting_seconds_total{job=\"runner-node\"}[$__rate_interval])",
+          "expr": "max by (runner) (paws_runner_host_memory_pressure_ratio)",
           "legendFormat": "{{runner}}"
         }
       ],
