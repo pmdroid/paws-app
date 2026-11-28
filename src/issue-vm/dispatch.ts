@@ -21,6 +21,7 @@ import {
   type IssueVmDriver,
 } from "./lifecycle";
 import { createHostIssueVmDriver } from "./host";
+import { createIssueVmDeleter } from "./delete";
 import { createIssueVmReplacer } from "./replace";
 
 export const ISSUE_VM_SWEEP_JOB = "issue-vm.sweep";
@@ -86,7 +87,9 @@ export function* issueVmPlacementSteps(
       wait:
         vm.state === "creating"
           ? "Waiting for its issue VM to be created"
-          : "Waiting for its issue VM to wake",
+          : vm.state === "deleting"
+            ? "Waiting for its old issue VM to be deleted"
+            : "Waiting for its issue VM to wake",
     };
   return { runnerId: vm.runnerId };
 }
@@ -114,9 +117,11 @@ export function createIssueVmSweep(
   const now = options.now ?? Date.now;
   const lifecycle = createIssueVmLifecycle(store, options);
   const replacer = createIssueVmReplacer(store, options);
+  const deleter = createIssueVmDeleter(store, options);
   return async () => {
+    await deleter.claim();
     await store.transaction((q) => followIssueVmItemsSteps(q, now()));
-    await lifecycle.sweep();
+    await Promise.all([lifecycle.sweep(), deleter.sweep()]);
     await replacer.sweep().catch((error: unknown) => {
       journal(`issue_vm_replace_sweep_failed error=${JSON.stringify(errorText(error))}`);
     });

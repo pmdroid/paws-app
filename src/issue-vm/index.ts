@@ -67,3 +67,4 @@ export {
   issueVmPlacementSteps,
 } from "./dispatch";
 export type { IssueVmDrivers } from "./dispatch";
+export { ISSUE_VM_DELETE_RETRY_MS } from "./delete";
